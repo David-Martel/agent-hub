@@ -22,6 +22,51 @@ pub(crate) fn connect(settings: &Settings) -> Result<redis::Connection> {
     client.get_connection().context("Redis connection failed")
 }
 
+/// Shared Redis client for connection reuse in HTTP mode.
+///
+/// `redis::Client` handles reconnection internally on each `get_connection()` call,
+/// so a single `RedisPool` instance can serve the entire lifetime of the HTTP server
+/// without creating a new TCP connection per request.
+///
+/// # Examples
+///
+/// ```
+/// let settings = Settings::from_env();
+/// let pool = RedisPool::new(&settings).expect("Redis client creation failed");
+/// let mut conn = pool.get_connection().expect("Redis connection failed");
+/// ```
+#[derive(Clone, Debug)]
+pub(crate) struct RedisPool {
+    client: redis::Client,
+}
+
+impl RedisPool {
+    /// Create a new `RedisPool` from the given settings.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Redis URL is malformed.
+    pub(crate) fn new(settings: &Settings) -> Result<Self> {
+        let client = redis::Client::open(settings.redis_url.as_str())
+            .context("Redis client creation failed")?;
+        Ok(Self { client })
+    }
+
+    /// Obtain a synchronous Redis connection.
+    ///
+    /// `redis::Client` reconnects automatically; each call may reuse an
+    /// existing TCP connection or open a new one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a connection to Redis cannot be established.
+    pub(crate) fn get_connection(&self) -> Result<redis::Connection> {
+        self.client
+            .get_connection()
+            .context("Redis connection failed")
+    }
+}
+
 pub(crate) fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Message {
     let get = |k: &str| -> String {
         match fields.get(k) {

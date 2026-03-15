@@ -14,13 +14,20 @@ use serde::Deserialize;
 
 use crate::models::MAX_HISTORY_MINUTES;
 use crate::redis_bus::{
-    bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence, connect,
+    RedisPool, bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence,
 };
 use crate::settings::Settings;
 use crate::validation::validate_priority;
 
 /// Shared state injected into every axum handler.
-pub(crate) type AppState = Arc<Settings>;
+///
+/// `AppState` is cheap to clone — `settings` is behind an `Arc` and `redis`
+/// wraps a single `redis::Client` (which is `Clone + Send + Sync`).
+#[derive(Clone)]
+pub(crate) struct AppState {
+    pub(crate) settings: Arc<Settings>,
+    pub(crate) redis: RedisPool,
+}
 
 /// Map an `anyhow::Error` to an HTTP 500 response with a JSON body.
 #[expect(
@@ -49,8 +56,8 @@ fn default_priority() -> String {
 
 // --- GET /health -----------------------------------------------------------
 
-pub(crate) async fn http_health_handler(State(settings): State<AppState>) -> impl IntoResponse {
-    let h = bus_health(&settings);
+pub(crate) async fn http_health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let h = bus_health(&state.settings);
     Json(serde_json::to_value(&h).unwrap_or_default())
 }
 
@@ -78,7 +85,7 @@ pub(crate) struct HttpSendRequest {
 }
 
 pub(crate) async fn http_send_handler(
-    State(settings): State<AppState>,
+    State(state): State<AppState>,
     Json(req): Json<HttpSendRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     // Validate required fields.
@@ -105,10 +112,10 @@ pub(crate) async fn http_send_handler(
         .metadata
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
 
-    let mut conn = connect(&settings).map_err(internal_error)?;
+    let mut conn = state.redis.get_connection().map_err(internal_error)?;
     let msg = bus_post_message(
         &mut conn,
-        &settings,
+        &state.settings,
         &sender,
         &recipient,
         &topic,
@@ -156,14 +163,14 @@ fn default_true() -> bool {
 }
 
 pub(crate) async fn http_read_handler(
-    State(settings): State<AppState>,
+    State(state): State<AppState>,
     Query(params): Query<HttpReadQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let since = params.since.min(MAX_HISTORY_MINUTES);
     let limit = params.limit.clamp(1, 500);
 
     let msgs = bus_list_messages(
-        &settings,
+        &state.settings,
         params.agent.as_deref(),
         params.from.as_deref(),
         since,
@@ -190,7 +197,7 @@ fn default_ack_body() -> String {
 }
 
 pub(crate) async fn http_ack_handler(
-    State(settings): State<AppState>,
+    State(state): State<AppState>,
     Path(message_id): Path<String>,
     Json(req): Json<HttpAckRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -204,10 +211,10 @@ pub(crate) async fn http_ack_handler(
     }
 
     let meta = serde_json::json!({"ack_for": &message_id});
-    let mut conn = connect(&settings).map_err(internal_error)?;
+    let mut conn = state.redis.get_connection().map_err(internal_error)?;
     let msg = bus_post_message(
         &mut conn,
-        &settings,
+        &state.settings,
         &agent,
         "all",
         "ack",
@@ -250,7 +257,7 @@ fn default_ttl() -> u64 {
 }
 
 pub(crate) async fn http_presence_set_handler(
-    State(settings): State<AppState>,
+    State(state): State<AppState>,
     Path(agent): Path<String>,
     Json(req): Json<HttpPresenceRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
@@ -264,10 +271,10 @@ pub(crate) async fn http_presence_set_handler(
         .metadata
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
 
-    let mut conn = connect(&settings).map_err(internal_error)?;
+    let mut conn = state.redis.get_connection().map_err(internal_error)?;
     let presence = bus_set_presence(
         &mut conn,
-        &settings,
+        &state.settings,
         &agent,
         &req.status,
         req.session_id.as_deref(),
@@ -283,10 +290,10 @@ pub(crate) async fn http_presence_set_handler(
 // --- GET /presence ---------------------------------------------------------
 
 pub(crate) async fn http_presence_list_handler(
-    State(settings): State<AppState>,
+    State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let mut conn = connect(&settings).map_err(internal_error)?;
-    let results = bus_list_presence(&mut conn, &settings).map_err(internal_error)?;
+    let mut conn = state.redis.get_connection().map_err(internal_error)?;
+    let results = bus_list_presence(&mut conn, &state.settings).map_err(internal_error)?;
     Ok(Json(serde_json::to_value(&results).unwrap_or_default()))
 }
 
@@ -294,7 +301,11 @@ pub(crate) async fn http_presence_list_handler(
 
 pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<()> {
     let bind_host = settings.server_host.clone();
-    let state: AppState = Arc::new(settings);
+    let redis = RedisPool::new(&settings).context("Redis client creation failed")?;
+    let state = AppState {
+        settings: Arc::new(settings),
+        redis,
+    };
     let app = Router::new()
         .route("/health", get(http_health_handler))
         .route("/messages", post(http_send_handler).get(http_read_handler))
