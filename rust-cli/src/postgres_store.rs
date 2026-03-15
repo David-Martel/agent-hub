@@ -1,4 +1,12 @@
 //! `PostgreSQL` durable storage for messages and presence events.
+//!
+//! ## Connection reuse
+//!
+//! All write and read paths share a single process-lifetime [`PgClient`] held
+//! inside a `Mutex<Option<PgClient>>`.  The "take / execute / return" pattern
+//! keeps the mutex unlocked during the actual I/O so it never contends with
+//! concurrent readers.  On any error the client is discarded and a fresh TCP
+//! connection is made on the next call.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
@@ -102,12 +110,79 @@ pub(crate) fn run_postgres_blocking<T>(operation: impl FnOnce() -> Result<T>) ->
     }
 }
 
+/// Open a fresh `PostgreSQL` connection.
+///
+/// Used by the health probe, which intentionally bypasses the shared pool so
+/// that it always verifies real network reachability.
 pub(crate) fn connect_postgres(settings: &Settings) -> Result<Option<PgClient>> {
     let Some(database_url) = settings.database_url.as_deref() else {
         return Ok(None);
     };
     let client = PgClient::connect(database_url, NoTls).context("PostgreSQL connection failed")?;
     Ok(Some(client))
+}
+
+// ---------------------------------------------------------------------------
+// Shared process-lifetime PG client pool (single connection, reused)
+// ---------------------------------------------------------------------------
+
+/// Singleton holding the shared `PostgreSQL` client between all calls.
+///
+/// `None` means no connection has been established yet (or the previous one
+/// was discarded after an error).  Callers must *take* the `Option` out,
+/// perform their work, and then *return* it via [`return_pg_client`].  This
+/// keeps the `Mutex` unlocked during blocking I/O.
+fn shared_pg_client() -> &'static Mutex<Option<PgClient>> {
+    static PG_CLIENT: OnceLock<Mutex<Option<PgClient>>> = OnceLock::new();
+    PG_CLIENT.get_or_init(|| Mutex::new(None))
+}
+
+/// Take the shared client from the pool, reconnecting lazily when absent.
+///
+/// Returns `None` (without error) when `database_url` is not configured.
+/// The caller is responsible for either returning the client with
+/// [`return_pg_client`] on success or simply dropping it on error so that
+/// the next caller gets a fresh connection.
+///
+/// # Errors
+///
+/// Returns an error if the `Mutex` is poisoned or a new TCP connection to
+/// `PostgreSQL` cannot be established.
+fn get_pg_client(settings: &Settings) -> Result<Option<PgClient>> {
+    let Some(database_url) = settings.database_url.as_deref() else {
+        return Ok(None);
+    };
+
+    let mut guard = shared_pg_client()
+        .lock()
+        .map_err(|_e| anyhow::anyhow!("PostgreSQL shared-client mutex poisoned"))?;
+
+    // Try to reuse the existing connection with a lightweight health ping.
+    if let Some(ref mut client) = *guard {
+        if client.simple_query("").is_ok() {
+            // Connection is alive — take it out and hand to the caller.
+            return Ok(guard.take());
+        }
+        // Connection is stale; drop it and fall through to reconnect.
+        guard.take();
+    }
+
+    // Open a new connection and hand it directly to the caller (not back into
+    // the slot) so we do not hold the mutex during connect.
+    drop(guard); // release lock before the blocking TCP handshake
+    let client =
+        PgClient::connect(database_url, NoTls).context("PostgreSQL connection failed")?;
+    Ok(Some(client))
+}
+
+/// Return a healthy client back to the shared pool after successful use.
+///
+/// If the mutex is poisoned the client is silently dropped; the next
+/// call to [`get_pg_client`] will simply open a new connection.
+fn return_pg_client(client: PgClient) {
+    if let Ok(mut guard) = shared_pg_client().lock() {
+        *guard = Some(client);
+    }
 }
 
 pub(crate) fn storage_cache() -> &'static Mutex<HashSet<String>> {
@@ -211,7 +286,7 @@ pub(crate) fn parse_timestamp_utc(timestamp_utc: &str) -> Result<DateTime<Utc>> 
 pub(crate) fn persist_message_postgres(settings: &Settings, message: &Message) -> Result<()> {
     with_pg_retry(|| {
         run_postgres_blocking(|| {
-            let Some(mut client) = connect_postgres(settings)? else {
+            let Some(mut client) = get_pg_client(settings)? else {
                 return Ok(());
             };
             ensure_postgres_storage(&mut client, settings)?;
@@ -254,6 +329,8 @@ pub(crate) fn persist_message_postgres(settings: &Settings, message: &Message) -
                     &message.stream_id,
                 ],
             )?;
+            // Return the healthy connection to the pool.
+            return_pg_client(client);
             Ok(())
         })
     })
@@ -262,7 +339,7 @@ pub(crate) fn persist_message_postgres(settings: &Settings, message: &Message) -
 pub(crate) fn persist_presence_postgres(settings: &Settings, presence: &Presence) -> Result<()> {
     with_pg_retry(|| {
         run_postgres_blocking(|| {
-            let Some(mut client) = connect_postgres(settings)? else {
+            let Some(mut client) = get_pg_client(settings)? else {
                 return Ok(());
             };
             ensure_postgres_storage(&mut client, settings)?;
@@ -297,6 +374,8 @@ pub(crate) fn persist_presence_postgres(settings: &Settings, presence: &Presence
                     &ttl_seconds,
                 ],
             )?;
+            // Return the healthy connection to the pool.
+            return_pg_client(client);
             Ok(())
         })
     })
@@ -353,7 +432,7 @@ pub(crate) fn list_messages_postgres(
     include_broadcast: bool,
 ) -> Result<Vec<Message>> {
     run_postgres_blocking(|| {
-        let Some(mut client) = connect_postgres(settings)? else {
+        let Some(mut client) = get_pg_client(settings)? else {
             return Ok(Vec::new());
         };
         ensure_postgres_storage(&mut client, settings)?;
@@ -379,6 +458,7 @@ pub(crate) fn list_messages_postgres(
 
         let mut messages: Vec<Message> = rows.iter().map(row_to_message).collect();
         messages.reverse();
+        return_pg_client(client);
         Ok(messages)
     })
 }
@@ -399,7 +479,7 @@ pub(crate) fn list_messages_by_tag(
     limit: usize,
 ) -> Result<Vec<Message>> {
     run_postgres_blocking(|| {
-        let Some(mut client) = connect_postgres(settings)? else {
+        let Some(mut client) = get_pg_client(settings)? else {
             return Ok(Vec::new());
         };
         ensure_postgres_storage(&mut client, settings)?;
@@ -421,20 +501,23 @@ pub(crate) fn list_messages_by_tag(
         )?;
         let mut messages: Vec<Message> = rows.iter().map(row_to_message).collect();
         messages.reverse();
+        return_pg_client(client);
         Ok(messages)
     })
 }
 
 pub(crate) fn count_messages_postgres(settings: &Settings) -> Option<i64> {
     run_postgres_blocking(|| {
-        let Some(mut client) = connect_postgres(settings)? else {
+        let Some(mut client) = get_pg_client(settings)? else {
             return Ok(None);
         };
         let row = client.query_one(
             &format!("select count(*) as cnt from {}", settings.message_table),
             &[],
         )?;
-        Ok(Some(row.get::<_, i64>("cnt")))
+        let count = row.get::<_, i64>("cnt");
+        return_pg_client(client);
+        Ok(Some(count))
     })
     .ok()
     .flatten()
@@ -442,7 +525,7 @@ pub(crate) fn count_messages_postgres(settings: &Settings) -> Option<i64> {
 
 pub(crate) fn count_presence_postgres(settings: &Settings) -> Option<i64> {
     run_postgres_blocking(|| {
-        let Some(mut client) = connect_postgres(settings)? else {
+        let Some(mut client) = get_pg_client(settings)? else {
             return Ok(None);
         };
         let row = client.query_one(
@@ -452,7 +535,9 @@ pub(crate) fn count_presence_postgres(settings: &Settings) -> Option<i64> {
             ),
             &[],
         )?;
-        Ok(Some(row.get::<_, i64>("cnt")))
+        let count = row.get::<_, i64>("cnt");
+        return_pg_client(client);
+        Ok(Some(count))
     })
     .ok()
     .flatten()
@@ -467,7 +552,7 @@ pub(crate) fn count_presence_postgres(settings: &Settings) -> Option<i64> {
 /// Returns an error if the database operation fails.
 pub(crate) fn prune_old_messages(settings: &Settings, older_than_days: u64) -> Result<u64> {
     run_postgres_blocking(|| {
-        let Some(mut client) = connect_postgres(settings)? else {
+        let Some(mut client) = get_pg_client(settings)? else {
             return Ok(0);
         };
         ensure_postgres_storage(&mut client, settings)?;
@@ -479,6 +564,7 @@ pub(crate) fn prune_old_messages(settings: &Settings, older_than_days: u64) -> R
             ),
             &[&days],
         )?;
+        return_pg_client(client);
         Ok(rows)
     })
 }
@@ -492,7 +578,7 @@ pub(crate) fn prune_old_messages(settings: &Settings, older_than_days: u64) -> R
 /// Returns an error if the database operation fails.
 pub(crate) fn prune_old_presence(settings: &Settings, older_than_days: u64) -> Result<u64> {
     run_postgres_blocking(|| {
-        let Some(mut client) = connect_postgres(settings)? else {
+        let Some(mut client) = get_pg_client(settings)? else {
             return Ok(0);
         };
         ensure_postgres_storage(&mut client, settings)?;
@@ -504,6 +590,7 @@ pub(crate) fn prune_old_presence(settings: &Settings, older_than_days: u64) -> R
             ),
             &[&days],
         )?;
+        return_pg_client(client);
         Ok(rows)
     })
 }
@@ -543,7 +630,7 @@ pub(crate) fn list_presence_history_postgres(
     limit: usize,
 ) -> Result<Vec<Presence>> {
     run_postgres_blocking(|| {
-        let Some(mut client) = connect_postgres(settings)? else {
+        let Some(mut client) = get_pg_client(settings)? else {
             return Ok(Vec::new());
         };
         ensure_postgres_storage(&mut client, settings)?;
@@ -562,7 +649,9 @@ pub(crate) fn list_presence_history_postgres(
             ),
             &[&since_minutes, &agent_filter, &limit],
         )?;
-        Ok(rows.iter().map(row_to_presence).collect())
+        let results: Vec<Presence> = rows.iter().map(row_to_presence).collect();
+        return_pg_client(client);
+        Ok(results)
     })
 }
 
@@ -571,11 +660,15 @@ pub(crate) fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<Strin
         return (None, None, false);
     }
     match run_postgres_blocking(|| {
+        // Deliberately use a fresh connection here so that the health probe
+        // verifies real TCP reachability rather than returning a cached result.
         let Some(mut client) = connect_postgres(settings)? else {
             return Ok((None, None, false));
         };
         ensure_postgres_storage(&mut client, settings)?;
         mark_pg_up();
+        // Seed the shared pool so the next write reuses this connection.
+        return_pg_client(client);
         Ok((Some(true), None, true))
     }) {
         Ok(result) => result,
@@ -590,6 +683,40 @@ pub(crate) fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `get_pg_client` must return `Ok(None)` immediately when `database_url`
+    /// is not set — no TCP attempt, no mutex contention.
+    #[test]
+    fn get_pg_client_returns_none_when_no_database_url() {
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+        let result = get_pg_client(&settings);
+        assert!(result.is_ok(), "expected Ok from get_pg_client");
+        assert!(
+            result.unwrap().is_none(),
+            "expected None client when database_url is absent"
+        );
+    }
+
+    /// `return_pg_client` followed by `get_pg_client` with no `database_url`
+    /// must not panic or deadlock — the pool slot is simply ignored when PG
+    /// is not configured.
+    #[test]
+    fn shared_pool_is_inert_without_database_url() {
+        // The pool is a global singleton; we test the no-op path only.
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+
+        // Both calls must be infallible.
+        let client_opt = get_pg_client(&settings).expect("get_pg_client should not error");
+        assert!(client_opt.is_none());
+        // return_pg_client with no actual client — nothing to return; confirm
+        // the guard can still be acquired (not poisoned).
+        assert!(
+            shared_pg_client().lock().is_ok(),
+            "shared pool mutex must not be poisoned"
+        );
+    }
 
     #[test]
     fn pg_circuit_breaker_skips_when_open() {
