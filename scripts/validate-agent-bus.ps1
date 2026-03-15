@@ -1,68 +1,56 @@
 param(
+    [switch]$SkipBuild,
+    [switch]$SkipTests,
     [switch]$SkipHealth
 )
 
 $ErrorActionPreference = "Stop"
-$toolRoot = Join-Path $HOME ".codex/tools/agent-bus-mcp"
-$useIsolated = $false
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$rustCliRoot = Join-Path $repoRoot "rust-cli"
+$invokeScript = Join-Path $PSScriptRoot "invoke-agent-bus-cli.ps1"
 
-Write-Host "Syncing uv environment..."
-& uv --directory $toolRoot sync --frozen --group dev
-if ($LASTEXITCODE -ne 0) {
-    Write-Warning "uv sync hit a Windows file lock. Falling back to an isolated uv run for validation."
-    $useIsolated = $true
+if (-not $env:AGENT_BUS_REDIS_URL) {
+    $env:AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
+}
+if (-not $env:AGENT_BUS_DATABASE_URL) {
+    $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5432/redis_backend"
+}
+if (-not $env:AGENT_BUS_SERVER_HOST) {
+    $env:AGENT_BUS_SERVER_HOST = "localhost"
 }
 
-Write-Host "Running pytest validation..."
-if ($useIsolated) {
-    & uv --directory $toolRoot run --isolated --group dev pytest --cov=agent_bus_mcp --cov-report=term-missing
-}
-else {
-    & uv --directory $toolRoot run pytest --cov=agent_bus_mcp --cov-report=term-missing
-}
-if ($LASTEXITCODE -ne 0) {
-    if (-not $useIsolated) {
-        Write-Warning "In-place pytest validation failed. Retrying in an isolated uv environment."
-        & uv --directory $toolRoot run --isolated --group dev pytest --cov=agent_bus_mcp --cov-report=term-missing
+if (-not $SkipBuild) {
+    Write-Host "Building native agent-bus binary..."
+    Push-Location $rustCliRoot
+    try {
+        & cargo build --release
+        if ($LASTEXITCODE -ne 0) {
+            throw "cargo build --release failed."
+        }
     }
-    if ($LASTEXITCODE -ne 0) {
-        throw "Pytest validation failed."
+    finally {
+        Pop-Location
+    }
+}
+
+if (-not $SkipTests) {
+    Write-Host "Running native test suite..."
+    Push-Location $rustCliRoot
+    try {
+        & cargo test
+        if ($LASTEXITCODE -ne 0) {
+            throw "cargo test failed."
+        }
+    }
+    finally {
+        Pop-Location
     }
 }
 
 if (-not $SkipHealth) {
-    Write-Host "Running live health validation..."
-    if ($useIsolated) {
-        $code = @'
-from agent_bus_mcp.bus import AgentBus
-import json
-bus = AgentBus.from_env()
-try:
-    print(json.dumps(bus.initialize(announce_startup=True), indent=2))
-finally:
-    bus.close()
-'@
-        & uv --directory $toolRoot run --isolated python -c $code
-    }
-    else {
-        & uv --directory $toolRoot run agent-bus-mcp health
-    }
+    Write-Host "Running live Redis/PostgreSQL health check..."
+    & $invokeScript "health" "--encoding" "json"
     if ($LASTEXITCODE -ne 0) {
-        if (-not $useIsolated) {
-            Write-Warning "In-place health validation failed. Retrying in an isolated uv environment."
-            $code = @'
-from agent_bus_mcp.bus import AgentBus
-import json
-bus = AgentBus.from_env()
-try:
-    print(json.dumps(bus.initialize(announce_startup=True), indent=2))
-finally:
-    bus.close()
-'@
-            & uv --directory $toolRoot run --isolated python -c $code
-        }
-        if ($LASTEXITCODE -ne 0) {
-            throw "Health validation failed."
-        }
+        throw "agent-bus health validation failed."
     }
 }

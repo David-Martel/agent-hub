@@ -15,23 +15,26 @@
 // ---------------------------------------------------------------------------
 // Lint suppressions at the crate level
 // ---------------------------------------------------------------------------
-#![expect(clippy::multiple_crate_versions, reason = "dependency diamond between rmcp and redis — not our choice")]
+#![expect(
+    clippy::multiple_crate_versions,
+    reason = "dependency diamond between rmcp and redis — not our choice"
+)]
 
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context as _, Result, anyhow};
 use axum::{
-    Json,
-    Router,
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post, put},
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use mimalloc::MiMalloc;
+use postgres::{Client as PgClient, NoTls};
 use redis::Commands as _;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, InitializeResult,
@@ -53,39 +56,64 @@ static GLOBAL: MiMalloc = MiMalloc;
 #[derive(Debug, Clone)]
 struct Settings {
     redis_url: String,
+    database_url: Option<String>,
     stream_key: String,
     channel_key: String,
     presence_prefix: String,
+    message_table: String,
+    presence_event_table: String,
     stream_maxlen: u64,
     service_agent_id: String,
     startup_enabled: bool,
     startup_recipient: String,
     startup_topic: String,
     startup_body: String,
+    server_host: String,
 }
 
 impl Settings {
     fn from_env() -> Self {
         Self {
             redis_url: env_or("AGENT_BUS_REDIS_URL", "redis://localhost:6380/0"),
+            database_url: env_or_optional_default(
+                "AGENT_BUS_DATABASE_URL",
+                "postgresql://postgres@localhost:5432/redis_backend",
+            ),
             stream_key: env_or("AGENT_BUS_STREAM_KEY", "agent_bus:messages"),
             channel_key: env_or("AGENT_BUS_CHANNEL", "agent_bus:events"),
             presence_prefix: env_or("AGENT_BUS_PRESENCE_PREFIX", "agent_bus:presence:"),
+            message_table: env_or("AGENT_BUS_MESSAGE_TABLE", "agent_bus.messages"),
+            presence_event_table: env_or(
+                "AGENT_BUS_PRESENCE_EVENT_TABLE",
+                "agent_bus.presence_events",
+            ),
             stream_maxlen: env_parse("AGENT_BUS_STREAM_MAXLEN", 5000),
             service_agent_id: env_or("AGENT_BUS_SERVICE_AGENT_ID", "agent-bus"),
             startup_enabled: env_or("AGENT_BUS_STARTUP_ENABLED", "true") != "false",
             startup_recipient: env_or("AGENT_BUS_STARTUP_RECIPIENT", "all"),
             startup_topic: env_or("AGENT_BUS_STARTUP_TOPIC", "status"),
-            startup_body: env_or(
-                "AGENT_BUS_STARTUP_BODY",
-                "agent-bus is up and running",
-            ),
+            startup_body: env_or("AGENT_BUS_STARTUP_BODY", "agent-bus is up and running"),
+            server_host: env_or("AGENT_BUS_SERVER_HOST", "localhost"),
         }
     }
 }
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
+}
+
+fn env_or_optional_default(key: &str, default: &str) -> Option<String> {
+    match std::env::var(key) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_owned())
+            }
+        }
+        Err(_) => Some(default.to_owned()),
+    }
 }
 
 fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
@@ -164,6 +192,10 @@ struct Health {
     ok: bool,
     protocol_version: String,
     redis_url: String,
+    database_url: Option<String>,
+    database_ok: Option<bool>,
+    database_error: Option<String>,
+    storage_ready: bool,
     runtime: String,
     codec: String,
 }
@@ -173,11 +205,339 @@ struct Health {
 // ---------------------------------------------------------------------------
 
 fn connect(settings: &Settings) -> Result<redis::Connection> {
-    let client = redis::Client::open(settings.redis_url.as_str())
-        .context("Redis client creation failed")?;
-    client
-        .get_connection()
-        .context("Redis connection failed")
+    let client =
+        redis::Client::open(settings.redis_url.as_str()).context("Redis client creation failed")?;
+    client.get_connection().context("Redis connection failed")
+}
+
+fn run_postgres_blocking<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::task::block_in_place(operation)
+    } else {
+        operation()
+    }
+}
+
+fn connect_postgres(settings: &Settings) -> Result<Option<PgClient>> {
+    let Some(database_url) = settings.database_url.as_deref() else {
+        return Ok(None);
+    };
+    let client = PgClient::connect(database_url, NoTls).context("PostgreSQL connection failed")?;
+    Ok(Some(client))
+}
+
+fn storage_cache() -> &'static Mutex<HashSet<String>> {
+    static STORAGE_READY: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    STORAGE_READY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn storage_cache_key(settings: &Settings) -> Option<String> {
+    settings.database_url.as_ref().map(|database_url| {
+        format!(
+            "{database_url}|{}|{}",
+            settings.message_table, settings.presence_event_table
+        )
+    })
+}
+
+fn storage_ready(settings: &Settings) -> bool {
+    let Some(cache_key) = storage_cache_key(settings) else {
+        return false;
+    };
+    storage_cache()
+        .lock()
+        .map(|guard| guard.contains(&cache_key))
+        .unwrap_or(false)
+}
+
+fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings) -> Result<()> {
+    let Some(cache_key) = storage_cache_key(settings) else {
+        return Ok(());
+    };
+    if storage_ready(settings) {
+        return Ok(());
+    }
+
+    client.batch_execute("create schema if not exists agent_bus")?;
+    client.batch_execute(&format!(
+        r#"
+        create table if not exists {message_table} (
+            id uuid primary key,
+            timestamp_utc timestamptz not null,
+            protocol_version text not null default '1.0',
+            sender text not null,
+            recipient text not null,
+            topic text not null,
+            body text not null,
+            thread_id text null,
+            priority text not null,
+            tags jsonb not null default '[]'::jsonb,
+            request_ack boolean not null default false,
+            reply_to text not null,
+            metadata jsonb not null default '{{}}'::jsonb,
+            stream_id text null
+        );
+        alter table {message_table} add column if not exists protocol_version text not null default '1.0';
+        alter table {message_table} add column if not exists thread_id text null;
+        alter table {message_table} add column if not exists stream_id text null;
+        create index if not exists agent_bus_messages_recipient_ts_idx
+            on {message_table} (recipient, timestamp_utc desc);
+        create index if not exists agent_bus_messages_sender_ts_idx
+            on {message_table} (sender, timestamp_utc desc);
+        create index if not exists agent_bus_messages_topic_ts_idx
+            on {message_table} (topic, timestamp_utc desc);
+        create index if not exists agent_bus_messages_reply_to_idx
+            on {message_table} (reply_to);
+        create unique index if not exists agent_bus_messages_stream_id_idx
+            on {message_table} (stream_id) where stream_id is not null;
+
+        create table if not exists {presence_event_table} (
+            id bigserial primary key,
+            timestamp_utc timestamptz not null,
+            protocol_version text not null default '1.0',
+            agent text not null,
+            status text not null,
+            session_id text not null,
+            capabilities jsonb not null default '[]'::jsonb,
+            metadata jsonb not null default '{{}}'::jsonb,
+            ttl_seconds bigint not null
+        );
+        alter table {presence_event_table} add column if not exists protocol_version text not null default '1.0';
+        create index if not exists agent_bus_presence_events_agent_ts_idx
+            on {presence_event_table} (agent, timestamp_utc desc);
+        "#,
+        message_table = settings.message_table,
+        presence_event_table = settings.presence_event_table,
+    ))?;
+
+    if let Ok(mut guard) = storage_cache().lock() {
+        guard.insert(cache_key);
+    }
+    Ok(())
+}
+
+fn parse_timestamp_utc(timestamp_utc: &str) -> Result<DateTime<Utc>> {
+    let parsed = DateTime::parse_from_rfc3339(&timestamp_utc.replace('Z', "+00:00"))
+        .with_context(|| format!("invalid timestamp_utc: {timestamp_utc}"))?;
+    Ok(parsed.with_timezone(&Utc))
+}
+
+fn persist_message_postgres(settings: &Settings, message: &Message) -> Result<()> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = connect_postgres(settings)? else {
+            return Ok(());
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+
+        let message_id = Uuid::parse_str(&message.id)
+            .with_context(|| format!("invalid message id: {}", message.id))?;
+        let timestamp_utc = parse_timestamp_utc(&message.timestamp_utc)?;
+        let tags = serde_json::Value::Array(
+            message
+                .tags
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        );
+        let reply_to = message.reply_to.clone().unwrap_or_default();
+
+        client.execute(
+            &format!(
+                "insert into {} \
+                 (id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, priority, tags, request_ack, reply_to, metadata, stream_id) \
+                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+                 on conflict (id) do nothing",
+                settings.message_table
+            ),
+            &[
+                &message_id,
+                &timestamp_utc,
+                &message.protocol_version,
+                &message.from,
+                &message.to,
+                &message.topic,
+                &message.body,
+                &message.thread_id,
+                &message.priority,
+                &tags,
+                &message.request_ack,
+                &reply_to,
+                &message.metadata,
+                &message.stream_id,
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+fn persist_presence_postgres(settings: &Settings, presence: &Presence) -> Result<()> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = connect_postgres(settings)? else {
+            return Ok(());
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+
+        let timestamp_utc = parse_timestamp_utc(&presence.timestamp_utc)?;
+        let capabilities = serde_json::Value::Array(
+            presence
+                .capabilities
+                .iter()
+                .cloned()
+                .map(serde_json::Value::String)
+                .collect(),
+        );
+        let ttl_seconds = i64::try_from(presence.ttl_seconds).context("ttl_seconds exceeds i64")?;
+
+        client.execute(
+            &format!(
+                "insert into {} \
+                 (timestamp_utc, protocol_version, agent, status, session_id, capabilities, metadata, ttl_seconds) \
+                 values ($1, $2, $3, $4, $5, $6, $7, $8)",
+                settings.presence_event_table
+            ),
+            &[
+                &timestamp_utc,
+                &presence.protocol_version,
+                &presence.agent,
+                &presence.status,
+                &presence.session_id,
+                &capabilities,
+                &presence.metadata,
+                &ttl_seconds,
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+fn parse_tags(value: serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn row_to_message(row: &postgres::Row) -> Message {
+    Message {
+        id: row.get::<_, Uuid>("id").to_string(),
+        timestamp_utc: row
+            .get::<_, DateTime<Utc>>("timestamp_utc")
+            .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+            .to_string(),
+        protocol_version: row.get("protocol_version"),
+        from: row.get("sender"),
+        to: row.get("recipient"),
+        topic: row.get("topic"),
+        body: row.get("body"),
+        thread_id: row.get("thread_id"),
+        tags: parse_tags(row.get::<_, serde_json::Value>("tags")),
+        priority: row.get("priority"),
+        request_ack: row.get("request_ack"),
+        reply_to: {
+            let reply_to: String = row.get("reply_to");
+            if reply_to.is_empty() {
+                None
+            } else {
+                Some(reply_to)
+            }
+        },
+        metadata: row.get("metadata"),
+        stream_id: row.get("stream_id"),
+    }
+}
+
+fn list_messages_postgres(
+    settings: &Settings,
+    agent: Option<&str>,
+    from_agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+    include_broadcast: bool,
+) -> Result<Vec<Message>> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = connect_postgres(settings)? else {
+            return Ok(Vec::new());
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+
+        let since_minutes = i64::try_from(since_minutes).context("since_minutes exceeds i64")?;
+        let limit = i64::try_from(limit).context("limit exceeds i64")?;
+        let agent_filter = agent.map(str::to_owned);
+        let sender_filter = from_agent.map(str::to_owned);
+
+        let rows = client.query(
+            &format!(
+                "select id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, tags, priority, request_ack, reply_to, metadata, stream_id \
+                 from {} \
+                 where timestamp_utc >= now() - ($1::bigint * interval '1 minute') \
+                   and ($2::text is null or sender = $2) \
+                   and ($3::text is null or recipient = $3 or ($4 and recipient = 'all')) \
+                 order by timestamp_utc desc \
+                 limit $5",
+                settings.message_table
+            ),
+            &[&since_minutes, &sender_filter, &agent_filter, &include_broadcast, &limit],
+        )?;
+
+        let mut messages: Vec<Message> = rows.iter().map(row_to_message).collect();
+        messages.reverse();
+        Ok(messages)
+    })
+}
+
+fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<String>, bool) {
+    if settings.database_url.is_none() {
+        return (None, None, false);
+    }
+    match run_postgres_blocking(|| {
+        let Some(mut client) = connect_postgres(settings)? else {
+            return Ok((None, None, false));
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+        Ok((Some(true), None, true))
+    }) {
+        Ok(result) => result,
+        Err(error) => (
+            Some(false),
+            Some(format!("{error:#}")),
+            storage_ready(settings),
+        ),
+    }
+}
+
+fn redact_url(value: &str) -> String {
+    let Some(scheme_end) = value.find("://") else {
+        return value.to_owned();
+    };
+    let authority_start = scheme_end + 3;
+    let authority_end = value[authority_start..]
+        .find(['/', '?', '#'])
+        .map(|index| authority_start + index)
+        .unwrap_or(value.len());
+    let authority = &value[authority_start..authority_end];
+    let Some(at_index) = authority.rfind('@') else {
+        return value.to_owned();
+    };
+
+    let host_part = &authority[at_index + 1..];
+    let redacted_authority = if authority[..at_index].contains(':') {
+        format!("***:***@{host_part}")
+    } else {
+        format!("***@{host_part}")
+    };
+    format!(
+        "{}{}{}",
+        &value[..authority_start],
+        redacted_authority,
+        &value[authority_end..]
+    )
 }
 
 fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Message {
@@ -198,8 +558,7 @@ fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Message {
     };
     let get_json_value = |k: &str| -> serde_json::Value {
         let raw = get(k);
-        serde_json::from_str(&raw)
-            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
+        serde_json::from_str(&raw).unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
     };
 
     Message {
@@ -212,7 +571,11 @@ fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Message {
         body: get("body"),
         thread_id: {
             let v = get("thread_id");
-            if v.is_empty() || v == "None" { None } else { Some(v) }
+            if v.is_empty() || v == "None" {
+                None
+            } else {
+                Some(v)
+            }
         },
         tags: get_json_vec("tags"),
         priority: {
@@ -233,11 +596,19 @@ fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Message {
 fn parse_xrange_result(raw: &[redis::Value]) -> Vec<(String, HashMap<String, redis::Value>)> {
     let mut out = Vec::new();
     for entry in raw {
-        let redis::Value::Array(parts) = entry else { continue };
-        if parts.len() < 2 { continue; }
-        let redis::Value::BulkString(sid_bytes) = &parts[0] else { continue };
+        let redis::Value::Array(parts) = entry else {
+            continue;
+        };
+        if parts.len() < 2 {
+            continue;
+        }
+        let redis::Value::BulkString(sid_bytes) = &parts[0] else {
+            continue;
+        };
         let stream_id = String::from_utf8_lossy(sid_bytes).to_string();
-        let redis::Value::Array(fields_raw) = &parts[1] else { continue };
+        let redis::Value::Array(fields_raw) = &parts[1] else {
+            continue;
+        };
 
         let mut field_map: HashMap<String, redis::Value> = HashMap::new();
         let mut j = 0;
@@ -245,7 +616,10 @@ fn parse_xrange_result(raw: &[redis::Value]) -> Vec<(String, HashMap<String, red
             let key = match &fields_raw[j] {
                 redis::Value::BulkString(b) => String::from_utf8_lossy(b).to_string(),
                 redis::Value::SimpleString(s) => s.clone(),
-                _ => { j += 2; continue; }
+                _ => {
+                    j += 2;
+                    continue;
+                }
             };
             field_map.insert(key, fields_raw[j + 1].clone());
             j += 2;
@@ -256,7 +630,10 @@ fn parse_xrange_result(raw: &[redis::Value]) -> Vec<(String, HashMap<String, red
 }
 
 /// Post a message to the stream + publish to channel. Returns the full message.
-#[expect(clippy::too_many_arguments, reason = "maps directly to protocol fields")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "maps directly to protocol fields"
+)]
 fn bus_post_message(
     conn: &mut redis::Connection,
     settings: &Settings,
@@ -331,11 +708,15 @@ fn bus_post_message(
         .publish(&settings.channel_key, &event_json)
         .context("PUBLISH failed")?;
 
+    if let Err(error) = persist_message_postgres(settings, &msg) {
+        tracing::warn!("failed to persist bus message to Postgres: {error:#}");
+    }
+
     Ok(msg)
 }
 
 /// List messages from the stream, most-recent first then reversed to chrono.
-fn bus_list_messages(
+fn bus_list_messages_from_redis(
     conn: &mut redis::Connection,
     settings: &Settings,
     agent: Option<&str>,
@@ -355,7 +736,10 @@ fn bus_list_messages(
         .query(conn)
         .context("XREVRANGE failed")?;
 
-    #[expect(clippy::cast_possible_wrap, reason = "since_minutes is bounded to <=10080 by validation")]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "since_minutes is bounded to <=10080 by validation"
+    )]
     let cutoff = Utc::now() - chrono::Duration::minutes(since_minutes as i64);
 
     let mut messages: Vec<Message> = Vec::new();
@@ -363,31 +747,73 @@ fn bus_list_messages(
         let mut msg = decode_stream_entry(&fields);
 
         // time-based cutoff
-        if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(
-            &msg.timestamp_utc.replace('Z', "+00:00"),
-        ) {
+        if let Ok(ts) =
+            chrono::DateTime::parse_from_rfc3339(&msg.timestamp_utc.replace('Z', "+00:00"))
+        {
             if ts < cutoff {
                 continue;
             }
         }
 
         if let Some(f) = from_agent {
-            if msg.from != f { continue; }
+            if msg.from != f {
+                continue;
+            }
         }
         if let Some(a) = agent {
             let to_matches = msg.to == a;
             let broadcast_matches = include_broadcast && msg.to == "all";
-            if !to_matches && !broadcast_matches { continue; }
+            if !to_matches && !broadcast_matches {
+                continue;
+            }
         }
 
         msg.stream_id = Some(stream_id);
         messages.push(msg);
-        if messages.len() >= limit { break; }
+        if messages.len() >= limit {
+            break;
+        }
     }
 
     // XREVRANGE returns newest first; reverse to get chronological
     messages.reverse();
     Ok(messages)
+}
+
+fn bus_list_messages(
+    settings: &Settings,
+    agent: Option<&str>,
+    from_agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+    include_broadcast: bool,
+) -> Result<Vec<Message>> {
+    if settings.database_url.is_some() {
+        match list_messages_postgres(
+            settings,
+            agent,
+            from_agent,
+            since_minutes,
+            limit,
+            include_broadcast,
+        ) {
+            Ok(messages) => return Ok(messages),
+            Err(error) => {
+                tracing::warn!("Postgres message query failed, falling back to Redis: {error:#}");
+            }
+        }
+    }
+
+    let mut conn = connect(settings)?;
+    bus_list_messages_from_redis(
+        &mut conn,
+        settings,
+        agent,
+        from_agent,
+        since_minutes,
+        limit,
+        include_broadcast,
+    )
 }
 
 /// Set presence for an agent.
@@ -426,14 +852,15 @@ fn bus_set_presence(
         .publish(&settings.channel_key, &event_json)
         .context("PUBLISH presence failed")?;
 
+    if let Err(error) = persist_presence_postgres(settings, &presence) {
+        tracing::warn!("failed to persist presence event to Postgres: {error:#}");
+    }
+
     Ok(presence)
 }
 
 /// List all presence records using cursor-based SCAN (avoids blocking KEYS).
-fn bus_list_presence(
-    conn: &mut redis::Connection,
-    settings: &Settings,
-) -> Result<Vec<Presence>> {
+fn bus_list_presence(conn: &mut redis::Connection, settings: &Settings) -> Result<Vec<Presence>> {
     let pattern = format!("{}*", settings.presence_prefix);
 
     // Use SCAN instead of KEYS to avoid blocking the Redis event loop.
@@ -479,11 +906,16 @@ fn bus_health(settings: &Settings) -> Health {
         })
         .map(|pong| pong == "PONG")
         .unwrap_or(false);
+    let (database_ok, database_error, storage_ready) = probe_postgres(settings);
 
     Health {
         ok,
         protocol_version: PROTOCOL_VERSION.to_owned(),
-        redis_url: settings.redis_url.clone(),
+        redis_url: redact_url(&settings.redis_url),
+        database_url: settings.database_url.as_deref().map(redact_url),
+        database_ok,
+        database_error,
+        storage_ready: storage_ready || settings.database_url.is_none(),
         runtime: "rust-native".to_owned(),
         codec: "serde_json".to_owned(),
     }
@@ -525,12 +957,7 @@ fn output_message(msg: &Message, encoding: &Encoding) {
     if matches!(encoding, Encoding::Human) {
         println!(
             "[{}] {} -> {} | {} | {} | {}",
-            msg.timestamp_utc,
-            msg.from,
-            msg.to,
-            msg.topic,
-            msg.priority,
-            msg.body,
+            msg.timestamp_utc, msg.from, msg.to, msg.topic, msg.priority, msg.body,
         );
     } else {
         output(msg, encoding);
@@ -566,9 +993,7 @@ fn minimize_value(value: &serde_json::Value) -> serde_json::Value {
                 match k.as_str() {
                     "protocol_version" | "stream_id" => continue,
                     "tags" if v.as_array().is_some_and(Vec::is_empty) => continue,
-                    "metadata"
-                        if v.as_object().is_some_and(serde_json::Map::is_empty) =>
-                    {
+                    "metadata" if v.as_object().is_some_and(serde_json::Map::is_empty) => {
                         continue;
                     }
                     "thread_id" if v.is_null() => continue,
@@ -609,19 +1034,21 @@ fn minimize_value(value: &serde_json::Value) -> serde_json::Value {
 #[command(
     name = "agent-bus",
     version,
-    about = "Redis-backed agent coordination bus — CLI + MCP server (Rust native)",
-    long_about = "Redis-backed coordination bus for AI coding agents.\n\n\
+    about = "Redis + PostgreSQL agent coordination bus — CLI + MCP server (Rust native)",
+    long_about = "Redis + PostgreSQL coordination bus for AI coding agents.\n\n\
         Provides message passing, presence tracking, and real-time event streaming\n\
         between Claude, Codex, Gemini, Copilot, and custom agents on the same machine.\n\n\
-        Protocol: agent-bus v1.0 | Backend: Redis Stream + Pub/Sub\n\
+        Protocol: agent-bus v1.0 | Backend: Redis Stream + Pub/Sub + PostgreSQL history\n\
         Codec: serde_json + MessagePack + LZ4 | Runtime: Rust native (no Python)\n\n\
         Stable agent IDs: claude, codex, gemini, copilot, euler, pasteur, all",
     after_help = "ENVIRONMENT VARIABLES:\n  \
         AGENT_BUS_REDIS_URL          Redis connection URL [default: redis://localhost:6380/0]\n  \
+        AGENT_BUS_DATABASE_URL       PostgreSQL connection URL [default: postgresql://postgres@localhost:5432/redis_backend]\n  \
         AGENT_BUS_STREAM_KEY         Redis Stream key [default: agent_bus:messages]\n  \
         AGENT_BUS_CHANNEL            Redis Pub/Sub channel [default: agent_bus:events]\n  \
         AGENT_BUS_PRESENCE_PREFIX    Redis key prefix for presence [default: agent_bus:presence:]\n  \
         AGENT_BUS_STREAM_MAXLEN      Max stream entries [default: 5000]\n  \
+        AGENT_BUS_SERVER_HOST        HTTP bind host [default: localhost]\n  \
         AGENT_BUS_SERVICE_AGENT_ID   Agent ID for this service [default: agent-bus]\n  \
         AGENT_BUS_STARTUP_ENABLED    Announce on MCP startup [default: true]\n  \
         AGENT_BUS_STARTUP_RECIPIENT  Startup message recipient [default: all]\n  \
@@ -655,8 +1082,9 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Check Redis bus health and report runtime metadata.
-    #[command(long_about = "Ping Redis and report bus status.\n\n\
-        Returns: ok, protocol_version, redis_url, runtime, codec.\n\
+    #[command(long_about = "Ping Redis and, when configured, PostgreSQL.\n\n\
+        Returns: ok, protocol_version, redis_url, database_url, database_ok,\n\
+        database_error, storage_ready, runtime, codec.\n\
         Use --encoding compact for CI/dashboards, --encoding json for debugging.")]
     Health {
         #[arg(long, default_value = "compact", help = "Output format")]
@@ -664,17 +1092,22 @@ enum Cmd {
     },
 
     /// Post a message to the coordination bus.
-    #[command(long_about = "Post a message to the Redis Stream and Pub/Sub channel.\n\n\
+    #[command(
+        long_about = "Post a message to the Redis Stream and Pub/Sub channel.\n\n\
         Messages are stored in the stream (up to AGENT_BUS_STREAM_MAXLEN entries)\n\
         and broadcast to all pub/sub subscribers. Use --thread-id to group related\n\
         messages. Use --request-ack when you need confirmation from the recipient.\n\n\
-        Priority levels: low, normal (default), high, urgent")]
+        Priority levels: low, normal (default), high, urgent"
+    )]
     Send {
         #[arg(long, help = "Sender agent ID (e.g. claude, codex)")]
         from_agent: String,
         #[arg(long, help = "Recipient agent ID or 'all' for broadcast")]
         to_agent: String,
-        #[arg(long, help = "Message topic (e.g. review-findings, file-ownership, status)")]
+        #[arg(
+            long,
+            help = "Message topic (e.g. review-findings, file-ownership, status)"
+        )]
         topic: String,
         #[arg(long, help = "Message body text")]
         body: String,
@@ -682,9 +1115,17 @@ enum Cmd {
         thread_id: Option<String>,
         #[arg(long, action = clap::ArgAction::Append, help = "Add a tag (repeatable)")]
         tag: Vec<String>,
-        #[arg(long, default_value = "normal", help = "Priority: low|normal|high|urgent")]
+        #[arg(
+            long,
+            default_value = "normal",
+            help = "Priority: low|normal|high|urgent"
+        )]
         priority: String,
-        #[arg(long, default_value_t = false, help = "Request acknowledgement from recipient")]
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Request acknowledgement from recipient"
+        )]
         request_ack: bool,
         #[arg(long, help = "Reply-to agent ID [default: sender]")]
         reply_to: Option<String>,
@@ -704,26 +1145,40 @@ enum Cmd {
         agent: Option<String>,
         #[arg(long, help = "Filter by sender agent ID")]
         from_agent: Option<String>,
-        #[arg(long, default_value_t = 1440, help = "Time window in minutes [1-10080]")]
+        #[arg(
+            long,
+            default_value_t = 1440,
+            help = "Time window in minutes [1-10080]"
+        )]
         since_minutes: u64,
         #[arg(long, default_value_t = 50, help = "Max messages to return [1-500]")]
         limit: usize,
-        #[arg(long, default_value_t = false, help = "Exclude broadcast (to='all') messages")]
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Exclude broadcast (to='all') messages"
+        )]
         exclude_broadcast: bool,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
 
     /// Watch bus traffic in real-time via Redis Pub/Sub.
-    #[command(long_about = "Subscribe to the bus Pub/Sub channel and stream events.\n\n\
+    #[command(
+        long_about = "Subscribe to the bus Pub/Sub channel and stream events.\n\n\
         Optionally loads --history N prior messages before switching to live mode.\n\
         Runs until interrupted (Ctrl+C). Events include both messages and presence.\n\n\
         Human format: [timestamp] from -> to | topic | priority | body\n\
-        Presence:     [timestamp] presence agent=status session=id")]
+        Presence:     [timestamp] presence agent=status session=id"
+    )]
     Watch {
         #[arg(long, help = "Agent ID to filter events for")]
         agent: String,
-        #[arg(long, default_value_t = 0, help = "Load N historical messages before streaming")]
+        #[arg(
+            long,
+            default_value_t = 0,
+            help = "Load N historical messages before streaming"
+        )]
         history: u64,
         #[arg(long, default_value_t = false, help = "Exclude broadcast messages")]
         exclude_broadcast: bool,
@@ -748,10 +1203,12 @@ enum Cmd {
     },
 
     /// Set or update agent presence with TTL expiry.
-    #[command(long_about = "Register agent availability in Redis with automatic TTL expiry.\n\n\
+    #[command(
+        long_about = "Register agent availability in Redis with automatic TTL expiry.\n\n\
         Presence records expire after --ttl-seconds (default 180s = 3 minutes).\n\
         Use --capability to advertise supported features (e.g. mcp, redis, rust).\n\
-        Presence changes are also published to the Pub/Sub channel.")]
+        Presence changes are also published to the Pub/Sub channel."
+    )]
     Presence {
         #[arg(long, help = "Agent ID to set presence for")]
         agent: String,
@@ -770,30 +1227,38 @@ enum Cmd {
     },
 
     /// List all active agent presence records.
-    #[command(long_about = "Scan Redis for all presence keys and return sorted by agent name.\n\
-        Only shows agents whose TTL has not expired.")]
+    #[command(
+        long_about = "Scan Redis for all presence keys and return sorted by agent name.\n\
+        Only shows agents whose TTL has not expired."
+    )]
     PresenceList {
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
 
     /// Run as an MCP server (stdio transport) or HTTP REST server.
-    #[command(long_about = "Start a Model Context Protocol (MCP) server on stdio, or an HTTP REST server.\n\n\
+    #[command(
+        long_about = "Start a Model Context Protocol (MCP) server on stdio, or an HTTP REST server.\n\n\
         MCP mode (default):\n\
         Exposes 6 tools to LLM agents: bus_health, post_message, list_messages,\n\
         ack_message, set_presence, list_presence.\n\
         Register in mcp.json / config.toml / settings.json:\n\
         {\"command\": \"agent-bus\", \"args\": [\"serve\", \"--transport\", \"stdio\"]}\n\n\
         HTTP mode (--transport http):\n\
-        Starts an axum HTTP server on 127.0.0.1:PORT (default 8400).\n\
+        Starts an axum HTTP server on localhost:PORT (default 8400).\n\
         Routes: GET /health, POST /messages, GET /messages, POST /messages/:id/ack,\n\
         PUT /presence/:agent, GET /presence\n\n\
         On startup, announces presence and posts a startup message if\n\
-        AGENT_BUS_STARTUP_ENABLED=true (default).")]
+        AGENT_BUS_STARTUP_ENABLED=true (default)."
+    )]
     Serve {
         #[arg(long, default_value = "stdio", help = "Transport protocol: stdio|http")]
         transport: String,
-        #[arg(long, default_value_t = 8400, help = "HTTP server port (only used when --transport http)")]
+        #[arg(
+            long,
+            default_value_t = 8400,
+            help = "HTTP server port (only used when --transport http)"
+        )]
         port: u16,
     },
 }
@@ -868,9 +1333,7 @@ fn cmd_send(settings: &Settings, args: &SendArgs) -> Result<()> {
 }
 
 fn cmd_read(settings: &Settings, args: &ReadArgs) -> Result<()> {
-    let mut conn = connect(settings)?;
     let msgs = bus_list_messages(
-        &mut conn,
         settings,
         args.agent.as_deref(),
         args.from_agent.as_deref(),
@@ -882,12 +1345,16 @@ fn cmd_read(settings: &Settings, args: &ReadArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_watch(settings: &Settings, agent: &str, history: u64, exclude_broadcast: bool, encoding: &Encoding) -> Result<()> {
+fn cmd_watch(
+    settings: &Settings,
+    agent: &str,
+    history: u64,
+    exclude_broadcast: bool,
+    encoding: &Encoding,
+) -> Result<()> {
     // Load history first (chronological order)
     if history > 0 {
-        let mut conn = connect(settings)?;
         let msgs = bus_list_messages(
-            &mut conn,
             settings,
             Some(agent),
             None,
@@ -920,7 +1387,9 @@ fn cmd_watch(settings: &Settings, agent: &str, history: u64, exclude_broadcast: 
         };
         match event.get("event").and_then(|e| e.as_str()) {
             Some("message") => {
-                let Some(msg_val) = event.get("message") else { continue };
+                let Some(msg_val) = event.get("message") else {
+                    continue;
+                };
                 let Ok(bus_msg) = serde_json::from_value::<Message>(msg_val.clone()) else {
                     continue;
                 };
@@ -931,7 +1400,9 @@ fn cmd_watch(settings: &Settings, agent: &str, history: u64, exclude_broadcast: 
                 }
             }
             Some("presence") => {
-                let Some(p_val) = event.get("presence") else { continue };
+                let Some(p_val) = event.get("presence") else {
+                    continue;
+                };
                 let Ok(presence) = serde_json::from_value::<Presence>(p_val.clone()) else {
                     continue;
                 };
@@ -942,7 +1413,13 @@ fn cmd_watch(settings: &Settings, agent: &str, history: u64, exclude_broadcast: 
     }
 }
 
-fn cmd_ack(settings: &Settings, agent: &str, message_id: &str, body: &str, encoding: &Encoding) -> Result<()> {
+fn cmd_ack(
+    settings: &Settings,
+    agent: &str,
+    message_id: &str,
+    body: &str,
+    encoding: &Encoding,
+) -> Result<()> {
     let meta = serde_json::json!({"ack_for": message_id});
     let mut conn = connect(settings)?;
     let msg = bus_post_message(
@@ -1051,7 +1528,9 @@ impl AgentBusMcpServer {
 
     fn tool_list() -> Vec<Tool> {
         // Build minimal but valid JSON Schema objects for each tool
-        let schema_for = |props: serde_json::Value, required: &[&str]| -> Arc<serde_json::Map<String, serde_json::Value>> {
+        let schema_for = |props: serde_json::Value,
+                          required: &[&str]|
+         -> Arc<serde_json::Map<String, serde_json::Value>> {
             let mut schema = serde_json::Map::new();
             schema.insert("type".to_owned(), serde_json::json!("object"));
             schema.insert("properties".to_owned(), props);
@@ -1141,9 +1620,7 @@ impl AgentBusMcpServer {
     }
 
     fn json_to_text(value: &serde_json::Value) -> Content {
-        Content::text(
-            serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_owned()),
-        )
+        Content::text(serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_owned()))
     }
 
     fn err_content(e: &anyhow::Error) -> CallToolResult {
@@ -1168,10 +1645,7 @@ impl AgentBusMcpServer {
         key: &str,
         default: &'a str,
     ) -> &'a str {
-        params
-            .get(key)
-            .and_then(|v| v.as_str())
-            .unwrap_or(default)
+        params.get(key).and_then(|v| v.as_str()).unwrap_or(default)
     }
 
     fn get_bool_or(
@@ -1235,10 +1709,16 @@ impl AgentBusMcpServer {
             .unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
     }
 
-    #[expect(clippy::too_many_lines, reason = "match on 6 tool names, each short — extracting further would reduce clarity")]
-    fn handle_tool_call_inner(&self, name: &str, args: &serde_json::Map<String, serde_json::Value>) -> Result<serde_json::Value> {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "match on 6 tool names, each short — extracting further would reduce clarity"
+    )]
+    fn handle_tool_call_inner(
+        &self,
+        name: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value> {
         let settings = &*self.settings;
-        let mut conn = connect(settings)?;
 
         match name {
             "bus_health" => {
@@ -1247,14 +1727,14 @@ impl AgentBusMcpServer {
             }
 
             "post_message" => {
-                let sender = Self::get_str(args, "sender")
-                    .ok_or_else(|| anyhow!("sender is required"))?;
+                let sender =
+                    Self::get_str(args, "sender").ok_or_else(|| anyhow!("sender is required"))?;
                 let recipient = Self::get_str(args, "recipient")
                     .ok_or_else(|| anyhow!("recipient is required"))?;
-                let topic = Self::get_str(args, "topic")
-                    .ok_or_else(|| anyhow!("topic is required"))?;
-                let body = Self::get_str(args, "body")
-                    .ok_or_else(|| anyhow!("body is required"))?;
+                let topic =
+                    Self::get_str(args, "topic").ok_or_else(|| anyhow!("topic is required"))?;
+                let body =
+                    Self::get_str(args, "body").ok_or_else(|| anyhow!("body is required"))?;
                 let tags = Self::get_string_array(args, "tags");
                 let thread_id = Self::get_str(args, "thread_id");
                 let priority = Self::get_str_or(args, "priority", "normal");
@@ -1263,6 +1743,7 @@ impl AgentBusMcpServer {
                 let metadata = Self::get_object_or_empty(args, "metadata");
 
                 validate_priority(priority)?;
+                let mut conn = connect(settings)?;
                 let msg = bus_post_message(
                     &mut conn,
                     settings,
@@ -1288,7 +1769,6 @@ impl AgentBusMcpServer {
                 let include_broadcast = Self::get_bool_or(args, "include_broadcast", true);
 
                 let msgs = bus_list_messages(
-                    &mut conn,
                     settings,
                     agent,
                     sender,
@@ -1300,13 +1780,14 @@ impl AgentBusMcpServer {
             }
 
             "ack_message" => {
-                let agent = Self::get_str(args, "agent")
-                    .ok_or_else(|| anyhow!("agent is required"))?;
+                let agent =
+                    Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
                 let message_id = Self::get_str(args, "message_id")
                     .ok_or_else(|| anyhow!("message_id is required"))?;
                 let body = Self::get_str_or(args, "body", "ack");
 
                 let meta = serde_json::json!({"ack_for": message_id});
+                let mut conn = connect(settings)?;
                 let msg = bus_post_message(
                     &mut conn,
                     settings,
@@ -1325,14 +1806,15 @@ impl AgentBusMcpServer {
             }
 
             "set_presence" => {
-                let agent = Self::get_str(args, "agent")
-                    .ok_or_else(|| anyhow!("agent is required"))?;
+                let agent =
+                    Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
                 let status = Self::get_str_or(args, "status", "online");
                 let session_id = Self::get_str(args, "session_id");
                 let capabilities = Self::get_string_array(args, "capabilities");
                 let ttl_seconds = Self::get_u64_or(args, "ttl_seconds", 180);
                 let metadata = Self::get_object_or_empty(args, "metadata");
 
+                let mut conn = connect(settings)?;
                 let presence = bus_set_presence(
                     &mut conn,
                     settings,
@@ -1347,6 +1829,7 @@ impl AgentBusMcpServer {
             }
 
             "list_presence" => {
+                let mut conn = connect(settings)?;
                 let results = bus_list_presence(&mut conn, settings)?;
                 Ok(serde_json::to_value(&results)?)
             }
@@ -1367,7 +1850,7 @@ impl ServerHandler for AgentBusMcpServer {
             Implementation::new("agent-bus", env!("CARGO_PKG_VERSION")),
         )
         .with_instructions(
-            "Redis-backed coordination bus for local agents. \
+            "Redis-backed coordination bus with PostgreSQL-backed durable history for local agents. \
              Use post_message for handoffs, list_messages to inspect inbox history, \
              set_presence to advertise availability, and list_presence to discover \
              other active agents.",
@@ -1410,7 +1893,10 @@ impl ServerHandler for AgentBusMcpServer {
 type AppState = Arc<Settings>;
 
 /// Map an `anyhow::Error` to an HTTP 500 response with a JSON body.
-#[expect(clippy::needless_pass_by_value, reason = "used as map_err(internal_error) — fn pointer requires by-value")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as map_err(internal_error) — fn pointer requires by-value"
+)]
 fn internal_error(e: anyhow::Error) -> (StatusCode, Json<serde_json::Value>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -1480,7 +1966,9 @@ async fn http_send_handler(
     }
     validate_priority(&req.priority).map_err(|e| bad_request(format!("{e:#}")))?;
 
-    let metadata = req.metadata.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let metadata = req
+        .metadata
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
 
     let mut conn = connect(&settings).map_err(internal_error)?;
     let msg = bus_post_message(
@@ -1499,7 +1987,10 @@ async fn http_send_handler(
     )
     .map_err(internal_error)?;
 
-    Ok((StatusCode::OK, Json(serde_json::to_value(&msg).unwrap_or_default())))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::to_value(&msg).unwrap_or_default()),
+    ))
 }
 
 // --- GET /messages ---------------------------------------------------------
@@ -1536,9 +2027,7 @@ async fn http_read_handler(
     let since = params.since.min(MAX_HISTORY_MINUTES);
     let limit = params.limit.clamp(1, 500);
 
-    let mut conn = connect(&settings).map_err(internal_error)?;
     let msgs = bus_list_messages(
-        &mut conn,
         &settings,
         params.agent.as_deref(),
         params.from.as_deref(),
@@ -1636,7 +2125,9 @@ async fn http_presence_set_handler(
     }
 
     let ttl = req.ttl_seconds.clamp(1, 86400);
-    let metadata = req.metadata.unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let metadata = req
+        .metadata
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
 
     let mut conn = connect(&settings).map_err(internal_error)?;
     let presence = bus_set_presence(
@@ -1667,21 +2158,19 @@ async fn http_presence_list_handler(
 // --- Server bootstrap ------------------------------------------------------
 
 async fn start_http_server(settings: Settings, port: u16) -> Result<()> {
+    let bind_host = settings.server_host.clone();
     let state: AppState = Arc::new(settings);
     let app = Router::new()
         .route("/health", get(http_health_handler))
-        .route(
-            "/messages",
-            post(http_send_handler).get(http_read_handler),
-        )
+        .route("/messages", post(http_send_handler).get(http_read_handler))
         .route("/messages/{id}/ack", post(http_ack_handler))
         .route("/presence/{agent}", put(http_presence_set_handler))
         .route("/presence", get(http_presence_list_handler))
         .with_state(state);
 
-    let addr = format!("127.0.0.1:{port}");
+    let addr = format!("{bind_host}:{port}");
     tracing::info!("HTTP server listening on {addr}");
-    eprintln!("agent-bus HTTP server listening on http://127.0.0.1:{port}");
+    eprintln!("agent-bus HTTP server listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .context("failed to bind HTTP server")?;
@@ -1703,7 +2192,10 @@ fn maybe_announce_startup(settings: &Settings) {
         return; // silently skip if Redis not up yet
     };
     let meta = serde_json::json!({"service": "agent-bus", "startup": true});
-    let caps = vec!["mcp".to_owned(), "redis".to_owned()];
+    let mut caps = vec!["mcp".to_owned(), "redis".to_owned()];
+    if probe_postgres(settings).0 == Some(true) {
+        caps.push("postgres".to_owned());
+    }
     let _ = bus_set_presence(
         &mut conn,
         settings,
@@ -1722,7 +2214,11 @@ fn maybe_announce_startup(settings: &Settings) {
         &settings.startup_topic,
         &settings.startup_body,
         None,
-        &["startup".to_owned(), "system".to_owned(), "health".to_owned()],
+        &[
+            "startup".to_owned(),
+            "system".to_owned(),
+            "health".to_owned(),
+        ],
         "normal",
         false,
         None,
@@ -1734,7 +2230,10 @@ fn maybe_announce_startup(settings: &Settings) {
 // Section 10 – main
 // ---------------------------------------------------------------------------
 
-#[expect(clippy::too_many_lines, reason = "main command dispatch — extracting further would obscure flow")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "main command dispatch — extracting further would obscure flow"
+)]
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -1850,7 +2349,10 @@ async fn main() -> Result<()> {
             cmd_presence_list(&settings, encoding)?;
         }
 
-        Cmd::Serve { ref transport, port } => {
+        Cmd::Serve {
+            ref transport,
+            port,
+        } => {
             if transport == "http" {
                 maybe_announce_startup(&settings);
                 start_http_server(settings, port).await?;
@@ -2042,15 +2544,39 @@ mod tests {
     #[test]
     fn decode_stream_entry_reads_bulk_string_fields() {
         let mut fields: HashMap<String, redis::Value> = HashMap::new();
-        fields.insert("id".to_owned(), redis::Value::BulkString(b"msg-123".to_vec()));
-        fields.insert("from".to_owned(), redis::Value::BulkString(b"claude".to_vec()));
+        fields.insert(
+            "id".to_owned(),
+            redis::Value::BulkString(b"msg-123".to_vec()),
+        );
+        fields.insert(
+            "from".to_owned(),
+            redis::Value::BulkString(b"claude".to_vec()),
+        );
         fields.insert("to".to_owned(), redis::Value::BulkString(b"codex".to_vec()));
-        fields.insert("topic".to_owned(), redis::Value::BulkString(b"test".to_vec()));
-        fields.insert("body".to_owned(), redis::Value::BulkString(b"hello".to_vec()));
-        fields.insert("priority".to_owned(), redis::Value::BulkString(b"high".to_vec()));
-        fields.insert("request_ack".to_owned(), redis::Value::BulkString(b"true".to_vec()));
-        fields.insert("thread_id".to_owned(), redis::Value::BulkString(b"tid-1".to_vec()));
-        fields.insert("reply_to".to_owned(), redis::Value::BulkString(b"claude".to_vec()));
+        fields.insert(
+            "topic".to_owned(),
+            redis::Value::BulkString(b"test".to_vec()),
+        );
+        fields.insert(
+            "body".to_owned(),
+            redis::Value::BulkString(b"hello".to_vec()),
+        );
+        fields.insert(
+            "priority".to_owned(),
+            redis::Value::BulkString(b"high".to_vec()),
+        );
+        fields.insert(
+            "request_ack".to_owned(),
+            redis::Value::BulkString(b"true".to_vec()),
+        );
+        fields.insert(
+            "thread_id".to_owned(),
+            redis::Value::BulkString(b"tid-1".to_vec()),
+        );
+        fields.insert(
+            "reply_to".to_owned(),
+            redis::Value::BulkString(b"claude".to_vec()),
+        );
 
         let msg = decode_stream_entry(&fields);
         assert_eq!(msg.id, "msg-123");
@@ -2067,7 +2593,10 @@ mod tests {
     #[test]
     fn decode_stream_entry_thread_id_none_is_mapped() {
         let mut fields: HashMap<String, redis::Value> = HashMap::new();
-        fields.insert("thread_id".to_owned(), redis::Value::BulkString(b"None".to_vec()));
+        fields.insert(
+            "thread_id".to_owned(),
+            redis::Value::BulkString(b"None".to_vec()),
+        );
         let msg = decode_stream_entry(&fields);
         assert_eq!(msg.thread_id, None);
     }
@@ -2128,6 +2657,26 @@ mod tests {
         let h = bus_health(&s);
         assert_eq!(h.codec, "serde_json");
         assert_eq!(h.runtime, "rust-native");
+    }
+
+    #[test]
+    fn redact_url_hides_credentials() {
+        assert_eq!(
+            redact_url("postgresql://postgres:secret@localhost:5432/redis_backend"),
+            "postgresql://***:***@localhost:5432/redis_backend"
+        );
+        assert_eq!(
+            redact_url("redis://default@localhost:6380/0"),
+            "redis://***@localhost:6380/0"
+        );
+    }
+
+    #[test]
+    fn redact_url_leaves_plain_urls_unchanged() {
+        assert_eq!(
+            redact_url("redis://localhost:6380/0"),
+            "redis://localhost:6380/0"
+        );
     }
 
     // -- Constants ----------------------------------------------------------

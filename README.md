@@ -1,14 +1,17 @@
 # Agent Bus MCP
 
-Redis-backed coordination bus for Codex, Claude, Gemini, and sub-agents.
+Rust-native coordination bus for Codex, Claude, Gemini, and local sub-agents.
 
-The package validates Redis/Postgres settings at startup via Pydantic v2, and
-requires `localhost` instead of numeric loopback addresses.
+The active implementation lives in `rust-cli/` and uses Redis for live
+transport plus PostgreSQL for durable history and presence-event persistence.
+The legacy Python package remains in the repo only as deprecated reference
+material.
 
 Current protocol metadata:
 - Bus protocol: `agent-bus` message contract v1.0
 - Message identity: UUID `id` + UTC `timestamp_utc`
-- Default Redis endpoint: `redis://localhost:6379/0`
+- Default Redis endpoint: `redis://localhost:6380/0`
+- Default PostgreSQL endpoint: `postgresql://postgres@localhost:5432/redis_backend`
 
 ## Commands
 
@@ -20,6 +23,13 @@ uv --directory C:\Users\david\.codex\tools\agent-bus-mcp run agent-bus-mcp healt
 pwsh -NoLogo -NoProfile -File C:\Users\david\.codex\tools\agent-bus-mcp\scripts\validate-agent-bus.ps1
 ```
 
+### Windows service
+
+```powershell
+pwsh -NoLogo -NoProfile -File scripts\install-agent-hub-service.ps1
+pwsh -NoLogo -NoProfile -File scripts\remove-agent-hub-service.ps1
+```
+
 ### MCP launch
 
 ```powershell
@@ -29,13 +39,15 @@ uv --directory C:\Users\david\.codex\tools\agent-bus-mcp run agent-bus-mcp serve
 
 ## Notes
 
-- Durable history uses Redis Streams.
+- Live message durability and fanout use Redis Streams + Pub/Sub.
+- Durable history and presence events are mirrored into PostgreSQL when configured.
 - Realtime watch uses Redis Pub/Sub.
-- Wrapper scripts prefer in-place `.venv` execution and fall back to `uv --isolated` if Windows file locks block `uv run`.
+- PowerShell wrapper scripts call the Rust binary directly and default to local `localhost` Redis/PostgreSQL services.
+- `scripts/install-agent-hub-service.ps1` installs the native HTTP transport as a Windows service using `nssm` + `pwsh`.
 - MCP clients should register the stdio form by default.
 - Streamable HTTP is available for clients that support long-lived MCP sessions and notifications.
 - MCP server validates Redis and PostgreSQL during startup and emits a startup status message from `agent-bus`.
-- Redis is the default backend because it is already running locally; MQTT is an optional future bridge rather than the primary transport.
+- Redis remains the realtime system of record; PostgreSQL is the query/history backend.
 
 ## Encoding and interoperability
 
