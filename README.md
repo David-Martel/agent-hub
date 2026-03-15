@@ -48,6 +48,8 @@ uv --directory C:\Users\david\.codex\tools\agent-bus-mcp run agent-bus-mcp serve
 - Streamable HTTP is available for clients that support long-lived MCP sessions and notifications.
 - MCP server validates Redis and PostgreSQL during startup and emits a startup status message from `agent-bus`.
 - Redis remains the realtime system of record; PostgreSQL is the query/history backend.
+- Sample client configs are in `examples/mcp/`.
+- Agent coordination guidance is in `AGENT_COMMUNICATIONS.md` and `MCP_CONFIGURATION.md`.
 
 ## Encoding and interoperability
 

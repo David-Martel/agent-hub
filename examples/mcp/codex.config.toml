@@ -1,0 +1,8 @@
+[mcp_servers.agentHub]
+command = "C:\\Users\\david\\bin\\agent-bus.exe"
+args = ["serve", "--transport", "stdio"]
+
+[mcp_servers.agentHub.env]
+AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
+AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5432/redis_backend"
+AGENT_BUS_SERVER_HOST = "localhost"
