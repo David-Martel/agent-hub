@@ -8,7 +8,7 @@ use redis::Commands as _;
 use uuid::Uuid;
 
 use crate::models::{
-    Health, Message, PROTOCOL_VERSION, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR, Presence,
+    Health, Message, PROTOCOL_VERSION, Presence, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR,
 };
 use crate::postgres_store::{
     list_messages_postgres, persist_message_postgres, persist_presence_postgres, probe_postgres,

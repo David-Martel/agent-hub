@@ -3,11 +3,11 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
+use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, InitializeResult,
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
 };
-use rmcp::ServerHandler;
 
 use crate::redis_bus::{
     bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence, connect,
