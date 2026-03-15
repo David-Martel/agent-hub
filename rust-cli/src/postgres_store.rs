@@ -11,6 +11,47 @@ use uuid::Uuid;
 use crate::models::{Message, Presence};
 use crate::settings::Settings;
 
+/// Maximum number of attempts for a transient `PostgreSQL` failure.
+const PG_MAX_RETRIES: u32 = 3;
+
+/// Base delay in milliseconds; doubles on each subsequent attempt (exponential back-off).
+const PG_RETRY_BASE_MS: u64 = 50;
+
+/// Retries `operation` up to [`PG_MAX_RETRIES`] times with exponential back-off.
+///
+/// The closure is called repeatedly on failure, so it must be `FnMut`.  Each
+/// attempt that fails logs a warning via `tracing`.  The final error from the
+/// last attempt is returned if all attempts are exhausted.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let result = with_pg_retry(|| do_postgres_work(client));
+/// ```
+fn with_pg_retry<T>(mut operation: impl FnMut() -> Result<T>) -> Result<T> {
+    let mut last_error: Option<anyhow::Error> = None;
+    for attempt in 0..PG_MAX_RETRIES {
+        match operation() {
+            Ok(result) => return Ok(result),
+            Err(e) => {
+                tracing::warn!(
+                    "PostgreSQL operation failed (attempt {}/{}): {e:#}",
+                    attempt + 1,
+                    PG_MAX_RETRIES
+                );
+                last_error = Some(e);
+                if attempt + 1 < PG_MAX_RETRIES {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        PG_RETRY_BASE_MS * (1 << attempt),
+                    ));
+                }
+            }
+        }
+    }
+    Err(last_error
+        .unwrap_or_else(|| anyhow::anyhow!("PostgreSQL operation failed after retries")))
+}
+
 pub(crate) fn run_postgres_blocking<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
     if tokio::runtime::Handle::try_current().is_ok() {
         tokio::task::block_in_place(operation)
@@ -124,91 +165,96 @@ pub(crate) fn parse_timestamp_utc(timestamp_utc: &str) -> Result<DateTime<Utc>> 
 }
 
 pub(crate) fn persist_message_postgres(settings: &Settings, message: &Message) -> Result<()> {
-    run_postgres_blocking(|| {
-        let Some(mut client) = connect_postgres(settings)? else {
-            return Ok(());
-        };
-        ensure_postgres_storage(&mut client, settings)?;
+    with_pg_retry(|| {
+        run_postgres_blocking(|| {
+            let Some(mut client) = connect_postgres(settings)? else {
+                return Ok(());
+            };
+            ensure_postgres_storage(&mut client, settings)?;
 
-        let message_id = Uuid::parse_str(&message.id)
-            .with_context(|| format!("invalid message id: {}", message.id))?;
-        let timestamp_utc = parse_timestamp_utc(&message.timestamp_utc)?;
-        let tags = serde_json::Value::Array(
-            message
-                .tags
-                .iter()
-                .cloned()
-                .map(serde_json::Value::String)
-                .collect(),
-        );
-        let reply_to = message.reply_to.clone().unwrap_or_default();
+            let message_id = Uuid::parse_str(&message.id)
+                .with_context(|| format!("invalid message id: {}", message.id))?;
+            let timestamp_utc = parse_timestamp_utc(&message.timestamp_utc)?;
+            let tags = serde_json::Value::Array(
+                message
+                    .tags
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            );
+            let reply_to = message.reply_to.clone().unwrap_or_default();
 
-        client.execute(
-            &format!(
-                "insert into {} \
-                 (id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, priority, tags, request_ack, reply_to, metadata, stream_id) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
-                 on conflict (id) do nothing",
-                settings.message_table
-            ),
-            &[
-                &message_id,
-                &timestamp_utc,
-                &message.protocol_version,
-                &message.from,
-                &message.to,
-                &message.topic,
-                &message.body,
-                &message.thread_id,
-                &message.priority,
-                &tags,
-                &message.request_ack,
-                &reply_to,
-                &message.metadata,
-                &message.stream_id,
-            ],
-        )?;
-        Ok(())
+            client.execute(
+                &format!(
+                    "insert into {} \
+                     (id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, priority, tags, request_ack, reply_to, metadata, stream_id) \
+                     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+                     on conflict (id) do nothing",
+                    settings.message_table
+                ),
+                &[
+                    &message_id,
+                    &timestamp_utc,
+                    &message.protocol_version,
+                    &message.from,
+                    &message.to,
+                    &message.topic,
+                    &message.body,
+                    &message.thread_id,
+                    &message.priority,
+                    &tags,
+                    &message.request_ack,
+                    &reply_to,
+                    &message.metadata,
+                    &message.stream_id,
+                ],
+            )?;
+            Ok(())
+        })
     })
 }
 
 pub(crate) fn persist_presence_postgres(settings: &Settings, presence: &Presence) -> Result<()> {
-    run_postgres_blocking(|| {
-        let Some(mut client) = connect_postgres(settings)? else {
-            return Ok(());
-        };
-        ensure_postgres_storage(&mut client, settings)?;
+    with_pg_retry(|| {
+        run_postgres_blocking(|| {
+            let Some(mut client) = connect_postgres(settings)? else {
+                return Ok(());
+            };
+            ensure_postgres_storage(&mut client, settings)?;
 
-        let timestamp_utc = parse_timestamp_utc(&presence.timestamp_utc)?;
-        let capabilities = serde_json::Value::Array(
-            presence
-                .capabilities
-                .iter()
-                .cloned()
-                .map(serde_json::Value::String)
-                .collect(),
-        );
-        let ttl_seconds = i64::try_from(presence.ttl_seconds).context("ttl_seconds exceeds i64")?;
+            let timestamp_utc = parse_timestamp_utc(&presence.timestamp_utc)?;
+            let capabilities = serde_json::Value::Array(
+                presence
+                    .capabilities
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            );
+            let ttl_seconds =
+                i64::try_from(presence.ttl_seconds).context("ttl_seconds exceeds i64")?;
 
-        client.execute(
-            &format!(
-                "insert into {} \
-                 (timestamp_utc, protocol_version, agent, status, session_id, capabilities, metadata, ttl_seconds) \
-                 values ($1, $2, $3, $4, $5, $6, $7, $8)",
-                settings.presence_event_table
-            ),
-            &[
-                &timestamp_utc,
-                &presence.protocol_version,
-                &presence.agent,
-                &presence.status,
-                &presence.session_id,
-                &capabilities,
-                &presence.metadata,
-                &ttl_seconds,
-            ],
-        )?;
-        Ok(())
+            client.execute(
+                &format!(
+                    "insert into {} \
+                     (timestamp_utc, protocol_version, agent, status, session_id, capabilities, metadata, ttl_seconds) \
+                     values ($1, $2, $3, $4, $5, $6, $7, $8)",
+                    settings.presence_event_table
+                ),
+                &[
+                    &timestamp_utc,
+                    &presence.protocol_version,
+                    &presence.agent,
+                    &presence.status,
+                    &presence.session_id,
+                    &capabilities,
+                    &presence.metadata,
+                    &ttl_seconds,
+                ],
+            )?;
+            Ok(())
+        })
     })
 }
 
