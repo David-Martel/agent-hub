@@ -381,6 +381,79 @@ pub(crate) fn persist_presence_postgres(settings: &Settings, presence: &Presence
     })
 }
 
+/// Backfill missing Redis messages into `PostgreSQL`.
+///
+/// Iterates `messages` (typically the full Redis stream) and inserts each one
+/// using `ON CONFLICT (id) DO NOTHING`, making the operation safe to repeat.
+///
+/// Returns `(total_checked, newly_inserted)`.
+///
+/// # Errors
+///
+/// Returns an error if the database connection or any `INSERT` fails.
+pub(crate) fn sync_redis_to_postgres(
+    settings: &Settings,
+    messages: &[Message],
+) -> Result<(usize, usize)> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = get_pg_client(settings)? else {
+            return Ok((0, 0));
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+
+        let mut inserted: usize = 0;
+        let mut skipped: usize = 0;
+        for msg in messages {
+            // Skip messages with empty or non-UUID IDs (legacy Python CLI entries)
+            let Ok(message_id) = Uuid::parse_str(&msg.id) else {
+                skipped += 1;
+                continue;
+            };
+            let Ok(timestamp_utc) = parse_timestamp_utc(&msg.timestamp_utc) else {
+                skipped += 1;
+                continue;
+            };
+            let tags = serde_json::Value::Array(
+                msg.tags.iter().cloned().map(serde_json::Value::String).collect(),
+            );
+            let reply_to = msg.reply_to.clone().unwrap_or_default();
+
+            let rows = client.execute(
+                &format!(
+                    "INSERT INTO {} \
+                     (id, timestamp_utc, protocol_version, sender, recipient, topic, body, \
+                      thread_id, priority, tags, request_ack, reply_to, metadata, stream_id) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+                     ON CONFLICT (id) DO NOTHING",
+                    settings.message_table
+                ),
+                &[
+                    &message_id,
+                    &timestamp_utc,
+                    &msg.protocol_version,
+                    &msg.from,
+                    &msg.to,
+                    &msg.topic,
+                    &msg.body,
+                    &msg.thread_id,
+                    &msg.priority,
+                    &tags,
+                    &msg.request_ack,
+                    &reply_to,
+                    &msg.metadata,
+                    &msg.stream_id,
+                ],
+            )?;
+            if rows > 0 {
+                inserted += 1;
+            }
+        }
+
+        return_pg_client(client);
+        Ok((messages.len(), inserted))
+    })
+}
+
 pub(crate) fn parse_tags(value: &serde_json::Value) -> Vec<String> {
     value
         .as_array()

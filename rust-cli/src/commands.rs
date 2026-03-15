@@ -278,6 +278,34 @@ pub(crate) fn cmd_presence_list(settings: &Settings, encoding: &Encoding) -> Res
     Ok(())
 }
 
+/// Backfill all Redis stream messages into `PostgreSQL`.
+///
+/// Reads up to `limit` entries from Redis via `XRANGE` (oldest-first, no filter)
+/// and inserts any that are missing from the database using `ON CONFLICT DO NOTHING`.
+/// Progress is written to stderr; the final count JSON goes to stdout.
+///
+/// # Errors
+///
+/// Returns an error if Redis is unreachable or any database write fails.
+pub(crate) fn cmd_sync(settings: &Settings, limit: usize, encoding: &Encoding) -> Result<()> {
+    eprintln!("Reading messages from Redis stream...");
+    let messages = crate::redis_bus::bus_read_all_from_redis(settings, limit)?;
+    eprintln!("Found {} messages in Redis", messages.len());
+
+    eprintln!("Syncing to PostgreSQL...");
+    let (checked, inserted) =
+        crate::postgres_store::sync_redis_to_postgres(settings, &messages)?;
+
+    let result = serde_json::json!({
+        "redis_messages": messages.len(),
+        "checked": checked,
+        "newly_inserted": inserted,
+        "already_in_pg": checked - inserted,
+    });
+    output(&result, encoding);
+    Ok(())
+}
+
 /// Export bus messages matching an optional tag or sender filter to an NDJSON
 /// journal file on disk.
 ///

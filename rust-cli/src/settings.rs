@@ -237,7 +237,7 @@ impl Settings {
                 cfg.presence_event_table.as_deref(),
                 "agent_bus.presence_events",
             ),
-            stream_maxlen: resolve_parse("AGENT_BUS_STREAM_MAXLEN", cfg.stream_maxlen, 100000),
+            stream_maxlen: resolve_parse("AGENT_BUS_STREAM_MAXLEN", cfg.stream_maxlen, 100_000),
             service_agent_id: resolve(
                 "AGENT_BUS_SERVICE_AGENT_ID",
                 cfg.service_agent_id.as_deref(),

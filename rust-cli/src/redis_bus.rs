@@ -244,6 +244,37 @@ pub(crate) fn bus_post_message(
     Ok(msg)
 }
 
+/// Read all messages from the Redis stream (ignoring PG), ordered oldest first.
+///
+/// Fetches up to `limit` entries via `XRANGE` with no time or agent filter,
+/// suitable for a one-time backfill into `PostgreSQL`.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or `XRANGE` command fails.
+pub(crate) fn bus_read_all_from_redis(
+    settings: &Settings,
+    limit: usize,
+) -> Result<Vec<Message>> {
+    let mut conn = connect(settings)?;
+    let raw: Vec<redis::Value> = redis::cmd("XRANGE")
+        .arg(&settings.stream_key)
+        .arg("-")
+        .arg("+")
+        .arg("COUNT")
+        .arg(limit)
+        .query(&mut conn)
+        .context("XRANGE failed")?;
+
+    let mut messages = Vec::new();
+    for (stream_id, fields) in parse_xrange_result(&raw) {
+        let mut msg = decode_stream_entry(&fields);
+        msg.stream_id = Some(stream_id);
+        messages.push(msg);
+    }
+    Ok(messages)
+}
+
 /// List messages from the stream, most-recent first then reversed to chrono.
 pub(crate) fn bus_list_messages_from_redis(
     conn: &mut redis::Connection,

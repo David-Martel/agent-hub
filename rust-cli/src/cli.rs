@@ -283,6 +283,21 @@ pub(crate) enum Cmd {
         output: String,
     },
 
+    /// Backfill Redis messages into `PostgreSQL` (one-time sync).
+    #[command(long_about = "Read all messages from the Redis stream and insert any missing\n\
+        ones into PostgreSQL. Safe to run multiple times (uses ON CONFLICT DO NOTHING).\n\
+        Use after enabling PostgreSQL on an existing Redis deployment.")]
+    Sync {
+        #[arg(
+            long,
+            default_value_t = 100_000,
+            help = "Max messages to read from Redis"
+        )]
+        limit: usize,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
     /// Run as an MCP server (stdio transport) or HTTP REST server.
     #[command(
         long_about = "Start a Model Context Protocol (MCP) server on stdio, or an HTTP REST server.\n\n\

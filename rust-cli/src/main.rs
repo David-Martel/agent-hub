@@ -40,7 +40,7 @@ use rmcp::serve_server;
 use cli::{Cli, Cmd};
 use commands::{
     PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_export, cmd_health, cmd_journal, cmd_presence,
-    cmd_presence_history, cmd_presence_list, cmd_prune, cmd_read, cmd_send, cmd_watch,
+    cmd_presence_history, cmd_presence_list, cmd_prune, cmd_read, cmd_send, cmd_sync, cmd_watch,
 };
 use http::start_http_server;
 use mcp::AgentBusMcpServer;
@@ -271,6 +271,10 @@ async fn main() -> Result<()> {
                 limit,
                 output,
             )?;
+        }
+
+        Cmd::Sync { limit, ref encoding } => {
+            cmd_sync(&settings, limit, encoding)?;
         }
 
         Cmd::Serve {
