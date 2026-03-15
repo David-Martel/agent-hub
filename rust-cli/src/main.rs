@@ -1855,13 +1855,19 @@ async fn main() -> Result<()> {
                 maybe_announce_startup(&settings);
                 start_http_server(settings, port).await?;
             } else {
-                // Default: MCP stdio transport
-                maybe_announce_startup(&settings);
+                // Default: MCP stdio transport.
+                // Start the MCP server FIRST so it can respond to initialize
+                // immediately, then announce startup in the background.
+                let announce_settings = settings.clone();
                 let server = AgentBusMcpServer::new(settings);
                 let mcp_transport = (tokio::io::stdin(), tokio::io::stdout());
                 let service = serve_server(server, mcp_transport)
                     .await
                     .context("MCP server init failed")?;
+                // Announce after MCP handshake completes (non-blocking)
+                tokio::spawn(async move {
+                    maybe_announce_startup(&announce_settings);
+                });
                 service.waiting().await.context("MCP server loop error")?;
             }
         }
