@@ -20,6 +20,11 @@
     reason = "dependency diamond between rmcp and redis — not our choice"
 )]
 
+mod models;
+mod output;
+mod settings;
+mod validation;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -32,7 +37,7 @@ use axum::{
     routing::{get, post, put},
 };
 use chrono::{DateTime, Utc};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use mimalloc::MiMalloc;
 use postgres::{Client as PgClient, NoTls};
 use redis::Commands as _;
@@ -41,164 +46,29 @@ use rmcp::model::{
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
 };
 use rmcp::{ServerHandler, serve_server};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use uuid::Uuid;
+
+use models::{
+    Health, MAX_HISTORY_MINUTES, Message, PROTOCOL_VERSION, Presence, STARTUP_PRESENCE_TTL,
+    XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR, default_priority,
+};
+use output::{Encoding, output, output_message, output_messages, output_presence};
+use settings::{Settings, redact_url};
+use validation::{non_empty, parse_metadata_arg, validate_priority};
+
+// Items re-exported into scope solely so that `use super::*` in the test
+// module can access them without additional per-test imports.
+#[cfg(test)]
+use output::minimize_value;
+#[cfg(test)]
+use settings::{env_or, env_parse};
+#[cfg(test)]
+use validation::VALID_PRIORITIES;
 
 /// Use mimalloc for notable allocation performance gains (M-MIMALLOC-APPS).
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
-
-// ---------------------------------------------------------------------------
-// Section 1 – Settings
-// ---------------------------------------------------------------------------
-
-/// All environment-variable configuration, read at startup.
-#[derive(Debug, Clone)]
-struct Settings {
-    redis_url: String,
-    database_url: Option<String>,
-    stream_key: String,
-    channel_key: String,
-    presence_prefix: String,
-    message_table: String,
-    presence_event_table: String,
-    stream_maxlen: u64,
-    service_agent_id: String,
-    startup_enabled: bool,
-    startup_recipient: String,
-    startup_topic: String,
-    startup_body: String,
-    server_host: String,
-}
-
-impl Settings {
-    fn from_env() -> Self {
-        Self {
-            redis_url: env_or("AGENT_BUS_REDIS_URL", "redis://localhost:6380/0"),
-            database_url: env_or_optional_default(
-                "AGENT_BUS_DATABASE_URL",
-                "postgresql://postgres@localhost:5432/redis_backend",
-            ),
-            stream_key: env_or("AGENT_BUS_STREAM_KEY", "agent_bus:messages"),
-            channel_key: env_or("AGENT_BUS_CHANNEL", "agent_bus:events"),
-            presence_prefix: env_or("AGENT_BUS_PRESENCE_PREFIX", "agent_bus:presence:"),
-            message_table: env_or("AGENT_BUS_MESSAGE_TABLE", "agent_bus.messages"),
-            presence_event_table: env_or(
-                "AGENT_BUS_PRESENCE_EVENT_TABLE",
-                "agent_bus.presence_events",
-            ),
-            stream_maxlen: env_parse("AGENT_BUS_STREAM_MAXLEN", 5000),
-            service_agent_id: env_or("AGENT_BUS_SERVICE_AGENT_ID", "agent-bus"),
-            startup_enabled: env_or("AGENT_BUS_STARTUP_ENABLED", "true") != "false",
-            startup_recipient: env_or("AGENT_BUS_STARTUP_RECIPIENT", "all"),
-            startup_topic: env_or("AGENT_BUS_STARTUP_TOPIC", "status"),
-            startup_body: env_or("AGENT_BUS_STARTUP_BODY", "agent-bus is up and running"),
-            server_host: env_or("AGENT_BUS_SERVER_HOST", "localhost"),
-        }
-    }
-}
-
-fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_owned())
-}
-
-fn env_or_optional_default(key: &str, default: &str) -> Option<String> {
-    match std::env::var(key) {
-        Ok(value) => {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_owned())
-            }
-        }
-        Err(_) => Some(default.to_owned()),
-    }
-}
-
-fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
-    std::env::var(key)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
-}
-
-// ---------------------------------------------------------------------------
-// Section 2 – Models
-// ---------------------------------------------------------------------------
-
-const PROTOCOL_VERSION: &str = "1.0";
-
-/// Maximum time window for history queries (minutes). 10080 = 7 days.
-const MAX_HISTORY_MINUTES: u64 = 10080;
-
-/// Overfetch multiplier for XREVRANGE to allow for client-side filtering.
-const XREVRANGE_OVERFETCH_FACTOR: usize = 5;
-
-/// Minimum entries to fetch from XREVRANGE even for small limits.
-const XREVRANGE_MIN_FETCH: usize = 200;
-
-/// Default TTL for startup presence announcement (seconds).
-const STARTUP_PRESENCE_TTL: u64 = 300;
-
-/// A bus message record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Message {
-    id: String,
-    timestamp_utc: String,
-    protocol_version: String,
-    from: String,
-    to: String,
-    topic: String,
-    body: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    thread_id: Option<String>,
-    #[serde(default)]
-    tags: Vec<String>,
-    #[serde(default = "default_priority")]
-    priority: String,
-    #[serde(default)]
-    request_ack: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reply_to: Option<String>,
-    #[serde(default)]
-    metadata: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stream_id: Option<String>,
-}
-
-fn default_priority() -> String {
-    "normal".to_owned()
-}
-
-/// Agent presence record.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Presence {
-    agent: String,
-    status: String,
-    protocol_version: String,
-    timestamp_utc: String,
-    session_id: String,
-    #[serde(default)]
-    capabilities: Vec<String>,
-    #[serde(default)]
-    metadata: serde_json::Value,
-    ttl_seconds: u64,
-}
-
-/// Bus health response.
-#[derive(Debug, Clone, Serialize)]
-struct Health {
-    ok: bool,
-    protocol_version: String,
-    redis_url: String,
-    database_url: Option<String>,
-    database_ok: Option<bool>,
-    database_error: Option<String>,
-    storage_ready: bool,
-    runtime: String,
-    codec: String,
-}
 
 // ---------------------------------------------------------------------------
 // Section 3 – Bus (Redis operations)
@@ -260,7 +130,7 @@ fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings) -> Result
 
     client.batch_execute("create schema if not exists agent_bus")?;
     client.batch_execute(&format!(
-        r#"
+        r"
         create table if not exists {message_table} (
             id uuid primary key,
             timestamp_utc timestamptz not null,
@@ -305,7 +175,7 @@ fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings) -> Result
         alter table {presence_event_table} add column if not exists protocol_version text not null default '1.0';
         create index if not exists agent_bus_presence_events_agent_ts_idx
             on {presence_event_table} (agent, timestamp_utc desc);
-        "#,
+        ",
         message_table = settings.message_table,
         presence_event_table = settings.presence_event_table,
     ))?;
@@ -411,7 +281,7 @@ fn persist_presence_postgres(settings: &Settings, presence: &Presence) -> Result
     })
 }
 
-fn parse_tags(value: serde_json::Value) -> Vec<String> {
+fn parse_tags(value: &serde_json::Value) -> Vec<String> {
     value
         .as_array()
         .map(|items| {
@@ -437,7 +307,7 @@ fn row_to_message(row: &postgres::Row) -> Message {
         topic: row.get("topic"),
         body: row.get("body"),
         thread_id: row.get("thread_id"),
-        tags: parse_tags(row.get::<_, serde_json::Value>("tags")),
+        tags: parse_tags(&row.get::<_, serde_json::Value>("tags")),
         priority: row.get("priority"),
         request_ack: row.get("request_ack"),
         reply_to: {
@@ -510,34 +380,6 @@ fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<String>, bool) {
             storage_ready(settings),
         ),
     }
-}
-
-fn redact_url(value: &str) -> String {
-    let Some(scheme_end) = value.find("://") else {
-        return value.to_owned();
-    };
-    let authority_start = scheme_end + 3;
-    let authority_end = value[authority_start..]
-        .find(['/', '?', '#'])
-        .map(|index| authority_start + index)
-        .unwrap_or(value.len());
-    let authority = &value[authority_start..authority_end];
-    let Some(at_index) = authority.rfind('@') else {
-        return value.to_owned();
-    };
-
-    let host_part = &authority[at_index + 1..];
-    let redacted_authority = if authority[..at_index].contains(':') {
-        format!("***:***@{host_part}")
-    } else {
-        format!("***@{host_part}")
-    };
-    format!(
-        "{}{}{}",
-        &value[..authority_start],
-        redacted_authority,
-        &value[authority_end..]
-    )
 }
 
 fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Message {
@@ -922,111 +764,6 @@ fn bus_health(settings: &Settings) -> Health {
 }
 
 // ---------------------------------------------------------------------------
-// Section 4 – Output / encoding
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug, ValueEnum)]
-enum Encoding {
-    Json,
-    Compact,
-    Minimal,
-    Human,
-}
-
-fn output<T: Serialize + ?Sized>(data: &T, encoding: &Encoding) {
-    match encoding {
-        Encoding::Json => {
-            println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
-        }
-        Encoding::Compact => {
-            println!("{}", serde_json::to_string(data).unwrap_or_default());
-        }
-        Encoding::Minimal => {
-            let value = serde_json::to_value(data).unwrap_or_default();
-            let minimized = minimize_value(&value);
-            println!("{}", serde_json::to_string(&minimized).unwrap_or_default());
-        }
-        Encoding::Human => {
-            // Human falls back to compact for non-message/presence data
-            println!("{}", serde_json::to_string(data).unwrap_or_default());
-        }
-    }
-}
-
-fn output_message(msg: &Message, encoding: &Encoding) {
-    if matches!(encoding, Encoding::Human) {
-        println!(
-            "[{}] {} -> {} | {} | {} | {}",
-            msg.timestamp_utc, msg.from, msg.to, msg.topic, msg.priority, msg.body,
-        );
-    } else {
-        output(msg, encoding);
-    }
-}
-
-fn output_messages(msgs: &[Message], encoding: &Encoding) {
-    if matches!(encoding, Encoding::Human) {
-        for msg in msgs {
-            output_message(msg, encoding);
-        }
-    } else {
-        output(msgs, encoding);
-    }
-}
-
-fn output_presence(p: &Presence, encoding: &Encoding) {
-    if matches!(encoding, Encoding::Human) {
-        println!(
-            "[{}] presence {}={} session={}",
-            p.timestamp_utc, p.agent, p.status, p.session_id
-        );
-    } else {
-        output(p, encoding);
-    }
-}
-
-fn minimize_value(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut result = serde_json::Map::new();
-            for (k, v) in map {
-                match k.as_str() {
-                    "protocol_version" | "stream_id" => continue,
-                    "tags" if v.as_array().is_some_and(Vec::is_empty) => continue,
-                    "metadata" if v.as_object().is_some_and(serde_json::Map::is_empty) => {
-                        continue;
-                    }
-                    "thread_id" if v.is_null() => continue,
-                    "request_ack" if v == &serde_json::Value::Bool(false) => continue,
-                    "priority" if v.as_str() == Some("normal") => continue,
-                    _ => {}
-                }
-                let short = match k.as_str() {
-                    "timestamp_utc" => "ts",
-                    "request_ack" => "ack",
-                    "from" => "f",
-                    "to" => "t",
-                    "topic" => "tp",
-                    "body" => "b",
-                    "priority" => "p",
-                    "reply_to" => "rt",
-                    "thread_id" => "tid",
-                    "tags" => "tg",
-                    "metadata" => "m",
-                    other => other,
-                };
-                result.insert(short.to_owned(), minimize_value(v));
-            }
-            serde_json::Value::Object(result)
-        }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.iter().map(minimize_value).collect())
-        }
-        other => other.clone(),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Section 5 – CLI definition
 // ---------------------------------------------------------------------------
 
@@ -1261,39 +998,6 @@ enum Cmd {
         )]
         port: u16,
     },
-}
-
-// ---------------------------------------------------------------------------
-// Section 6 – Validation helpers
-// ---------------------------------------------------------------------------
-
-const VALID_PRIORITIES: &[&str] = &["low", "normal", "high", "urgent"];
-
-fn validate_priority(p: &str) -> Result<()> {
-    if VALID_PRIORITIES.contains(&p) {
-        Ok(())
-    } else {
-        Err(anyhow!(
-            "invalid priority '{p}'; must be one of: {}",
-            VALID_PRIORITIES.join(", ")
-        ))
-    }
-}
-
-fn non_empty<'a>(val: &'a str, name: &str) -> Result<&'a str> {
-    let trimmed = val.trim();
-    if trimmed.is_empty() {
-        Err(anyhow!("{name} must not be empty"))
-    } else {
-        Ok(trimmed)
-    }
-}
-
-fn parse_metadata_arg(metadata: Option<&str>) -> Result<serde_json::Value> {
-    match metadata {
-        None => Ok(serde_json::Value::Object(serde_json::Map::new())),
-        Some(s) => serde_json::from_str(s).context("--metadata must be valid JSON object"),
-    }
 }
 
 // ---------------------------------------------------------------------------
