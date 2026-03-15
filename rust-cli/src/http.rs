@@ -57,8 +57,10 @@ fn default_priority() -> String {
 // --- GET /health -----------------------------------------------------------
 
 pub(crate) async fn http_health_handler(State(state): State<AppState>) -> impl IntoResponse {
-    let h = bus_health(&state.settings);
-    Json(serde_json::to_value(&h).unwrap_or_default())
+    let result = tokio::task::spawn_blocking(move || bus_health(&state.settings))
+        .await
+        .expect("spawn_blocking panicked");
+    Json(serde_json::to_value(&result).unwrap_or_default())
 }
 
 // --- POST /messages --------------------------------------------------------
@@ -88,7 +90,7 @@ pub(crate) async fn http_send_handler(
     State(state): State<AppState>,
     Json(req): Json<HttpSendRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    // Validate required fields.
+    // Validate required fields (cheap — stays on the async task).
     let sender = req.sender.trim().to_owned();
     let recipient = req.recipient.trim().to_owned();
     let topic = req.topic.trim().to_owned();
@@ -111,22 +113,31 @@ pub(crate) async fn http_send_handler(
     let metadata = req
         .metadata
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let thread_id = req.thread_id;
+    let tags = req.tags;
+    let priority = req.priority;
+    let request_ack = req.request_ack;
+    let reply_to = req.reply_to;
 
-    let mut conn = state.redis.get_connection().map_err(internal_error)?;
-    let msg = bus_post_message(
-        &mut conn,
-        &state.settings,
-        &sender,
-        &recipient,
-        &topic,
-        &body_text,
-        req.thread_id.as_deref(),
-        &req.tags,
-        &req.priority,
-        req.request_ack,
-        req.reply_to.as_deref(),
-        &metadata,
-    )
+    let msg = tokio::task::spawn_blocking(move || {
+        let mut conn = state.redis.get_connection()?;
+        bus_post_message(
+            &mut conn,
+            &state.settings,
+            &sender,
+            &recipient,
+            &topic,
+            &body_text,
+            thread_id.as_deref(),
+            &tags,
+            &priority,
+            request_ack,
+            reply_to.as_deref(),
+            &metadata,
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
     Ok((
@@ -168,15 +179,22 @@ pub(crate) async fn http_read_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let since = params.since.min(MAX_HISTORY_MINUTES);
     let limit = params.limit.clamp(1, 500);
+    let agent = params.agent;
+    let from = params.from;
+    let broadcast = params.broadcast;
 
-    let msgs = bus_list_messages(
-        &state.settings,
-        params.agent.as_deref(),
-        params.from.as_deref(),
-        since,
-        limit,
-        params.broadcast,
-    )
+    let msgs = tokio::task::spawn_blocking(move || {
+        bus_list_messages(
+            &state.settings,
+            agent.as_deref(),
+            from.as_deref(),
+            since,
+            limit,
+            broadcast,
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
     Ok(Json(serde_json::to_value(&msgs).unwrap_or_default()))
@@ -201,6 +219,7 @@ pub(crate) async fn http_ack_handler(
     Path(message_id): Path<String>,
     Json(req): Json<HttpAckRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // Validation stays on the async task (cheap).
     let agent = req.agent.trim().to_owned();
     if agent.is_empty() {
         return Err(bad_request("agent must not be empty"));
@@ -209,23 +228,28 @@ pub(crate) async fn http_ack_handler(
     if message_id.is_empty() {
         return Err(bad_request("message id must not be empty"));
     }
+    let ack_body = req.body;
 
-    let meta = serde_json::json!({"ack_for": &message_id});
-    let mut conn = state.redis.get_connection().map_err(internal_error)?;
-    let msg = bus_post_message(
-        &mut conn,
-        &state.settings,
-        &agent,
-        "all",
-        "ack",
-        &req.body,
-        None,
-        &[],
-        "normal",
-        false,
-        Some(&message_id),
-        &meta,
-    )
+    let msg = tokio::task::spawn_blocking(move || {
+        let meta = serde_json::json!({"ack_for": &message_id});
+        let mut conn = state.redis.get_connection()?;
+        bus_post_message(
+            &mut conn,
+            &state.settings,
+            &agent,
+            "all",
+            "ack",
+            &ack_body,
+            None,
+            &[],
+            "normal",
+            false,
+            Some(&message_id),
+            &meta,
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
     Ok(Json(serde_json::to_value(&msg).unwrap_or_default()))
@@ -261,6 +285,7 @@ pub(crate) async fn http_presence_set_handler(
     Path(agent): Path<String>,
     Json(req): Json<HttpPresenceRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    // Validation stays on the async task (cheap).
     let agent = agent.trim().to_owned();
     if agent.is_empty() {
         return Err(bad_request("agent must not be empty"));
@@ -270,18 +295,25 @@ pub(crate) async fn http_presence_set_handler(
     let metadata = req
         .metadata
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+    let status = req.status;
+    let session_id = req.session_id;
+    let capabilities = req.capabilities;
 
-    let mut conn = state.redis.get_connection().map_err(internal_error)?;
-    let presence = bus_set_presence(
-        &mut conn,
-        &state.settings,
-        &agent,
-        &req.status,
-        req.session_id.as_deref(),
-        &req.capabilities,
-        ttl,
-        &metadata,
-    )
+    let presence = tokio::task::spawn_blocking(move || {
+        let mut conn = state.redis.get_connection()?;
+        bus_set_presence(
+            &mut conn,
+            &state.settings,
+            &agent,
+            &status,
+            session_id.as_deref(),
+            &capabilities,
+            ttl,
+            &metadata,
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
     Ok(Json(serde_json::to_value(&presence).unwrap_or_default()))
@@ -292,8 +324,14 @@ pub(crate) async fn http_presence_set_handler(
 pub(crate) async fn http_presence_list_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let mut conn = state.redis.get_connection().map_err(internal_error)?;
-    let results = bus_list_presence(&mut conn, &state.settings).map_err(internal_error)?;
+    let results = tokio::task::spawn_blocking(move || {
+        let mut conn = state.redis.get_connection()?;
+        bus_list_presence(&mut conn, &state.settings)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
     Ok(Json(serde_json::to_value(&results).unwrap_or_default()))
 }
 
