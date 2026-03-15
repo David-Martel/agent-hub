@@ -87,23 +87,53 @@
 
 ### P6 Learnings from multi-repo deployment (finance-warehouse, stm32-merge)
 
+**Bus behavior fixes (from live observation):**
+- [ ] **Broadcast inclusion bug**: Messages `to: all` don't appear in `list_messages(agent=claude)` via HTTP GET — the `include_broadcast` parameter defaults to true on CLI but the HTTP `broadcast` query param may not be checked. Finance-warehouse orchestrator couldn't see hub-admin messages sent to `all`. VERIFY AND FIX.
+- [ ] **Auto-schema inference from topic**: Agents forget to set schema. Infer from topic name: `*-findings` → `finding`, `status`/`ownership`/`coordination` → `status`, `benchmark` → `benchmark`. Apply in `bus_post_message`.
+- [ ] **Ownership conflict detection**: When an agent posts `topic=ownership`, the bus should track claimed files. Subsequent edits to claimed files by OTHER agents should generate a warning.
+
+**Performance and reliability:**
 - [ ] Async PG write-through via tokio mpsc channel (fire-and-forget, batched)
+- [ ] Proactive circuit breaker reset (periodic health check, not just on explicit `health` call)
+- [ ] Agent task queue (orchestrator queues tasks; agents pull when idle — enables wave dispatch without manual timing)
+
+**Features:**
 - [ ] Finding deduplication command (group journal entries by file path, merge overlapping)
-- [ ] Default schema enforcement (reject messages without schema on configured topics)
-- [ ] Agent inbox notification — MCP server should push notifications when new messages arrive for an agent
-- [ ] `--server` client mode (CLI → HTTP → Redis) for LAN access from other machines
 - [ ] Session ID auto-generation (env var `AGENT_BUS_SESSION_ID` set by orchestrator)
+- [ ] Session summary auto-generation (from all bus messages with matching session tag)
+- [ ] `--server` client mode (CLI → HTTP → Redis) for LAN access from other machines
 - [ ] Message threading enforcement (auto-link finding→fix→verify chains)
 - [ ] TOON/MessagePack exploration for token-efficient message encoding
-- [ ] Proactive circuit breaker reset (periodic health check, not just on explicit `health` call)
+- [ ] Agent inbox notification — MCP server should push notifications when new messages arrive
 
-### P7 Documentation gaps (reported by finance-warehouse agents)
+### P7 Documentation and protocol (observed from finance-warehouse live session)
 
 - [x] MCP tool names section in AGENT_COMMUNICATIONS.md
 - [x] Orchestration patterns (parallel analysis, chained tasks, cross-repo, session recovery)
+- [x] Ownership claims as mandatory protocol step (emergent from finance-warehouse agents)
+- [x] Polling strengthened as numbered step in Quick Start
 - [ ] Per-repo AGENT_COMMUNICATIONS.md auto-deploy (create on first `journal` export)
 - [ ] MCP tool description improvements (include schema examples in tool descriptions)
-- [ ] Video/walkthrough of orchestration workflow
+- [ ] Agent prompt template library (pre-built prompts for common agent types with bus instructions)
+- [ ] Orchestrator monitoring dashboard (read bus, show agent status, findings by severity)
+
+### Observations from finance-warehouse live session (2026-03-15)
+
+**What works:**
+- Ownership claims: agents claim files before editing, check for conflicts, linter skips owned files
+- Wave-based dispatch: orchestrator dispatches wave 1, waits for completion, dispatches wave 2
+- Presence tracking: 8 agents registered with capabilities across 2 repos
+- Cross-agent awareness: rust-builder notes tax-integrator's ownership, avoids conflict
+- Completion signals: all agents post structured COMPLETE summaries
+
+**What doesn't work:**
+- Schema adoption: 0/18 finance-warehouse messages used schema field
+- Inbox polling: 0 agents checked for follow-up tasks during execution
+- Broadcast visibility: messages to `all` not visible when querying by specific agent
+- Hub-admin announcement not seen by finance-warehouse orchestrator (polling + broadcast bug)
+
+**Message rate:** 0.7 msgs/min across 6 agents. Acceptable but could batch findings.
+**Session duration:** 27 min for 18 messages (6 agents, 4 ownership + 9 status + 5 completions)
 
 ## Suggested execution order
 
