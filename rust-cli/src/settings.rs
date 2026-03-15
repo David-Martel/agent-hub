@@ -27,7 +27,7 @@ impl Settings {
             redis_url: env_or("AGENT_BUS_REDIS_URL", "redis://localhost:6380/0"),
             database_url: env_or_optional_default(
                 "AGENT_BUS_DATABASE_URL",
-                "postgresql://postgres@localhost:5432/redis_backend",
+                "postgresql://postgres@localhost:5300/redis_backend",
             ),
             stream_key: env_or("AGENT_BUS_STREAM_KEY", "agent_bus:messages"),
             channel_key: env_or("AGENT_BUS_CHANNEL", "agent_bus:events"),

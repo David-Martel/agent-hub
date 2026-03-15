@@ -2,6 +2,7 @@
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
@@ -17,6 +18,38 @@ const PG_MAX_RETRIES: u32 = 3;
 /// Base delay in milliseconds; doubles on each subsequent attempt (exponential back-off).
 const PG_RETRY_BASE_MS: u64 = 50;
 
+/// How long (in seconds) the circuit breaker suppresses retry attempts after a confirmed outage.
+const PG_CIRCUIT_BREAKER_SECONDS: u64 = 60;
+
+/// Returns the singleton that records the last instant `PostgreSQL` was confirmed unreachable.
+fn pg_down_since() -> &'static Mutex<Option<Instant>> {
+    static PG_DOWN: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+    PG_DOWN.get_or_init(|| Mutex::new(None))
+}
+
+/// Returns `true` when the circuit breaker is open (i.e., PG was down within the last 60 s).
+fn is_pg_circuit_open() -> bool {
+    pg_down_since()
+        .lock()
+        .ok()
+        .and_then(|guard| *guard)
+        .is_some_and(|since| since.elapsed().as_secs() < PG_CIRCUIT_BREAKER_SECONDS)
+}
+
+/// Records that `PostgreSQL` is currently unreachable, opening the circuit breaker.
+fn mark_pg_down() {
+    if let Ok(mut guard) = pg_down_since().lock() {
+        *guard = Some(Instant::now());
+    }
+}
+
+/// Clears the circuit-breaker state, allowing future connection attempts.
+fn mark_pg_up() {
+    if let Ok(mut guard) = pg_down_since().lock() {
+        *guard = None;
+    }
+}
+
 /// Retries `operation` up to [`PG_MAX_RETRIES`] times with exponential back-off.
 ///
 /// The closure is called repeatedly on failure, so it must be `FnMut`.  Each
@@ -29,10 +62,19 @@ const PG_RETRY_BASE_MS: u64 = 50;
 /// let result = with_pg_retry(|| do_postgres_work(client));
 /// ```
 fn with_pg_retry<T>(mut operation: impl FnMut() -> Result<T>) -> Result<T> {
+    if is_pg_circuit_open() {
+        return Err(anyhow::anyhow!(
+            "PostgreSQL circuit breaker open — skipping retry"
+        ));
+    }
+
     let mut last_error: Option<anyhow::Error> = None;
     for attempt in 0..PG_MAX_RETRIES {
         match operation() {
-            Ok(result) => return Ok(result),
+            Ok(result) => {
+                mark_pg_up();
+                return Ok(result);
+            }
             Err(e) => {
                 tracing::warn!(
                     "PostgreSQL operation failed (attempt {}/{}): {e:#}",
@@ -48,6 +90,7 @@ fn with_pg_retry<T>(mut operation: impl FnMut() -> Result<T>) -> Result<T> {
             }
         }
     }
+    mark_pg_down();
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("PostgreSQL operation failed after retries")))
 }
 
@@ -488,6 +531,7 @@ pub(crate) fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<Strin
             return Ok((None, None, false));
         };
         ensure_postgres_storage(&mut client, settings)?;
+        mark_pg_up();
         Ok((Some(true), None, true))
     }) {
         Ok(result) => result,
@@ -496,5 +540,44 @@ pub(crate) fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<Strin
             Some(format!("{error:#}")),
             storage_ready(settings),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pg_circuit_breaker_skips_when_open() {
+        // Ensure a clean state before the test.
+        mark_pg_up();
+        assert!(
+            !is_pg_circuit_open(),
+            "circuit should be closed after mark_pg_up"
+        );
+
+        mark_pg_down();
+        assert!(
+            is_pg_circuit_open(),
+            "circuit should be open after mark_pg_down"
+        );
+
+        // with_pg_retry must short-circuit immediately while the breaker is open.
+        let mut calls = 0_u32;
+        let result: Result<()> = with_pg_retry(|| {
+            calls += 1;
+            Ok(())
+        });
+        assert!(result.is_err(), "expected circuit-breaker error");
+        assert_eq!(
+            calls, 0,
+            "operation must not be called while circuit is open"
+        );
+
+        mark_pg_up();
+        assert!(
+            !is_pg_circuit_open(),
+            "circuit should be closed again after mark_pg_up"
+        );
     }
 }
