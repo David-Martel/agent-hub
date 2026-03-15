@@ -273,7 +273,10 @@ async fn main() -> Result<()> {
             )?;
         }
 
-        Cmd::Sync { limit, ref encoding } => {
+        Cmd::Sync {
+            limit,
+            ref encoding,
+        } => {
             cmd_sync(&settings, limit, encoding)?;
         }
 

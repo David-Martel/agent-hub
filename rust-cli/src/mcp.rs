@@ -420,10 +420,15 @@ impl ServerHandler for AgentBusMcpServer {
             Implementation::new("agent-bus", env!("CARGO_PKG_VERSION")),
         )
         .with_instructions(
-            "Redis-backed coordination bus with PostgreSQL-backed durable history for local agents. \
-             Use post_message for handoffs, list_messages to inspect inbox history, \
-             set_presence to advertise availability, and list_presence to discover \
-             other active agents.",
+            "Agent Hub coordination bus (Redis + PostgreSQL). MANDATORY PROTOCOL: \
+             (1) set_presence on session start with your agent ID and capabilities. \
+             (2) post_message topic=ownership BEFORE editing any file — claim it first, check for conflicts. \
+             (3) list_messages every 2-3 tool calls — check inbox for tasks, avoid duplicate work. \
+             (4) Schema required: topic *-findings → schema=finding (needs FINDING:+SEVERITY:), \
+             topic status/ownership/coordination → schema=status, topic benchmark → schema=benchmark. \
+             (5) Batch 3-5 findings per message (max 2000 chars). Include tags=[repo:<name>]. \
+             (6) Post COMPLETE summary when done, then poll for follow-up tasks. \
+             HTTP alternative: POST http://localhost:8400/messages (faster for subagents without MCP).",
         )
     }
 

@@ -58,9 +58,7 @@ pub(crate) fn validate_message_schema(body: &str, schema: Option<&str>) -> Resul
                 && !body.contains("TAGGED:")
                 && !body.contains("COMPLETE")
             {
-                bail!(
-                    "Schema 'finding' requires FINDING:, FIX, TAGGED:, or COMPLETE in body"
-                );
+                bail!("Schema 'finding' requires FINDING:, FIX, TAGGED:, or COMPLETE in body");
             }
             // When a FINDING: is declared, SEVERITY: must also be present.
             if body.contains("FINDING:") && !body.contains("SEVERITY:") {
@@ -77,13 +75,8 @@ pub(crate) fn validate_message_schema(body: &str, schema: Option<&str>) -> Resul
         }
         SCHEMA_BENCHMARK => {
             // Must contain measurable metrics.
-            if !body.contains("agents=")
-                && !body.contains("msgs=")
-                && !body.contains("duration=")
-            {
-                bail!(
-                    "Schema 'benchmark' requires metrics (agents=, msgs=, duration=) in body"
-                );
+            if !body.contains("agents=") && !body.contains("msgs=") && !body.contains("duration=") {
+                bail!("Schema 'benchmark' requires metrics (agents=, msgs=, duration=) in body");
             }
             Ok(())
         }

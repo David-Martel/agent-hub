@@ -257,7 +257,7 @@ impl Settings {
             startup_body: resolve(
                 "AGENT_BUS_STARTUP_BODY",
                 cfg.startup_body.as_deref(),
-                "agent-bus is up and running",
+                "Agent Hub online. Protocol: (1) set_presence on start, (2) claim files via topic=ownership before editing, (3) list_messages every 2-3 calls for inbox, (4) schema=finding for findings (FINDING:+SEVERITY:), schema=status for updates, (5) batch 3-5 findings per msg, (6) COMPLETE when done. HTTP: localhost:8400. Tags: repo:<name>.",
             ),
             server_host: resolve(
                 "AGENT_BUS_SERVER_HOST",

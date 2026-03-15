@@ -170,8 +170,7 @@ fn get_pg_client(settings: &Settings) -> Result<Option<PgClient>> {
     // Open a new connection and hand it directly to the caller (not back into
     // the slot) so we do not hold the mutex during connect.
     drop(guard); // release lock before the blocking TCP handshake
-    let client =
-        PgClient::connect(database_url, NoTls).context("PostgreSQL connection failed")?;
+    let client = PgClient::connect(database_url, NoTls).context("PostgreSQL connection failed")?;
     Ok(Some(client))
 }
 
@@ -414,7 +413,11 @@ pub(crate) fn sync_redis_to_postgres(
                 continue;
             };
             let tags = serde_json::Value::Array(
-                msg.tags.iter().cloned().map(serde_json::Value::String).collect(),
+                msg.tags
+                    .iter()
+                    .cloned()
+                    .map(serde_json::Value::String)
+                    .collect(),
             );
             let reply_to = msg.reply_to.clone().unwrap_or_default();
 

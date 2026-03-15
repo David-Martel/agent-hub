@@ -252,10 +252,7 @@ pub(crate) fn bus_post_message(
 /// # Errors
 ///
 /// Returns an error if the Redis connection or `XRANGE` command fails.
-pub(crate) fn bus_read_all_from_redis(
-    settings: &Settings,
-    limit: usize,
-) -> Result<Vec<Message>> {
+pub(crate) fn bus_read_all_from_redis(settings: &Settings, limit: usize) -> Result<Vec<Message>> {
     let mut conn = connect(settings)?;
     let raw: Vec<redis::Value> = redis::cmd("XRANGE")
         .arg(&settings.stream_key)

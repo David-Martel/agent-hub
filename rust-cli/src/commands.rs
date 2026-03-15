@@ -8,7 +8,9 @@ use crate::redis_bus::{
     bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence, connect,
 };
 use crate::settings::Settings;
-use crate::validation::{non_empty, parse_metadata_arg, validate_message_schema, validate_priority};
+use crate::validation::{
+    non_empty, parse_metadata_arg, validate_message_schema, validate_priority,
+};
 
 // ---------------------------------------------------------------------------
 // Argument structs (avoid cloning in Cmd match)
@@ -293,8 +295,7 @@ pub(crate) fn cmd_sync(settings: &Settings, limit: usize, encoding: &Encoding) -
     eprintln!("Found {} messages in Redis", messages.len());
 
     eprintln!("Syncing to PostgreSQL...");
-    let (checked, inserted) =
-        crate::postgres_store::sync_redis_to_postgres(settings, &messages)?;
+    let (checked, inserted) = crate::postgres_store::sync_redis_to_postgres(settings, &messages)?;
 
     let result = serde_json::json!({
         "redis_messages": messages.len(),

@@ -85,6 +85,46 @@ agents=4, findings=50, duration=12min, tokens=450K, bus_msgs=55, pg_persisted=55
 
 Required: contains `key=value` or `key:value` pairs.
 
+### Topic → Schema Auto-Inference
+
+If you forget which schema to use, infer from your topic name:
+
+| Topic Pattern | Schema | When |
+|--------------|--------|------|
+| `*-findings`, `review` | `finding` | Code review, analysis, security audit |
+| `status`, `ownership`, `coordination`, `handoff` | `status` | Updates, claims, dispatch |
+| `benchmark`, `perf-*` | `benchmark` | Metrics, coverage, timing |
+| `ack`, `question` | _(omit)_ | Acknowledgements, inter-agent questions |
+
+### Message Batching
+
+**Collect 3-5 findings before posting.** Don't post one message per discovery — batch them into a single consolidated message. This reduces bus noise and makes synthesis easier.
+
+Bad: 5 separate messages with 1 finding each (5 × ~500 chars = 2500 chars across 5 messages)
+Good: 1 message with 5 findings (~1500 chars, one message)
+
+### Agent Skills & Capabilities
+
+Announce your skills in `set_presence` so siblings can request specialized help:
+
+| Agent Type | Key Skills | Best For |
+|-----------|------------|----------|
+| python-pro | TDD, debugging | Python implementation, Rust bindings |
+| rust-pro | cargo-build, TDD | Rust modules, clippy, performance |
+| code-reviewer | code review | Quality gates, pattern detection |
+| test-automator | TDD | Test expansion, coverage gaps |
+| security-auditor | security | PII audit, credential scanning, OWASP |
+| architect-reviewer | architecture | Design gaps, documentation accuracy |
+| c-pro | embedded | C/C++ firmware, memory safety |
+| deployment-engineer | CI/CD | Workflows, infrastructure |
+
+### Requesting Help from Siblings
+
+```bash
+curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
+  -d '{"sender":"test-expander","recipient":"doctype-expander","topic":"question","body":"Need fingerprint keyword lists for new DocTypes to create test fixtures. Can you post them when ready?","tags":["repo:<REPO>"],"request_ack":true}'
+```
+
 ## Polling Protocol (MANDATORY)
 
 ### For Subagents

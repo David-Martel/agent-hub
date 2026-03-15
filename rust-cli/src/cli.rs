@@ -105,10 +105,7 @@ pub(crate) enum Cmd {
         reply_to: Option<String>,
         #[arg(long, help = "JSON metadata object (e.g. '{\"key\":\"value\"}')")]
         metadata: Option<String>,
-        #[arg(
-            long,
-            help = "Validate body against schema: finding|status|benchmark"
-        )]
+        #[arg(long, help = "Validate body against schema: finding|status|benchmark")]
         schema: Option<String>,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
@@ -261,11 +258,13 @@ pub(crate) enum Cmd {
     },
 
     /// Export bus messages to a local NDJSON journal file (per-repo archive).
-    #[command(long_about = "Export messages matching a filter to a local NDJSON file.\n\n\
+    #[command(
+        long_about = "Export messages matching a filter to a local NDJSON file.\n\n\
         Idempotent: only appends messages not already in the file.\n\
         Use --tag to filter by repo (e.g., 'repo:stm32-merge').\n\
         Use --from-agent to filter by sender (e.g., 'codex').\n\n\
-        Journal files are one JSON message per line, suitable for grep/jq analysis.")]
+        Journal files are one JSON message per line, suitable for grep/jq analysis."
+    )]
     Journal {
         #[arg(long, help = "Filter by tag (e.g., 'repo:stm32-merge')")]
         tag: Option<String>,
@@ -284,9 +283,11 @@ pub(crate) enum Cmd {
     },
 
     /// Backfill Redis messages into `PostgreSQL` (one-time sync).
-    #[command(long_about = "Read all messages from the Redis stream and insert any missing\n\
+    #[command(
+        long_about = "Read all messages from the Redis stream and insert any missing\n\
         ones into PostgreSQL. Safe to run multiple times (uses ON CONFLICT DO NOTHING).\n\
-        Use after enabling PostgreSQL on an existing Redis deployment.")]
+        Use after enabling PostgreSQL on an existing Redis deployment."
+    )]
     Sync {
         #[arg(
             long,

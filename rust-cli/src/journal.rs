@@ -28,8 +28,7 @@ pub(crate) fn query_messages_by_tag(
 ) -> Result<Vec<Message>> {
     // Try PG first (has GIN index on tags).
     if settings.database_url.is_some() {
-        if let Ok(msgs) =
-            postgres_store::list_messages_by_tag(settings, tag, since_minutes, limit)
+        if let Ok(msgs) = postgres_store::list_messages_by_tag(settings, tag, since_minutes, limit)
         {
             if !msgs.is_empty() {
                 return Ok(msgs);
@@ -141,7 +140,10 @@ mod tests {
     fn export_journal_writes_new_messages() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.ndjson");
-        let msgs = vec![make_message("id-1", "repo:test"), make_message("id-2", "repo:test")];
+        let msgs = vec![
+            make_message("id-1", "repo:test"),
+            make_message("id-2", "repo:test"),
+        ];
 
         let written = export_journal(&msgs, &path).unwrap();
         assert_eq!(written, 2);
