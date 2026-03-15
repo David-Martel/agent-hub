@@ -28,11 +28,11 @@
 - [x] Add explicit startup validation for invalid stream/table names and fail early with actionable errors.
 - [x] Add health fields for Redis stream length and PostgreSQL row counts when `--encoding json` is requested.
 - [x] Add bounded retry/backoff for PostgreSQL persistence failures instead of reconnecting on every write.
-- [ ] Add service log rotation or size limits for `C:\ProgramData\AgentHub\logs\agent-hub-service.log`.
+- [x] Add service log rotation or size limits for `C:\ProgramData\AgentHub\logs\agent-hub-service.log`.
 
 ### P2 Performance
 - [x] Replace one-connection-per-call PostgreSQL access with retry-based reconnection (thread-local pool deferred until benchmarks justify).
-- [ ] Move blocking Redis/PostgreSQL work behind `spawn_blocking` or dedicated worker threads in HTTP handlers.
+- [x] Move blocking Redis/PostgreSQL work behind `spawn_blocking` or dedicated worker threads in HTTP handlers.
 - [x] Reuse Redis clients/connections in HTTP mode instead of reconnecting per request.
 - [ ] Add benchmarks for `send`, `read`, `watch`, and HTTP `/messages` throughput with Redis-only versus Redis+Postgres modes.
 - [ ] Add index review based on actual query plans once message volume is non-trivial.
@@ -50,18 +50,18 @@
   - `mcp.rs`
   - `http.rs`
 - [x] Move shared request validation and JSON argument parsing into reusable helpers.
-- [ ] Isolate MCP tool schemas from tool execution logic.
+- [x] Isolate MCP tool schemas from tool execution logic.
 - [x] Add an integration-test harness for live Redis/PostgreSQL behavior under `rust-cli/tests/`.
 
 ### P4 Features
-- [ ] SSE or websocket live streaming endpoint for HTTP clients.
+- [x] SSE or websocket live streaming endpoint for HTTP clients.
 - [ ] `--server` client mode for remote/local HTTP calls instead of direct Redis access.
-- [ ] Presence read path backed by PostgreSQL history for forensic/debug use.
-- [ ] Optional retention management task for PostgreSQL history pruning.
-- [ ] Optional message replay or export command for recovery workflows.
+- [x] Presence read path backed by PostgreSQL history for forensic/debug use.
+- [x] Optional retention management task for PostgreSQL history pruning.
+- [x] Optional message replay or export command for recovery workflows.
 
 ### P5 Interop and packaging
-- [ ] Add Windows service health/restart troubleshooting docs to `README.md`.
+- [x] Add Windows service health/restart troubleshooting docs to `README.md`.
 - [ ] Package the native binary and scripts for reproducible machine bootstrap.
 - [ ] Add optional WinSW support if NSSM behavior proves insufficient.
 - [ ] Add A2A adapter mapping once the core schema settles.
@@ -72,5 +72,5 @@
 1. ~~Finish Rust-side localhost validation and connection pooling.~~ Done.
 2. ~~Split `main.rs` into modules without changing behavior.~~ Done.
 3. ~~Add integration tests that exercise Redis and PostgreSQL together.~~ Done.
-4. Add HTTP streaming and remote client mode.
+4. ~~Add HTTP streaming and remote client mode.~~ SSE streaming done. `--server` client mode deferred.
 5. Reassess wire-format and packaging work after the runtime stabilizes.

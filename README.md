@@ -26,9 +26,37 @@ pwsh -NoLogo -NoProfile -File C:\Users\david\.codex\tools\agent-bus-mcp\scripts\
 ### Windows service
 
 ```powershell
+# Install the service (requires admin + nssm in PATH)
 pwsh -NoLogo -NoProfile -File scripts\install-agent-hub-service.ps1
+
+# Configure log rotation (10 MB max, daily rotation)
+pwsh -NoLogo -NoProfile -File scripts\configure-log-rotation.ps1
+
+# Remove the service
 pwsh -NoLogo -NoProfile -File scripts\remove-agent-hub-service.ps1
 ```
+
+#### Service troubleshooting
+
+```powershell
+# Check service status
+nssm status AgentHub
+
+# Restart the service
+nssm restart AgentHub
+
+# View recent logs
+Get-Content C:\ProgramData\AgentHub\logs\agent-hub-service.log -Tail 50
+
+# View error logs
+Get-Content C:\ProgramData\AgentHub\logs\agent-hub-service-error.log -Tail 50
+```
+
+Common issues:
+- **Port in use**: Another process is using port 8400. Check with `netstat -ano | findstr 8400`.
+- **Redis not running**: Verify with `redis-cli -p 6380 ping`. Start the Redis service if needed.
+- **PostgreSQL connection refused**: Verify with `psql -h localhost -U postgres -c "SELECT 1"`.
+- **Service won't start**: Check error log, ensure `agent-bus.exe` exists at `C:\Users\david\bin\agent-bus.exe`.
 
 ### MCP launch
 
