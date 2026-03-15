@@ -402,15 +402,15 @@ pub(crate) fn sync_redis_to_postgres(
         ensure_postgres_storage(&mut client, settings)?;
 
         let mut inserted: usize = 0;
-        let mut skipped: usize = 0;
+        let mut _skipped: usize = 0;
         for msg in messages {
             // Skip messages with empty or non-UUID IDs (legacy Python CLI entries)
             let Ok(message_id) = Uuid::parse_str(&msg.id) else {
-                skipped += 1;
+                _skipped += 1;
                 continue;
             };
             let Ok(timestamp_utc) = parse_timestamp_utc(&msg.timestamp_utc) else {
-                skipped += 1;
+                _skipped += 1;
                 continue;
             };
             let tags = serde_json::Value::Array(
