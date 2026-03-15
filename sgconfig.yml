@@ -1,0 +1,11 @@
+# ast-grep configuration for Agent Hub
+# Uses global Rust rules from ~/.claude/rules/rust/
+
+ruleDirs:
+  - ~/.claude/rules/rust
+
+# Language-specific configuration
+languageGlobs:
+  rust:
+    - "rust-cli/src/**/*.rs"
+    - "!rust-cli/src/**/tests.rs"

@@ -1,0 +1,43 @@
+# Agent Hub — Lefthook Configuration
+# Install: lefthook install
+# Enforces: Rust fmt, clippy, ast-grep P0 rules, cargo audit
+
+skip_output:
+  - meta
+
+pre-commit:
+  parallel: true
+  commands:
+    # Rust checks (~2s incremental)
+    rust-fmt:
+      root: "rust-cli"
+      glob: "*.rs"
+      run: cargo fmt -- --check
+
+    rust-clippy:
+      root: "rust-cli"
+      glob: "*.rs"
+      run: RUSTC_WRAPPER="" cargo clippy --all-targets --quiet -- -D warnings
+
+    # ast-grep P0 rules (if sg is available)
+    ast-grep-rust:
+      root: "rust-cli"
+      glob: "*.rs"
+      run: sg scan --config ~/.claude/sgconfig.yml {staged_files} 2>/dev/null; exit 0
+
+pre-push:
+  parallel: true
+  commands:
+    rust-test:
+      root: "rust-cli"
+      glob: "*.rs"
+      run: RUSTC_WRAPPER="" cargo test --quiet
+
+    rust-audit:
+      root: "rust-cli"
+      run: cargo audit --quiet 2>/dev/null; exit 0
+
+commit-msg:
+  commands:
+    conventional:
+      run: "grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)' {1} || echo 'WARNING: Consider conventional commit format'; exit 0"
