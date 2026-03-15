@@ -105,3 +105,68 @@ pub(crate) fn minimize_value(value: &serde_json::Value) -> serde_json::Value {
         other => other.clone(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn minimize_strips_defaults_and_shortens_keys() {
+        let input = serde_json::json!({
+            "timestamp_utc": "2026-01-01T00:00:00Z",
+            "from": "claude",
+            "to": "codex",
+            "topic": "test",
+            "body": "hello",
+            "protocol_version": "1.0",
+            "stream_id": "123-0",
+            "tags": [],
+            "metadata": {},
+            "thread_id": null,
+            "request_ack": false,
+            "priority": "normal"
+        });
+        let minimized = minimize_value(&input);
+        let obj = minimized.as_object().unwrap();
+
+        // Stripped fields should be absent
+        assert!(!obj.contains_key("protocol_version"));
+        assert!(!obj.contains_key("stream_id"));
+        assert!(!obj.contains_key("tags"));
+        assert!(!obj.contains_key("tg"));
+        assert!(!obj.contains_key("metadata"));
+        assert!(!obj.contains_key("m"));
+        assert!(!obj.contains_key("thread_id"));
+        assert!(!obj.contains_key("tid"));
+        assert!(!obj.contains_key("request_ack"));
+        assert!(!obj.contains_key("ack"));
+        assert!(!obj.contains_key("priority"));
+        assert!(!obj.contains_key("p"));
+
+        // Shortened keys should be present
+        assert_eq!(obj["ts"], "2026-01-01T00:00:00Z");
+        assert_eq!(obj["f"], "claude");
+        assert_eq!(obj["t"], "codex");
+        assert_eq!(obj["tp"], "test");
+        assert_eq!(obj["b"], "hello");
+    }
+
+    #[test]
+    fn minimize_preserves_non_default_values() {
+        let input = serde_json::json!({
+            "priority": "high",
+            "request_ack": true,
+            "tags": ["important"],
+            "metadata": {"key": "val"},
+            "thread_id": "abc-123"
+        });
+        let minimized = minimize_value(&input);
+        let obj = minimized.as_object().unwrap();
+
+        assert_eq!(obj["p"], "high");
+        assert_eq!(obj["ack"], true);
+        assert_eq!(obj["tg"], serde_json::json!(["important"]));
+        assert_eq!(obj["m"], serde_json::json!({"key": "val"}));
+        assert_eq!(obj["tid"], "abc-123");
+    }
+}

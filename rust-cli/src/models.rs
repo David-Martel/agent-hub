@@ -46,6 +46,21 @@ pub(crate) fn default_priority() -> String {
     "normal".to_owned()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_priority_is_normal() {
+        assert_eq!(default_priority(), "normal");
+    }
+
+    #[test]
+    fn max_history_minutes_is_one_week() {
+        assert_eq!(MAX_HISTORY_MINUTES, 7 * 24 * 60);
+    }
+}
+
 /// Agent presence record.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Presence {

@@ -406,3 +406,112 @@ pub(crate) fn bus_health(settings: &Settings) -> Health {
         codec: "serde_json".to_owned(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_stream_entry_handles_empty_fields() {
+        let fields: HashMap<String, redis::Value> = HashMap::new();
+        let msg = decode_stream_entry(&fields);
+        assert!(msg.id.is_empty());
+        assert!(msg.from.is_empty());
+        assert_eq!(msg.priority, "normal");
+        assert!(!msg.request_ack);
+    }
+
+    #[test]
+    fn decode_stream_entry_reads_bulk_string_fields() {
+        let mut fields: HashMap<String, redis::Value> = HashMap::new();
+        fields.insert(
+            "id".to_owned(),
+            redis::Value::BulkString(b"msg-123".to_vec()),
+        );
+        fields.insert(
+            "from".to_owned(),
+            redis::Value::BulkString(b"claude".to_vec()),
+        );
+        fields.insert("to".to_owned(), redis::Value::BulkString(b"codex".to_vec()));
+        fields.insert(
+            "topic".to_owned(),
+            redis::Value::BulkString(b"test".to_vec()),
+        );
+        fields.insert(
+            "body".to_owned(),
+            redis::Value::BulkString(b"hello".to_vec()),
+        );
+        fields.insert(
+            "priority".to_owned(),
+            redis::Value::BulkString(b"high".to_vec()),
+        );
+        fields.insert(
+            "request_ack".to_owned(),
+            redis::Value::BulkString(b"true".to_vec()),
+        );
+        fields.insert(
+            "thread_id".to_owned(),
+            redis::Value::BulkString(b"tid-1".to_vec()),
+        );
+        fields.insert(
+            "reply_to".to_owned(),
+            redis::Value::BulkString(b"claude".to_vec()),
+        );
+
+        let msg = decode_stream_entry(&fields);
+        assert_eq!(msg.id, "msg-123");
+        assert_eq!(msg.from, "claude");
+        assert_eq!(msg.to, "codex");
+        assert_eq!(msg.topic, "test");
+        assert_eq!(msg.body, "hello");
+        assert_eq!(msg.priority, "high");
+        assert!(msg.request_ack);
+        assert_eq!(msg.thread_id, Some("tid-1".to_owned()));
+        assert_eq!(msg.reply_to, Some("claude".to_owned()));
+    }
+
+    #[test]
+    fn decode_stream_entry_thread_id_none_is_mapped() {
+        let mut fields: HashMap<String, redis::Value> = HashMap::new();
+        fields.insert(
+            "thread_id".to_owned(),
+            redis::Value::BulkString(b"None".to_vec()),
+        );
+        let msg = decode_stream_entry(&fields);
+        assert_eq!(msg.thread_id, None);
+    }
+
+    #[test]
+    fn parse_xrange_result_handles_empty() {
+        let raw: Vec<redis::Value> = vec![];
+        let result = parse_xrange_result(&raw);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn parse_xrange_result_parses_single_entry() {
+        let entry = redis::Value::Array(vec![
+            redis::Value::BulkString(b"1234-0".to_vec()),
+            redis::Value::Array(vec![
+                redis::Value::BulkString(b"id".to_vec()),
+                redis::Value::BulkString(b"msg-1".to_vec()),
+                redis::Value::BulkString(b"from".to_vec()),
+                redis::Value::BulkString(b"claude".to_vec()),
+            ]),
+        ]);
+        let raw = vec![entry];
+        let result = parse_xrange_result(&raw);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].0, "1234-0");
+        assert!(result[0].1.contains_key("id"));
+        assert!(result[0].1.contains_key("from"));
+    }
+
+    #[test]
+    fn health_codec_field_is_accurate() {
+        let s = Settings::from_env();
+        let h = bus_health(&s);
+        assert_eq!(h.codec, "serde_json");
+        assert_eq!(h.runtime, "rust-native");
+    }
+}

@@ -97,3 +97,49 @@ pub(crate) fn redact_url(value: &str) -> String {
         &value[authority_end..]
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_or_returns_default_for_missing_var() {
+        let result = env_or("__AGENT_BUS_TEST_NONEXISTENT_KEY__", "fallback");
+        assert_eq!(result, "fallback");
+    }
+
+    #[test]
+    fn env_parse_returns_default_for_missing_var() {
+        let result: u64 = env_parse("__AGENT_BUS_TEST_NONEXISTENT_KEY__", 42);
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn settings_from_env_has_sane_defaults() {
+        let s = Settings::from_env();
+        assert!(s.redis_url.starts_with("redis://"));
+        assert!(!s.stream_key.is_empty());
+        assert!(!s.channel_key.is_empty());
+        assert!(s.stream_maxlen > 0);
+    }
+
+    #[test]
+    fn redact_url_hides_credentials() {
+        assert_eq!(
+            redact_url("postgresql://postgres:secret@localhost:5432/redis_backend"),
+            "postgresql://***:***@localhost:5432/redis_backend"
+        );
+        assert_eq!(
+            redact_url("redis://default@localhost:6380/0"),
+            "redis://***@localhost:6380/0"
+        );
+    }
+
+    #[test]
+    fn redact_url_leaves_plain_urls_unchanged() {
+        assert_eq!(
+            redact_url("redis://localhost:6380/0"),
+            "redis://localhost:6380/0"
+        );
+    }
+}

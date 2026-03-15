@@ -387,3 +387,26 @@ impl ServerHandler for AgentBusMcpServer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tool_list_has_expected_count() {
+        let tools = AgentBusMcpServer::tool_list();
+        assert_eq!(tools.len(), 6, "expected 6 MCP tools");
+    }
+
+    #[test]
+    fn tool_list_names_are_correct() {
+        let tools = AgentBusMcpServer::tool_list();
+        let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+        assert!(names.iter().any(|n| n == "bus_health"));
+        assert!(names.iter().any(|n| n == "post_message"));
+        assert!(names.iter().any(|n| n == "list_messages"));
+        assert!(names.iter().any(|n| n == "ack_message"));
+        assert!(names.iter().any(|n| n == "set_presence"));
+        assert!(names.iter().any(|n| n == "list_presence"));
+    }
+}
