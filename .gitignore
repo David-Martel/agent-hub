@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+dist/
+build/
+*.pyd
+
+# Rust
+rust/target/
+rust-cli/target/
+T:/RustCache/
+
+# IDE
+.vscode/
+.idea/
+
+# Test/coverage
+.coverage
+.pytest_cache/
+htmlcov/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Lock files managed externally
+uv.lock

@@ -1,0 +1,36 @@
+[project]
+name = "agent-bus-mcp"
+version = "0.1.0"
+description = "Redis-backed agent coordination bus with MCP and watcher interfaces"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp>=1.23.0",
+  "pydantic>=2.11.3",
+  "pydantic-settings>=2.8.1",
+  "psycopg[binary]>=3.2.0",
+  "psycopg-pool>=3.2.0",
+  "redis>=6.4.0",
+]
+
+[project.scripts]
+agent-bus-mcp = "agent_bus_mcp.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.5",
+  "pytest-cov>=6.0.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]

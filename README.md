@@ -1,0 +1,62 @@
+# Agent Bus MCP
+
+Redis-backed coordination bus for Codex, Claude, Gemini, and sub-agents.
+
+The package validates Redis/Postgres settings at startup via Pydantic v2, and
+requires `localhost` instead of numeric loopback addresses.
+
+Current protocol metadata:
+- Bus protocol: `agent-bus` message contract v1.0
+- Message identity: UUID `id` + UTC `timestamp_utc`
+- Default Redis endpoint: `redis://localhost:6379/0`
+
+## Commands
+
+```powershell
+pwsh -NoLogo -NoProfile -File C:\Users\david\.codex\tools\agent-bus-mcp\scripts\send-agent-bus.ps1 -From codex -To claude -Topic status -Body "message" -Encoding compact
+pwsh -NoLogo -NoProfile -File C:\Users\david\.codex\tools\agent-bus-mcp\scripts\read-agent-bus.ps1 -Agent codex -SinceMinutes 120
+pwsh -NoLogo -NoProfile -File C:\Users\david\.codex\tools\agent-bus-mcp\scripts\watch-agent-bus.ps1 -Agent codex
+uv --directory C:\Users\david\.codex\tools\agent-bus-mcp run agent-bus-mcp health
+pwsh -NoLogo -NoProfile -File C:\Users\david\.codex\tools\agent-bus-mcp\scripts\validate-agent-bus.ps1
+```
+
+### MCP launch
+
+```powershell
+uv --directory C:\Users\david\.codex\tools\agent-bus-mcp run agent-bus-mcp serve --transport stdio
+uv --directory C:\Users\david\.codex\tools\agent-bus-mcp run agent-bus-mcp serve --transport streamable-http --port 8765
+```
+
+## Notes
+
+- Durable history uses Redis Streams.
+- Realtime watch uses Redis Pub/Sub.
+- Wrapper scripts prefer in-place `.venv` execution and fall back to `uv --isolated` if Windows file locks block `uv run`.
+- MCP clients should register the stdio form by default.
+- Streamable HTTP is available for clients that support long-lived MCP sessions and notifications.
+- MCP server validates Redis and PostgreSQL during startup and emits a startup status message from `agent-bus`.
+- Redis is the default backend because it is already running locally; MQTT is an optional future bridge rather than the primary transport.
+
+## Encoding and interoperability
+
+- Default CLI output remains human-readable JSON; prefer `--encoding compact` for LLM prompts and scripts.
+- `thread_id` can be used for grouped coordination conversations.
+- `protocol_version` is added to all outbound payloads for safe schema evolution.
+- Planned future: adapter mode for A2A task cards and protobuf/TOON payload negotiation for selected endpoints.
+
+### Interop & runtime metadata
+
+- `bus_health` now returns `protocol_version` and `runtime_metadata` for monitoring hooks.
+- `bus_health.runtime_metadata.codec` reports serializer backend (`native`/`python`) and is safe for observability pipelines.
+- Suggested integration order:
+  - Use compact JSON for all machine pipelines and script-to-script transport.
+  - Use human mode only for direct operator viewing.
+  - Keep payload contracts additive (`protocol_version`, `thread_id`) to preserve forward compatibility.
+- See [IMPLEMENTATION_NOTES.md](./IMPLEMENTATION_NOTES.md) for a concrete A2A/TOON/protobuf comparison and Rust migration sequence.
+
+### Performance and Rust path
+
+- High-throughput target: keep Redis stream reads/writes in Python for now, then migrate hot serialization/deserialization paths (`message` / `event` shaping + watch formatting) to a Rust `pyo3` extension with:
+  - zero-copy JSON serialization for NDJSON/compact output,
+  - bounded message reuse in worker pools, and
+  - optional C ABI fallback while retaining pure-Python path parity.
