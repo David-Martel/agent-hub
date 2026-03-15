@@ -15,6 +15,93 @@ use crate::redis_bus::{
 use crate::settings::Settings;
 use crate::validation::validate_priority;
 
+/// Tool input schemas, separated from execution logic.
+mod schemas {
+    use std::sync::Arc;
+
+    pub(super) fn schema_for(
+        props: serde_json::Value,
+        required: &[&str],
+    ) -> Arc<serde_json::Map<String, serde_json::Value>> {
+        let mut schema = serde_json::Map::new();
+        schema.insert("type".to_owned(), serde_json::json!("object"));
+        schema.insert("properties".to_owned(), props);
+        if !required.is_empty() {
+            schema.insert(
+                "required".to_owned(),
+                serde_json::Value::Array(
+                    required.iter().map(|s| serde_json::json!(s)).collect(),
+                ),
+            );
+        }
+        Arc::new(schema)
+    }
+
+    pub(super) fn bus_health() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(serde_json::json!({}), &[])
+    }
+
+    pub(super) fn post_message() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "sender":    {"type": "string"},
+                "recipient": {"type": "string"},
+                "topic":     {"type": "string"},
+                "body":      {"type": "string"},
+                "tags":      {"type": "array", "items": {"type": "string"}},
+                "thread_id": {"type": "string"},
+                "priority":  {"type": "string", "enum": ["low","normal","high","urgent"]},
+                "request_ack": {"type": "boolean"},
+                "reply_to":  {"type": "string"},
+                "metadata":  {"type": "object"}
+            }),
+            &["sender", "recipient", "topic", "body"],
+        )
+    }
+
+    pub(super) fn list_messages() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "agent":          {"type": "string"},
+                "sender":         {"type": "string"},
+                "since_minutes":  {"type": "integer", "minimum": 1, "maximum": 10080},
+                "limit":          {"type": "integer", "minimum": 1, "maximum": 500},
+                "include_broadcast": {"type": "boolean"}
+            }),
+            &[],
+        )
+    }
+
+    pub(super) fn ack_message() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "agent":      {"type": "string"},
+                "message_id": {"type": "string"},
+                "body":       {"type": "string"}
+            }),
+            &["agent", "message_id"],
+        )
+    }
+
+    pub(super) fn set_presence() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "agent":        {"type": "string"},
+                "status":       {"type": "string"},
+                "session_id":   {"type": "string"},
+                "capabilities": {"type": "array", "items": {"type": "string"}},
+                "ttl_seconds":  {"type": "integer", "minimum": 1, "maximum": 86400},
+                "metadata":     {"type": "object"}
+            }),
+            &["agent"],
+        )
+    }
+
+    pub(super) fn list_presence() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(serde_json::json!({}), &[])
+    }
+}
+
 /// MCP server handler that exposes agent-bus operations as MCP tools.
 ///
 /// Settings are immutable after construction, so no `Mutex` is needed.
@@ -30,94 +117,36 @@ impl AgentBusMcpServer {
     }
 
     pub(crate) fn tool_list() -> Vec<Tool> {
-        // Build minimal but valid JSON Schema objects for each tool
-        let schema_for = |props: serde_json::Value,
-                          required: &[&str]|
-         -> Arc<serde_json::Map<String, serde_json::Value>> {
-            let mut schema = serde_json::Map::new();
-            schema.insert("type".to_owned(), serde_json::json!("object"));
-            schema.insert("properties".to_owned(), props);
-            if !required.is_empty() {
-                schema.insert(
-                    "required".to_owned(),
-                    serde_json::Value::Array(
-                        required.iter().map(|s| serde_json::json!(s)).collect(),
-                    ),
-                );
-            }
-            Arc::new(schema)
-        };
-
         vec![
             Tool::new(
                 "bus_health",
                 "Check the health of the agent-bus Redis backend.",
-                schema_for(serde_json::json!({}), &[]),
+                schemas::bus_health(),
             ),
             Tool::new(
                 "post_message",
                 "Post a message to the agent coordination bus.",
-                schema_for(
-                    serde_json::json!({
-                        "sender":    {"type": "string"},
-                        "recipient": {"type": "string"},
-                        "topic":     {"type": "string"},
-                        "body":      {"type": "string"},
-                        "tags":      {"type": "array", "items": {"type": "string"}},
-                        "thread_id": {"type": "string"},
-                        "priority":  {"type": "string", "enum": ["low","normal","high","urgent"]},
-                        "request_ack": {"type": "boolean"},
-                        "reply_to":  {"type": "string"},
-                        "metadata":  {"type": "object"}
-                    }),
-                    &["sender", "recipient", "topic", "body"],
-                ),
+                schemas::post_message(),
             ),
             Tool::new(
                 "list_messages",
                 "List recent messages from the bus, optionally filtered by recipient or sender.",
-                schema_for(
-                    serde_json::json!({
-                        "agent":          {"type": "string"},
-                        "sender":         {"type": "string"},
-                        "since_minutes":  {"type": "integer", "minimum": 1, "maximum": 10080},
-                        "limit":          {"type": "integer", "minimum": 1, "maximum": 500},
-                        "include_broadcast": {"type": "boolean"}
-                    }),
-                    &[],
-                ),
+                schemas::list_messages(),
             ),
             Tool::new(
                 "ack_message",
                 "Acknowledge a message by posting an ack reply.",
-                schema_for(
-                    serde_json::json!({
-                        "agent":      {"type": "string"},
-                        "message_id": {"type": "string"},
-                        "body":       {"type": "string"}
-                    }),
-                    &["agent", "message_id"],
-                ),
+                schemas::ack_message(),
             ),
             Tool::new(
                 "set_presence",
                 "Announce or update agent presence on the bus.",
-                schema_for(
-                    serde_json::json!({
-                        "agent":        {"type": "string"},
-                        "status":       {"type": "string"},
-                        "session_id":   {"type": "string"},
-                        "capabilities": {"type": "array", "items": {"type": "string"}},
-                        "ttl_seconds":  {"type": "integer", "minimum": 1, "maximum": 86400},
-                        "metadata":     {"type": "object"}
-                    }),
-                    &["agent"],
-                ),
+                schemas::set_presence(),
             ),
             Tool::new(
                 "list_presence",
                 "List all active agent presence records.",
-                schema_for(serde_json::json!({}), &[]),
+                schemas::list_presence(),
             ),
         ]
     }
