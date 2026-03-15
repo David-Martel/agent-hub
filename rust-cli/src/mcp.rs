@@ -310,6 +310,7 @@ impl AgentBusMcpServer {
                     request_ack,
                     reply_to,
                     &metadata,
+                    crate::pg_writer(),
                 )?;
                 Ok(serde_json::to_value(&msg)?)
             }
@@ -354,6 +355,7 @@ impl AgentBusMcpServer {
                     false,
                     Some(message_id),
                     &meta,
+                    crate::pg_writer(),
                 )?;
                 // Include ack confirmation in response so the caller sees it on stdio.
                 let response = serde_json::json!({
@@ -384,6 +386,7 @@ impl AgentBusMcpServer {
                     &capabilities,
                     ttl_seconds,
                     &metadata,
+                    crate::pg_writer(),
                 )?;
                 Ok(serde_json::to_value(&presence)?)
             }

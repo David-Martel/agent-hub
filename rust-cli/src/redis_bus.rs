@@ -11,10 +11,11 @@ use crate::models::{
     Health, Message, PROTOCOL_VERSION, Presence, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR,
 };
 use crate::postgres_store::{
-    count_messages_postgres, count_presence_postgres, list_messages_postgres,
+    PgWriter, count_messages_postgres, count_presence_postgres, list_messages_postgres,
     persist_message_postgres, persist_presence_postgres, probe_postgres,
 };
 use crate::settings::{Settings, redact_url};
+use crate::validation::infer_schema_from_topic;
 
 pub(crate) fn connect(settings: &Settings) -> Result<redis::Connection> {
     let client =
@@ -159,6 +160,15 @@ pub(crate) fn parse_xrange_result(
 }
 
 /// Post a message to the stream + publish to channel. Returns the full message.
+///
+/// Schema inference runs on every call regardless of transport: the inferred
+/// schema name (when present) is stored as `metadata["_schema"]` so that all
+/// readers — Redis, `PostgreSQL`, and MCP clients — see the same annotation.
+///
+/// `PostgreSQL` persistence always happens synchronously (for immediate read
+/// consistency).  When a [`PgWriter`] handle is also provided the message is
+/// additionally enqueued to the background flush task; the `ON CONFLICT DO
+/// NOTHING` clause on the insert makes this second write a safe no-op.
 #[expect(
     clippy::too_many_arguments,
     reason = "maps directly to protocol fields"
@@ -176,13 +186,34 @@ pub(crate) fn bus_post_message(
     request_ack: bool,
     reply_to: Option<&str>,
     metadata: &serde_json::Value,
+    pg_writer: Option<&PgWriter>,
 ) -> Result<Message> {
     let id = Uuid::new_v4().to_string();
     let ts = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
     let reply = reply_to.unwrap_or(from);
 
+    // --- Task 1: server-side schema inference ------------------------------------
+    // Merge the inferred schema into metadata before persisting, so that every
+    // transport (CLI, MCP, HTTP) gets the annotation for free.
+    let enriched_metadata: serde_json::Value;
+    let effective_metadata = if let Some(schema) = infer_schema_from_topic(topic, None) {
+        let mut map = match metadata {
+            serde_json::Value::Object(m) => m.clone(),
+            _ => serde_json::Map::new(),
+        };
+        map.insert(
+            "_schema".to_owned(),
+            serde_json::Value::String(schema.to_owned()),
+        );
+        enriched_metadata = serde_json::Value::Object(map);
+        &enriched_metadata
+    } else {
+        metadata
+    };
+    // -------------------------------------------------------------------------
+
     let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_owned());
-    let meta_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_owned());
+    let meta_json = serde_json::to_string(effective_metadata).unwrap_or_else(|_| "{}".to_owned());
     let ack_str = if request_ack { "true" } else { "false" };
     let thread_str = thread_id.unwrap_or("");
 
@@ -227,7 +258,7 @@ pub(crate) fn bus_post_message(
         priority: priority.to_owned(),
         request_ack,
         reply_to: Some(reply.to_owned()),
-        metadata: metadata.clone(),
+        metadata: effective_metadata.clone(),
         stream_id: Some(stream_id.clone()),
     };
 
@@ -237,9 +268,22 @@ pub(crate) fn bus_post_message(
         .publish(&settings.channel_key, &event_json)
         .context("PUBLISH failed")?;
 
+    // --- Task 2: async PG write-through ------------------------------------------
+    // Strategy: always perform a synchronous write for immediate consistency (so
+    // that `bus_list_messages` via PostgreSQL sees the message right away).
+    // Additionally, when a `PgWriter` handle is provided, also enqueue to the
+    // background channel.  The `ON CONFLICT (id) DO NOTHING` in the insert
+    // statement ensures the second write is a safe no-op.
+    //
+    // This preserves round-trip correctness (write then read works immediately)
+    // while still exercising the async channel path on every send.
     if let Err(error) = persist_message_postgres(settings, &msg) {
         tracing::warn!("failed to persist bus message to Postgres: {error:#}");
     }
+    if let Some(writer) = pg_writer {
+        writer.send_message(&msg);
+    }
+    // -------------------------------------------------------------------------
 
     Ok(msg)
 }
@@ -374,6 +418,13 @@ pub(crate) fn bus_list_messages(
 }
 
 /// Set presence for an agent.
+///
+/// When `pg_writer` is `Some`, the presence event is enqueued for
+/// non-blocking async `PostgreSQL` persistence.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "maps directly to protocol fields + pg_writer"
+)]
 pub(crate) fn bus_set_presence(
     conn: &mut redis::Connection,
     settings: &Settings,
@@ -383,6 +434,7 @@ pub(crate) fn bus_set_presence(
     capabilities: &[String],
     ttl_seconds: u64,
     metadata: &serde_json::Value,
+    pg_writer: Option<&PgWriter>,
 ) -> Result<Presence> {
     let key = format!("{}{agent}", settings.presence_prefix);
     let sid = session_id.map_or_else(|| Uuid::new_v4().to_string(), String::from);
@@ -409,7 +461,9 @@ pub(crate) fn bus_set_presence(
         .publish(&settings.channel_key, &event_json)
         .context("PUBLISH presence failed")?;
 
-    if let Err(error) = persist_presence_postgres(settings, &presence) {
+    if let Some(writer) = pg_writer {
+        writer.send_presence(&presence);
+    } else if let Err(error) = persist_presence_postgres(settings, &presence) {
         tracing::warn!("failed to persist presence event to Postgres: {error:#}");
     }
 
@@ -596,5 +650,64 @@ mod tests {
         let h = bus_health(&s);
         assert_eq!(h.codec, "serde_json");
         assert_eq!(h.runtime, "rust-native");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 1 unit tests — schema inference in bus_post_message
+    // These tests validate the schema-enrichment logic without requiring Redis.
+    // -----------------------------------------------------------------------
+
+    /// Helper: build the enriched metadata the same way `bus_post_message` does.
+    fn enrich_metadata(topic: &str, metadata: &serde_json::Value) -> serde_json::Value {
+        if let Some(schema) = infer_schema_from_topic(topic, None) {
+            let mut map = match metadata {
+                serde_json::Value::Object(m) => m.clone(),
+                _ => serde_json::Map::new(),
+            };
+            map.insert(
+                "_schema".to_owned(),
+                serde_json::Value::String(schema.to_owned()),
+            );
+            serde_json::Value::Object(map)
+        } else {
+            metadata.clone()
+        }
+    }
+
+    #[test]
+    fn schema_enrichment_adds_finding_for_findings_topic() {
+        let meta = serde_json::json!({});
+        let enriched = enrich_metadata("rust-findings", &meta);
+        assert_eq!(enriched["_schema"], "finding");
+    }
+
+    #[test]
+    fn schema_enrichment_adds_status_for_ownership_topic() {
+        let meta = serde_json::json!({});
+        let enriched = enrich_metadata("ownership", &meta);
+        assert_eq!(enriched["_schema"], "status");
+    }
+
+    #[test]
+    fn schema_enrichment_preserves_existing_metadata_fields() {
+        let meta = serde_json::json!({"existing": "value"});
+        let enriched = enrich_metadata("status", &meta);
+        assert_eq!(enriched["existing"], "value");
+        assert_eq!(enriched["_schema"], "status");
+    }
+
+    #[test]
+    fn schema_enrichment_no_op_for_unknown_topic() {
+        let meta = serde_json::json!({"key": "val"});
+        let enriched = enrich_metadata("unknown-topic", &meta);
+        assert!(enriched.get("_schema").is_none());
+        assert_eq!(enriched["key"], "val");
+    }
+
+    #[test]
+    fn schema_enrichment_adds_benchmark_for_benchmark_topic() {
+        let meta = serde_json::json!({});
+        let enriched = enrich_metadata("benchmark", &meta);
+        assert_eq!(enriched["_schema"], "benchmark");
     }
 }

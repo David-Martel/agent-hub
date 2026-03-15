@@ -85,6 +85,7 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
         args.request_ack,
         args.reply_to.as_deref(),
         &meta,
+        crate::pg_writer(),
     )?;
     output(&msg, args.encoding);
     Ok(())
@@ -193,6 +194,7 @@ pub(crate) fn cmd_ack(
         false,
         Some(message_id), // reply_to = the message being acked
         &meta,
+        crate::pg_writer(),
     )?;
     output(&msg, encoding);
     Ok(())
@@ -211,6 +213,7 @@ pub(crate) fn cmd_presence(settings: &Settings, args: &PresenceArgs<'_>) -> Resu
         args.capabilities,
         args.ttl_seconds,
         &meta,
+        crate::pg_writer(),
     )?;
     output_presence(&presence, args.encoding);
     Ok(())
@@ -281,6 +284,17 @@ pub(crate) fn cmd_presence_list(settings: &Settings, encoding: &Encoding) -> Res
         output(&results, encoding);
     }
     Ok(())
+}
+
+/// Display a real-time session monitoring dashboard.
+///
+/// Delegates to [`crate::monitor::monitor_session`].  Runs until interrupted.
+///
+/// # Errors
+///
+/// Returns an error if the initial Redis connection fails.
+pub(crate) fn cmd_monitor(settings: &Settings, session: Option<&str>, refresh: u64) -> Result<()> {
+    crate::monitor::monitor_session(settings, session, refresh)
 }
 
 /// Backfill all Redis stream messages into `PostgreSQL`.

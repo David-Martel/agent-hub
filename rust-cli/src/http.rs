@@ -144,6 +144,7 @@ pub(crate) async fn http_send_handler(
             request_ack,
             reply_to.as_deref(),
             &metadata,
+            crate::pg_writer(),
         )
     })
     .await
@@ -257,6 +258,7 @@ pub(crate) async fn http_ack_handler(
             false,
             Some(&message_id),
             &meta,
+            crate::pg_writer(),
         )
     })
     .await
@@ -327,6 +329,7 @@ pub(crate) async fn http_presence_set_handler(
             &capabilities,
             ttl,
             &metadata,
+            crate::pg_writer(),
         )
     })
     .await

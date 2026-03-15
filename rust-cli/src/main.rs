@@ -25,12 +25,16 @@ mod commands;
 mod http;
 mod journal;
 mod mcp;
+mod mcp_discovery;
 mod models;
+mod monitor;
 mod output;
 mod postgres_store;
 mod redis_bus;
 mod settings;
 mod validation;
+
+use std::sync::OnceLock;
 
 use anyhow::{Context as _, Result};
 use clap::Parser;
@@ -39,15 +43,29 @@ use rmcp::serve_server;
 
 use cli::{Cli, Cmd};
 use commands::{
-    PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_export, cmd_health, cmd_journal, cmd_presence,
-    cmd_presence_history, cmd_presence_list, cmd_prune, cmd_read, cmd_send, cmd_sync, cmd_watch,
+    PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_export, cmd_health, cmd_journal, cmd_monitor,
+    cmd_presence, cmd_presence_history, cmd_presence_list, cmd_prune, cmd_read, cmd_send, cmd_sync,
+    cmd_watch,
 };
 use http::start_http_server;
 use mcp::AgentBusMcpServer;
 use models::STARTUP_PRESENCE_TTL;
-use postgres_store::probe_postgres;
+use postgres_store::{PgWriter, probe_postgres};
 use redis_bus::{bus_post_message, bus_set_presence, connect};
 use settings::Settings;
+
+// ---------------------------------------------------------------------------
+// Section 8 – Global async PG writer (Task 3)
+// ---------------------------------------------------------------------------
+
+/// Process-lifetime [`PgWriter`] handle, initialized once before any transport
+/// starts.  Callers retrieve it via [`pg_writer()`].
+static PG_WRITER: OnceLock<PgWriter> = OnceLock::new();
+
+/// Returns a reference to the global [`PgWriter`], or `None` before init.
+pub(crate) fn pg_writer() -> Option<&'static PgWriter> {
+    PG_WRITER.get()
+}
 
 /// Use mimalloc for notable allocation performance gains (M-MIMALLOC-APPS).
 #[global_allocator]
@@ -69,6 +87,7 @@ fn maybe_announce_startup(settings: &Settings) {
     if probe_postgres(settings).0 == Some(true) {
         caps.push("postgres".to_owned());
     }
+    let writer = pg_writer();
     let _ = bus_set_presence(
         &mut conn,
         settings,
@@ -78,6 +97,7 @@ fn maybe_announce_startup(settings: &Settings) {
         &caps,
         STARTUP_PRESENCE_TTL,
         &meta,
+        writer,
     );
     let _ = bus_post_message(
         &mut conn,
@@ -96,6 +116,7 @@ fn maybe_announce_startup(settings: &Settings) {
         false,
         None,
         &meta,
+        writer,
     );
 }
 
@@ -119,6 +140,12 @@ async fn main() -> Result<()> {
 
     let settings = Settings::from_env();
     settings.validate()?;
+
+    // Initialize the global PgWriter before any transport starts.
+    // When database_url is absent the writer is still created but all writes
+    // are silently discarded by the background task.
+    let _ = PG_WRITER.set(PgWriter::spawn(settings.clone()));
+
     let cli = Cli::parse();
 
     match cli.command {
@@ -278,6 +305,13 @@ async fn main() -> Result<()> {
             ref encoding,
         } => {
             cmd_sync(&settings, limit, encoding)?;
+        }
+
+        Cmd::Monitor {
+            ref session,
+            refresh,
+        } => {
+            cmd_monitor(&settings, session.as_deref(), refresh)?;
         }
 
         Cmd::Serve {

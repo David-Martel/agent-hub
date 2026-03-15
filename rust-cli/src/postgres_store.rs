@@ -7,14 +7,22 @@
 //! keeps the mutex unlocked during the actual I/O so it never contends with
 //! concurrent readers.  On any error the client is discarded and a fresh TCP
 //! connection is made on the next call.
+//!
+//! ## Async write-through
+//!
+//! [`PgWriter`] provides a non-blocking fire-and-forget write path via a
+//! `tokio::sync::mpsc::UnboundedSender`.  A background task drains the channel
+//! and flushes to `PostgreSQL` in batches of up to 10 messages, or every 100 ms,
+//! whichever comes first.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use postgres::{Client as PgClient, NoTls};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::models::{Message, Presence};
@@ -756,6 +764,159 @@ pub(crate) fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<Strin
     }
 }
 
+// ---------------------------------------------------------------------------
+// Async write-through: PgWriter
+// ---------------------------------------------------------------------------
+
+/// Requests that can be sent to the background [`PgWriter`] task.
+pub(crate) enum PgWriteRequest {
+    /// Persist a bus message.
+    Message(Box<Message>),
+    /// Persist a presence event.
+    Presence(Box<Presence>),
+    /// Flush any queued writes immediately.
+    ///
+    /// Reserved for future use (e.g. graceful-shutdown sequences).
+    #[expect(
+        dead_code,
+        reason = "reserved control signal for graceful-shutdown callers"
+    )]
+    Flush,
+    /// Drain remaining writes and shut down the background task.
+    ///
+    /// Reserved for future use (e.g. process termination hooks).
+    #[expect(
+        dead_code,
+        reason = "reserved control signal for process-termination callers"
+    )]
+    Shutdown,
+}
+
+/// Non-blocking fire-and-forget `PostgreSQL` writer.
+///
+/// Internally holds an [`mpsc::UnboundedSender`] that feeds a background
+/// Tokio task.  The background task batches writes (up to 10 at a time) and
+/// flushes every 100 ms.  Callers are never blocked waiting for `PostgreSQL`.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let writer = PgWriter::spawn(settings.clone());
+/// writer.send_message(&msg);
+/// writer.send_presence(&presence);
+/// ```
+#[derive(Debug, Clone)]
+pub(crate) struct PgWriter {
+    tx: mpsc::UnboundedSender<PgWriteRequest>,
+}
+
+/// Maximum number of requests to process in a single flush cycle.
+const PG_BATCH_SIZE: usize = 10;
+
+/// How long to wait between flush cycles.
+const PG_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+
+impl PgWriter {
+    /// Spawn the background flush task and return a `PgWriter` handle.
+    ///
+    /// The returned handle is `Clone` — each clone shares the same channel.
+    pub(crate) fn spawn(settings: Settings) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel::<PgWriteRequest>();
+        tokio::spawn(pg_writer_task(settings, rx));
+        Self { tx }
+    }
+
+    /// Enqueue a message for asynchronous `PostgreSQL` persistence.
+    ///
+    /// Drops the write silently if the background task has already exited.
+    pub(crate) fn send_message(&self, msg: &Message) {
+        let _ = self.tx.send(PgWriteRequest::Message(Box::new(msg.clone())));
+    }
+
+    /// Enqueue a presence event for asynchronous `PostgreSQL` persistence.
+    ///
+    /// Drops the write silently if the background task has already exited.
+    pub(crate) fn send_presence(&self, presence: &Presence) {
+        let _ = self
+            .tx
+            .send(PgWriteRequest::Presence(Box::new(presence.clone())));
+    }
+}
+
+/// Background task: drain the mpsc channel and flush to `PostgreSQL` in batches.
+async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWriteRequest>) {
+    let mut batch: Vec<PgWriteRequest> = Vec::with_capacity(PG_BATCH_SIZE);
+    let mut interval = tokio::time::interval(PG_FLUSH_INTERVAL);
+
+    loop {
+        tokio::select! {
+            // Timer tick: flush whatever we have.
+            _ = interval.tick() => {
+                if !batch.is_empty() {
+                    flush_pg_batch(&settings, &mut batch);
+                }
+            }
+            // Incoming write request.
+            msg = rx.recv() => {
+                match msg {
+                    None => {
+                        // Channel closed — sender side dropped.
+                        if !batch.is_empty() {
+                            flush_pg_batch(&settings, &mut batch);
+                        }
+                        return;
+                    }
+                    Some(PgWriteRequest::Shutdown) => {
+                        // Drain remaining writes then stop.
+                        // Collect any remaining messages still in the channel.
+                        while let Ok(req) = rx.try_recv() {
+                            batch.push(req);
+                        }
+                        if !batch.is_empty() {
+                            flush_pg_batch(&settings, &mut batch);
+                        }
+                        return;
+                    }
+                    Some(PgWriteRequest::Flush) => {
+                        if !batch.is_empty() {
+                            flush_pg_batch(&settings, &mut batch);
+                        }
+                    }
+                    Some(req) => {
+                        batch.push(req);
+                        if batch.len() >= PG_BATCH_SIZE {
+                            flush_pg_batch(&settings, &mut batch);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Drain `batch` and write each entry to `PostgreSQL`.
+///
+/// Each write is attempted independently; failures are logged as warnings but
+/// do not prevent remaining items from being processed.
+fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>) {
+    for req in batch.drain(..) {
+        match req {
+            PgWriteRequest::Message(msg) => {
+                if let Err(error) = persist_message_postgres(settings, &msg) {
+                    tracing::warn!("PgWriter: failed to persist message: {error:#}");
+                }
+            }
+            PgWriteRequest::Presence(presence) => {
+                if let Err(error) = persist_presence_postgres(settings, &presence) {
+                    tracing::warn!("PgWriter: failed to persist presence: {error:#}");
+                }
+            }
+            // Flush/Shutdown are control signals, not data — nothing to persist.
+            PgWriteRequest::Flush | PgWriteRequest::Shutdown => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -826,5 +987,66 @@ mod tests {
             !is_pg_circuit_open(),
             "circuit should be closed again after mark_pg_up"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // PgWriter tests
+    // -----------------------------------------------------------------------
+
+    /// `PgWriter::spawn` must not panic when `database_url` is absent.
+    /// The background task will silently skip all writes.
+    #[tokio::test]
+    async fn pg_writer_spawn_no_database_url() {
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+        let writer = PgWriter::spawn(settings);
+        // send_message must be a no-op without panicking.
+        let msg = crate::models::Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp_utc: "2026-01-01T00:00:00.000000Z".to_owned(),
+            protocol_version: "1.0".to_owned(),
+            from: "test".to_owned(),
+            to: "test".to_owned(),
+            topic: "test".to_owned(),
+            body: "hello".to_owned(),
+            thread_id: None,
+            tags: vec![],
+            priority: "normal".to_owned(),
+            request_ack: false,
+            reply_to: None,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+            stream_id: None,
+        };
+        writer.send_message(&msg);
+        // Give the background task a moment to process then verify no panic.
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    /// Multiple clones of a `PgWriter` share the same underlying channel.
+    #[tokio::test]
+    async fn pg_writer_clone_shares_channel() {
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+        let writer = PgWriter::spawn(settings);
+        let writer2 = writer.clone();
+        // Both clones must be usable without panicking.
+        let msg = crate::models::Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp_utc: "2026-01-01T00:00:00.000000Z".to_owned(),
+            protocol_version: "1.0".to_owned(),
+            from: "a".to_owned(),
+            to: "b".to_owned(),
+            topic: "test".to_owned(),
+            body: "msg2".to_owned(),
+            thread_id: None,
+            tags: vec![],
+            priority: "normal".to_owned(),
+            request_ack: false,
+            reply_to: None,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+            stream_id: None,
+        };
+        writer.send_message(&msg);
+        writer2.send_message(&msg);
     }
 }

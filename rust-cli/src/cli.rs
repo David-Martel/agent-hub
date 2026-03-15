@@ -299,6 +299,28 @@ pub(crate) enum Cmd {
         encoding: Encoding,
     },
 
+    /// Real-time monitoring of active agent sessions.
+    #[command(
+        long_about = "Render a continuously-refreshing terminal dashboard showing per-agent\n\
+            message counts, completion state, and aggregate finding severity counts\n\
+            (CRITICAL/HIGH/MEDIUM/LOW).\n\n\
+            Filter by session tag to focus on a single coordination session.\n\
+            Runs until interrupted (Ctrl-C)."
+    )]
+    Monitor {
+        #[arg(
+            long,
+            help = "Filter by session tag (e.g. 'session:framework-upgrade')"
+        )]
+        session: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 5,
+            help = "Refresh interval in seconds [1-3600]"
+        )]
+        refresh: u64,
+    },
+
     /// Run as an MCP server (stdio transport) or HTTP REST server.
     #[command(
         long_about = "Start a Model Context Protocol (MCP) server on stdio, or an HTTP REST server.\n\n\
