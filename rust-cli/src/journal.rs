@@ -106,7 +106,51 @@ pub(crate) fn export_journal(messages: &[Message], output_path: &Path) -> Result
         writeln!(file, "{line}").context("failed to write journal entry")?;
     }
 
+    maybe_deploy_protocol_doc(output_path);
+
     Ok(new_msgs.len())
+}
+
+/// Resolve the user's home directory from environment variables.
+///
+/// Tries `USERPROFILE` (Windows) then `HOME` (Unix/WSL).
+fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .ok()
+        .map(std::path::PathBuf::from)
+}
+
+/// Deploy `AGENT_COMMUNICATIONS.md` to the nearest repo root if absent.
+///
+/// Walks up from `output_path` looking for a `.git` directory to identify
+/// the repo root. When found and `AGENT_COMMUNICATIONS.md` is missing, it
+/// copies the canonical file from
+/// `~/.codex/tools/agent-bus-mcp/AGENT_COMMUNICATIONS.md`.
+///
+/// Failures are silently ignored — the journal export should not fail because
+/// of a missing or unwritable documentation file.
+fn maybe_deploy_protocol_doc(output_path: &Path) {
+    let mut dir = output_path.parent();
+    while let Some(d) = dir {
+        if d.join(".git").exists() {
+            let doc_path = d.join("AGENT_COMMUNICATIONS.md");
+            if !doc_path.exists() {
+                let canonical = home_dir()
+                    .map(|h| h.join(".codex/tools/agent-bus-mcp/AGENT_COMMUNICATIONS.md"));
+                if let Some(src) = canonical {
+                    if src.exists() && std::fs::copy(&src, &doc_path).is_ok() {
+                        tracing::info!(
+                            "Deployed AGENT_COMMUNICATIONS.md to {}",
+                            doc_path.display()
+                        );
+                    }
+                }
+            }
+            break;
+        }
+        dir = d.parent();
+    }
 }
 
 #[cfg(test)]

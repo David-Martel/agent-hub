@@ -13,7 +13,9 @@ use crate::redis_bus::{
     bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence, connect,
 };
 use crate::settings::Settings;
-use crate::validation::{validate_message_schema, validate_priority};
+use crate::validation::{
+    auto_fit_schema, infer_schema_from_topic, validate_message_schema, validate_priority,
+};
 
 /// Tool input schemas, separated from execution logic.
 mod schemas {
@@ -289,9 +291,11 @@ impl AgentBusMcpServer {
                 let reply_to = Self::get_str(args, "reply_to");
                 let metadata = Self::get_object_or_empty(args, "metadata");
                 let schema = Self::get_str(args, "schema");
+                let effective_schema = infer_schema_from_topic(topic, schema);
 
                 validate_priority(priority)?;
-                validate_message_schema(body, schema)?;
+                let fitted_body = auto_fit_schema(body, effective_schema);
+                validate_message_schema(&fitted_body, effective_schema)?;
                 let mut conn = connect(settings)?;
                 let msg = bus_post_message(
                     &mut conn,
@@ -299,7 +303,7 @@ impl AgentBusMcpServer {
                     sender,
                     recipient,
                     topic,
-                    body,
+                    &fitted_body,
                     thread_id,
                     &tags,
                     priority,

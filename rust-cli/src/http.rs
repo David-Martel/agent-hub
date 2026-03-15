@@ -19,7 +19,9 @@ use crate::redis_bus::{
     RedisPool, bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence,
 };
 use crate::settings::Settings;
-use crate::validation::{validate_message_schema, validate_priority};
+use crate::validation::{
+    auto_fit_schema, infer_schema_from_topic, validate_message_schema, validate_priority,
+};
 
 /// Shared state injected into every axum handler.
 ///
@@ -113,10 +115,10 @@ pub(crate) async fn http_send_handler(
         return Err(bad_request("body must not be empty"));
     }
     validate_priority(&req.priority).map_err(|e| bad_request(format!("{e:#}")))?;
-    if let Some(ref schema) = req.schema {
-        validate_message_schema(&body_text, Some(schema))
-            .map_err(|e| bad_request(format!("schema validation failed: {e:#}")))?;
-    }
+    let effective_schema = infer_schema_from_topic(&topic, req.schema.as_deref());
+    let fitted_body = auto_fit_schema(&body_text, effective_schema);
+    validate_message_schema(&fitted_body, effective_schema)
+        .map_err(|e| bad_request(format!("schema validation failed: {e:#}")))?;
 
     let metadata = req
         .metadata
@@ -135,7 +137,7 @@ pub(crate) async fn http_send_handler(
             &sender,
             &recipient,
             &topic,
-            &body_text,
+            &fitted_body,
             thread_id.as_deref(),
             &tags,
             &priority,

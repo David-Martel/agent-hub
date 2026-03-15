@@ -67,6 +67,62 @@ pub(crate) fn infer_schema_from_topic<'a>(
     }
 }
 
+/// Auto-fit a message body to match the required schema format.
+///
+/// Returns the body unchanged when no schema is specified, or a cleaned
+/// version that satisfies schema validation. This allows callers to send
+/// plain-text bodies against schemas that have structural requirements
+/// without failing validation.
+///
+/// # Examples
+///
+/// ```
+/// use agent_bus::validation::auto_fit_schema;
+/// let fitted = auto_fit_schema("memory leak in allocator", Some("finding"));
+/// assert!(fitted.contains("FINDING:"));
+/// assert!(fitted.contains("SEVERITY:"));
+/// ```
+pub(crate) fn auto_fit_schema(body: &str, schema: Option<&str>) -> String {
+    let Some(schema) = schema else {
+        return body.to_owned();
+    };
+    match schema {
+        SCHEMA_FINDING => auto_fit_finding(body),
+        SCHEMA_BENCHMARK => auto_fit_benchmark(body),
+        // status and unknown schemas: pass body through unchanged
+        _ => body.to_owned(),
+    }
+}
+
+fn auto_fit_finding(body: &str) -> String {
+    // If body already has FINDING: or FIX or COMPLETE, return as-is.
+    if body.contains("FINDING:") || body.contains("FIX") || body.contains("COMPLETE") {
+        return body.to_owned();
+    }
+    // Detect severity from content keywords.
+    let severity = if body.to_uppercase().contains("CRITICAL") {
+        "CRITICAL"
+    } else if body.to_uppercase().contains("HIGH")
+        || body.to_uppercase().contains("SECURITY")
+        || body.to_uppercase().contains("VULNERABILITY")
+    {
+        "HIGH"
+    } else if body.to_uppercase().contains("MEDIUM") || body.to_uppercase().contains("WARNING") {
+        "MEDIUM"
+    } else {
+        "LOW"
+    };
+    format!("FINDING: {body}\nSEVERITY: {severity}")
+}
+
+fn auto_fit_benchmark(body: &str) -> String {
+    // If body already has key=value metrics, return as-is.
+    if body.contains('=') {
+        return body.to_owned();
+    }
+    format!("summary={body}")
+}
+
 pub(crate) fn validate_message_schema(body: &str, schema: Option<&str>) -> Result<()> {
     let Some(schema) = schema else {
         return Ok(());
@@ -256,5 +312,85 @@ mod tests {
     #[test]
     fn no_schema_always_passes() {
         assert!(validate_message_schema("anything", None).is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // auto_fit_schema tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn auto_fit_schema_no_schema_returns_body_unchanged() {
+        assert_eq!(auto_fit_schema("hello", None), "hello");
+    }
+
+    #[test]
+    fn auto_fit_schema_status_returns_body_unchanged() {
+        assert_eq!(
+            auto_fit_schema("STATUS: online", Some("status")),
+            "STATUS: online"
+        );
+    }
+
+    #[test]
+    fn auto_fit_schema_unknown_schema_returns_body_unchanged() {
+        assert_eq!(auto_fit_schema("body", Some("unknown")), "body");
+    }
+
+    #[test]
+    fn auto_fit_schema_finding_wraps_plain_body() {
+        let result = auto_fit_schema("memory leak detected", Some("finding"));
+        assert!(result.contains("FINDING:"), "must inject FINDING:");
+        assert!(result.contains("SEVERITY:"), "must inject SEVERITY:");
+        // Resulting body must pass validation.
+        assert!(validate_message_schema(&result, Some("finding")).is_ok());
+    }
+
+    #[test]
+    fn auto_fit_schema_finding_detects_critical_severity() {
+        let result = auto_fit_schema("critical failure in core", Some("finding"));
+        assert!(result.contains("SEVERITY: CRITICAL"));
+    }
+
+    #[test]
+    fn auto_fit_schema_finding_detects_high_severity_security() {
+        let result = auto_fit_schema("security vulnerability found", Some("finding"));
+        assert!(result.contains("SEVERITY: HIGH"));
+    }
+
+    #[test]
+    fn auto_fit_schema_finding_detects_medium_severity_warning() {
+        let result = auto_fit_schema("warning: possible overflow", Some("finding"));
+        assert!(result.contains("SEVERITY: MEDIUM"));
+    }
+
+    #[test]
+    fn auto_fit_schema_finding_defaults_to_low_severity() {
+        let result = auto_fit_schema("minor nit in formatting", Some("finding"));
+        assert!(result.contains("SEVERITY: LOW"));
+    }
+
+    #[test]
+    fn auto_fit_schema_finding_already_valid_passthrough() {
+        let body = "FINDING: pre-formatted\nSEVERITY: HIGH";
+        assert_eq!(auto_fit_schema(body, Some("finding")), body);
+    }
+
+    #[test]
+    fn auto_fit_schema_finding_fix_passthrough() {
+        let body = "FIX applied to issue";
+        assert_eq!(auto_fit_schema(body, Some("finding")), body);
+    }
+
+    #[test]
+    fn auto_fit_schema_benchmark_wraps_plain_body() {
+        let result = auto_fit_schema("test run finished", Some("benchmark"));
+        assert!(result.contains('='), "must inject key=value pair");
+        assert!(validate_message_schema(&result, Some("benchmark")).is_ok());
+    }
+
+    #[test]
+    fn auto_fit_schema_benchmark_already_valid_passthrough() {
+        let body = "duration=5.2s msgs=100";
+        assert_eq!(auto_fit_schema(body, Some("benchmark")), body);
     }
 }
