@@ -8,9 +8,11 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
+    response::sse::{Event, Sse},
     routing::{get, post, put},
 };
 use serde::Deserialize;
+use tokio_stream::wrappers::ReceiverStream;
 
 use crate::models::MAX_HISTORY_MINUTES;
 use crate::redis_bus::{
@@ -335,6 +337,108 @@ pub(crate) async fn http_presence_list_handler(
     Ok(Json(serde_json::to_value(&results).unwrap_or_default()))
 }
 
+// --- GET /events -----------------------------------------------------------
+
+/// Query parameters for `GET /events`.
+#[derive(Debug, Deserialize)]
+struct SseQuery {
+    agent: Option<String>,
+    #[serde(default = "default_true")]
+    broadcast: bool,
+}
+
+/// Stream Redis Pub/Sub events to the client as Server-Sent Events.
+///
+/// Filters by `agent` when specified; includes broadcast messages when `broadcast=true`.
+/// The stream runs until the client disconnects or the Redis connection drops.
+async fn http_sse_handler(
+    State(state): State<AppState>,
+    Query(params): Query<SseQuery>,
+) -> Sse<ReceiverStream<Result<Event, std::convert::Infallible>>> {
+    let agent_filter = params.agent;
+    let include_broadcast = params.broadcast;
+    let settings = (*state.settings).clone();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
+
+    tokio::task::spawn_blocking(move || {
+        let Ok(client) = redis::Client::open(settings.redis_url.as_str()) else {
+            return;
+        };
+        let Ok(mut conn) = client.get_connection() else {
+            return;
+        };
+        let mut pubsub = conn.as_pubsub();
+        if pubsub.subscribe(&settings.channel_key).is_err() {
+            return;
+        }
+
+        while let Ok(msg) = pubsub.get_message() {
+            let Ok(payload): Result<String, _> = msg.get_payload() else {
+                continue;
+            };
+
+            // Apply agent filter when one was provided.
+            if let Some(ref filter) = agent_filter {
+                if let Ok(event_val) = serde_json::from_str::<serde_json::Value>(&payload) {
+                    let recipient = event_val
+                        .pointer("/message/to")
+                        .or_else(|| event_val.pointer("/presence/agent"))
+                        .and_then(|v| v.as_str());
+                    let matches = recipient == Some(filter.as_str())
+                        || (include_broadcast && recipient == Some("all"));
+                    if !matches {
+                        continue;
+                    }
+                }
+            }
+
+            let sse_event = Event::default().data(payload);
+            if tx.blocking_send(Ok(sse_event)).is_err() {
+                break; // client disconnected
+            }
+        }
+    });
+
+    Sse::new(ReceiverStream::new(rx))
+}
+
+// --- GET /presence/history -------------------------------------------------
+
+/// Query parameters for `GET /presence/history`.
+#[derive(Debug, Deserialize)]
+struct HttpPresenceHistoryQuery {
+    agent: Option<String>,
+    #[serde(default = "default_since_minutes")]
+    since: u64,
+    #[serde(default = "default_limit")]
+    limit: usize,
+}
+
+async fn http_presence_history_handler(
+    State(state): State<AppState>,
+    Query(params): Query<HttpPresenceHistoryQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let since = params.since.min(MAX_HISTORY_MINUTES);
+    let limit = params.limit.clamp(1, 500);
+    let agent = params.agent;
+    let settings = Arc::clone(&state.settings);
+
+    let result = tokio::task::spawn_blocking(move || {
+        crate::postgres_store::list_presence_history_postgres(
+            &settings,
+            agent.as_deref(),
+            since,
+            limit,
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
+}
+
 // --- Server bootstrap ------------------------------------------------------
 
 pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<()> {
@@ -350,6 +454,8 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         .route("/messages/{id}/ack", post(http_ack_handler))
         .route("/presence/{agent}", put(http_presence_set_handler))
         .route("/presence", get(http_presence_list_handler))
+        .route("/presence/history", get(http_presence_history_handler))
+        .route("/events", get(http_sse_handler))
         .with_state(state);
 
     let addr = format!("{bind_host}:{port}");

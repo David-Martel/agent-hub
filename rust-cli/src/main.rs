@@ -38,8 +38,8 @@ use rmcp::serve_server;
 
 use cli::{Cli, Cmd};
 use commands::{
-    PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_health, cmd_presence, cmd_presence_list,
-    cmd_read, cmd_send, cmd_watch,
+    PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_export, cmd_health, cmd_presence,
+    cmd_presence_history, cmd_presence_list, cmd_prune, cmd_read, cmd_send, cmd_watch,
 };
 use http::start_http_server;
 use mcp::AgentBusMcpServer;
@@ -220,6 +220,37 @@ async fn main() -> Result<()> {
 
         Cmd::PresenceList { ref encoding } => {
             cmd_presence_list(&settings, encoding)?;
+        }
+
+        Cmd::Prune {
+            older_than_days,
+            ref encoding,
+        } => {
+            cmd_prune(&settings, older_than_days, encoding)?;
+        }
+
+        Cmd::Export {
+            ref agent,
+            ref from_agent,
+            since_minutes,
+            limit,
+        } => {
+            cmd_export(
+                &settings,
+                agent.as_deref(),
+                from_agent.as_deref(),
+                since_minutes,
+                limit,
+            )?;
+        }
+
+        Cmd::PresenceHistory {
+            ref agent,
+            since_minutes,
+            limit,
+            ref encoding,
+        } => {
+            cmd_presence_history(&settings, agent.as_deref(), since_minutes, limit, encoding)?;
         }
 
         Cmd::Serve {

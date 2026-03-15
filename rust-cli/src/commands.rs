@@ -209,6 +209,60 @@ pub(crate) fn cmd_presence(settings: &Settings, args: &PresenceArgs<'_>) -> Resu
     Ok(())
 }
 
+pub(crate) fn cmd_prune(
+    settings: &Settings,
+    older_than_days: u64,
+    encoding: &Encoding,
+) -> Result<()> {
+    let msgs = crate::postgres_store::prune_old_messages(settings, older_than_days)?;
+    let presence = crate::postgres_store::prune_old_presence(settings, older_than_days)?;
+    let result = serde_json::json!({
+        "messages_deleted": msgs,
+        "presence_events_deleted": presence,
+        "older_than_days": older_than_days,
+    });
+    output(&result, encoding);
+    Ok(())
+}
+
+pub(crate) fn cmd_export(
+    settings: &Settings,
+    agent: Option<&str>,
+    from_agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+) -> Result<()> {
+    let msgs = bus_list_messages(settings, agent, from_agent, since_minutes, limit, true)?;
+    for msg in &msgs {
+        println!("{}", serde_json::to_string(msg).unwrap_or_default());
+    }
+    eprintln!("Exported {} messages", msgs.len());
+    Ok(())
+}
+
+pub(crate) fn cmd_presence_history(
+    settings: &Settings,
+    agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+    encoding: &Encoding,
+) -> Result<()> {
+    let events = crate::postgres_store::list_presence_history_postgres(
+        settings,
+        agent,
+        since_minutes,
+        limit,
+    )?;
+    if matches!(encoding, Encoding::Human) {
+        for p in &events {
+            output_presence(p, encoding);
+        }
+    } else {
+        output(&events, encoding);
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_presence_list(settings: &Settings, encoding: &Encoding) -> Result<()> {
     let mut conn = connect(settings)?;
     let results = bus_list_presence(&mut conn, settings)?;

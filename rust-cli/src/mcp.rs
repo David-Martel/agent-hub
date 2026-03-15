@@ -29,9 +29,7 @@ mod schemas {
         if !required.is_empty() {
             schema.insert(
                 "required".to_owned(),
-                serde_json::Value::Array(
-                    required.iter().map(|s| serde_json::json!(s)).collect(),
-                ),
+                serde_json::Value::Array(required.iter().map(|s| serde_json::json!(s)).collect()),
             );
         }
         Arc::new(schema)
@@ -100,6 +98,17 @@ mod schemas {
     pub(super) fn list_presence() -> Arc<serde_json::Map<String, serde_json::Value>> {
         schema_for(serde_json::json!({}), &[])
     }
+
+    pub(super) fn list_presence_history() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "agent":         {"type": "string"},
+                "since_minutes": {"type": "integer", "minimum": 1, "maximum": 10080},
+                "limit":         {"type": "integer", "minimum": 1, "maximum": 500}
+            }),
+            &[],
+        )
+    }
 }
 
 /// MCP server handler that exposes agent-bus operations as MCP tools.
@@ -147,6 +156,11 @@ impl AgentBusMcpServer {
                 "list_presence",
                 "List all active agent presence records.",
                 schemas::list_presence(),
+            ),
+            Tool::new(
+                "list_presence_history",
+                "Query PostgreSQL for historical presence events within a time window.",
+                schemas::list_presence_history(),
             ),
         ]
     }
@@ -243,7 +257,7 @@ impl AgentBusMcpServer {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "match on 6 tool names, each short — extracting further would reduce clarity"
+        reason = "match on 7 tool names, each short — extracting further would reduce clarity"
     )]
     fn handle_tool_call_inner(
         &self,
@@ -366,6 +380,20 @@ impl AgentBusMcpServer {
                 Ok(serde_json::to_value(&results)?)
             }
 
+            "list_presence_history" => {
+                let agent = Self::get_str(args, "agent");
+                let since_minutes = Self::get_u64_or(args, "since_minutes", 1440);
+                let limit = Self::get_usize_or(args, "limit", 50);
+
+                let events = crate::postgres_store::list_presence_history_postgres(
+                    settings,
+                    agent,
+                    since_minutes,
+                    limit,
+                )?;
+                Ok(serde_json::to_value(&events)?)
+            }
+
             other => Err(anyhow!("unknown tool: {other}")),
         }
     }
@@ -424,7 +452,7 @@ mod tests {
     #[test]
     fn tool_list_has_expected_count() {
         let tools = AgentBusMcpServer::tool_list();
-        assert_eq!(tools.len(), 6, "expected 6 MCP tools");
+        assert_eq!(tools.len(), 7, "expected 7 MCP tools");
     }
 
     #[test]
@@ -437,5 +465,6 @@ mod tests {
         assert!(names.iter().any(|n| n == "ack_message"));
         assert!(names.iter().any(|n| n == "set_presence"));
         assert!(names.iter().any(|n| n == "list_presence"));
+        assert!(names.iter().any(|n| n == "list_presence_history"));
     }
 }

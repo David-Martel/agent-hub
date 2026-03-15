@@ -371,6 +371,114 @@ pub(crate) fn count_presence_postgres(settings: &Settings) -> Option<i64> {
     .flatten()
 }
 
+/// Delete messages older than `older_than_days` days from `PostgreSQL`.
+///
+/// Returns the number of rows deleted, or `0` if `PostgreSQL` is not configured.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub(crate) fn prune_old_messages(settings: &Settings, older_than_days: u64) -> Result<u64> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = connect_postgres(settings)? else {
+            return Ok(0);
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+        let days = i64::try_from(older_than_days).context("days exceeds i64")?;
+        let rows = client.execute(
+            &format!(
+                "delete from {} where timestamp_utc < now() - ($1::bigint * interval '1 day')",
+                settings.message_table
+            ),
+            &[&days],
+        )?;
+        Ok(rows)
+    })
+}
+
+/// Delete presence events older than `older_than_days` days from `PostgreSQL`.
+///
+/// Returns the number of rows deleted, or `0` if `PostgreSQL` is not configured.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub(crate) fn prune_old_presence(settings: &Settings, older_than_days: u64) -> Result<u64> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = connect_postgres(settings)? else {
+            return Ok(0);
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+        let days = i64::try_from(older_than_days).context("days exceeds i64")?;
+        let rows = client.execute(
+            &format!(
+                "delete from {} where timestamp_utc < now() - ($1::bigint * interval '1 day')",
+                settings.presence_event_table
+            ),
+            &[&days],
+        )?;
+        Ok(rows)
+    })
+}
+
+fn row_to_presence(row: &postgres::Row) -> Presence {
+    Presence {
+        agent: row.get("agent"),
+        status: row.get("status"),
+        protocol_version: row.get("protocol_version"),
+        timestamp_utc: row
+            .get::<_, DateTime<Utc>>("timestamp_utc")
+            .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+            .to_string(),
+        session_id: row.get("session_id"),
+        capabilities: parse_tags(&row.get::<_, serde_json::Value>("capabilities")),
+        metadata: row.get("metadata"),
+        #[expect(
+            clippy::cast_sign_loss,
+            reason = "ttl_seconds stored as i64 in PostgreSQL; negative values treated as 0"
+        )]
+        ttl_seconds: row.get::<_, i64>("ttl_seconds").max(0) as u64,
+    }
+}
+
+/// Query historical presence events from `PostgreSQL`.
+///
+/// Returns up to `limit` records within the `since_minutes` window, newest first.
+/// Returns an empty `Vec` if `PostgreSQL` is not configured.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub(crate) fn list_presence_history_postgres(
+    settings: &Settings,
+    agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+) -> Result<Vec<Presence>> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = connect_postgres(settings)? else {
+            return Ok(Vec::new());
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+        let since_minutes = i64::try_from(since_minutes).context("since_minutes exceeds i64")?;
+        let limit = i64::try_from(limit).context("limit exceeds i64")?;
+        let agent_filter = agent.map(str::to_owned);
+        let rows = client.query(
+            &format!(
+                "select timestamp_utc, protocol_version, agent, status, session_id, capabilities, metadata, ttl_seconds \
+                 from {} \
+                 where timestamp_utc >= now() - ($1::bigint * interval '1 minute') \
+                   and ($2::text is null or agent = $2) \
+                 order by timestamp_utc desc \
+                 limit $3",
+                settings.presence_event_table
+            ),
+            &[&since_minutes, &agent_filter, &limit],
+        )?;
+        Ok(rows.iter().map(row_to_presence).collect())
+    })
+}
+
 pub(crate) fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<String>, bool) {
     if settings.database_url.is_none() {
         return (None, None, false);

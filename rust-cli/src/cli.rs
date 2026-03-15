@@ -210,6 +210,51 @@ pub(crate) enum Cmd {
         encoding: Encoding,
     },
 
+    /// Prune old messages and presence events from `PostgreSQL`.
+    #[command(
+        long_about = "Delete messages and presence events older than N days from PostgreSQL.\n\
+        Useful for managing storage growth in long-running deployments."
+    )]
+    Prune {
+        #[arg(long, default_value_t = 30, help = "Delete records older than N days")]
+        older_than_days: u64,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Export messages as NDJSON (one JSON object per line).
+    #[command(long_about = "Export messages to stdout as newline-delimited JSON.\n\
+        Useful for backup, recovery, and analysis workflows.")]
+    Export {
+        #[arg(long, help = "Filter by recipient agent")]
+        agent: Option<String>,
+        #[arg(long, help = "Filter by sender")]
+        from_agent: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 10080,
+            help = "Time window in minutes [max 10080 = 7 days]"
+        )]
+        since_minutes: u64,
+        #[arg(long, default_value_t = 10000, help = "Max messages to export")]
+        limit: usize,
+    },
+
+    /// List historical presence events from `PostgreSQL`.
+    #[command(long_about = "Query PostgreSQL for historical presence events.\n\
+        Unlike presence-list (which shows current TTL-based state from Redis),\n\
+        this shows the full history of presence changes.")]
+    PresenceHistory {
+        #[arg(long, help = "Filter by agent ID")]
+        agent: Option<String>,
+        #[arg(long, default_value_t = 1440, help = "Time window in minutes")]
+        since_minutes: u64,
+        #[arg(long, default_value_t = 50, help = "Max records")]
+        limit: usize,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
     /// Run as an MCP server (stdio transport) or HTTP REST server.
     #[command(
         long_about = "Start a Model Context Protocol (MCP) server on stdio, or an HTTP REST server.\n\n\
