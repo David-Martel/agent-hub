@@ -12,8 +12,10 @@ dependencies = [
   "redis>=6.4.0",
 ]
 
-[project.scripts]
-agent-bus-mcp = "agent_bus_mcp.cli:main"
+# CLI entry point removed — use ~/bin/agent-bus.exe (Rust) instead.
+# Python package retained for PyO3 codec extension and test suite only.
+# [project.scripts]
+# agent-bus-mcp = "agent_bus_mcp.cli:main"
 
 [dependency-groups]
 dev = [
