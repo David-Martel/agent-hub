@@ -88,8 +88,10 @@
 ### P6 Learnings from multi-repo deployment (finance-warehouse, stm32-merge)
 
 **Bus behavior fixes (from live observation):**
-- [ ] **Broadcast inclusion bug**: Messages `to: all` don't appear in `list_messages(agent=claude)` via HTTP GET — the `include_broadcast` parameter defaults to true on CLI but the HTTP `broadcast` query param may not be checked. Finance-warehouse orchestrator couldn't see hub-admin messages sent to `all`. VERIFY AND FIX.
-- [ ] **Auto-schema inference from topic**: Agents forget to set schema. Infer from topic name: `*-findings` → `finding`, `status`/`ownership`/`coordination` → `status`, `benchmark` → `benchmark`. Apply in `bus_post_message`.
+- [x] **Broadcast inclusion bug**: Investigated — HTTP broadcast param defaults correctly. Issue was timing (message arrived after orchestrator's last read). Documented workaround: send to specific agent instead of `all`.
+- [x] **Auto-schema inference from topic**: `infer_schema_from_topic()` in validation.rs, wired into CLI, MCP, and HTTP paths. `*-findings` → `finding`, `status`/`ownership`/`coordination` → `status`, `benchmark` → `benchmark`.
+- [x] **Schema auto-fitter**: `auto_fit_schema()` wraps plain bodies with FINDING:/SEVERITY: headers, detects severity from keywords (CRITICAL/HIGH/MEDIUM/LOW). 12 new tests.
+- [x] **Auto-deploy AGENT_COMMUNICATIONS.md**: `journal.rs` deploys protocol doc to repo root on first journal export if missing.
 - [ ] **Ownership conflict detection**: When an agent posts `topic=ownership`, the bus should track claimed files. Subsequent edits to claimed files by OTHER agents should generate a warning.
 
 **Performance and reliability:**
