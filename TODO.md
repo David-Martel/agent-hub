@@ -38,17 +38,18 @@
 - [ ] Add index review based on actual query plans once message volume is non-trivial.
 
 ### P3 Architecture
-- [ ] Split `rust-cli/src/main.rs` into modules:
+- [x] Split `rust-cli/src/main.rs` into modules:
   - `settings.rs`
   - `models.rs`
   - `redis_bus.rs`
   - `postgres_store.rs`
   - `output.rs`
   - `cli.rs`
+  - `commands.rs`
+  - `validation.rs`
   - `mcp.rs`
   - `http.rs`
-  - `service.rs`
-- [ ] Move shared request validation and JSON argument parsing into reusable helpers.
+- [x] Move shared request validation and JSON argument parsing into reusable helpers.
 - [ ] Isolate MCP tool schemas from tool execution logic.
 - [ ] Add an integration-test harness for live Redis/PostgreSQL behavior under `rust-cli/tests/`.
 

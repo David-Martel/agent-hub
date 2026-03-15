@@ -40,22 +40,21 @@ pwsh -NoLogo -NoProfile -File scripts/build-native-codec.ps1 -Release
 
 ## Architecture
 
-The entire Rust implementation lives in a single file `rust-cli/src/main.rs` (~2700 LOC), organized into numbered sections:
+The Rust implementation (`rust-cli/src/`, ~2760 LOC) is split into focused modules:
 
-| Section | Purpose |
-|---------|---------|
-| 1 – Settings | `Settings::from_env()` reads all `AGENT_BUS_*` environment variables |
-| 2 – Models | `Message`, `Presence`, `Health` structs (serde) |
-| 3 – Bus | Redis + PostgreSQL operations: connect, send, read, health, presence, pub/sub, persistent storage |
-| 4 – Encoding | Four output modes: `json`, `compact`, `minimal`, `human` (table) |
-| 5 – CLI | Clap parser with 8 subcommands |
-| 6 – Validation | Input validation helpers |
-| 7 – Commands | CLI command implementations |
-| 8 – MCP server | `AgentBusMcpServer` implementing `rmcp::ServerHandler` |
-| 8b – HTTP server | Axum REST routes mirroring all MCP tools |
-| 9 – Startup | Startup announcement helper |
-| 10 – main | Transport selection (MCP stdio vs HTTP) |
-| 11 – Tests | Inline `#[cfg(test)]` unit tests |
+| Module | Purpose |
+|--------|---------|
+| `main.rs` | Crate root, mod declarations, startup announcement, `main()` dispatch |
+| `settings.rs` | `Settings::from_env()`, env helpers, `redact_url()` |
+| `models.rs` | `Message`, `Presence`, `Health` structs, protocol constants |
+| `redis_bus.rs` | Redis connect, stream ops, pub/sub, presence, health, PG-fallback facade |
+| `postgres_store.rs` | PG connect, persist, list, probe, storage cache |
+| `output.rs` | `Encoding` enum, four output modes (`json`/`compact`/`minimal`/`human`), `minimize_value()` |
+| `validation.rs` | `validate_priority()`, `non_empty()`, `parse_metadata_arg()` |
+| `cli.rs` | Clap `Cli`/`Cmd` parser with 8 subcommands |
+| `commands.rs` | CLI command implementations (`cmd_health`, `cmd_send`, etc.) |
+| `mcp.rs` | `AgentBusMcpServer` implementing `rmcp::ServerHandler` |
+| `http.rs` | Axum REST routes, handlers, `start_http_server()` |
 
 ### Dual Transport
 
