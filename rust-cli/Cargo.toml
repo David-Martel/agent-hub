@@ -1,6 +1,6 @@
 [package]
 name = "agent-bus"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 publish = false
 description = "Fast standalone CLI + MCP server for agent-bus coordination (no Python required)"
@@ -16,8 +16,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal", "net"] }
 rmcp = { version = "1", features = ["server", "transport-async-rw"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
