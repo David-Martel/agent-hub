@@ -42,9 +42,17 @@ fn send_and_read_round_trip() {
     }
     let send = agent_bus_binary()
         .args([
-            "send", "--from-agent", "test-sender", "--to-agent", "test-receiver",
-            "--topic", "integration-test", "--body", "hello-from-integration-test",
-            "--encoding", "compact",
+            "send",
+            "--from-agent",
+            "test-sender",
+            "--to-agent",
+            "test-receiver",
+            "--topic",
+            "integration-test",
+            "--body",
+            "hello-from-integration-test",
+            "--encoding",
+            "compact",
         ])
         .output()
         .expect("send failed");
@@ -56,7 +64,13 @@ fn send_and_read_round_trip() {
 
     let read = agent_bus_binary()
         .args([
-            "read", "--agent", "test-receiver", "--since-minutes", "1", "--encoding", "compact",
+            "read",
+            "--agent",
+            "test-receiver",
+            "--since-minutes",
+            "1",
+            "--encoding",
+            "compact",
         ])
         .output()
         .expect("read failed");
@@ -73,8 +87,15 @@ fn presence_set_and_list() {
     }
     let set = agent_bus_binary()
         .args([
-            "presence", "--agent", "test-agent-integ", "--status", "online",
-            "--ttl-seconds", "10", "--encoding", "compact",
+            "presence",
+            "--agent",
+            "test-agent-integ",
+            "--status",
+            "online",
+            "--ttl-seconds",
+            "10",
+            "--encoding",
+            "compact",
         ])
         .output()
         .expect("presence set failed");

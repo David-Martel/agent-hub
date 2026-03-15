@@ -48,8 +48,7 @@ fn with_pg_retry<T>(mut operation: impl FnMut() -> Result<T>) -> Result<T> {
             }
         }
     }
-    Err(last_error
-        .unwrap_or_else(|| anyhow::anyhow!("PostgreSQL operation failed after retries")))
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("PostgreSQL operation failed after retries")))
 }
 
 pub(crate) fn run_postgres_blocking<T>(operation: impl FnOnce() -> Result<T>) -> Result<T> {
@@ -360,7 +359,10 @@ pub(crate) fn count_presence_postgres(settings: &Settings) -> Option<i64> {
             return Ok(None);
         };
         let row = client.query_one(
-            &format!("select count(*) as cnt from {}", settings.presence_event_table),
+            &format!(
+                "select count(*) as cnt from {}",
+                settings.presence_event_table
+            ),
             &[],
         )?;
         Ok(Some(row.get::<_, i64>("cnt")))

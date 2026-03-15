@@ -438,14 +438,12 @@ pub(crate) fn bus_health(settings: &Settings) -> Health {
         })
         .map(|pong| pong == "PONG")
         .unwrap_or(false);
-    let stream_length: Option<u64> = connect(settings)
-        .ok()
-        .and_then(|mut c| {
-            redis::cmd("XLEN")
-                .arg(&settings.stream_key)
-                .query::<u64>(&mut c)
-                .ok()
-        });
+    let stream_length: Option<u64> = connect(settings).ok().and_then(|mut c| {
+        redis::cmd("XLEN")
+            .arg(&settings.stream_key)
+            .query::<u64>(&mut c)
+            .ok()
+    });
     let (database_ok, database_error, storage_ready) = probe_postgres(settings);
 
     Health {
