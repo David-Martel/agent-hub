@@ -1,5 +1,7 @@
 //! Environment-variable configuration, read once at startup.
 
+use anyhow::{Result, bail};
+
 /// All environment-variable configuration, read at startup.
 #[derive(Debug, Clone)]
 pub(crate) struct Settings {
@@ -44,6 +46,73 @@ impl Settings {
             server_host: env_or("AGENT_BUS_SERVER_HOST", "localhost"),
         }
     }
+
+    /// Validate that all configured values are safe for a local-only agent bus.
+    ///
+    /// Enforces:
+    /// - All URLs must resolve to localhost (localhost, 127.0.0.1, or `::1`).
+    /// - Stream keys, channel keys, and table names must be non-empty and
+    ///   free of whitespace characters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error describing the first validation failure found.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let settings = Settings::from_env();
+    /// settings.validate().expect("default settings should be valid");
+    /// ```
+    pub(crate) fn validate(&self) -> Result<()> {
+        validate_localhost_url(&self.redis_url, "AGENT_BUS_REDIS_URL")?;
+        if let Some(ref db_url) = self.database_url {
+            validate_localhost_url(db_url, "AGENT_BUS_DATABASE_URL")?;
+        }
+        if !is_localhost(&self.server_host) {
+            bail!(
+                "AGENT_BUS_SERVER_HOST must be localhost or 127.0.0.1, got '{}'",
+                self.server_host
+            );
+        }
+        validate_identifier(&self.stream_key, "AGENT_BUS_STREAM_KEY")?;
+        validate_identifier(&self.channel_key, "AGENT_BUS_CHANNEL")?;
+        validate_identifier(&self.presence_prefix, "AGENT_BUS_PRESENCE_PREFIX")?;
+        validate_identifier(&self.message_table, "AGENT_BUS_MESSAGE_TABLE")?;
+        validate_identifier(&self.presence_event_table, "AGENT_BUS_PRESENCE_EVENT_TABLE")?;
+        Ok(())
+    }
+}
+
+fn is_localhost(host: &str) -> bool {
+    let h = host.trim().to_lowercase();
+    h == "localhost" || h == "127.0.0.1" || h == "::1"
+}
+
+/// Extract the host from a URL and verify it is localhost.
+fn validate_localhost_url(url: &str, env_var: &str) -> Result<()> {
+    let Some(scheme_end) = url.find("://") else {
+        return Ok(()); // not a URL, skip
+    };
+    let after_scheme = &url[scheme_end + 3..];
+    let authority = after_scheme.split('/').next().unwrap_or("");
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host_port.split(':').next().unwrap_or("");
+    if !is_localhost(host) {
+        bail!("{env_var} must use localhost, got host '{host}' in '{url}'");
+    }
+    Ok(())
+}
+
+/// Verify an identifier is non-empty and contains no whitespace.
+fn validate_identifier(value: &str, env_var: &str) -> Result<()> {
+    if value.is_empty() {
+        bail!("{env_var} must not be empty");
+    }
+    if value.contains(' ') || value.contains('\n') || value.contains('\t') {
+        bail!("{env_var} must not contain whitespace, got '{value}'");
+    }
+    Ok(())
 }
 
 pub(crate) fn env_or(key: &str, default: &str) -> String {
@@ -141,5 +210,86 @@ mod tests {
             redact_url("redis://localhost:6380/0"),
             "redis://localhost:6380/0"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Settings::validate — localhost enforcement (Task 1)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_rejects_non_localhost_redis() {
+        let mut s = Settings::from_env();
+        s.redis_url = "redis://remote-host:6380/0".to_owned();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_non_localhost_database() {
+        let mut s = Settings::from_env();
+        s.database_url = Some("postgresql://postgres@remote:5432/db".to_owned());
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_non_localhost_server_host() {
+        let mut s = Settings::from_env();
+        s.server_host = "0.0.0.0".to_owned();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_localhost_variants() {
+        let mut s = Settings::from_env();
+        s.redis_url = "redis://localhost:6380/0".to_owned();
+        s.database_url = Some("postgresql://postgres@localhost:5432/db".to_owned());
+        s.server_host = "localhost".to_owned();
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_127_0_0_1() {
+        let mut s = Settings::from_env();
+        s.redis_url = "redis://127.0.0.1:6380/0".to_owned();
+        s.server_host = "127.0.0.1".to_owned();
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_none_database() {
+        let mut s = Settings::from_env();
+        s.database_url = None;
+        assert!(s.validate().is_ok());
+    }
+
+    // -----------------------------------------------------------------------
+    // Settings::validate — identifier checks (Task 2)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn validate_rejects_empty_stream_key() {
+        let mut s = Settings::from_env();
+        s.stream_key = String::new();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_stream_key_with_spaces() {
+        let mut s = Settings::from_env();
+        s.stream_key = "bad stream key".to_owned();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_empty_table_name() {
+        let mut s = Settings::from_env();
+        s.message_table = String::new();
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_dotted_table_name() {
+        let s = Settings::from_env();
+        // default is "agent_bus.messages" which contains a dot — should pass
+        assert!(s.validate().is_ok());
     }
 }

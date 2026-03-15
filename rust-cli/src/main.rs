@@ -117,6 +117,7 @@ async fn main() -> Result<()> {
         .init();
 
     let settings = Settings::from_env();
+    settings.validate()?;
     let cli = Cli::parse();
 
     match cli.command {
