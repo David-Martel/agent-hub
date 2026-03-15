@@ -3,23 +3,50 @@
 > **This document MUST be included in every subagent's system prompt.**
 > Agents that do not follow this protocol will have their findings rejected.
 
-## Quick Start (Copy This Into Your First Action)
+## Quick Start (Copy These 5 Steps Into Your First Actions)
 
+**Step 1 — Announce yourself:**
 ```bash
-# 1. Announce yourself
 curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
-  -d '{"sender":"<YOUR-AGENT-ID>","recipient":"claude","topic":"status","body":"Online and starting work on <TASK>","tags":["repo:<REPO-NAME>"]}'
+  -d '{"sender":"<YOUR-AGENT-ID>","recipient":"claude","topic":"status","body":"Online and starting work on <TASK>","tags":["repo:<REPO-NAME>"],"schema":"status"}'
+```
 
-# 2. Post findings (MANDATORY schema — messages without schema are rejected)
+**Step 2 — CLAIM OWNERSHIP before editing any file:**
+```bash
+curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
+  -d '{"sender":"<YOUR-AGENT-ID>","recipient":"all","topic":"ownership","body":"CLAIMING: <file-path> for <task-description>. No conflicts with other agents.","tags":["repo:<REPO-NAME>"],"schema":"status"}'
+```
+
+**Step 3 — Post findings with mandatory schema:**
+```bash
 curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
   -d '{"sender":"<YOUR-AGENT-ID>","recipient":"claude","topic":"<type>-findings","body":"FINDING: <summary>\nSEVERITY: HIGH\nFILE: <path:line>\nCURRENT: <what exists>\nPROPOSED: <what should change>\nSTATUS: discovered","tags":["repo:<REPO-NAME>","severity:high"],"schema":"finding"}'
+```
 
-# 3. Check your inbox (DO THIS EVERY 2-3 TOOL CALLS)
+**Step 4 — CHECK YOUR INBOX (after every 2-3 tool calls):**
+```bash
 curl -s "http://localhost:8400/messages?agent=<YOUR-AGENT-ID>&since=5&limit=5"
+```
+If you see a task-assignment or coordination message, acknowledge it and incorporate.
 
-# 4. Post completion
+**Step 5 — Post completion:**
+```bash
 curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
   -d '{"sender":"<YOUR-AGENT-ID>","recipient":"claude","topic":"<type>-findings","body":"COMPLETE: <N> findings. CRITICAL=<n>, HIGH=<n>, MEDIUM=<n>, LOW=<n>. Key: <one-line summary>","tags":["repo:<REPO-NAME>","status:complete"],"schema":"finding"}'
+```
+
+## File Ownership (MANDATORY for editing agents)
+
+Before modifying ANY file, you MUST:
+1. Check recent ownership claims: `curl -s "http://localhost:8400/messages?since=30&limit=50"` — look for `topic: "ownership"`
+2. If another agent owns the file, **do not edit it**. Post a status message noting the conflict.
+3. Post your own ownership claim (Step 2 above) before making changes.
+4. When done with a file, post: `"RELEASING: <file-path>"`
+
+Example (from finance-warehouse, where this pattern emerged naturally):
+```
+linter → all | ownership | CLAIMING: Task #11 — lint and format. Skipping files owned
+  by active agents: tax_parser.py (tax-integrator), test_doc_type_detector.py (doctype-expander)
 ```
 
 ## Message Schemas (MANDATORY)
