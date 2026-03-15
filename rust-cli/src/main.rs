@@ -23,6 +23,7 @@
 mod cli;
 mod commands;
 mod http;
+mod journal;
 mod mcp;
 mod models;
 mod output;
@@ -38,7 +39,7 @@ use rmcp::serve_server;
 
 use cli::{Cli, Cmd};
 use commands::{
-    PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_export, cmd_health, cmd_presence,
+    PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_export, cmd_health, cmd_journal, cmd_presence,
     cmd_presence_history, cmd_presence_list, cmd_prune, cmd_read, cmd_send, cmd_watch,
 };
 use http::start_http_server;
@@ -136,6 +137,7 @@ async fn main() -> Result<()> {
             request_ack,
             ref reply_to,
             ref metadata,
+            ref schema,
             ref encoding,
         } => {
             cmd_send(
@@ -151,6 +153,7 @@ async fn main() -> Result<()> {
                     request_ack,
                     reply_to,
                     metadata: metadata.as_deref(),
+                    schema: schema.as_deref(),
                     encoding,
                 },
             )?;
@@ -251,6 +254,23 @@ async fn main() -> Result<()> {
             ref encoding,
         } => {
             cmd_presence_history(&settings, agent.as_deref(), since_minutes, limit, encoding)?;
+        }
+
+        Cmd::Journal {
+            ref tag,
+            ref from_agent,
+            since_minutes,
+            limit,
+            ref output,
+        } => {
+            cmd_journal(
+                &settings,
+                tag.as_deref(),
+                from_agent.as_deref(),
+                since_minutes,
+                limit,
+                output,
+            )?;
         }
 
         Cmd::Serve {

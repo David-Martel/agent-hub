@@ -8,7 +8,7 @@ use crate::redis_bus::{
     bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence, connect,
 };
 use crate::settings::Settings;
-use crate::validation::{non_empty, parse_metadata_arg, validate_priority};
+use crate::validation::{non_empty, parse_metadata_arg, validate_message_schema, validate_priority};
 
 // ---------------------------------------------------------------------------
 // Argument structs (avoid cloning in Cmd match)
@@ -25,6 +25,7 @@ pub(crate) struct SendArgs<'a> {
     pub(crate) request_ack: bool,
     pub(crate) reply_to: &'a Option<String>,
     pub(crate) metadata: Option<&'a str>,
+    pub(crate) schema: Option<&'a str>,
     pub(crate) encoding: &'a Encoding,
 }
 
@@ -62,6 +63,7 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
     let to = non_empty(args.to_agent, "--to-agent")?;
     let topic = non_empty(args.topic, "--topic")?;
     let body = non_empty(args.body, "--body")?;
+    validate_message_schema(body, args.schema)?;
     let meta = parse_metadata_arg(args.metadata)?;
 
     let mut conn = connect(settings)?;
@@ -273,5 +275,37 @@ pub(crate) fn cmd_presence_list(settings: &Settings, encoding: &Encoding) -> Res
     } else {
         output(&results, encoding);
     }
+    Ok(())
+}
+
+/// Export bus messages matching an optional tag or sender filter to an NDJSON
+/// journal file on disk.
+///
+/// The export is idempotent: messages already present in the file (matched by
+/// `id`) are skipped. Progress is reported to stderr.
+///
+/// # Errors
+///
+/// Returns an error if the query fails or the journal file cannot be written.
+pub(crate) fn cmd_journal(
+    settings: &Settings,
+    tag: Option<&str>,
+    from_agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+    output: &str,
+) -> Result<()> {
+    let messages = if let Some(tag) = tag {
+        crate::journal::query_messages_by_tag(settings, tag, since_minutes, limit)?
+    } else {
+        bus_list_messages(settings, None, from_agent, since_minutes, limit, true)?
+    };
+
+    let path = std::path::Path::new(output);
+    let count = crate::journal::export_journal(&messages, path)?;
+    eprintln!(
+        "Exported {count} new messages to {output} ({} total in query)",
+        messages.len()
+    );
     Ok(())
 }

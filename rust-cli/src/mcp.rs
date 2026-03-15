@@ -13,7 +13,7 @@ use crate::redis_bus::{
     bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence, connect,
 };
 use crate::settings::Settings;
-use crate::validation::validate_priority;
+use crate::validation::{validate_message_schema, validate_priority};
 
 /// Tool input schemas, separated from execution logic.
 mod schemas {
@@ -51,7 +51,8 @@ mod schemas {
                 "priority":  {"type": "string", "enum": ["low","normal","high","urgent"]},
                 "request_ack": {"type": "boolean"},
                 "reply_to":  {"type": "string"},
-                "metadata":  {"type": "object"}
+                "metadata":  {"type": "object"},
+                "schema":    {"type": "string", "enum": ["finding", "status", "benchmark"]}
             }),
             &["sender", "recipient", "topic", "body"],
         )
@@ -287,8 +288,10 @@ impl AgentBusMcpServer {
                 let request_ack = Self::get_bool_or(args, "request_ack", false);
                 let reply_to = Self::get_str(args, "reply_to");
                 let metadata = Self::get_object_or_empty(args, "metadata");
+                let schema = Self::get_str(args, "schema");
 
                 validate_priority(priority)?;
+                validate_message_schema(body, schema)?;
                 let mut conn = connect(settings)?;
                 let msg = bus_post_message(
                     &mut conn,
@@ -348,7 +351,14 @@ impl AgentBusMcpServer {
                     Some(message_id),
                     &meta,
                 )?;
-                Ok(serde_json::to_value(&msg)?)
+                // Include ack confirmation in response so the caller sees it on stdio.
+                let response = serde_json::json!({
+                    "ack_sent": true,
+                    "ack_message_id": msg.id,
+                    "acked_message_id": message_id,
+                    "timestamp": msg.timestamp_utc,
+                });
+                Ok(response)
             }
 
             "set_presence" => {

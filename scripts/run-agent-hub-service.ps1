@@ -15,8 +15,9 @@ if (-not (Test-Path $BinaryPath)) {
 }
 
 $env:AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
-$env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5432/$DatabaseName"
+$env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5300/$DatabaseName"
 $env:AGENT_BUS_SERVER_HOST = "localhost"
+$env:AGENT_BUS_STARTUP_ENABLED = "true"
 $env:RUST_LOG = "warn"
 
 Start-Transcript -Path $logPath -Append | Out-Null

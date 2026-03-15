@@ -27,6 +27,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 mimalloc = "0.1"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

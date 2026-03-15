@@ -174,6 +174,8 @@ pub(crate) fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings
             on {message_table} (reply_to);
         create unique index if not exists agent_bus_messages_stream_id_idx
             on {message_table} (stream_id) where stream_id is not null;
+        create index if not exists agent_bus_messages_tags_idx
+            on {message_table} using gin (tags);
 
         create table if not exists {presence_event_table} (
             id bigserial primary key,
@@ -375,6 +377,48 @@ pub(crate) fn list_messages_postgres(
             &[&since_minutes, &sender_filter, &agent_filter, &include_broadcast, &limit],
         )?;
 
+        let mut messages: Vec<Message> = rows.iter().map(row_to_message).collect();
+        messages.reverse();
+        Ok(messages)
+    })
+}
+
+/// Query messages whose `tags` array contains `tag` (uses the GIN index).
+///
+/// Returns up to `limit` records within the `since_minutes` window, in
+/// chronological order. Returns an empty `Vec` when `PostgreSQL` is not
+/// configured or the tag matches nothing.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub(crate) fn list_messages_by_tag(
+    settings: &Settings,
+    tag: &str,
+    since_minutes: u64,
+    limit: usize,
+) -> Result<Vec<Message>> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = connect_postgres(settings)? else {
+            return Ok(Vec::new());
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+        let since = i64::try_from(since_minutes).context("since_minutes exceeds i64")?;
+        let limit_i64 = i64::try_from(limit).context("limit exceeds i64")?;
+        let tag_json = serde_json::json!([tag]);
+        let rows = client.query(
+            &format!(
+                "SELECT id, timestamp_utc, protocol_version, sender, recipient, topic, body, \
+                 thread_id, tags, priority, request_ack, reply_to, metadata, stream_id \
+                 FROM {} \
+                 WHERE timestamp_utc >= now() - ($1::bigint * interval '1 minute') \
+                   AND tags @> $2::jsonb \
+                 ORDER BY timestamp_utc DESC \
+                 LIMIT $3",
+                settings.message_table
+            ),
+            &[&since, &tag_json, &limit_i64],
+        )?;
         let mut messages: Vec<Message> = rows.iter().map(row_to_message).collect();
         messages.reverse();
         Ok(messages)

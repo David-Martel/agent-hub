@@ -19,7 +19,7 @@ use crate::redis_bus::{
     RedisPool, bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence,
 };
 use crate::settings::Settings;
-use crate::validation::validate_priority;
+use crate::validation::{validate_message_schema, validate_priority};
 
 /// Shared state injected into every axum handler.
 ///
@@ -86,6 +86,8 @@ pub(crate) struct HttpSendRequest {
     pub(crate) reply_to: Option<String>,
     #[serde(default)]
     pub(crate) metadata: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(crate) schema: Option<String>,
 }
 
 pub(crate) async fn http_send_handler(
@@ -111,6 +113,10 @@ pub(crate) async fn http_send_handler(
         return Err(bad_request("body must not be empty"));
     }
     validate_priority(&req.priority).map_err(|e| bad_request(format!("{e:#}")))?;
+    if let Some(ref schema) = req.schema {
+        validate_message_schema(&body_text, Some(schema))
+            .map_err(|e| bad_request(format!("schema validation failed: {e:#}")))?;
+    }
 
     let metadata = req
         .metadata
@@ -232,6 +238,7 @@ pub(crate) async fn http_ack_handler(
     }
     let ack_body = req.body;
 
+    let acked_id = message_id.clone();
     let msg = tokio::task::spawn_blocking(move || {
         let meta = serde_json::json!({"ack_for": &message_id});
         let mut conn = state.redis.get_connection()?;
@@ -254,7 +261,13 @@ pub(crate) async fn http_ack_handler(
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
-    Ok(Json(serde_json::to_value(&msg).unwrap_or_default()))
+    let response = serde_json::json!({
+        "ack_sent": true,
+        "ack_message_id": msg.id,
+        "acked_message_id": acked_id,
+        "timestamp": msg.timestamp_utc,
+    });
+    Ok(Json(response))
 }
 
 // --- PUT /presence/:agent --------------------------------------------------
