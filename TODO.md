@@ -67,10 +67,50 @@
 - [ ] Add A2A adapter mapping once the core schema settles.
 - [ ] Revisit MessagePack/LZ4 only after runtime and storage shape stop moving.
 
+### Completed in 2026-03-15 session
+
+- [x] Config.json 3-tier loading (file → env → defaults)
+- [x] PG circuit breaker (60s cooldown after confirmed outage)
+- [x] PG shared client pool (get/return pattern, eliminates TCP-per-call)
+- [x] Journal subcommand (per-repo NDJSON export with PG tag queries + GIN index)
+- [x] Message schema validation (finding/status/benchmark) on CLI, MCP, HTTP
+- [x] Enriched ack responses (ack_sent, timestamp visible on stdio)
+- [x] Sync subcommand (Redis→PG backfill for historical messages)
+- [x] SSE streaming endpoint (GET /events)
+- [x] Windows service install via nssm (direct Rust binary, auto-restart)
+- [x] Build-deploy.ps1 script (build→copy→restart→healthcheck)
+- [x] Lefthook + ast-grep enforcement (pre-commit, pre-push)
+- [x] Stream MAXLEN 5000 → 100000
+- [x] Redis AOF + PG trust auth infrastructure
+- [x] AGENT_COMMUNICATIONS.md with MCP tool names, orchestration patterns, polling protocol
+- [x] Spawn_blocking on all HTTP handlers
+
+### P6 Learnings from multi-repo deployment (finance-warehouse, stm32-merge)
+
+- [ ] Async PG write-through via tokio mpsc channel (fire-and-forget, batched)
+- [ ] Finding deduplication command (group journal entries by file path, merge overlapping)
+- [ ] Default schema enforcement (reject messages without schema on configured topics)
+- [ ] Agent inbox notification — MCP server should push notifications when new messages arrive for an agent
+- [ ] `--server` client mode (CLI → HTTP → Redis) for LAN access from other machines
+- [ ] Session ID auto-generation (env var `AGENT_BUS_SESSION_ID` set by orchestrator)
+- [ ] Message threading enforcement (auto-link finding→fix→verify chains)
+- [ ] TOON/MessagePack exploration for token-efficient message encoding
+- [ ] Proactive circuit breaker reset (periodic health check, not just on explicit `health` call)
+
+### P7 Documentation gaps (reported by finance-warehouse agents)
+
+- [x] MCP tool names section in AGENT_COMMUNICATIONS.md
+- [x] Orchestration patterns (parallel analysis, chained tasks, cross-repo, session recovery)
+- [ ] Per-repo AGENT_COMMUNICATIONS.md auto-deploy (create on first `journal` export)
+- [ ] MCP tool description improvements (include schema examples in tool descriptions)
+- [ ] Video/walkthrough of orchestration workflow
+
 ## Suggested execution order
 
 1. ~~Finish Rust-side localhost validation and connection pooling.~~ Done.
 2. ~~Split `main.rs` into modules without changing behavior.~~ Done.
 3. ~~Add integration tests that exercise Redis and PostgreSQL together.~~ Done.
 4. ~~Add HTTP streaming and remote client mode.~~ SSE streaming done. `--server` client mode deferred.
-5. Reassess wire-format and packaging work after the runtime stabilizes.
+5. ~~Multi-repo validation (stm32-merge, finance-warehouse).~~ Done. 320+ PG messages.
+6. Async PG write-through + finding dedup + default schema enforcement.
+7. Reassess wire-format and packaging work after the runtime stabilizes.

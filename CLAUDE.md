@@ -17,7 +17,7 @@ cd rust-cli && RUSTC_WRAPPER="" cargo build --release
 # Clippy (required — pre-push hook enforces)
 cd rust-cli && RUSTC_WRAPPER="" cargo clippy --all-targets -- -D warnings
 
-# Tests (39 unit + 4 integration)
+# Tests (64 total: 60 unit + 4 integration)
 cd rust-cli && RUSTC_WRAPPER="" cargo test
 
 # Format
@@ -28,7 +28,7 @@ cd rust-cli && cargo fmt --all --check
 
 ## Architecture
 
-The Rust implementation (`rust-cli/src/`, ~3200 LOC) is split into 12 modules:
+The Rust implementation (`rust-cli/src/`, ~4500 LOC) is split into 13 modules:
 
 | Module | Purpose |
 |--------|---------|
@@ -53,7 +53,11 @@ The Rust implementation (`rust-cli/src/`, ~3200 LOC) is split into 12 modules:
 
 ### CLI Subcommands
 
-`health`, `send`, `read`, `watch`, `ack`, `presence`, `presence-list`, `serve`, `prune`, `export`, `presence-history`, `journal`
+`health`, `send`, `read`, `watch`, `ack`, `presence`, `presence-list`, `serve`, `prune`, `export`, `presence-history`, `journal`, `sync`
+
+### MCP Tool Names (for stdio transport)
+
+When loaded as an MCP server, exposes 7 tools: `bus_health`, `post_message`, `list_messages`, `ack_message`, `set_presence`, `list_presence`, `list_presence_history`. See [`AGENT_COMMUNICATIONS.md`](AGENT_COMMUNICATIONS.md) for full parameter docs and orchestration patterns.
 
 ### Message Schema Validation
 
@@ -64,7 +68,7 @@ Use `--schema finding|status|benchmark` on `send` to validate message structure:
 
 ### Storage
 
-**Redis** (realtime, always required): Streams (MAXLEN~5000), Pub/Sub, Presence (TTL)
+**Redis** (realtime, always required): Streams (MAXLEN~100000), Pub/Sub, Presence (TTL), AOF persistence
 **PostgreSQL** (durable history): Auto-creates tables, GIN index on tags, circuit breaker (60s cooldown)
 
 ## Environment Variables
@@ -75,7 +79,7 @@ Use `--schema finding|status|benchmark` on `send` to validate message structure:
 | `AGENT_BUS_REDIS_URL` | `redis://localhost:6380/0` | config.json |
 | `AGENT_BUS_DATABASE_URL` | `postgresql://postgres@localhost:5300/redis_backend` | config.json |
 | `AGENT_BUS_SERVER_HOST` | `localhost` | config.json |
-| `AGENT_BUS_STREAM_MAXLEN` | `5000` | config.json |
+| `AGENT_BUS_STREAM_MAXLEN` | `100000` | config.json |
 | `RUST_LOG` | `error` | env only |
 
 ## MCP Platform Configs

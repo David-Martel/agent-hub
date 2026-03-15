@@ -114,13 +114,95 @@ Before reading files, check if these tools have already indexed the repo:
 - Read only the sections you need (use `offset` and `limit` parameters)
 - If a file was already analyzed in the journal (`.agent-bus/messages.jsonl`), don't re-analyze it
 
+## MCP Tool Names (When Agent-Bus Is Loaded as MCP Server)
+
+If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), these tools are available directly:
+
+| MCP Tool | Purpose | Key Parameters |
+|----------|---------|----------------|
+| `bus_health` | Check Redis + PG status | (none) |
+| `post_message` | Send a message | `sender`, `recipient`, `topic`, `body`, `tags[]`, `schema`, `thread_id`, `priority`, `request_ack` |
+| `list_messages` | Read messages | `agent` (recipient filter), `sender`, `since_minutes`, `limit`, `include_broadcast` |
+| `ack_message` | Acknowledge a message | `agent`, `message_id`, `body` |
+| `set_presence` | Register agent availability | `agent`, `status`, `capabilities[]`, `ttl_seconds`, `metadata` |
+| `list_presence` | List all active agents | (none) |
+| `list_presence_history` | PG presence audit trail | `agent`, `since_minutes`, `limit` |
+
+**Schema validation is enforced on `post_message`** when the `schema` parameter is provided.
+
+### MCP Usage Example (in-session, no HTTP/CLI needed)
+
+```
+Use post_message with:
+  sender: "my-agent-id"
+  recipient: "claude"
+  topic: "analysis-findings"
+  body: "FINDING: Issue found\nSEVERITY: HIGH\nFILE: src/main.rs:42"
+  tags: ["repo:my-project", "severity:high"]
+  schema: "finding"
+```
+
+## Orchestration Patterns
+
+### Pattern 1: Parallel Analysis (Read-Only)
+
+```
+Orchestrator:
+  1. bus_health → verify infrastructure
+  2. set_presence → announce session with capabilities
+  3. post_message → "Starting analysis of <repo>. Dispatching N agents."
+  4. Dispatch N specialist agents with bus instructions
+  5. Monitor: list_messages(agent=claude, since_minutes=5)
+  6. When all agents post COMPLETE → synthesize findings
+  7. post_message → session benchmark (schema: benchmark)
+
+Each Agent:
+  1. post_message → "Online and starting <task>" (schema: status)
+  2. Analyze files, post each finding (schema: finding)
+  3. Every 2-3 tool calls: list_messages(agent=<my-id>) → check for follow-ups
+  4. post_message → "COMPLETE: N findings" (schema: finding)
+```
+
+### Pattern 2: Chained Task Assignment
+
+```
+Orchestrator:
+  1. Dispatch Agent A for initial analysis
+  2. Read Agent A's findings from bus
+  3. post_message(recipient=Agent B, topic="follow-up-task") based on A's findings
+  4. Agent B reads task, continues deeper analysis
+  5. Orchestrator synthesizes A + B findings
+```
+
+### Pattern 3: Cross-Repo Coordination
+
+```
+Orchestrator working on repo-X:
+  1. Tag all messages: tags=["repo:repo-X"]
+  2. Another session on repo-Y uses tags=["repo:repo-Y"]
+  3. Messages don't conflict — filtered by tag
+  4. Journal export per repo: agent-bus journal --tag "repo:repo-X" --output .agent-bus/messages.jsonl
+```
+
+### Pattern 4: Session Recovery
+
+```
+New session on same repo:
+  1. Read journal: .agent-bus/messages.jsonl
+  2. list_messages(since_minutes=1440) → last 24h of coordination
+  3. Avoid re-analyzing files already covered by previous agents
+  4. Post status: "Resuming from previous session. Prior findings: N"
+```
+
 ## Transport Modes
 
 | Mode | Latency | Use Case |
 |------|---------|----------|
-| **HTTP POST** (`localhost:8400`) | <50ms | **Default for all agents.** Fastest, no process spawn. |
-| **CLI** (`agent-bus send`) | ~2.5s | Scripts, one-off operations, environments without curl |
-| **MCP tools** (stdio) | <100ms | When agent-bus is loaded as MCP server in the session |
+| **MCP tools** (stdio) | <100ms | **Best when agent-bus is loaded as MCP server.** Direct tool calls. |
+| **HTTP POST** (`localhost:8400`) | <50ms | **Default for subagents.** No MCP session needed. |
+| **CLI** (`agent-bus send`) | ~2.5s | Scripts, one-off ops, environments without curl/MCP |
+
+**Priority**: MCP tools > HTTP POST > CLI. Use the fastest available.
 
 ## Endpoint Reference
 
