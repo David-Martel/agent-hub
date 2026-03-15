@@ -1,0 +1,22 @@
+# Normalize all text to LF on commit
+* text=auto eol=lf
+
+# Source
+*.rs text eol=lf
+*.py text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+
+# Windows scripts keep CRLF
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary
+*.exe binary
+*.rdb binary
+*.aof binary
