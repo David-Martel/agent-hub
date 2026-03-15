@@ -293,6 +293,36 @@ pub(crate) fn list_messages_postgres(
     })
 }
 
+pub(crate) fn count_messages_postgres(settings: &Settings) -> Option<i64> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = connect_postgres(settings)? else {
+            return Ok(None);
+        };
+        let row = client.query_one(
+            &format!("select count(*) as cnt from {}", settings.message_table),
+            &[],
+        )?;
+        Ok(Some(row.get::<_, i64>("cnt")))
+    })
+    .ok()
+    .flatten()
+}
+
+pub(crate) fn count_presence_postgres(settings: &Settings) -> Option<i64> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = connect_postgres(settings)? else {
+            return Ok(None);
+        };
+        let row = client.query_one(
+            &format!("select count(*) as cnt from {}", settings.presence_event_table),
+            &[],
+        )?;
+        Ok(Some(row.get::<_, i64>("cnt")))
+    })
+    .ok()
+    .flatten()
+}
+
 pub(crate) fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<String>, bool) {
     if settings.database_url.is_none() {
         return (None, None, false);

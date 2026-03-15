@@ -88,4 +88,10 @@ pub(crate) struct Health {
     pub(crate) storage_ready: bool,
     pub(crate) runtime: String,
     pub(crate) codec: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) stream_length: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) pg_message_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) pg_presence_count: Option<i64>,
 }

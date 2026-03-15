@@ -11,7 +11,8 @@ use crate::models::{
     Health, Message, PROTOCOL_VERSION, Presence, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR,
 };
 use crate::postgres_store::{
-    list_messages_postgres, persist_message_postgres, persist_presence_postgres, probe_postgres,
+    count_messages_postgres, count_presence_postgres, list_messages_postgres,
+    persist_message_postgres, persist_presence_postgres, probe_postgres,
 };
 use crate::settings::{Settings, redact_url};
 
@@ -392,6 +393,14 @@ pub(crate) fn bus_health(settings: &Settings) -> Health {
         })
         .map(|pong| pong == "PONG")
         .unwrap_or(false);
+    let stream_length: Option<u64> = connect(settings)
+        .ok()
+        .and_then(|mut c| {
+            redis::cmd("XLEN")
+                .arg(&settings.stream_key)
+                .query::<u64>(&mut c)
+                .ok()
+        });
     let (database_ok, database_error, storage_ready) = probe_postgres(settings);
 
     Health {
@@ -404,6 +413,9 @@ pub(crate) fn bus_health(settings: &Settings) -> Health {
         storage_ready: storage_ready || settings.database_url.is_none(),
         runtime: "rust-native".to_owned(),
         codec: "serde_json".to_owned(),
+        stream_length,
+        pg_message_count: count_messages_postgres(settings),
+        pg_presence_count: count_presence_postgres(settings),
     }
 }
 
