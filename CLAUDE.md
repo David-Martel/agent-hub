@@ -4,101 +4,94 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Redis-backed agent coordination bus for multi-agent systems (Claude, Codex, Gemini). The primary implementation is a **Rust standalone binary** (`rust-cli/`) that provides both a CLI and MCP server. Storage is dual: Redis (primary, realtime) with optional PostgreSQL persistence. A legacy Python package (`src/`) is retained only for the PyO3 codec extension and test suite.
+Redis + PostgreSQL agent coordination bus for multi-agent systems (Claude, Codex, Gemini). The primary implementation is a **Rust standalone binary** (`rust-cli/`) providing CLI, MCP server (stdio), and HTTP REST server. Storage is dual: Redis (realtime streams + pub/sub) with PostgreSQL (durable history, tag-indexed queries).
+
+**Config**: Settings load from `~/.config/agent-bus/config.json` → env vars → hardcoded defaults.
 
 ## Build & Development
 
-### Rust CLI (primary — all new work goes here)
-
 ```bash
-# Build (from repo root)
-cd rust-cli && cargo build --release
-# The release binary is deployed to ~/bin/agent-bus.exe
+# Build release (binary deploys to ~/bin/agent-bus.exe)
+cd rust-cli && RUSTC_WRAPPER="" cargo build --release
 
-# Clippy (required — pre-push hook enforces this)
+# Clippy (required — pre-push hook enforces)
 cd rust-cli && RUSTC_WRAPPER="" cargo clippy --all-targets -- -D warnings
 
-# Format check
+# Tests (39 unit + 4 integration)
+cd rust-cli && RUSTC_WRAPPER="" cargo test
+
+# Format
 cd rust-cli && cargo fmt --all --check
 ```
 
-**sccache note**: If clippy/build fails with `SCCACHE_SERVER_PORT` errors, set `RUSTC_WRAPPER=""` to bypass sccache.
-
-### Python tests (codec + bus integration)
-
-```bash
-uv run pytest --cov                    # all tests
-uv run pytest tests/test_codec.py -v   # single module
-uv run pytest -k "test_name"           # single test
-```
-
-### PyO3 codec extension
-
-```bash
-pwsh -NoLogo -NoProfile -File scripts/build-native-codec.ps1 -Release
-```
+**sccache note**: If builds fail with `SCCACHE_SERVER_PORT` errors, set `RUSTC_WRAPPER=""`.
 
 ## Architecture
 
-The Rust implementation (`rust-cli/src/`, ~2760 LOC) is split into focused modules:
+The Rust implementation (`rust-cli/src/`, ~3200 LOC) is split into 12 modules:
 
 | Module | Purpose |
 |--------|---------|
-| `main.rs` | Crate root, mod declarations, startup announcement, `main()` dispatch |
-| `settings.rs` | `Settings::from_env()`, env helpers, `redact_url()` |
+| `main.rs` | Crate root, startup, `main()` dispatch |
+| `settings.rs` | Config file + env loading, `Settings::validate()`, `redact_url()` |
 | `models.rs` | `Message`, `Presence`, `Health` structs, protocol constants |
-| `redis_bus.rs` | Redis connect, stream ops, pub/sub, presence, health, PG-fallback facade |
-| `postgres_store.rs` | PG connect, persist, list, probe, storage cache |
-| `output.rs` | `Encoding` enum, four output modes (`json`/`compact`/`minimal`/`human`), `minimize_value()` |
-| `validation.rs` | `validate_priority()`, `non_empty()`, `parse_metadata_arg()` |
-| `cli.rs` | Clap `Cli`/`Cmd` parser with 8 subcommands |
-| `commands.rs` | CLI command implementations (`cmd_health`, `cmd_send`, etc.) |
-| `mcp.rs` | `AgentBusMcpServer` implementing `rmcp::ServerHandler` |
-| `http.rs` | Axum REST routes, handlers, `start_http_server()` |
+| `redis_bus.rs` | Redis connect, `RedisPool`, stream ops, pub/sub, presence, health |
+| `postgres_store.rs` | PG connect, persist with retry + circuit breaker, tag queries, prune |
+| `output.rs` | `Encoding` enum, formatters, `minimize_value()` |
+| `validation.rs` | Priority/field validation, message schema validation (`finding`/`status`/`benchmark`) |
+| `cli.rs` | Clap parser with 11 subcommands |
+| `commands.rs` | CLI command implementations |
+| `mcp.rs` | `AgentBusMcpServer` with `schemas` submodule for tool definitions |
+| `http.rs` | Axum REST + SSE streaming, all handlers use `spawn_blocking` |
+| `journal.rs` | Per-repo NDJSON export with idempotent cursor tracking |
 
-### Dual Transport
+### Transport Modes
 
-- **MCP stdio** (`serve --transport stdio`): Default mode for LLM tool integration via rmcp
-- **HTTP REST** (`serve --transport http --port 8400`): Axum server with CORS, same tool set as MCP
+- **MCP stdio** (`serve --transport stdio`): For LLM tool integration (Claude/Codex/Gemini MCP configs)
+- **HTTP REST** (`serve --transport http --port 8400`): Server mode with SSE streaming at `/events`
+- **CLI**: Direct Redis/PG access for scripting and agent subprocesses
+
+### CLI Subcommands
+
+`health`, `send`, `read`, `watch`, `ack`, `presence`, `presence-list`, `serve`, `prune`, `export`, `presence-history`, `journal`
+
+### Message Schema Validation
+
+Use `--schema finding|status|benchmark` on `send` to validate message structure:
+- **finding**: Requires `FINDING:` + `SEVERITY:`, or `FIX`/`COMPLETE` keywords
+- **status**: Non-empty body
+- **benchmark**: Contains key=value or key:value metrics
 
 ### Storage
 
-**Redis** (primary, always required):
-- **Streams** (`agent_bus:messages`): Durable message history, XADD with MAXLEN~5000, XREVRANGE with 5x overfetch for filtered queries
-- **Pub/Sub** (`agent_bus:events`): Realtime watch notifications
-- **Presence** (`agent_bus:presence:{agent}`): TTL-based agent registration via SET EX
-
-**PostgreSQL** (optional, for long-term persistence):
-- Auto-creates `messages` and `presence` tables if `AGENT_BUS_DATABASE_URL` is set
-- Messages and presence records are written to both Redis and Postgres
-- Blocking sync client via `run_postgres_blocking()` on a Tokio `spawn_blocking` thread
-
-### Message Protocol (v1.0)
-
-Required fields: `id` (UUID), `timestamp_utc`, `protocol_version`, `from`, `to`, `topic`, `body`. Optional: `thread_id`, `tags`, `priority` (low/normal/high/urgent), `request_ack`, `reply_to`, `metadata`.
-
-## CLI Subcommands
-
-`health`, `send`, `read`, `watch`, `ack`, `presence`, `presence-list`, `serve`
+**Redis** (realtime, always required): Streams (MAXLEN~5000), Pub/Sub, Presence (TTL)
+**PostgreSQL** (durable history): Auto-creates tables, GIN index on tags, circuit breaker (60s cooldown)
 
 ## Environment Variables
 
-| Variable | Default |
-|----------|---------|
-| `AGENT_BUS_REDIS_URL` | `redis://localhost:6380/0` |
-| `AGENT_BUS_STREAM_KEY` | `agent_bus:messages` |
-| `AGENT_BUS_STREAM_MAXLEN` | `5000` |
-| `AGENT_BUS_STARTUP_ENABLED` | `true` |
-| `AGENT_BUS_DATABASE_URL` | *(unset — Postgres disabled)* |
-| `RUST_LOG` | `error` |
+| Variable | Default | Source |
+|----------|---------|--------|
+| `AGENT_BUS_CONFIG` | `~/.config/agent-bus/config.json` | Config file path |
+| `AGENT_BUS_REDIS_URL` | `redis://localhost:6380/0` | config.json |
+| `AGENT_BUS_DATABASE_URL` | `postgresql://postgres@localhost:5300/redis_backend` | config.json |
+| `AGENT_BUS_SERVER_HOST` | `localhost` | config.json |
+| `AGENT_BUS_STREAM_MAXLEN` | `5000` | config.json |
+| `RUST_LOG` | `error` | env only |
+
+## MCP Platform Configs
+
+All 3 platforms configured identically at:
+- Claude Code: `~/.claude/mcp.json` (key: `agent-bus`)
+- Codex: `~/.codex/config.toml` (key: `agent_bus`)
+- Gemini: `~/.gemini/settings.json` (key: `agent-bus`)
 
 ## Git Hooks
 
-Lefthook pre-push runs `rust-clippy` and `rust-audit` on Rust files. Clippy failures block push. If sccache port conflicts cause false failures, use `RUSTC_WRAPPER="" git push`.
+Lefthook pre-push: `rust-clippy` + `rust-audit` (both blocking).
 
 ## Rust Conventions
 
-- **Allocator**: mimalloc (`#[global_allocator]`) per M-MIMALLOC-APPS
+- **Allocator**: mimalloc per M-MIMALLOC-APPS
 - **Error handling**: `anyhow::Result` with `.context()` — no unwrap in business logic
-- **Lints**: Clippy pedantic + restriction subset enabled in `Cargo.toml [lints]`
+- **Lints**: Clippy pedantic + restriction subset in `Cargo.toml [lints]`
 - **Edition**: 2024

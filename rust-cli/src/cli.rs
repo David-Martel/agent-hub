@@ -21,7 +21,7 @@ use crate::output::Encoding;
         AGENT_BUS_STREAM_KEY         Redis Stream key [default: agent_bus:messages]\n  \
         AGENT_BUS_CHANNEL            Redis Pub/Sub channel [default: agent_bus:events]\n  \
         AGENT_BUS_PRESENCE_PREFIX    Redis key prefix for presence [default: agent_bus:presence:]\n  \
-        AGENT_BUS_STREAM_MAXLEN      Max stream entries [default: 5000]\n  \
+        AGENT_BUS_STREAM_MAXLEN      Max stream entries [default: 100000]\n  \
         AGENT_BUS_SERVER_HOST        HTTP bind host [default: localhost]\n  \
         AGENT_BUS_SERVICE_AGENT_ID   Agent ID for this service [default: agent-bus]\n  \
         AGENT_BUS_STARTUP_ENABLED    Announce on MCP startup [default: true]\n  \
@@ -105,6 +105,11 @@ pub(crate) enum Cmd {
         reply_to: Option<String>,
         #[arg(long, help = "JSON metadata object (e.g. '{\"key\":\"value\"}')")]
         metadata: Option<String>,
+        #[arg(
+            long,
+            help = "Validate body against schema: finding|status|benchmark"
+        )]
+        schema: Option<String>,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
@@ -253,6 +258,29 @@ pub(crate) enum Cmd {
         limit: usize,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
+    },
+
+    /// Export bus messages to a local NDJSON journal file (per-repo archive).
+    #[command(long_about = "Export messages matching a filter to a local NDJSON file.\n\n\
+        Idempotent: only appends messages not already in the file.\n\
+        Use --tag to filter by repo (e.g., 'repo:stm32-merge').\n\
+        Use --from-agent to filter by sender (e.g., 'codex').\n\n\
+        Journal files are one JSON message per line, suitable for grep/jq analysis.")]
+    Journal {
+        #[arg(long, help = "Filter by tag (e.g., 'repo:stm32-merge')")]
+        tag: Option<String>,
+        #[arg(long, help = "Filter by sender agent")]
+        from_agent: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 10080,
+            help = "Time window in minutes [default: 7 days]"
+        )]
+        since_minutes: u64,
+        #[arg(long, default_value_t = 10000, help = "Max messages to export")]
+        limit: usize,
+        #[arg(long, help = "Output NDJSON file path")]
+        output: String,
     },
 
     /// Run as an MCP server (stdio transport) or HTTP REST server.

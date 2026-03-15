@@ -100,7 +100,7 @@ fn maybe_write_default_config(path: &std::path::Path) {
   "presence_prefix": "agent_bus:presence:",
   "message_table": "agent_bus.messages",
   "presence_event_table": "agent_bus.presence_events",
-  "stream_maxlen": 5000,
+  "stream_maxlen": 100000,
   "server_host": "localhost",
   "service_agent_id": "agent-bus",
   "startup_enabled": true,
@@ -237,7 +237,7 @@ impl Settings {
                 cfg.presence_event_table.as_deref(),
                 "agent_bus.presence_events",
             ),
-            stream_maxlen: resolve_parse("AGENT_BUS_STREAM_MAXLEN", cfg.stream_maxlen, 5000),
+            stream_maxlen: resolve_parse("AGENT_BUS_STREAM_MAXLEN", cfg.stream_maxlen, 100000),
             service_agent_id: resolve(
                 "AGENT_BUS_SERVICE_AGENT_ID",
                 cfg.service_agent_id.as_deref(),
