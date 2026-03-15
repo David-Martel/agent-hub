@@ -9,7 +9,8 @@ use crate::redis_bus::{
 };
 use crate::settings::Settings;
 use crate::validation::{
-    non_empty, parse_metadata_arg, validate_message_schema, validate_priority,
+    infer_schema_from_topic, non_empty, parse_metadata_arg, validate_message_schema,
+    validate_priority,
 };
 
 // ---------------------------------------------------------------------------
@@ -65,7 +66,8 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
     let to = non_empty(args.to_agent, "--to-agent")?;
     let topic = non_empty(args.topic, "--topic")?;
     let body = non_empty(args.body, "--body")?;
-    validate_message_schema(body, args.schema)?;
+    let effective_schema = infer_schema_from_topic(topic, args.schema);
+    validate_message_schema(body, effective_schema)?;
     let meta = parse_metadata_arg(args.metadata)?;
 
     let mut conn = connect(settings)?;

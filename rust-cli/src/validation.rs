@@ -46,6 +46,27 @@ pub(crate) const SCHEMA_BENCHMARK: &str = "benchmark";
 ///
 /// Returns an error if the body does not satisfy the named schema, or if the
 /// schema name is not one of `finding`, `status`, `benchmark`.
+/// Infer schema from topic name when not explicitly provided.
+///
+/// Maps common topic patterns to their expected schema:
+/// - `*-findings`, `review*` → finding
+/// - `status`, `ownership`, `coordination`, `handoff` → status
+/// - `benchmark`, `perf-*` → benchmark
+pub(crate) fn infer_schema_from_topic<'a>(
+    topic: &str,
+    explicit_schema: Option<&'a str>,
+) -> Option<&'a str> {
+    if explicit_schema.is_some() {
+        return explicit_schema;
+    }
+    match topic {
+        t if t.contains("findings") || t.starts_with("review") => Some("finding"),
+        "status" | "ownership" | "coordination" | "handoff" => Some("status"),
+        "benchmark" => Some("benchmark"),
+        _ => None,
+    }
+}
+
 pub(crate) fn validate_message_schema(body: &str, schema: Option<&str>) -> Result<()> {
     let Some(schema) = schema else {
         return Ok(());
@@ -67,16 +88,16 @@ pub(crate) fn validate_message_schema(body: &str, schema: Option<&str>) -> Resul
             Ok(())
         }
         SCHEMA_STATUS => {
-            // Must contain a STATUS: line.
-            if !body.contains("STATUS:") {
-                bail!("Schema 'status' requires STATUS: in body");
+            // Status messages are free-form but must be non-empty.
+            if body.trim().is_empty() {
+                bail!("Schema 'status' requires non-empty body");
             }
             Ok(())
         }
         SCHEMA_BENCHMARK => {
-            // Must contain measurable metrics.
-            if !body.contains("agents=") && !body.contains("msgs=") && !body.contains("duration=") {
-                bail!("Schema 'benchmark' requires metrics (agents=, msgs=, duration=) in body");
+            // Must contain key=value metrics (any key, not just agents/msgs/duration).
+            if !body.contains('=') {
+                bail!("Schema 'benchmark' requires key=value metrics in body");
             }
             Ok(())
         }
@@ -167,8 +188,15 @@ mod tests {
     }
 
     #[test]
-    fn validate_message_schema_status_rejects_missing_keyword() {
-        assert!(validate_message_schema("all good", Some("status")).is_err());
+    fn validate_message_schema_status_rejects_empty() {
+        assert!(validate_message_schema("", Some("status")).is_err());
+        assert!(validate_message_schema("   ", Some("status")).is_err());
+    }
+
+    #[test]
+    fn validate_message_schema_status_accepts_any_nonempty() {
+        assert!(validate_message_schema("CLAIMING: file.py for task", Some("status")).is_ok());
+        assert!(validate_message_schema("all good", Some("status")).is_ok());
     }
 
     #[test]

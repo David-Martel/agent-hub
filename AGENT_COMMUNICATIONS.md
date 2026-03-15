@@ -156,9 +156,41 @@ Your agent ID is: <AGENT-ID>
 
 After dispatching agents:
 1. Monitor the bus: `curl -s "http://localhost:8400/messages?agent=claude&since=5"`
-2. Send follow-up tasks when findings converge: POST to `recipient:<agent-id>`
+2. **Mediate handoffs**: Read findings from Agent A, post targeted HANDOFF to Agent B with the relevant findings for B's scope. Don't rely on agents reading each other's messages.
 3. Send cross-agent coordination when agents should know about each other's work
-4. Post session benchmarks when all agents complete
+4. Post session benchmarks when all agents complete (use `schema=benchmark`)
+
+### Wave-Then-Quality-Gate Pattern (Recommended)
+
+The most effective orchestration rhythm (from finance-warehouse, 21 agents, 83 messages):
+
+```
+Wave 1-3: Feature implementation (parallel specialists)
+  → Each wave builds on previous results
+  → Orchestrator dispatches next wave when current completes
+
+Wave N (Quality Gate): Review + optimize + test
+  → code-reviewer: review all code from prior waves
+  → optimizer: apply performance improvements
+  → debugger: run full test suite, fix failures, lint
+  → rust-pro: build verification, dependency audit
+
+Wave N+1 (Hardening): Security + documentation
+  → security-auditor: PII, credentials, injection
+  → documenter: docstrings, type annotations
+  → deep-debugger: Pyright, test warnings
+```
+
+### Orchestrator-Mediated Handoffs
+
+When a code-reviewer finds issues in files owned by another agent, the orchestrator reads the findings and posts a targeted HANDOFF:
+
+```bash
+curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
+  -d '{"sender":"claude","recipient":"w4-python-optimizer","topic":"handoff","body":"HANDOFF from code-reviewer: 3 findings for your files: (1) tax_parser.py:475 — _detect_tax_year() double-executes Rust engine, (2) tax_parser.py:52 — _AMOUNT_RE is dead code, (3) doc_type_detector.py:622 — branch never hit","tags":["repo:<REPO>"],"schema":"status"}'
+```
+
+This is more reliable than hoping agents read each other's messages.
 
 ## Accelerating Analysis
 
