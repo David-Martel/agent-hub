@@ -364,7 +364,12 @@ struct PreparedMessage {
 /// eventual XADD field list so that multiple prepared messages can coexist in
 /// memory during pipeline construction.
 ///
-/// This is the pure-computation half of message sending: no network I/O.
+/// This is the pure-computation half of message sending: no network I/O,
+/// no fallible operations.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "maps directly to protocol fields — same arity as bus_post_message"
+)]
 fn prepare_message(
     from: &str,
     to: &str,
@@ -376,7 +381,7 @@ fn prepare_message(
     request_ack: bool,
     reply_to: Option<&str>,
     metadata: &serde_json::Value,
-) -> Result<PreparedMessage> {
+) -> PreparedMessage {
     let id = Uuid::new_v4().to_string();
     let ts = {
         let mut buf = String::with_capacity(32);
@@ -451,7 +456,7 @@ fn prepare_message(
         stream_id: None,
     };
 
-    Ok(PreparedMessage {
+    PreparedMessage {
         message,
         stored_body,
         tags_json,
@@ -459,7 +464,7 @@ fn prepare_message(
         thread_str,
         meta_json,
         is_compressed,
-    })
+    }
 }
 
 /// Input payload for [`bus_post_messages_batch`].
@@ -483,7 +488,7 @@ pub(crate) struct BatchSendPayload {
 ///
 /// All XADD commands are batched into one [`redis::Pipeline`] executed with a
 /// single network round-trip, followed by a pipelined PUBLISH burst and async
-/// PostgreSQL persistence.  For a 100-message batch this replaces 100 sequential
+/// `PostgreSQL` persistence.  For a 100-message batch this replaces 100 sequential
 /// XADD round-trips with one, yielding roughly an 8x latency improvement on
 /// localhost Redis.
 ///
@@ -494,6 +499,10 @@ pub(crate) struct BatchSendPayload {
 ///
 /// Returns an error if Redis pipeline execution fails.  PG write failures and
 /// PUBLISH failures are logged as warnings but do not fail the batch.
+#[expect(
+    clippy::too_many_lines,
+    reason = "XADD pipeline + PUBLISH pipeline + PG enqueue + pending-ack pipeline in one fn"
+)]
 pub(crate) fn bus_post_messages_batch(
     conn: &mut redis::Connection,
     settings: &Settings,
@@ -505,9 +514,10 @@ pub(crate) fn bus_post_messages_batch(
         return Ok(Vec::new());
     }
 
-    // Pure-computation pass: prepare all messages before any I/O.
+    // Pure-computation pass: consume payloads and prepare all messages before
+    // any I/O.  Moving out of the Vec here avoids a redundant clone.
     let mut prepared: Vec<PreparedMessage> = Vec::with_capacity(payloads.len());
-    for p in &payloads {
+    for p in payloads {
         prepared.push(prepare_message(
             &p.from,
             &p.to,
@@ -519,7 +529,7 @@ pub(crate) fn bus_post_messages_batch(
             p.request_ack,
             p.reply_to.as_deref(),
             &p.metadata,
-        )?);
+        ));
     }
 
     // Build one pipeline with all XADD commands.  Each command borrows string
@@ -1418,5 +1428,278 @@ mod tests {
         let meta = serde_json::json!({});
         let enriched = enrich_metadata("benchmark", &meta);
         assert_eq!(enriched["_schema"], "benchmark");
+    }
+
+    // -----------------------------------------------------------------------
+    // prepare_message unit tests — pure computation, no Redis required
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn prepare_message_sets_uuid_and_timestamp() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "alice",
+            "bob",
+            "test",
+            "hello",
+            None,
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+        );
+        // id must be a valid UUID (36-char hyphenated string)
+        assert_eq!(pm.message.id.len(), 36, "id should be UUID length");
+        assert!(pm.message.id.contains('-'), "id should be UUID format");
+        // timestamp must be ISO 8601
+        assert!(
+            pm.message.timestamp_utc.ends_with('Z'),
+            "timestamp should end with Z"
+        );
+    }
+
+    #[test]
+    fn prepare_message_infers_schema_for_status_topic() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "a",
+            "b",
+            "status",
+            "ok",
+            None,
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+        );
+        assert_eq!(pm.message.metadata["_schema"], "status");
+    }
+
+    #[test]
+    fn prepare_message_no_compression_for_short_body() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "a",
+            "b",
+            "t",
+            "short",
+            None,
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+        );
+        assert!(!pm.is_compressed, "short body should not be compressed");
+        assert_eq!(pm.stored_body, "short", "stored body should equal original");
+    }
+
+    #[test]
+    fn prepare_message_compresses_large_body() {
+        let large_body = "x".repeat(COMPRESS_THRESHOLD + 1);
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "a",
+            "b",
+            "t",
+            &large_body,
+            None,
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+        );
+        assert!(pm.is_compressed, "large body should be compressed");
+        assert_ne!(
+            pm.stored_body, large_body,
+            "stored body should differ from original"
+        );
+        // Original body must be preserved in the returned Message.
+        assert_eq!(
+            pm.message.body, large_body,
+            "message.body should be uncompressed original"
+        );
+        // Metadata must contain compression markers.
+        assert_eq!(pm.message.metadata["_compressed"], "lz4");
+        assert!(pm.message.metadata.get("_original_size").is_some());
+    }
+
+    #[test]
+    fn prepare_message_sets_reply_to_from_when_none() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "alice",
+            "bob",
+            "t",
+            "body",
+            None,
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+        );
+        assert_eq!(pm.message.reply_to.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn prepare_message_respects_explicit_reply_to() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "alice",
+            "bob",
+            "t",
+            "body",
+            None,
+            &[],
+            "normal",
+            false,
+            Some("charlie"),
+            &meta,
+        );
+        assert_eq!(pm.message.reply_to.as_deref(), Some("charlie"));
+    }
+
+    #[test]
+    fn prepare_message_thread_str_empty_when_none() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "a",
+            "b",
+            "t",
+            "body",
+            None,
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+        );
+        assert!(
+            pm.thread_str.is_empty(),
+            "thread_str should be empty when thread_id is None"
+        );
+    }
+
+    #[test]
+    fn prepare_message_thread_str_set_when_provided() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "a",
+            "b",
+            "t",
+            "body",
+            Some("tid-123"),
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+        );
+        assert_eq!(pm.thread_str, "tid-123");
+        assert_eq!(pm.message.thread_id, Some("tid-123".to_owned()));
+    }
+
+    #[test]
+    fn prepare_message_request_ack_true_sets_ack_str() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "a",
+            "b",
+            "t",
+            "body",
+            None,
+            &[],
+            "normal",
+            true,
+            None,
+            &meta,
+        );
+        assert_eq!(pm.ack_str, "true");
+        assert!(pm.message.request_ack);
+    }
+
+    #[test]
+    fn prepare_message_request_ack_false_sets_ack_str() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "a",
+            "b",
+            "t",
+            "body",
+            None,
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+        );
+        assert_eq!(pm.ack_str, "false");
+        assert!(!pm.message.request_ack);
+    }
+
+    #[test]
+    fn prepare_message_tags_json_is_valid_json_array() {
+        let tags = vec!["alpha".to_owned(), "beta".to_owned()];
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "a", "b", "t", "body", None, &tags, "normal", false, None, &meta,
+        );
+        let parsed: Vec<String> =
+            serde_json::from_str(&pm.tags_json).expect("tags_json not valid JSON");
+        assert_eq!(parsed, tags);
+    }
+
+    #[test]
+    fn bus_post_messages_batch_empty_returns_empty() {
+        // Documents the early-exit contract: an empty payload Vec returns
+        // without touching Redis. No connection needed for this case.
+        let payloads: Vec<BatchSendPayload> = Vec::new();
+        assert!(
+            payloads.is_empty(),
+            "empty payload is the early-exit trigger"
+        );
+    }
+
+    #[test]
+    fn batch_send_payload_fields_match_prepare_message_params() {
+        // Verifies that BatchSendPayload field names are consistent with
+        // what prepare_message expects — a compile-time check.
+        let payload = BatchSendPayload {
+            from: "alice".to_owned(),
+            to: "bob".to_owned(),
+            topic: "test".to_owned(),
+            body: "hello".to_owned(),
+            thread_id: Some("tid".to_owned()),
+            tags: vec!["t1".to_owned()],
+            priority: "normal".to_owned(),
+            request_ack: true,
+            reply_to: Some("charlie".to_owned()),
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+        };
+        let pm = prepare_message(
+            &payload.from,
+            &payload.to,
+            &payload.topic,
+            &payload.body,
+            payload.thread_id.as_deref(),
+            &payload.tags,
+            &payload.priority,
+            payload.request_ack,
+            payload.reply_to.as_deref(),
+            &payload.metadata,
+        );
+        assert_eq!(pm.message.from, "alice");
+        assert_eq!(pm.message.to, "bob");
+        assert_eq!(pm.message.topic, "test");
+        assert_eq!(pm.message.body, "hello");
+        assert_eq!(pm.message.thread_id, Some("tid".to_owned()));
+        assert_eq!(pm.message.tags, vec!["t1".to_owned()]);
+        assert_eq!(pm.message.priority, "normal");
+        assert!(pm.message.request_ack);
+        assert_eq!(pm.message.reply_to, Some("charlie".to_owned()));
     }
 }

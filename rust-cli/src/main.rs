@@ -149,7 +149,8 @@ async fn main() -> Result<()> {
     // Initialize the global PgWriter before any transport starts.
     // When database_url is absent the writer is still created but all writes
     // are silently discarded by the background task.
-    let _ = PG_WRITER.set(PgWriter::spawn(settings.clone()));
+    let (writer, pg_handle) = PgWriter::spawn(settings.clone());
+    let _ = PG_WRITER.set(writer);
 
     let cli = Cli::parse();
 
@@ -361,6 +362,10 @@ async fn main() -> Result<()> {
                 });
                 service.waiting().await.context("MCP server loop error")?;
             }
+            // Server commands run indefinitely — pg_handle is cancelled when
+            // the process terminates; no explicit shutdown needed.
+            pg_handle.abort();
+            return Ok(());
         }
 
         Cmd::BatchSend {
@@ -454,6 +459,14 @@ async fn main() -> Result<()> {
         } => {
             cmd_resolve(&settings, resource, winner, reason, resolved_by, encoding)?;
         }
+    }
+
+    // Flush any enqueued PG writes before the process exits.  This is only
+    // reached by non-server CLI commands; server commands return early above.
+    if let Some(writer) = pg_writer() {
+        writer.shutdown_and_wait(pg_handle);
+    } else {
+        pg_handle.abort();
     }
 
     Ok(())

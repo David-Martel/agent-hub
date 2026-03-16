@@ -778,11 +778,8 @@ pub(crate) enum PgWriteRequest {
     Flush,
     /// Drain remaining writes and shut down the background task.
     ///
-    /// Reserved for future use (e.g. process termination hooks).
-    #[expect(
-        dead_code,
-        reason = "reserved control signal for process-termination callers"
-    )]
+    /// Sent by [`PgWriter::shutdown_and_wait`] before process exit in CLI mode
+    /// to guarantee all enqueued writes are flushed to `PostgreSQL`.
     Shutdown,
 }
 
@@ -1010,7 +1007,7 @@ mod tests {
     async fn pg_writer_spawn_no_database_url() {
         let mut settings = Settings::from_env();
         settings.database_url = None;
-        let writer = PgWriter::spawn(settings);
+        let (writer, _handle) = PgWriter::spawn(settings);
         // send_message must be a no-op without panicking.
         let msg = crate::models::Message {
             id: uuid::Uuid::new_v4().to_string(),
@@ -1038,7 +1035,7 @@ mod tests {
     async fn pg_writer_clone_shares_channel() {
         let mut settings = Settings::from_env();
         settings.database_url = None;
-        let writer = PgWriter::spawn(settings);
+        let (writer, _handle) = PgWriter::spawn(settings);
         let writer2 = writer.clone();
         // Both clones must be usable without panicking.
         let msg = crate::models::Message {

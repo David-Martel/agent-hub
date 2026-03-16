@@ -21,7 +21,7 @@ use crate::mcp::AgentBusMcpServer;
 use crate::models::MAX_HISTORY_MINUTES;
 use crate::output::{format_health_toon, format_message_toon, format_presence_toon};
 use crate::redis_bus::{
-    BatchSendPayload, RedisPool, SseSubscriberCount, bus_health, bus_list_messages,
+    BatchSendPayload, RedisPool, SseSubscriberCount, bus_health, bus_list_messages_from_redis,
     bus_list_presence, bus_post_message, bus_post_messages_batch, bus_set_presence,
 };
 use crate::settings::Settings;
@@ -303,7 +303,13 @@ pub(crate) async fn http_read_handler(
     let toon = params.encoding.as_deref() == Some("toon");
 
     let msgs = tokio::task::spawn_blocking(move || {
-        bus_list_messages(
+        // Always read from Redis for the HTTP path: Redis is the authoritative
+        // source-of-truth (the PgWriter flushes async so PG may lag ~100 ms).
+        // This ensures read-after-write consistency without the synchronous PG
+        // write that caused POST /messages to take ~230 ms.
+        let mut conn = state.redis.get_connection()?;
+        bus_list_messages_from_redis(
+            &mut conn,
             &state.settings,
             agent.as_deref(),
             from.as_deref(),
@@ -1099,10 +1105,14 @@ pub(crate) async fn http_batch_read_handler(
     let agents = req.agents;
 
     let result = tokio::task::spawn_blocking(move || {
+        // Read from Redis (not PG) for the same read-after-write consistency
+        // reason as in `http_read_handler`.
+        let mut conn = state.redis.get_connection()?;
         let mut seen = std::collections::HashSet::new();
         let mut all_msgs: Vec<crate::models::Message> = Vec::new();
         for agent in &agents {
-            let msgs = bus_list_messages(
+            let msgs = bus_list_messages_from_redis(
+                &mut conn,
                 &state.settings,
                 Some(agent.as_str()),
                 None,
