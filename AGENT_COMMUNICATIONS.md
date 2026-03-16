@@ -1,53 +1,266 @@
-# Agent Hub Communication Protocol
+# Agent Hub Communication Protocol (v0.4)
 
-> **This document MUST be included in every subagent's system prompt.**
-> Agents that do not follow this protocol will have their findings rejected.
+> **Generalized for Claude, Codex, Gemini, Copilot, and any MCP-compatible agent.**
+> **This document MUST be included in every agent's system prompt.**
+> Agents that do not follow this protocol will have their findings rejected or deprioritized.
+>
+> Protocol Version: v0.4 | Implementation: Rust native (zero Python)
+> Storage: Redis (realtime) + PostgreSQL (durable history)
 
 ## Quick Start (Copy These 5 Steps Into Your First Actions)
 
-**Step 1 — Announce yourself:**
+**Step 1 — Announce yourself (HTTP POST or CLI):**
 ```bash
+# Via HTTP (fastest)
 curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
   -d '{"sender":"<YOUR-AGENT-ID>","recipient":"claude","topic":"status","body":"Online and starting work on <TASK>","tags":["repo:<REPO-NAME>"],"schema":"status"}'
+
+# OR via CLI
+agent-bus send --from-agent <YOUR-AGENT-ID> --to-agent claude --topic status \
+  --body "Online and starting work on <TASK>" --tag "repo:<REPO-NAME>" --schema status
 ```
 
 **Step 2 — CLAIM OWNERSHIP before editing any file:**
 ```bash
+# Via CLI (recommended for file ownership)
+agent-bus claim src/file.rs --agent <YOUR-AGENT-ID> --reason "Adding feature: <description>"
+
+# OR via HTTP
 curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
-  -d '{"sender":"<YOUR-AGENT-ID>","recipient":"all","topic":"ownership","body":"CLAIMING: <file-path> for <task-description>. No conflicts with other agents.","tags":["repo:<REPO-NAME>"],"schema":"status"}'
+  -d '{"sender":"<YOUR-AGENT-ID>","recipient":"all","topic":"ownership","body":"CLAIMING: src/file.rs for <task>. Conflict? Post immediately.","tags":["repo:<REPO-NAME>"],"schema":"status"}'
 ```
 
 **Step 3 — Post findings with mandatory schema:**
 ```bash
+# Via CLI (validates schema automatically)
+agent-bus send --from-agent <YOUR-AGENT-ID> --to-agent claude --topic code-findings \
+  --body "FINDING: Buffer overflow\nSEVERITY: HIGH\nFILE: src/file.rs:42\nCURRENT: unsafe code\nPROPOSED: bounds check\nSTATUS: discovered" \
+  --tag "repo:<REPO-NAME>" --tag "severity:high" --schema finding
+
+# OR via HTTP
 curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
-  -d '{"sender":"<YOUR-AGENT-ID>","recipient":"claude","topic":"<type>-findings","body":"FINDING: <summary>\nSEVERITY: HIGH\nFILE: <path:line>\nCURRENT: <what exists>\nPROPOSED: <what should change>\nSTATUS: discovered","tags":["repo:<REPO-NAME>","severity:high"],"schema":"finding"}'
+  -d '{"sender":"<YOUR-AGENT-ID>","recipient":"claude","topic":"code-findings","body":"FINDING: ...","tags":["repo:<REPO-NAME>","severity:high"],"schema":"finding"}'
 ```
 
 **Step 4 — CHECK YOUR INBOX (after every 2-3 tool calls):**
 ```bash
+# Via CLI (human-readable table)
+agent-bus read --agent <YOUR-AGENT-ID> --since-minutes 5 --limit 5 --encoding human
+
+# OR via HTTP
 curl -s "http://localhost:8400/messages?agent=<YOUR-AGENT-ID>&since=5&limit=5"
+
+# OR TOON (ultra-compact for LLM context window)
+agent-bus read --agent <YOUR-AGENT-ID> --since-minutes 5 --limit 5 --encoding toon
 ```
 If you see a task-assignment or coordination message, acknowledge it and incorporate.
 
 **Step 5 — Post completion:**
 ```bash
-curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
-  -d '{"sender":"<YOUR-AGENT-ID>","recipient":"claude","topic":"<type>-findings","body":"COMPLETE: <N> findings. CRITICAL=<n>, HIGH=<n>, MEDIUM=<n>, LOW=<n>. Key: <one-line summary>","tags":["repo:<REPO-NAME>","status:complete"],"schema":"finding"}'
+agent-bus send --from-agent <YOUR-AGENT-ID> --to-agent claude --topic findings-complete \
+  --body "COMPLETE: 5 findings. CRITICAL=1, HIGH=2, MEDIUM=2. Key: Buffer management unsafe code." \
+  --tag "repo:<REPO-NAME>" --tag "status:complete" --schema finding
 ```
 
 ## File Ownership (MANDATORY for editing agents)
 
 Before modifying ANY file, you MUST:
-1. Check recent ownership claims: `curl -s "http://localhost:8400/messages?since=30&limit=50"` — look for `topic: "ownership"`
-2. If another agent owns the file, **do not edit it**. Post a status message noting the conflict.
-3. Post your own ownership claim (Step 2 above) before making changes.
+1. Use `agent-bus claim <path>` to register ownership or check for conflicts
+2. If another agent owns the file, **do not edit it**. Post a status message noting the conflict
+3. If conflicting claims exist, the orchestrator will resolve via `agent-bus resolve <path>`
 4. When done with a file, post: `"RELEASING: <file-path>"`
+
+```bash
+# Check all claims
+agent-bus claims
+
+# Check claims for a specific resource
+agent-bus claims --resource src/file.rs
+
+# Check only contested claims
+agent-bus claims --status contested
+
+# Resolve a conflict (orchestrator only)
+agent-bus resolve src/file.rs --winner claude --reason "claude owns this module"
+```
 
 Example (from finance-warehouse, where this pattern emerged naturally):
 ```
 linter → all | ownership | CLAIMING: Task #11 — lint and format. Skipping files owned
   by active agents: tax_parser.py (tax-integrator), test_doc_type_detector.py (doctype-expander)
 ```
+
+## Channel System (v0.4)
+
+Beyond broadcast messages, the bus provides focused communication channels for coordinated multi-agent work.
+
+### Direct Messages (Agent-to-Agent Private)
+
+Private 1-on-1 conversation channels. Messages do not appear in the main bus stream.
+
+```bash
+# Send a direct message
+agent-bus post-direct --from-agent claude --to-agent codex --topic "sync" \
+  --body "Review complete. 3 critical issues found."
+
+# Read direct messages between two agents
+agent-bus read-direct --agent-a claude --agent-b codex --limit 50 --encoding human
+
+# HTTP (post)
+curl -X POST http://localhost:8400/channels/direct/codex \
+  -H "Content-Type: application/json" \
+  -d '{"from":"claude","topic":"sync","body":"Review complete. 3 critical issues found."}'
+
+# HTTP (read)
+curl http://localhost:8400/channels/direct/codex?peer=claude&since=5
+```
+
+**Use cases:**
+- Sensitive coordination between agent pairs
+- Multi-stage handoffs without broadcast noise
+- Agent-to-orchestrator private escalations
+
+### Group Discussions (Named Channels)
+
+Named multi-agent discussion channels for focused work (e.g., a code review team, a deployment wave).
+
+```bash
+# Post to a group (group must exist)
+agent-bus post-group --group "review-http-rs" --from-agent code-reviewer \
+  --body "Found 5 buffer-safety issues. Assigning to rust-pro."
+
+# Read group messages
+agent-bus read-group --group "review-http-rs" --limit 100 --encoding human
+
+# HTTP (post)
+curl -X POST http://localhost:8400/channels/groups/review-http-rs/messages \
+  -H "Content-Type: application/json" \
+  -d '{"from":"code-reviewer","body":"Found 5 buffer-safety issues."}'
+
+# HTTP (read)
+curl http://localhost:8400/channels/groups/review-http-rs/messages?limit=100
+```
+
+**Use cases:**
+- Wave-based orchestration (Wave 1: analysis, Wave 2: review, Wave 3: fix)
+- Sub-team coordination within a larger session
+- Issue-specific working groups
+
+### Orchestrator Escalation (Automatic Priority Routing)
+
+High-priority messages automatically routed to the orchestrator with `priority=urgent`.
+
+```bash
+# HTTP (auto-routes to orchestrator)
+curl -X POST http://localhost:8400/channels/escalate \
+  -H "Content-Type: application/json" \
+  -d '{"from":"security-auditor","body":"CRITICAL: SQL injection in payment handler","priority":"urgent"}'
+
+# CLI equivalent (send to orchestrator with high priority)
+agent-bus send --from-agent security-auditor --to-agent orchestrator \
+  --topic "security-escalation" --body "CRITICAL: SQL injection in payment handler" \
+  --priority urgent --tag "severity:critical" --schema finding
+```
+
+### Ownership Arbitration (Protocol-Level File Locking)
+
+First-edit ownership with automatic conflict detection and escalation to orchestrator.
+
+```bash
+# Claim ownership (auto-granted if first claim)
+agent-bus claim src/redis_bus.rs --agent claude --reason "Adding compression"
+
+# View claim status
+agent-bus claims --resource src/redis_bus.rs
+
+# If conflict: escalates to orchestrator, both agents notified
+# Orchestrator resolves:
+agent-bus resolve src/redis_bus.rs --winner claude --reason "claude owns Redis layer" --resolved-by orchestrator
+
+# Claims auto-expire after 1 hour if unresolved
+```
+
+**Claim states:** `pending` (awaiting first-challenge) → `granted` (first claim won) or `contested` (conflict) → `review_assigned` (loser) or escalated.
+
+## Encoding Modes (Token-Efficient Output)
+
+When reading messages, use encoding modes optimized for LLM consumption to save context window tokens.
+
+### TOON (Token-Optimized Output Notation)
+
+Ultra-compact format: ~70% fewer tokens than JSON, ~40% vs compact.
+
+```bash
+# Fetch messages in TOON format
+agent-bus read --agent claude --since-minutes 60 --encoding toon
+
+# Example TOON line:
+# @claude→codex #code-findings [repo:agent-hub,severity:high] Buffer overflow in memcpy at src/usb/callbacks.cpp:64
+```
+
+Format: `@from→to #topic [tag1,tag2,tag3] body-first-120-chars...`
+
+**Use when:** Context window is precious, human readability is secondary (dashboards, CI logs).
+
+### Minimal
+
+Short field names, defaults stripped (~50% fewer tokens vs JSON, still readable).
+
+```bash
+agent-bus read --agent claude --encoding minimal
+```
+
+### Human
+
+Table format for terminal reading (default for watch/read interactive use).
+
+```bash
+agent-bus read --agent claude --encoding human
+agent-bus watch --agent claude --encoding human
+```
+
+### Compact
+
+Minified JSON, no whitespace (default for scripts/CI).
+
+```bash
+agent-bus read --agent claude --encoding compact
+```
+
+### JSON
+
+Pretty-printed for debugging.
+
+```bash
+agent-bus read --agent claude --encoding json
+```
+
+## Message Compression
+
+Automatically applied to large message bodies:
+- Bodies **>512 bytes** are LZ4-compressed on send
+- Transparently decompressed on read
+- Metadata: `_compressed: "lz4"`, `_original_size: N`
+
+No configuration needed — compression is automatic and transparent.
+
+## Batch Operations
+
+Send multiple messages from a NDJSON file (one JSON object per line) for bulk coordination.
+
+```bash
+# Create batch file (batch.ndjson)
+{"sender":"claude","recipient":"codex","topic":"status","body":"Starting code review"}
+{"sender":"claude","recipient":"rust-pro","topic":"task-assignment","body":"Fix 3 clippy warnings in redis_bus.rs"}
+
+# Send batch
+agent-bus batch-send --file batch.ndjson --encoding compact
+
+# OR from stdin
+cat batch.ndjson | agent-bus batch-send --file - --encoding human
+```
+
+Each message is validated and posted. Message IDs are printed line-by-line.
 
 ## Message Schemas (MANDATORY)
 
@@ -215,7 +428,7 @@ Before reading files, check if these tools have already indexed the repo:
 
 ## MCP Tool Names (When Agent-Bus Is Loaded as MCP Server)
 
-If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), these tools are available directly:
+If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), these 8 tools are available directly in your LLM session:
 
 | MCP Tool | Purpose | Key Parameters |
 |----------|---------|----------------|
@@ -226,8 +439,27 @@ If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), thes
 | `set_presence` | Register agent availability | `agent`, `status`, `capabilities[]`, `ttl_seconds`, `metadata` |
 | `list_presence` | List all active agents | (none) |
 | `list_presence_history` | PG presence audit trail | `agent`, `since_minutes`, `limit` |
+| `negotiate` | Discover protocol capabilities | (none) — returns: protocol_version, features, transports, schemas, encoding_formats |
 
 **Schema validation is enforced on `post_message`** when the `schema` parameter is provided.
+
+## Required-ACK Message Tracking
+
+For critical handoffs, request acknowledgement with `request_ack: true`. Unacknowledged messages are tracked and flagged.
+
+```bash
+# Send with ACK requested (recipient must acknowledge or message stays pending)
+agent-bus send --from-agent claude --to-agent codex --topic "critical-handoff" \
+  --body "Complete these 3 fixes before merging" --request-ack
+
+# List all unacknowledged messages (stale >60s are flagged)
+agent-bus pending-acks --agent claude --encoding human
+
+# Acknowledge a message
+agent-bus ack --agent codex --message-id <UUID> --body "Acknowledged. Starting work."
+```
+
+**Use case:** Ensure critical instructions (deployments, security fixes) are received before proceeding.
 
 ### MCP Usage Example (in-session, no HTTP/CLI needed)
 
@@ -295,42 +527,185 @@ New session on same repo:
 
 ## Transport Modes
 
-| Mode | Latency | Use Case |
-|------|---------|----------|
-| **MCP tools** (stdio) | <100ms | **Best when agent-bus is loaded as MCP server.** Direct tool calls. |
-| **HTTP POST** (`localhost:8400`) | <50ms | **Default for subagents.** No MCP session needed. |
-| **CLI** (`agent-bus send`) | ~2.5s | Scripts, one-off ops, environments without curl/MCP |
+| Transport | Command | Latency | Use Case |
+|-----------|---------|---------|----------|
+| **MCP stdio** | `serve --transport stdio` | <100ms | **Best for LLM agents.** Load as MCP server in ~/.claude/mcp.json, ~/.codex/config.toml, etc. |
+| **MCP Streamable HTTP** | `serve --transport mcp-http --port 8401` | <50ms | MCP 2025-06-18 spec support. Supports SSE streaming + session continuity. |
+| **HTTP REST** | `serve --transport http --port 8400` | <50ms | **Default for subagents.** Direct HTTP API + SSE streaming. No MCP needed. |
+| **CLI** | `agent-bus send` | ~200ms | Shell scripts, cron, agent subprocesses. Human-readable output modes. |
 
-**Priority**: MCP tools > HTTP POST > CLI. Use the fastest available.
+**Priority for LLM agents**: MCP stdio > MCP Streamable HTTP > HTTP REST > CLI.
+**Priority for scripts**: HTTP REST (fast, no subprocess) > CLI (reliable, subprocess).
 
-## Endpoint Reference
+## HTTP Endpoint Reference
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `GET` | `/health` | Bus health with Redis + PG stats |
+| **Core Messaging** | | |
 | `POST` | `/messages` | Send a message (JSON body) |
 | `GET` | `/messages?agent=X&since=N&limit=N` | Read messages for an agent |
 | `POST` | `/messages/:id/ack` | Acknowledge a message |
-| `GET` | `/events?agent=X&broadcast=bool` | SSE live stream |
+| `GET` | `/pending-acks?agent=X` | List unacknowledged messages |
+| **Presence** | | |
 | `PUT` | `/presence/:agent` | Set agent presence |
 | `GET` | `/presence` | List all active agents |
 | `GET` | `/presence/history?agent=X&since=N` | PG presence audit trail |
+| **Channels** | | |
+| `POST` | `/channels/direct/:agent` | Send direct message to another agent |
+| `GET` | `/channels/direct/:agent?peer=X&since=N` | Read direct messages |
+| `POST` | `/channels/groups` | Create a new group |
+| `POST` | `/channels/groups/:name/messages` | Post to a group |
+| `GET` | `/channels/groups/:name/messages?limit=N` | Read group messages |
+| `POST` | `/channels/escalate` | Send escalation (routes to orchestrator) |
+| `POST` | `/channels/arbitrate/:resource` | Claim ownership |
+| `GET` | `/channels/arbitrate/:resource` | List claims for resource |
+| `PUT` | `/channels/arbitrate/:resource/resolve` | Resolve ownership conflict |
+| **Streaming** | | |
+| `GET` | `/events?agent=X&broadcast=bool` | SSE live stream (text/event-stream) |
 
 ## CLI Quick Reference
 
+### Core Commands
 ```bash
 agent-bus health --encoding json              # Full status
 agent-bus send --from-agent X --to-agent Y --topic T --body B --schema finding
 agent-bus read --agent X --since-minutes 60 --encoding human
-agent-bus watch --agent X --history 20        # Real-time streaming
-agent-bus journal --tag "repo:X" --output .agent-bus/messages.jsonl
-agent-bus sync                                # Backfill Redis → PG
-agent-bus prune --older-than-days 30          # PG retention
-agent-bus export --since-minutes 1440         # NDJSON full dump
-agent-bus presence --agent X --capability mcp
-agent-bus presence-list
-agent-bus presence-history --agent X
+agent-bus read --agent X --since-minutes 60 --encoding toon  # Ultra-compact for LLMs
+agent-bus watch --agent X --history 20 --encoding human      # Real-time streaming
 ```
+
+### File Ownership & Arbitration
+```bash
+agent-bus claim src/file.rs --agent claude --reason "Adding compression"
+agent-bus claims                              # List all claims
+agent-bus claims --resource src/file.rs      # Claims for a specific file
+agent-bus claims --status contested          # Contested claims only
+agent-bus resolve src/file.rs --winner claude --reason "claude owns Redis layer"
+```
+
+### Direct Messages & Groups
+```bash
+agent-bus post-direct --from-agent claude --to-agent codex --body "Review done"
+agent-bus read-direct --agent-a claude --agent-b codex --limit 50
+agent-bus post-group --group "review-http-rs" --from-agent reviewer --body "3 issues found"
+agent-bus read-group --group "review-http-rs" --limit 100
+```
+
+### Batch & Monitoring
+```bash
+agent-bus batch-send --file batch.ndjson --encoding compact
+agent-bus pending-acks --agent claude --encoding human  # Unacknowledged messages
+agent-bus ack --agent claude --message-id <UUID> --body "Acknowledged"
+agent-bus monitor --session "session:framework-upgrade" --refresh 5  # Live dashboard
+```
+
+### Presence & History
+```bash
+agent-bus presence --agent X --status online --capability mcp
+agent-bus presence-list                      # All active agents
+agent-bus presence-history --agent X --since-minutes 60
+```
+
+### Codex Integration & Storage
+```bash
+agent-bus codex-sync --limit 100             # Sync findings from bus to Codex
+agent-bus journal --tag "repo:X" --output .agent-bus/messages.jsonl  # Export per-repo
+agent-bus export --since-minutes 1440 --limit 10000  # NDJSON dump to stdout
+agent-bus sync --limit 100000                # Backfill Redis → PostgreSQL (one-time)
+agent-bus prune --older-than-days 30         # Delete old PG records
+```
+
+### Server Modes
+```bash
+agent-bus serve --transport stdio            # MCP stdio (for mcp.json)
+agent-bus serve --transport http --port 8400 # HTTP REST + SSE
+agent-bus serve --transport mcp-http --port 8401  # MCP Streamable HTTP (2025-06-18 spec)
+```
+
+## Codex Integration (v0.4)
+
+The bus includes bidirectional Codex bridge for syncing findings between coordinating agents and the Codex CLI.
+
+```bash
+# Discover Codex config and sync findings
+agent-bus codex-sync --limit 100 --encoding json
+
+# Output includes:
+# - Count of findings by severity
+# - List of Codex-addressed messages
+# - Normalized finding format for Codex consumption
+```
+
+**Use case:** Multi-agent sessions can post findings to the bus, then use `codex-sync` to integrate them into Codex's internal finding registry for downstream processing (fixes, verification, etc.).
+
+## Protocol Negotiation (v0.4)
+
+Clients can discover bus capabilities and supported features:
+
+```bash
+# Via MCP tool (in-session)
+# Tool: negotiate
+# Returns: protocol_version, features, transports, schemas, encoding_formats
+
+# Via HTTP
+curl http://localhost:8400/negotiate
+
+# Via CLI
+agent-bus health --encoding json  # Includes runtime_metadata
+```
+
+## MCP Configuration (Multi-Platform)
+
+Register agent-bus in your LLM agent's MCP config for instant message bus access.
+
+### Claude Code (~/.claude/mcp.json or .claude/mcp.json)
+
+```json
+{
+  "agent-bus": {
+    "command": "C:\\Users\\david\\bin\\agent-bus.exe",
+    "args": ["serve", "--transport", "stdio"],
+    "env": {
+      "AGENT_BUS_REDIS_URL": "redis://localhost:6380/0",
+      "AGENT_BUS_DATABASE_URL": "postgresql://postgres@localhost:5300/redis_backend",
+      "RUST_LOG": "error"
+    }
+  }
+}
+```
+
+### Codex CLI (~/.codex/config.toml)
+
+```toml
+[mcp]
+agent_bus = { command = "C:\\Users\\david\\bin\\agent-bus.exe", args = ["serve", "--transport", "stdio"] }
+
+[mcp.env.agent_bus]
+AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
+AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5300/redis_backend"
+RUST_LOG = "error"
+```
+
+### Gemini CLI (~/.gemini/settings.json)
+
+```json
+{
+  "mcp_servers": {
+    "agent-bus": {
+      "command": "C:\\Users\\david\\bin\\agent-bus.exe",
+      "args": ["serve", "--transport", "stdio"],
+      "env": {
+        "AGENT_BUS_REDIS_URL": "redis://localhost:6380/0",
+        "AGENT_BUS_DATABASE_URL": "postgresql://postgres@localhost:5300/redis_backend",
+        "RUST_LOG": "error"
+      }
+    }
+  }
+}
+```
+
+**All platforms use identical Rust binary** (`~/bin/agent-bus.exe`) — no platform-specific code.
 
 ## Stable Agent IDs
 
