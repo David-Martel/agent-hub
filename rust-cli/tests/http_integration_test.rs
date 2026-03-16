@@ -182,13 +182,17 @@ async fn post_message_missing_sender_returns_400() {
         .await
         .expect("POST /messages failed");
 
-    // Axum returns 422 Unprocessable Entity when a required JSON field is absent
-    // (deserialization fails before the handler runs).
-    assert!(
-        resp.status() == StatusCode::BAD_REQUEST
-            || resp.status() == StatusCode::UNPROCESSABLE_ENTITY,
-        "missing sender should be 400 or 422, got {}",
+    // The JsonRejection handler normalises all deserialisation failures to 400.
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "missing sender should be 400, got {}",
         resp.status()
+    );
+    let body: Value = resp.json().await.expect("response not JSON");
+    assert!(
+        body.get("error").is_some(),
+        "error response missing 'error' field: {body}"
     );
 }
 
@@ -862,6 +866,132 @@ async fn escalate_channel_sets_high_priority() {
         body["metadata"]["escalation"],
         json!(true),
         "escalation metadata.escalation should be true: {body}"
+    );
+}
+
+/// Verify that when an agent with `orchestration` capability is online the
+/// escalation `to` field is set to that specific agent rather than `"all"`.
+///
+/// This test registers a presence record, posts an escalation, then checks the
+/// `to` field of the returned message. It is self-contained — the presence
+/// record expires on its own TTL.
+#[tokio::test]
+async fn escalate_routes_to_orchestrator_when_present() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
+        return;
+    }
+
+    let ts = unique_suffix();
+    let orch_agent = format!("orchestrator-{ts}");
+    let sender = format!("escalate-sender-{ts}");
+
+    // Register the orchestrator agent with the required capability.
+    let presence_resp = client
+        .put(format!("{BASE_URL}/presence/{orch_agent}"))
+        .json(&json!({
+            "status": "online",
+            "capabilities": ["orchestration"],
+            "ttl_seconds": 60,
+        }))
+        .send()
+        .await
+        .expect("PUT /presence failed");
+    assert_eq!(
+        presence_resp.status(),
+        StatusCode::OK,
+        "presence registration failed: {}",
+        presence_resp.status()
+    );
+
+    // Post the escalation.
+    let resp = client
+        .post(format!("{BASE_URL}/channels/escalate"))
+        .json(&json!({
+            "sender": sender,
+            "body": format!("escalation for orchestrator test {ts}"),
+        }))
+        .send()
+        .await
+        .expect("POST /channels/escalate failed");
+
+    assert_eq!(resp.status(), StatusCode::OK, "escalate should be 200");
+    let body: Value = resp.json().await.expect("escalate response not JSON");
+
+    let to_field = body["to"].as_str().unwrap_or("");
+    assert_eq!(
+        to_field, orch_agent,
+        "escalation 'to' should be the registered orchestrator '{orch_agent}', got: '{to_field}' — full body: {body}"
+    );
+
+    // priority field on the Message struct must be "high" (Deviation 3).
+    assert_eq!(
+        body["priority"].as_str().unwrap_or(""),
+        "high",
+        "escalation Message.priority must be 'high': {body}"
+    );
+}
+
+/// Verify that batch send returns 400 (not 422) when the messages array field
+/// is missing from the request body. This covers Deviation 1 for the batch endpoint.
+#[tokio::test]
+async fn batch_send_missing_messages_field_returns_400() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
+        return;
+    }
+
+    // Send a body that is missing the required `messages` field entirely.
+    let resp = client
+        .post(format!("{BASE_URL}/messages/batch"))
+        .json(&json!({"unexpected_field": "value"}))
+        .send()
+        .await
+        .expect("POST /messages/batch failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "missing 'messages' field should be 400, got {}",
+        resp.status()
+    );
+    let body: Value = resp.json().await.expect("response not JSON");
+    assert!(
+        body.get("error").is_some(),
+        "error response missing 'error' field: {body}"
+    );
+}
+
+/// Verify that batch ack returns 400 (not 422) when the required `agent` field
+/// is missing. This covers Deviation 1 for the batch-ack endpoint.
+#[tokio::test]
+async fn batch_ack_missing_agent_field_returns_400() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
+        return;
+    }
+
+    // Omit the required `agent` field.
+    let resp = client
+        .post(format!("{BASE_URL}/ack/batch"))
+        .json(&json!({"message_ids": ["fake-id-1"]}))
+        .send()
+        .await
+        .expect("POST /ack/batch failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "missing 'agent' field should be 400, got {}",
+        resp.status()
+    );
+    let body: Value = resp.json().await.expect("response not JSON");
+    assert!(
+        body.get("error").is_some(),
+        "error response missing 'error' field: {body}"
     );
 }
 

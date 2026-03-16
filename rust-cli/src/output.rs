@@ -1,5 +1,7 @@
 //! Output formatting and encoding modes.
 
+use std::fmt::Write as _;
+
 use clap::ValueEnum;
 use serde::Serialize;
 
@@ -96,13 +98,24 @@ pub(crate) fn output_presence(p: &Presence, encoding: &Encoding) {
 /// ok=true r=561 p=492 v=1.0
 /// ```
 pub(crate) fn format_health_toon(h: &Health) -> String {
-    let r = h
-        .stream_length
-        .map_or_else(|| "?".to_owned(), |n| n.to_string());
-    let p = h
-        .pg_message_count
-        .map_or_else(|| "?".to_owned(), |n| n.to_string());
-    format!("ok={} r={r} p={p} v={}", h.ok, h.protocol_version)
+    // Pre-size: "ok=false r=18446744073709551615 p=-9223372036854775808 v=1.0" ~ 70 chars
+    let mut out = String::with_capacity(72);
+    let _ = write!(out, "ok={} r=", h.ok);
+    match h.stream_length {
+        Some(n) => {
+            let _ = write!(out, "{n}");
+        }
+        None => out.push('?'),
+    }
+    out.push_str(" p=");
+    match h.pg_message_count {
+        Some(n) => {
+            let _ = write!(out, "{n}");
+        }
+        None => out.push('?'),
+    }
+    let _ = write!(out, " v={}", h.protocol_version);
+    out
 }
 
 /// Format a [`Message`] as a single TOON line.
@@ -115,16 +128,33 @@ pub(crate) fn format_health_toon(h: &Health) -> String {
 /// @claude→all #coordination [repo:agent-hub] Session announced: framework-v0.4
 /// ```
 pub(crate) fn format_message_toon(msg: &Message) -> String {
-    let tags_str = if msg.tags.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", msg.tags.join(","))
-    };
-    let body_preview: String = msg.body.chars().take(120).collect();
-    format!(
-        "@{}→{} #{}{} {}",
-        msg.from, msg.to, msg.topic, tags_str, body_preview
-    )
+    // Capacity estimate: fixed prefix (~10) + from + to + topic + tags + body preview.
+    // Tags total + body preview ≤ 120 + reasonable tag length. Over-estimate to 256.
+    let cap = 10 + msg.from.len() + msg.to.len() + msg.topic.len() + 256;
+    let mut out = String::with_capacity(cap);
+    // "→" is U+2192, a 3-byte UTF-8 sequence; write it as a literal char.
+    let _ = write!(out, "@{}→{} #{}", msg.from, msg.to, msg.topic);
+    if !msg.tags.is_empty() {
+        out.push_str(" [");
+        let mut first = true;
+        for tag in &msg.tags {
+            if !first {
+                out.push(',');
+            }
+            out.push_str(tag);
+            first = false;
+        }
+        out.push(']');
+    }
+    out.push(' ');
+    // Body preview: up to 120 Unicode scalar values, avoiding a collect() allocation.
+    for (i, ch) in msg.body.chars().enumerate() {
+        if i == 120 {
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// Format a [`Presence`] record as a single TOON line.
@@ -137,15 +167,23 @@ pub(crate) fn format_message_toon(msg: &Message) -> String {
 /// ~claude online [orchestration] ttl=7200s
 /// ```
 pub(crate) fn format_presence_toon(p: &Presence) -> String {
-    let caps_str = if p.capabilities.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", p.capabilities.join(","))
-    };
-    format!(
-        "~{} {}{} ttl={}s",
-        p.agent, p.status, caps_str, p.ttl_seconds
-    )
+    let cap = 2 + p.agent.len() + 1 + p.status.len() + 64;
+    let mut out = String::with_capacity(cap);
+    let _ = write!(out, "~{} {}", p.agent, p.status);
+    if !p.capabilities.is_empty() {
+        out.push_str(" [");
+        let mut first = true;
+        for c in &p.capabilities {
+            if !first {
+                out.push(',');
+            }
+            out.push_str(c);
+            first = false;
+        }
+        out.push(']');
+    }
+    let _ = write!(out, " ttl={}s", p.ttl_seconds);
+    out
 }
 
 pub(crate) fn minimize_value(value: &serde_json::Value) -> serde_json::Value {

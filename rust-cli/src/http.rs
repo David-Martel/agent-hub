@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use axum::{
     Json, Router,
+    extract::rejection::JsonRejection,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -72,6 +73,17 @@ fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) 
         StatusCode::BAD_REQUEST,
         Json(serde_json::json!({"error": msg.into()})),
     )
+}
+
+/// Map an Axum [`JsonRejection`] (deserialization failure) to an HTTP 400
+/// response so clients receive a consistent error code whether a field is
+/// missing from the payload or present but invalid.
+///
+/// Axum's built-in `Json<T>` extractor returns 422 on deserialisation errors.
+/// By accepting `Result<Json<T>, JsonRejection>` in handlers and mapping
+/// rejections through this function we normalise all JSON parse failures to 400.
+fn json_rejection_to_400(e: JsonRejection) -> (StatusCode, Json<serde_json::Value>) {
+    bad_request(e.to_string())
 }
 
 // Local wrapper so serde's `default = "default_priority"` resolves in this module scope.
@@ -163,8 +175,9 @@ pub(crate) struct HttpSendRequest {
 
 pub(crate) async fn http_send_handler(
     State(state): State<AppState>,
-    Json(req): Json<HttpSendRequest>,
+    payload: Result<Json<HttpSendRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     // Validate required fields (cheap — stays on the async task).
     let sender = req.sender.trim().to_owned();
     let recipient = req.recipient.trim().to_owned();
@@ -318,8 +331,9 @@ fn default_ack_body() -> String {
 pub(crate) async fn http_ack_handler(
     State(state): State<AppState>,
     Path(message_id): Path<String>,
-    Json(req): Json<HttpAckRequest>,
+    payload: Result<Json<HttpAckRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     // Validation stays on the async task (cheap).
     let agent = req.agent.trim().to_owned();
     if agent.is_empty() {
@@ -392,8 +406,9 @@ fn default_ttl() -> u64 {
 pub(crate) async fn http_presence_set_handler(
     State(state): State<AppState>,
     Path(agent): Path<String>,
-    Json(req): Json<HttpPresenceRequest>,
+    payload: Result<Json<HttpPresenceRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     // Validation stays on the async task (cheap).
     let agent = agent.trim().to_owned();
     if agent.is_empty() {
@@ -936,8 +951,9 @@ pub(crate) struct HttpBatchSendResponse {
 
 pub(crate) async fn http_batch_send_handler(
     State(state): State<AppState>,
-    Json(req): Json<HttpBatchSendRequest>,
+    payload: Result<Json<HttpBatchSendRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     if req.messages.is_empty() {
         return Err(bad_request("messages array must not be empty"));
     }
@@ -1063,8 +1079,9 @@ pub(crate) struct HttpBatchReadRequest {
 
 pub(crate) async fn http_batch_read_handler(
     State(state): State<AppState>,
-    Json(req): Json<HttpBatchReadRequest>,
+    payload: Result<Json<HttpBatchReadRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     if req.agents.is_empty() {
         return Err(bad_request("agents array must not be empty"));
     }
@@ -1119,8 +1136,9 @@ pub(crate) struct HttpBatchAckRequest {
 
 pub(crate) async fn http_batch_ack_handler(
     State(state): State<AppState>,
-    Json(req): Json<HttpBatchAckRequest>,
+    payload: Result<Json<HttpBatchAckRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     let agent = req.agent.trim().to_owned();
     if agent.is_empty() {
         return Err(bad_request("agent must not be empty"));
@@ -1196,8 +1214,9 @@ fn default_direct_topic() -> String {
 async fn http_direct_send_handler(
     State(state): State<AppState>,
     Path(recipient): Path<String>,
-    Json(req): Json<HttpDirectSendRequest>,
+    payload: Result<Json<HttpDirectSendRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     let sender = req.sender.trim().to_owned();
     let recipient = recipient.trim().to_owned();
     let body = req.body.trim().to_owned();
@@ -1273,8 +1292,9 @@ pub(crate) struct HttpCreateGroupRequest {
 
 async fn http_create_group_handler(
     State(state): State<AppState>,
-    Json(req): Json<HttpCreateGroupRequest>,
+    payload: Result<Json<HttpCreateGroupRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     let name = req.name.trim().to_owned();
     if name.is_empty() {
         return Err(bad_request("name must not be empty"));
@@ -1326,8 +1346,9 @@ fn default_group_topic() -> String {
 async fn http_group_send_handler(
     State(state): State<AppState>,
     Path(group_name): Path<String>,
-    Json(req): Json<HttpGroupSendRequest>,
+    payload: Result<Json<HttpGroupSendRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     let sender = req.sender.trim().to_owned();
     let body = req.body.trim().to_owned();
     if sender.is_empty() {
@@ -1397,8 +1418,9 @@ pub(crate) struct HttpEscalateRequest {
 
 async fn http_escalate_handler(
     State(state): State<AppState>,
-    Json(req): Json<HttpEscalateRequest>,
+    payload: Result<Json<HttpEscalateRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     let sender = req.sender.trim().to_owned();
     let body = req.body.trim().to_owned();
     if sender.is_empty() {
@@ -1446,8 +1468,9 @@ fn default_priority_argument() -> String {
 async fn http_claim_handler(
     State(state): State<AppState>,
     Path(resource): Path<String>,
-    Json(req): Json<HttpClaimRequest>,
+    payload: Result<Json<HttpClaimRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     let agent = req.agent.trim().to_owned();
     if agent.is_empty() {
         return Err(bad_request("agent must not be empty"));
@@ -1504,8 +1527,9 @@ fn default_resolved_by() -> String {
 async fn http_resolve_handler(
     State(state): State<AppState>,
     Path(resource): Path<String>,
-    Json(req): Json<HttpResolveRequest>,
+    payload: Result<Json<HttpResolveRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
     let winner = req.winner.trim().to_owned();
     if winner.is_empty() {
         return Err(bad_request("winner must not be empty"));

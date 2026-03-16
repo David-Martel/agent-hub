@@ -136,16 +136,33 @@ impl RedisPool {
 }
 
 pub(crate) fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Message {
+    // Extract a field as an owned String. For BulkString we attempt zero-copy
+    // UTF-8 conversion; only lossy-converts on invalid bytes (rare in practice).
     let get = |k: &str| -> String {
         match fields.get(k) {
-            Some(redis::Value::BulkString(b)) => String::from_utf8_lossy(b).to_string(),
+            Some(redis::Value::BulkString(b)) => {
+                // Fast path: valid UTF-8 (the common case) avoids the lossy
+                // intermediate Cow allocation entirely.
+                match std::str::from_utf8(b) {
+                    Ok(s) => s.to_owned(),
+                    Err(_) => String::from_utf8_lossy(b).into_owned(),
+                }
+            }
             Some(redis::Value::SimpleString(s)) => s.clone(),
             _ => String::new(),
         }
     };
+    // Borrow a field as &str when possible (avoids allocation for read-only checks).
+    let get_ref = |k: &str| -> &[u8] {
+        match fields.get(k) {
+            Some(redis::Value::BulkString(b)) => b.as_slice(),
+            Some(redis::Value::SimpleString(s)) => s.as_bytes(),
+            _ => b"",
+        }
+    };
     let get_bool = |k: &str| -> bool {
-        let v = get(k);
-        v == "true" || v == "True"
+        let v = get_ref(k);
+        v == b"true" || v == b"True"
     };
     let get_json_vec = |k: &str| -> Vec<String> {
         let raw = get(k);
@@ -157,10 +174,10 @@ pub(crate) fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Mes
     };
 
     // Transparently decompress LZ4 bodies written by bus_post_message.
+    // Check the _compressed marker with a zero-allocation byte comparison.
     let body = {
         let raw = get("body");
-        let compressed_marker = get("_compressed");
-        if compressed_marker == "lz4" {
+        if get_ref("_compressed") == b"lz4" {
             match lz4_decompress_body(&raw) {
                 Ok(decompressed) => decompressed,
                 Err(e) => {
@@ -312,39 +329,25 @@ pub(crate) fn bus_post_message(
     let reply = reply_to.unwrap_or(from);
 
     // --- Task 1: server-side schema inference ------------------------------------
-    // Merge the inferred schema into metadata before persisting, so that every
+    // Merge the inferred schema into metadata before persisting so that every
     // transport (CLI, MCP, HTTP) gets the annotation for free.
-    let enriched_metadata: serde_json::Value;
-    let effective_metadata = if let Some(schema) = infer_schema_from_topic(topic, None) {
-        let mut map = match metadata {
-            serde_json::Value::Object(m) => m.clone(),
-            _ => serde_json::Map::new(),
-        };
-        map.insert(
-            "_schema".to_owned(),
-            serde_json::Value::String(schema.to_owned()),
-        );
-        enriched_metadata = serde_json::Value::Object(map);
-        &enriched_metadata
-    } else {
-        metadata
-    };
-    // -------------------------------------------------------------------------
-
-    let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_owned());
-    let ack_str = if request_ack { "true" } else { "false" };
-    let thread_str = thread_id.unwrap_or("");
+    //
+    // Optimisation: build the final metadata map in a single pass that handles
+    // both the schema annotation and the optional compression markers.  This
+    // avoids the two successive `m.clone()` calls the previous code made when
+    // both schema inference and compression fired on the same message.
+    let inferred_schema = infer_schema_from_topic(topic, None);
 
     // --- LZ4 body compression ------------------------------------------------
     // Compress bodies above the threshold to reduce Redis memory and payload
     // sizes. The original body is kept in the returned `Message` struct so all
     // callers work with uncompressed data.
     //
-    // `compressed`: `Some((b64_body, original_size_str))` when compression
-    // succeeded; `None` when the body is too small or compression failed.
-    let compressed: Option<(String, String)> = if body.len() > COMPRESS_THRESHOLD {
+    // `compressed`: `Some(b64_body)` when compression succeeded;
+    // `None` when the body is too small or compression failed.
+    let compressed: Option<String> = if body.len() > COMPRESS_THRESHOLD {
         match lz4_compress_body(body) {
-            Ok((b64, orig)) => Some((b64, orig.to_string())),
+            Ok((b64, _)) => Some(b64),
             Err(e) => {
                 tracing::warn!("lz4 compression failed, storing uncompressed: {e:#}");
                 None
@@ -354,28 +357,52 @@ pub(crate) fn bus_post_message(
         None
     };
 
-    let stored_body: &str = compressed.as_ref().map_or(body, |(b64, _)| b64.as_str());
+    let stored_body: &str = compressed.as_deref().unwrap_or(body);
 
-    // Merge compression markers into the stored metadata map.
-    let meta_with_compression: serde_json::Value;
-    let final_metadata = if let Some((_, ref orig_size)) = compressed {
-        let mut map = match effective_metadata {
+    // Build final metadata in one clone, merging schema + compression markers.
+    let final_metadata_owned: serde_json::Value;
+    let final_metadata: &serde_json::Value = if inferred_schema.is_some() || compressed.is_some() {
+        let mut map = match metadata {
             serde_json::Value::Object(m) => m.clone(),
             _ => serde_json::Map::new(),
         };
-        map.insert("_compressed".to_owned(), serde_json::json!("lz4"));
-        map.insert("_original_size".to_owned(), serde_json::json!(body.len()));
-        let _ = orig_size; // size is also stored as a dedicated stream field below
-        meta_with_compression = serde_json::Value::Object(map);
-        &meta_with_compression
+        if let Some(schema) = inferred_schema {
+            map.insert(
+                "_schema".to_owned(),
+                serde_json::Value::String(schema.to_owned()),
+            );
+        }
+        if compressed.is_some() {
+            map.insert("_compressed".to_owned(), serde_json::json!("lz4"));
+            map.insert(
+                "_original_size".to_owned(),
+                serde_json::Value::Number(body.len().into()),
+            );
+        }
+        final_metadata_owned = serde_json::Value::Object(map);
+        &final_metadata_owned
     } else {
-        effective_metadata
+        metadata
+    };
+    // effective_metadata for the returned Message is the schema-annotated map
+    // (without compression markers, since the returned body is uncompressed).
+    let effective_metadata: &serde_json::Value = if inferred_schema.is_some() {
+        final_metadata
+    } else {
+        metadata
     };
     // -------------------------------------------------------------------------
 
+    let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_owned());
+    let ack_str = if request_ack { "true" } else { "false" };
+    let thread_str = thread_id.unwrap_or("");
+
     let meta_json = serde_json::to_string(final_metadata).unwrap_or_else(|_| "{}".to_owned());
 
-    let mut fields: Vec<(&str, &str)> = vec![
+    // Use a fixed-capacity SmallVec-style array on the stack: 12 fixed fields
+    // + optional thread_id (1) + optional compression markers (2) = 15 max.
+    let mut fields: Vec<(&str, &str)> = Vec::with_capacity(15);
+    fields.extend_from_slice(&[
         ("id", &id),
         ("timestamp_utc", &ts),
         ("protocol_version", PROTOCOL_VERSION),
@@ -388,14 +415,13 @@ pub(crate) fn bus_post_message(
         ("request_ack", ack_str),
         ("reply_to", reply),
         ("metadata", &meta_json),
-    ];
+    ]);
     if !thread_str.is_empty() {
         fields.push(("thread_id", thread_str));
     }
     // Store a dedicated field for fast decompression detection in decode_stream_entry.
-    if let Some((_, ref orig_size_str)) = compressed {
+    if compressed.is_some() {
         fields.push(("_compressed", "lz4"));
-        fields.push(("_original_size", orig_size_str.as_str()));
     }
 
     let stream_id: String = redis::cmd("XADD")

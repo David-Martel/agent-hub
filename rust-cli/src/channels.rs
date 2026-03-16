@@ -627,18 +627,19 @@ fn list_group_info(conn: &mut redis::Connection, name: &str) -> Result<GroupInfo
 // Orchestrator escalation
 // ---------------------------------------------------------------------------
 
+/// Dedicated Redis stream key for escalation messages.
+const ESCALATION_STREAM: &str = "bus:escalations";
+
 /// Post an escalation message to the first online agent with `orchestration`
 /// capability, falling back to the `all` recipient if none is found.
 ///
-/// The message is stored in the main bus stream via `bus_post_message` so it
-/// participates in the normal delivery/ACK flow, but with `priority=high` and
-/// the `escalation=true` metadata flag so monitoring tools can surface it.
+/// The message is stored in a dedicated escalation stream with `priority=high`
+/// and the `escalation=true` metadata flag so monitoring tools can surface it.
+/// The `Message.priority` field of the returned value is always `"high"`.
 ///
 /// # Errors
 ///
-/// Returns an error if `bus_post_message` fails.
-/// Dedicated Redis stream key for escalation messages.
-const ESCALATION_STREAM: &str = "bus:escalations";
+/// Returns an error if the Redis `XADD` fails.
 
 pub(crate) fn post_escalation(
     settings: &Settings,
