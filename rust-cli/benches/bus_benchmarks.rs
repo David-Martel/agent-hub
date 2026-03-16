@@ -66,42 +66,78 @@ struct Health {
 }
 
 // ---------------------------------------------------------------------------
-// Pure functions (mirror output.rs)
+// Pure functions (mirror output.rs — keep in sync with src/output.rs)
 // ---------------------------------------------------------------------------
 
+use std::fmt::Write as _;
+
 fn format_message_toon(msg: &Message) -> String {
-    let tags_str = if msg.tags.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", msg.tags.join(","))
-    };
-    let body_preview: String = msg.body.chars().take(120).collect();
-    format!(
-        "@{}\u{2192}{} #{}{}  {}",
-        msg.from, msg.to, msg.topic, tags_str, body_preview
-    )
+    // Optimized: single pre-sized String, no intermediate join/format allocations.
+    let cap = 10 + msg.from.len() + msg.to.len() + msg.topic.len() + 256;
+    let mut out = String::with_capacity(cap);
+    let _ = write!(out, "@{}→{} #{}", msg.from, msg.to, msg.topic);
+    if !msg.tags.is_empty() {
+        out.push_str(" [");
+        let mut first = true;
+        for tag in &msg.tags {
+            if !first {
+                out.push(',');
+            }
+            out.push_str(tag);
+            first = false;
+        }
+        out.push(']');
+    }
+    out.push(' ');
+    for (i, ch) in msg.body.chars().enumerate() {
+        if i == 120 {
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn format_presence_toon(p: &Presence) -> String {
-    let caps_str = if p.capabilities.is_empty() {
-        String::new()
-    } else {
-        format!(" [{}]", p.capabilities.join(","))
-    };
-    format!(
-        "~{} {}{} ttl={}s",
-        p.agent, p.status, caps_str, p.ttl_seconds
-    )
+    // Optimized: single pre-sized String, no join/format intermediate allocations.
+    let cap = 2 + p.agent.len() + 1 + p.status.len() + 64;
+    let mut out = String::with_capacity(cap);
+    let _ = write!(out, "~{} {}", p.agent, p.status);
+    if !p.capabilities.is_empty() {
+        out.push_str(" [");
+        let mut first = true;
+        for c in &p.capabilities {
+            if !first {
+                out.push(',');
+            }
+            out.push_str(c);
+            first = false;
+        }
+        out.push(']');
+    }
+    let _ = write!(out, " ttl={}s", p.ttl_seconds);
+    out
 }
 
 fn format_health_toon(h: &Health) -> String {
-    let r = h
-        .stream_length
-        .map_or_else(|| "?".to_owned(), |n| n.to_string());
-    let p = h
-        .pg_message_count
-        .map_or_else(|| "?".to_owned(), |n| n.to_string());
-    format!("ok={} r={r} p={p} v={}", h.ok, h.protocol_version)
+    // Optimized: pre-sized String, write! directly — avoids two intermediate String allocs.
+    let mut out = String::with_capacity(72);
+    let _ = write!(out, "ok={} r=", h.ok);
+    match h.stream_length {
+        Some(n) => {
+            let _ = write!(out, "{n}");
+        }
+        None => out.push('?'),
+    }
+    out.push_str(" p=");
+    match h.pg_message_count {
+        Some(n) => {
+            let _ = write!(out, "{n}");
+        }
+        None => out.push('?'),
+    }
+    let _ = write!(out, " v={}", h.protocol_version);
+    out
 }
 
 fn minimize_value(value: &serde_json::Value) -> serde_json::Value {
@@ -190,6 +226,60 @@ fn group_members_key(name: &str) -> String {
 fn claims_key(resource: &str) -> String {
     let normalised = resource.replace('\\', "/");
     format!("{CLAIMS_PREFIX}{normalised}")
+}
+
+// ---------------------------------------------------------------------------
+// Pure functions (mirror redis_bus.rs decode_stream_entry — key extraction)
+// ---------------------------------------------------------------------------
+
+/// Original approach: from_utf8_lossy → Cow → .to_string() (two potential allocs).
+fn get_field_original(raw: &[u8]) -> String {
+    String::from_utf8_lossy(raw).to_string()
+}
+
+/// Optimized approach: try from_utf8 first (zero-copy path), fall back to lossy.
+fn get_field_optimized(raw: &[u8]) -> String {
+    match std::str::from_utf8(raw) {
+        Ok(s) => s.to_owned(),
+        Err(_) => String::from_utf8_lossy(raw).into_owned(),
+    }
+}
+
+/// Simulated decode: extracts 8 fields from a HashMap of byte slices.
+fn decode_fields_original(fields: &std::collections::HashMap<&str, Vec<u8>>) -> Vec<String> {
+    let get = |k: &str| -> String {
+        fields
+            .get(k)
+            .map_or_else(String::new, |b| get_field_original(b))
+    };
+    vec![
+        get("id"),
+        get("timestamp_utc"),
+        get("from"),
+        get("to"),
+        get("topic"),
+        get("body"),
+        get("priority"),
+        get("tags"),
+    ]
+}
+
+fn decode_fields_optimized(fields: &std::collections::HashMap<&str, Vec<u8>>) -> Vec<String> {
+    let get = |k: &str| -> String {
+        fields
+            .get(k)
+            .map_or_else(String::new, |b| get_field_optimized(b))
+    };
+    vec![
+        get("id"),
+        get("timestamp_utc"),
+        get("from"),
+        get("to"),
+        get("topic"),
+        get("body"),
+        get("priority"),
+        get("tags"),
+    ]
 }
 
 // ---------------------------------------------------------------------------
@@ -515,6 +605,54 @@ fn bench_presence_serde(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Benchmark 9: decode_stream_entry field extraction (Hotpath 2)
+// ---------------------------------------------------------------------------
+
+fn bench_decode_stream_fields(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decode_stream_fields");
+
+    // Simulate 8 ASCII-only fields as they arrive from Redis BulkString bytes.
+    let fields: std::collections::HashMap<&str, Vec<u8>> = [
+        ("id", b"550e8400-e29b-41d4-a716-446655440000".to_vec()),
+        ("timestamp_utc", b"2026-03-15T10:30:00.123456Z".to_vec()),
+        ("from", b"claude".to_vec()),
+        ("to", b"codex".to_vec()),
+        ("topic", b"rust-findings".to_vec()),
+        (
+            "body",
+            b"Reviewing redis_bus.rs hotpath: found excessive allocations in decode_stream_entry"
+                .to_vec(),
+        ),
+        ("priority", b"high".to_vec()),
+        (
+            "tags",
+            br#"["repo:agent-hub","severity:high","component:redis"]"#.to_vec(),
+        ),
+    ]
+    .into_iter()
+    .collect();
+
+    group.bench_function("original_lossy_to_string", |b| {
+        b.iter(|| decode_fields_original(&fields));
+    });
+
+    group.bench_function("optimized_utf8_fast_path", |b| {
+        b.iter(|| decode_fields_optimized(&fields));
+    });
+
+    // Also benchmark just the single-field extraction to isolate the difference.
+    let field_bytes = b"claude".to_vec();
+    group.bench_function("single_field_original", |b| {
+        b.iter(|| get_field_original(&field_bytes));
+    });
+    group.bench_function("single_field_optimized", |b| {
+        b.iter(|| get_field_optimized(&field_bytes));
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Criterion groups
 // ---------------------------------------------------------------------------
 
@@ -528,6 +666,7 @@ criterion_group!(
     bench_uuid_generation,
     bench_timestamp_format,
     bench_presence_serde,
+    bench_decode_stream_fields,
 );
 
 criterion_main!(benches);

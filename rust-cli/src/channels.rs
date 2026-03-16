@@ -640,7 +640,6 @@ const ESCALATION_STREAM: &str = "bus:escalations";
 /// # Errors
 ///
 /// Returns an error if the Redis `XADD` fails.
-
 pub(crate) fn post_escalation(
     settings: &Settings,
     sender: &str,
@@ -1095,6 +1094,7 @@ pub(crate) fn channel_summary(settings: &Settings) -> Result<ChannelSummary> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::useless_vec)]
 mod tests {
     use super::*;
 
@@ -1550,7 +1550,7 @@ mod tests {
         assert_eq!(status, ClaimStatus::Contested);
     }
 
-    /// After resolution the winner gets Granted, all others get ReviewAssigned.
+    /// After resolution the winner gets Granted, all others get `ReviewAssigned`.
     #[test]
     fn resolution_assigns_winner_and_reviewers() {
         let winner = "claude";
@@ -1610,7 +1610,7 @@ mod tests {
         assert_eq!(granted_count, 1, "exactly one agent should be Granted");
     }
 
-    /// Verifies that mark_all_contested logic upgrades only non-contested claims.
+    /// Verifies that `mark_all_contested` logic upgrades only non-contested claims.
     #[test]
     fn mark_all_contested_only_upgrades_non_contested_claims() {
         // Simulate the guard in mark_all_contested: only update if != Contested.
@@ -1623,10 +1623,10 @@ mod tests {
         let updated: Vec<ClaimStatus> = claims
             .iter()
             .map(|c| {
-                if c.status != ClaimStatus::Contested {
-                    ClaimStatus::Contested
-                } else {
+                if c.status == ClaimStatus::Contested {
                     c.status.clone()
+                } else {
+                    ClaimStatus::Contested
                 }
             })
             .collect();

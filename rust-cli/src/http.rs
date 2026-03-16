@@ -82,6 +82,10 @@ fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) 
 /// Axum's built-in `Json<T>` extractor returns 422 on deserialisation errors.
 /// By accepting `Result<Json<T>, JsonRejection>` in handlers and mapping
 /// rejections through this function we normalise all JSON parse failures to 400.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "used as .map_err(json_rejection_to_400) — fn pointer requires by-value"
+)]
 fn json_rejection_to_400(e: JsonRejection) -> (StatusCode, Json<serde_json::Value>) {
     bad_request(e.to_string())
 }
@@ -949,6 +953,10 @@ pub(crate) struct HttpBatchSendResponse {
     pub(crate) count: usize,
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "batch validation + per-message send loop"
+)]
 pub(crate) async fn http_batch_send_handler(
     State(state): State<AppState>,
     payload: Result<Json<HttpBatchSendRequest>, JsonRejection>,
