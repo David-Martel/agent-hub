@@ -231,11 +231,17 @@ pub(crate) fn cmd_pending_acks(
         if pending.is_empty() {
             println!("No pending acknowledgements.");
         } else {
-            println!("{:<38}  {:<12}  {:<26}  STATUS", "MESSAGE ID", "RECIPIENT", "SENT AT");
+            println!(
+                "{:<38}  {:<12}  {:<26}  STATUS",
+                "MESSAGE ID", "RECIPIENT", "SENT AT"
+            );
             println!("{}", "-".repeat(90));
             for p in &pending {
                 let status = if p.stale { "STALE" } else { "waiting" };
-                println!("{:<38}  {:<12}  {:<26}  {}", p.message_id, p.recipient, p.sent_at, status);
+                println!(
+                    "{:<38}  {:<12}  {:<26}  {}",
+                    p.message_id, p.recipient, p.sent_at, status
+                );
             }
             println!("\n{} pending ack(s)", pending.len());
         }
@@ -430,7 +436,10 @@ pub(crate) fn cmd_codex_sync(settings: &Settings, limit: usize, encoding: &Encod
                 })
             })
             .collect();
-        map.insert("findings".to_owned(), serde_json::Value::Array(findings_val));
+        map.insert(
+            "findings".to_owned(),
+            serde_json::Value::Array(findings_val),
+        );
     }
     output(&result, encoding);
     Ok(())
@@ -448,11 +457,7 @@ pub(crate) fn cmd_codex_sync(settings: &Settings, limit: usize, encoding: &Encod
 ///
 /// Returns an error if the file cannot be opened, any line fails JSON parsing,
 /// or any message fails validation or Redis write.
-pub(crate) fn cmd_batch_send(
-    settings: &Settings,
-    file: &str,
-    encoding: &Encoding,
-) -> Result<()> {
+pub(crate) fn cmd_batch_send(settings: &Settings, file: &str, encoding: &Encoding) -> Result<()> {
     use std::io::BufRead as _;
 
     #[derive(serde::Deserialize)]
@@ -657,9 +662,11 @@ pub(crate) fn cmd_claims(
         "review_assigned" => ClaimStatus::ReviewAssigned,
         _ => ClaimStatus::Pending, // "pending" and unrecognised values
     });
-    let claims =
-        crate::channels::list_claims(settings, resource, status_filter.as_ref())?;
-    output(&serde_json::json!({"claims": claims, "count": claims.len()}), encoding);
+    let claims = crate::channels::list_claims(settings, resource, status_filter.as_ref())?;
+    output(
+        &serde_json::json!({"claims": claims, "count": claims.len()}),
+        encoding,
+    );
     Ok(())
 }
 
@@ -676,8 +683,7 @@ pub(crate) fn cmd_resolve(
     resolved_by: &str,
     encoding: &Encoding,
 ) -> Result<()> {
-    let state =
-        crate::channels::resolve_claim(settings, resource, winner, reason, resolved_by)?;
+    let state = crate::channels::resolve_claim(settings, resource, winner, reason, resolved_by)?;
     output(&state, encoding);
     Ok(())
 }

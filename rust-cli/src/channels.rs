@@ -203,12 +203,10 @@ fn decode_channel_entry(
         let v = get(k);
         v == "true" || v == "True"
     };
-    let get_json_vec = |k: &str| -> Vec<String> {
-        serde_json::from_str(&get(k)).unwrap_or_default()
-    };
+    let get_json_vec =
+        |k: &str| -> Vec<String> { serde_json::from_str(&get(k)).unwrap_or_default() };
     let get_json_value = |k: &str| -> serde_json::Value {
-        serde_json::from_str(&get(k))
-            .unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
+        serde_json::from_str(&get(k)).unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
     };
 
     Message {
@@ -221,7 +219,11 @@ fn decode_channel_entry(
         body: get("body"),
         thread_id: {
             let v = get("thread_id");
-            if v.is_empty() || v == "None" { None } else { Some(v) }
+            if v.is_empty() || v == "None" {
+                None
+            } else {
+                Some(v)
+            }
         },
         tags: get_json_vec("tags"),
         priority: {
@@ -239,14 +241,24 @@ fn decode_channel_entry(
 }
 
 /// Parse raw XRANGE/XREVRANGE Redis output into `(stream_id, field_map)` pairs.
-fn parse_channel_xrange(raw: &[redis::Value]) -> Vec<(String, std::collections::HashMap<String, redis::Value>)> {
+fn parse_channel_xrange(
+    raw: &[redis::Value],
+) -> Vec<(String, std::collections::HashMap<String, redis::Value>)> {
     let mut out = Vec::new();
     for entry in raw {
-        let redis::Value::Array(parts) = entry else { continue };
-        if parts.len() < 2 { continue }
-        let redis::Value::BulkString(sid_bytes) = &parts[0] else { continue };
+        let redis::Value::Array(parts) = entry else {
+            continue;
+        };
+        if parts.len() < 2 {
+            continue;
+        }
+        let redis::Value::BulkString(sid_bytes) = &parts[0] else {
+            continue;
+        };
         let stream_id = String::from_utf8_lossy(sid_bytes).to_string();
-        let redis::Value::Array(fields_raw) = &parts[1] else { continue };
+        let redis::Value::Array(fields_raw) = &parts[1] else {
+            continue;
+        };
 
         let mut field_map: std::collections::HashMap<String, redis::Value> =
             std::collections::HashMap::new();
@@ -269,7 +281,10 @@ fn parse_channel_xrange(raw: &[redis::Value]) -> Vec<(String, std::collections::
 }
 
 /// Write a message into an arbitrary Redis stream and return the created `Message`.
-#[expect(clippy::too_many_arguments, reason = "maps directly to protocol fields")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "maps directly to protocol fields"
+)]
 fn xadd_to_stream(
     conn: &mut redis::Connection,
     stream_key: &str,
@@ -597,10 +612,7 @@ fn list_group_info(conn: &mut redis::Connection, name: &str) -> Result<GroupInfo
         .query(conn)
         .context("HGET group meta created_by failed")?;
 
-    let message_count: u64 = redis::cmd("XLEN")
-        .arg(&stream_key)
-        .query(conn)
-        .unwrap_or(0);
+    let message_count: u64 = redis::cmd("XLEN").arg(&stream_key).query(conn).unwrap_or(0);
 
     Ok(GroupInfo {
         name: name.to_owned(),
@@ -722,10 +734,7 @@ pub(crate) fn claim_resource(
         .query(&mut conn)
         .context("HKEYS claims failed")?;
 
-    let other_claimants: Vec<String> = existing_agents
-        .into_iter()
-        .filter(|a| a != agent)
-        .collect();
+    let other_claimants: Vec<String> = existing_agents.into_iter().filter(|a| a != agent).collect();
 
     let status = if other_claimants.is_empty() {
         ClaimStatus::Granted
@@ -784,11 +793,7 @@ pub(crate) fn claim_resource(
 }
 
 /// Update all existing claims for a resource to `contested` status.
-fn mark_all_contested(
-    conn: &mut redis::Connection,
-    key: &str,
-    resource: &str,
-) -> Result<()> {
+fn mark_all_contested(conn: &mut redis::Connection, key: &str, resource: &str) -> Result<()> {
     let all: Vec<(String, String)> = redis::cmd("HGETALL")
         .arg(key)
         .query(conn)
@@ -891,7 +896,9 @@ pub(crate) fn get_arbitration_state(
 
     let mut claims: Vec<OwnershipClaim> = all
         .iter()
-        .filter_map(|(_agent_id, claim_json)| serde_json::from_str::<OwnershipClaim>(claim_json).ok())
+        .filter_map(|(_agent_id, claim_json)| {
+            serde_json::from_str::<OwnershipClaim>(claim_json).ok()
+        })
         .collect();
     claims.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
 
@@ -1117,7 +1124,10 @@ mod tests {
     #[test]
     fn direct_key_sorts_alphabetically() {
         let key = direct_key("zephyr", "alpha");
-        assert!(key.contains("alpha:zephyr"), "expected alpha before zephyr, got {key}");
+        assert!(
+            key.contains("alpha:zephyr"),
+            "expected alpha before zephyr, got {key}"
+        );
     }
 
     #[test]
@@ -1160,7 +1170,11 @@ mod tests {
         let key = direct_key("alice", "bob");
         let suffix = key.strip_prefix(DIRECT_PREFIX).expect("prefix present");
         // suffix should be "alice:bob" — exactly one colon
-        assert_eq!(suffix.matches(':').count(), 1, "unexpected colons in suffix '{suffix}'");
+        assert_eq!(
+            suffix.matches(':').count(),
+            1,
+            "unexpected colons in suffix '{suffix}'"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1181,7 +1195,10 @@ mod tests {
         let result = post_direct(&settings, "", "bob", "test", "hello", None, &[]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("sender"), "expected 'sender' in error, got: {msg}");
+        assert!(
+            msg.contains("sender"),
+            "expected 'sender' in error, got: {msg}"
+        );
     }
 
     #[test]
@@ -1190,7 +1207,10 @@ mod tests {
         let result = post_direct(&settings, "alice", "", "test", "hello", None, &[]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("recipient"), "expected 'recipient' in error, got: {msg}");
+        assert!(
+            msg.contains("recipient"),
+            "expected 'recipient' in error, got: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1323,14 +1343,20 @@ mod tests {
     #[test]
     fn claims_key_preserves_forward_slashes() {
         let key = claims_key("src/channels.rs");
-        assert!(key.ends_with("src/channels.rs"), "expected suffix preserved, got: {key}");
+        assert!(
+            key.ends_with("src/channels.rs"),
+            "expected suffix preserved, got: {key}"
+        );
     }
 
     /// Empty resource produces a key that is just the prefix (no path component).
     #[test]
     fn claims_key_with_empty_resource() {
         let key = claims_key("");
-        assert_eq!(key, CLAIMS_PREFIX, "empty resource should yield bare prefix");
+        assert_eq!(
+            key, CLAIMS_PREFIX,
+            "empty resource should yield bare prefix"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1343,7 +1369,10 @@ mod tests {
         let result = claim_resource(&settings, "", "claude", "I need it");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("resource"), "expected 'resource' in error, got: {msg}");
+        assert!(
+            msg.contains("resource"),
+            "expected 'resource' in error, got: {msg}"
+        );
     }
 
     #[test]
@@ -1352,7 +1381,10 @@ mod tests {
         let result = claim_resource(&settings, "src/main.rs", "", "I need it");
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("agent"), "expected 'agent' in error, got: {msg}");
+        assert!(
+            msg.contains("agent"),
+            "expected 'agent' in error, got: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1483,7 +1515,10 @@ mod tests {
             make_claim("codex", "f.rs", ClaimStatus::Contested),
             make_claim("gemini", "g.rs", ClaimStatus::Granted),
         ];
-        let contested = claims.iter().filter(|c| c.status == ClaimStatus::Contested).count();
+        let contested = claims
+            .iter()
+            .filter(|c| c.status == ClaimStatus::Contested)
+            .count();
         assert_eq!(contested, 2);
     }
 
@@ -1542,7 +1577,11 @@ mod tests {
 
         for (agent, status) in &resolved {
             if agent != winner {
-                assert_eq!(*status, ClaimStatus::ReviewAssigned, "{agent} should be ReviewAssigned");
+                assert_eq!(
+                    *status,
+                    ClaimStatus::ReviewAssigned,
+                    "{agent} should be ReviewAssigned"
+                );
             }
         }
     }
@@ -1555,11 +1594,18 @@ mod tests {
         let resolved_statuses: Vec<ClaimStatus> = agents
             .iter()
             .map(|a| {
-                if *a == winner { ClaimStatus::Granted } else { ClaimStatus::ReviewAssigned }
+                if *a == winner {
+                    ClaimStatus::Granted
+                } else {
+                    ClaimStatus::ReviewAssigned
+                }
             })
             .collect();
 
-        let granted_count = resolved_statuses.iter().filter(|s| **s == ClaimStatus::Granted).count();
+        let granted_count = resolved_statuses
+            .iter()
+            .filter(|s| **s == ClaimStatus::Granted)
+            .count();
         assert_eq!(granted_count, 1, "exactly one agent should be Granted");
     }
 
@@ -1568,9 +1614,9 @@ mod tests {
     fn mark_all_contested_only_upgrades_non_contested_claims() {
         // Simulate the guard in mark_all_contested: only update if != Contested.
         let claims = vec![
-            make_claim("alice", "f.rs", ClaimStatus::Granted),   // should be upgraded
-            make_claim("bob",   "f.rs", ClaimStatus::Contested),  // already contested — skip
-            make_claim("carol", "f.rs", ClaimStatus::Pending),    // should be upgraded
+            make_claim("alice", "f.rs", ClaimStatus::Granted), // should be upgraded
+            make_claim("bob", "f.rs", ClaimStatus::Contested), // already contested — skip
+            make_claim("carol", "f.rs", ClaimStatus::Pending), // should be upgraded
         ];
 
         let updated: Vec<ClaimStatus> = claims
@@ -1593,7 +1639,9 @@ mod tests {
 
     #[test]
     fn channel_enum_serialises_with_type_tag() {
-        let ch = Channel::Direct { agent: "codex".to_owned() };
+        let ch = Channel::Direct {
+            agent: "codex".to_owned(),
+        };
         let json = serde_json::to_value(&ch).unwrap();
         assert_eq!(json["type"], "direct");
         assert_eq!(json["agent"], "codex");
@@ -1622,7 +1670,9 @@ mod tests {
 
     #[test]
     fn arbitrate_channel_serialises_resource() {
-        let ch = Channel::Arbitrate { resource: "src/main.rs".to_owned() };
+        let ch = Channel::Arbitrate {
+            resource: "src/main.rs".to_owned(),
+        };
         let json = serde_json::to_value(&ch).unwrap();
         assert_eq!(json["type"], "arbitrate");
         assert_eq!(json["resource"], "src/main.rs");
@@ -1631,10 +1681,17 @@ mod tests {
     #[test]
     fn channel_enum_round_trips_via_json() {
         let channels: Vec<Channel> = vec![
-            Channel::Direct { agent: "claude".to_owned() },
-            Channel::Group { name: "team".to_owned(), members: vec!["a".to_owned()] },
+            Channel::Direct {
+                agent: "claude".to_owned(),
+            },
+            Channel::Group {
+                name: "team".to_owned(),
+                members: vec!["a".to_owned()],
+            },
             Channel::Escalate,
-            Channel::Arbitrate { resource: "lib.rs".to_owned() },
+            Channel::Arbitrate {
+                resource: "lib.rs".to_owned(),
+            },
         ];
         for ch in &channels {
             let json = serde_json::to_string(ch).unwrap();
@@ -1687,7 +1744,10 @@ mod tests {
             make_claim("b", "f.rs", ClaimStatus::Contested),
             make_claim("c", "g.rs", ClaimStatus::Granted),
         ];
-        let contested_count = claims.iter().filter(|c| c.status == ClaimStatus::Contested).count();
+        let contested_count = claims
+            .iter()
+            .filter(|c| c.status == ClaimStatus::Contested)
+            .count();
         let summary = ChannelSummary {
             direct_channel_count: 3,
             groups: vec![],
@@ -1740,7 +1800,10 @@ mod tests {
         let result = post_escalation(&settings, "claude", "", None, &[]);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("body") || msg.contains("empty"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("body") || msg.contains("empty"),
+            "unexpected error: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1795,21 +1858,24 @@ mod tests {
 
         let mut fields: HashMap<String, redis::Value> = HashMap::new();
         let insert = |map: &mut HashMap<String, redis::Value>, k: &str, v: &str| {
-            map.insert(k.to_owned(), redis::Value::BulkString(v.as_bytes().to_vec()));
+            map.insert(
+                k.to_owned(),
+                redis::Value::BulkString(v.as_bytes().to_vec()),
+            );
         };
 
-        insert(&mut fields, "id",               "test-uuid-1234");
-        insert(&mut fields, "timestamp_utc",    "2026-01-01T00:00:00.000000Z");
+        insert(&mut fields, "id", "test-uuid-1234");
+        insert(&mut fields, "timestamp_utc", "2026-01-01T00:00:00.000000Z");
         insert(&mut fields, "protocol_version", "1.0");
-        insert(&mut fields, "from",             "alice");
-        insert(&mut fields, "to",               "bob");
-        insert(&mut fields, "topic",            "greeting");
-        insert(&mut fields, "body",             "hello world");
-        insert(&mut fields, "tags",             "[]");
-        insert(&mut fields, "priority",         "normal");
-        insert(&mut fields, "request_ack",      "false");
-        insert(&mut fields, "reply_to",         "alice");
-        insert(&mut fields, "metadata",         "{}");
+        insert(&mut fields, "from", "alice");
+        insert(&mut fields, "to", "bob");
+        insert(&mut fields, "topic", "greeting");
+        insert(&mut fields, "body", "hello world");
+        insert(&mut fields, "tags", "[]");
+        insert(&mut fields, "priority", "normal");
+        insert(&mut fields, "request_ack", "false");
+        insert(&mut fields, "reply_to", "alice");
+        insert(&mut fields, "metadata", "{}");
 
         let msg = decode_channel_entry("1234-0", &fields);
 
@@ -1830,7 +1896,10 @@ mod tests {
 
         // Only provide the bare minimum fields (everything else defaults).
         let mut fields: HashMap<String, redis::Value> = HashMap::new();
-        fields.insert("from".to_owned(), redis::Value::BulkString(b"sender".to_vec()));
+        fields.insert(
+            "from".to_owned(),
+            redis::Value::BulkString(b"sender".to_vec()),
+        );
         fields.insert("body".to_owned(), redis::Value::BulkString(b"hi".to_vec()));
 
         let msg = decode_channel_entry("9999-0", &fields);
@@ -1838,9 +1907,9 @@ mod tests {
         // Defaults should be safe values.
         assert_eq!(msg.from, "sender");
         assert_eq!(msg.body, "hi");
-        assert!(msg.id.is_empty());            // missing → empty string
-        assert!(msg.thread_id.is_none());      // missing → None
-        assert!(msg.tags.is_empty());          // missing → []
+        assert!(msg.id.is_empty()); // missing → empty string
+        assert!(msg.thread_id.is_none()); // missing → None
+        assert!(msg.tags.is_empty()); // missing → []
     }
 
     #[test]
@@ -1865,7 +1934,10 @@ mod tests {
     fn decode_channel_entry_request_ack_true_when_set() {
         use std::collections::HashMap;
         let mut fields: HashMap<String, redis::Value> = HashMap::new();
-        fields.insert("request_ack".to_owned(), redis::Value::BulkString(b"true".to_vec()));
+        fields.insert(
+            "request_ack".to_owned(),
+            redis::Value::BulkString(b"true".to_vec()),
+        );
         let msg = decode_channel_entry("0-0", &fields);
         assert!(msg.request_ack);
     }
@@ -1875,7 +1947,10 @@ mod tests {
     fn decode_channel_entry_thread_id_none_when_literal_none() {
         use std::collections::HashMap;
         let mut fields: HashMap<String, redis::Value> = HashMap::new();
-        fields.insert("thread_id".to_owned(), redis::Value::BulkString(b"None".to_vec()));
+        fields.insert(
+            "thread_id".to_owned(),
+            redis::Value::BulkString(b"None".to_vec()),
+        );
         let msg = decode_channel_entry("0-0", &fields);
         assert!(msg.thread_id.is_none());
     }
@@ -1885,7 +1960,10 @@ mod tests {
     fn decode_channel_entry_thread_id_some_when_present() {
         use std::collections::HashMap;
         let mut fields: HashMap<String, redis::Value> = HashMap::new();
-        fields.insert("thread_id".to_owned(), redis::Value::BulkString(b"thread-abc".to_vec()));
+        fields.insert(
+            "thread_id".to_owned(),
+            redis::Value::BulkString(b"thread-abc".to_vec()),
+        );
         let msg = decode_channel_entry("0-0", &fields);
         assert_eq!(msg.thread_id, Some("thread-abc".to_owned()));
     }

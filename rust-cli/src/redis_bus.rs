@@ -1,8 +1,8 @@
 //! Redis Stream and Pub/Sub operations for the agent coordination bus.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context as _, Result};
 use base64::Engine as _;
@@ -124,9 +124,7 @@ impl RedisPool {
     /// Suitable for embedding in the health endpoint response.
     pub(crate) fn metrics(&self) -> (u64, u64) {
         (
-            self.metrics
-                .connections_acquired
-                .load(Ordering::Relaxed),
+            self.metrics.connections_acquired.load(Ordering::Relaxed),
             self.metrics.connection_errors.load(Ordering::Relaxed),
         )
     }
@@ -248,7 +246,10 @@ pub(crate) fn parse_xrange_result(
 /// Compress `body` with LZ4 and Base64-encode it for Redis storage.
 ///
 /// Returns `(compressed_b64, original_len)`.
-#[expect(clippy::unnecessary_wraps, reason = "Result keeps the call-site uniform if compression ever becomes fallible")]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "Result keeps the call-site uniform if compression ever becomes fallible"
+)]
 fn lz4_compress_body(body: &str) -> Result<(String, usize)> {
     let compressed = lz4_flex::compress_prepend_size(body.as_bytes());
     let encoded = base64::engine::general_purpose::STANDARD.encode(&compressed);
@@ -353,9 +354,7 @@ pub(crate) fn bus_post_message(
         None
     };
 
-    let stored_body: &str = compressed
-        .as_ref()
-        .map_or(body, |(b64, _)| b64.as_str());
+    let stored_body: &str = compressed.as_ref().map_or(body, |(b64, _)| b64.as_str());
 
     // Merge compression markers into the stored metadata map.
     let meta_with_compression: serde_json::Value;
@@ -564,7 +563,9 @@ pub(crate) fn list_pending_acks(
     for key in &keys {
         let value: Option<String> = redis::Commands::get(conn, key).context("GET pending-ack")?;
         let Some(json) = value else { continue };
-        let Ok(record) = serde_json::from_str::<serde_json::Value>(&json) else { continue };
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(&json) else {
+            continue;
+        };
         let message_id = record["message_id"].as_str().unwrap_or("").to_owned();
         let recipient = record["recipient"].as_str().unwrap_or("").to_owned();
         let sent_at = record["sent_at"].as_str().unwrap_or("").to_owned();

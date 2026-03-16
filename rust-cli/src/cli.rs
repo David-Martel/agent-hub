@@ -407,7 +407,6 @@ pub(crate) enum Cmd {
     // -----------------------------------------------------------------------
     // Channel commands
     // -----------------------------------------------------------------------
-
     /// Send a direct private message to another agent.
     #[command(
         long_about = "Post a message to the private direct channel between two agents.\n\n\
@@ -448,11 +447,9 @@ pub(crate) enum Cmd {
     },
 
     /// Post a message to a named group channel.
-    #[command(
-        long_about = "Post a message to a named group discussion channel.\n\n\
+    #[command(long_about = "Post a message to a named group discussion channel.\n\n\
         The group must already exist (create it first via the HTTP API or MCP tool).\n\
-        Stored in Redis stream 'bus:group:<name>'."
-    )]
+        Stored in Redis stream 'bus:group:<name>'.")]
     PostGroup {
         #[arg(long, help = "Group name (alphanumerics, hyphens, underscores)")]
         group: String,
@@ -483,61 +480,70 @@ pub(crate) enum Cmd {
     },
 
     /// Claim ownership of a resource (file, directory, etc.).
-    #[command(
-        long_about = "Claim first-edit ownership of a resource.\n\n\
+    #[command(long_about = "Claim first-edit ownership of a resource.\n\n\
         First claim is auto-granted. Subsequent claims from other agents trigger\n\
         arbitration: both claimants are notified and the orchestrator receives an\n\
         escalation message to resolve the conflict.\n\n\
         Claims expire automatically after 1 hour.\n\n\
         Examples:\n  \
         agent-bus claim src/redis_bus.rs --agent claude --reason \"Adding compression\"\n  \
-        agent-bus claim src/ --agent codex --reason \"Refactoring module layout\""
-    )]
+        agent-bus claim src/ --agent codex --reason \"Refactoring module layout\"")]
     Claim {
         #[arg(help = "Resource path to claim (e.g. src/redis_bus.rs)")]
         resource: String,
         #[arg(long, help = "Your agent ID")]
         agent: String,
-        #[arg(long, default_value = "first-edit required", help = "Why you need first-edit")]
+        #[arg(
+            long,
+            default_value = "first-edit required",
+            help = "Why you need first-edit"
+        )]
         reason: String,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
 
     /// List ownership claims, optionally filtered by resource or status.
-    #[command(
-        long_about = "List all outstanding ownership claims.\n\n\
+    #[command(long_about = "List all outstanding ownership claims.\n\n\
         Filter by --resource to see claims for a specific file.\n\
         Filter by --status to see only contested claims:\n\
-          status values: pending|granted|contested|review_assigned"
-    )]
+          status values: pending|granted|contested|review_assigned")]
     Claims {
         #[arg(long, help = "Filter by resource path")]
         resource: Option<String>,
-        #[arg(long, help = "Filter by status: pending|granted|contested|review_assigned")]
+        #[arg(
+            long,
+            help = "Filter by status: pending|granted|contested|review_assigned"
+        )]
         status: Option<String>,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
 
     /// Resolve a contested ownership claim by naming a winner.
-    #[command(
-        long_about = "Resolve a contested ownership claim.\n\n\
+    #[command(long_about = "Resolve a contested ownership claim.\n\n\
         The winner receives 'granted' status and may proceed with first-edit.\n\
         Losing agents receive 'review_assigned' status and are notified via\n\
         direct message. A resolution reason is stored for audit.\n\n\
         Example:\n  \
         agent-bus resolve src/redis_bus.rs --winner claude \\\n  \
-          --reason \"claude owns compression\" --resolved-by orchestrator"
-    )]
+          --reason \"claude owns compression\" --resolved-by orchestrator")]
     Resolve {
         #[arg(help = "Resource path to resolve")]
         resource: String,
         #[arg(long, help = "Winning agent ID")]
         winner: String,
-        #[arg(long, default_value = "resolved by orchestrator", help = "Resolution rationale")]
+        #[arg(
+            long,
+            default_value = "resolved by orchestrator",
+            help = "Resolution rationale"
+        )]
         reason: String,
-        #[arg(long, default_value = "orchestrator", help = "Who is making this decision")]
+        #[arg(
+            long,
+            default_value = "orchestrator",
+            help = "Who is making this decision"
+        )]
         resolved_by: String,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,

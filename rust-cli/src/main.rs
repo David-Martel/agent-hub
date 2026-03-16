@@ -370,7 +370,6 @@ async fn main() -> Result<()> {
         }
 
         // --- Channel commands ------------------------------------------------
-
         Cmd::PostDirect {
             ref from_agent,
             ref to_agent,
@@ -380,7 +379,16 @@ async fn main() -> Result<()> {
             ref tag,
             ref encoding,
         } => {
-            cmd_post_direct(&settings, from_agent, to_agent, topic, body, thread_id.as_deref(), tag, encoding)?;
+            cmd_post_direct(
+                &settings,
+                from_agent,
+                to_agent,
+                topic,
+                body,
+                thread_id.as_deref(),
+                tag,
+                encoding,
+            )?;
         }
 
         Cmd::ReadDirect {
@@ -400,7 +408,15 @@ async fn main() -> Result<()> {
             ref thread_id,
             ref encoding,
         } => {
-            cmd_post_group(&settings, group, from_agent, topic, body, thread_id.as_deref(), encoding)?;
+            cmd_post_group(
+                &settings,
+                group,
+                from_agent,
+                topic,
+                body,
+                thread_id.as_deref(),
+                encoding,
+            )?;
         }
 
         Cmd::ReadGroup {

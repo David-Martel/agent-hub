@@ -32,8 +32,11 @@ use crate::validation::{
 /// The outer `Arc<RwLock<...>>` makes the map cheap to clone into every
 /// handler.  The inner `Vec` holds one sender per active SSE connection for
 /// that agent.  Disconnected senders are removed lazily when a send fails.
-type AgentConnections =
-    Arc<RwLock<HashMap<String, Vec<tokio::sync::mpsc::Sender<Result<Event, std::convert::Infallible>>>>>>;
+type AgentConnections = Arc<
+    RwLock<
+        HashMap<String, Vec<tokio::sync::mpsc::Sender<Result<Event, std::convert::Infallible>>>>,
+    >,
+>;
 
 /// Shared state injected into every axum handler.
 ///
@@ -586,7 +589,10 @@ pub(crate) async fn handle_mcp_http(
         .and_then(|v| v.to_str().ok())
         .map_or_else(|| uuid::Uuid::new_v4().to_string(), String::from);
 
-    let request_id = request.get("id").cloned().unwrap_or(serde_json::Value::Null);
+    let request_id = request
+        .get("id")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
     let method = request
         .get("method")
         .and_then(|v| v.as_str())
@@ -598,16 +604,15 @@ pub(crate) async fn handle_mcp_http(
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
     let server = AgentBusMcpServer::new((*state.settings).clone());
-    let response = tokio::task::spawn_blocking(move || {
-        dispatch_mcp_method(&server, &method, &params)
-    })
-    .await
-    .unwrap_or_else(|e| {
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "error": {"code": -32603, "message": format!("task join error: {e}")},
-        })
-    });
+    let response =
+        tokio::task::spawn_blocking(move || dispatch_mcp_method(&server, &method, &params))
+            .await
+            .unwrap_or_else(|e| {
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "error": {"code": -32603, "message": format!("task join error: {e}")},
+                })
+            });
 
     // Merge the id into the final response.
     let mut resp = response;
@@ -633,7 +638,9 @@ pub(crate) async fn handle_mcp_http(
             "data: {}\n\n",
             serde_json::to_string(&resp).unwrap_or_default()
         );
-        builder.body(axum::body::Body::from(body)).unwrap_or_default()
+        builder
+            .body(axum::body::Body::from(body))
+            .unwrap_or_default()
     } else {
         builder
             .body(axum::body::Body::from(
@@ -697,7 +704,9 @@ fn dispatch_mcp_method(
                 .unwrap_or_default();
 
             match server.call_tool_sync(&tool_name, &args) {
-                Ok(value) => serde_json::json!({"result": {"content": [{"type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default()}]}}),
+                Ok(value) => {
+                    serde_json::json!({"result": {"content": [{"type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default()}]}})
+                }
                 Err(e) => serde_json::json!({
                     "error": {"code": -32603, "message": format!("{e:#}")}
                 }),
@@ -717,9 +726,7 @@ fn dispatch_mcp_method(
 ///
 /// Clients that only need to enumerate capabilities without sending a
 /// JSON-RPC body can GET this endpoint.
-pub(crate) async fn handle_mcp_sse(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub(crate) async fn handle_mcp_sse(State(state): State<AppState>) -> impl IntoResponse {
     let tools: Vec<serde_json::Value> = AgentBusMcpServer::tool_list()
         .into_iter()
         .map(|t| {
@@ -768,8 +775,9 @@ async fn push_to_agent_connections(
     agent_connections: &AgentConnections,
     msg: &crate::models::Message,
 ) {
-    let event_json = serde_json::to_string(&serde_json::json!({"event": "message", "message": msg}))
-        .unwrap_or_default();
+    let event_json =
+        serde_json::to_string(&serde_json::json!({"event": "message", "message": msg}))
+            .unwrap_or_default();
 
     // Collect the agents that should receive this event.
     let targets: Vec<String> = {
@@ -940,19 +948,34 @@ pub(crate) async fn http_batch_send_handler(
     // Validate all messages eagerly before any Redis writes.
     #[allow(clippy::type_complexity)]
     let mut validated: Vec<(
-        String, String, String, String,
-        Option<String>, Vec<String>, String,
-        bool, Option<String>, serde_json::Value,
+        String,
+        String,
+        String,
+        String,
+        Option<String>,
+        Vec<String>,
+        String,
+        bool,
+        Option<String>,
+        serde_json::Value,
     )> = Vec::new();
     for m in &req.messages {
         let sender = m.sender.trim().to_owned();
         let recipient = m.recipient.trim().to_owned();
         let topic = m.topic.trim().to_owned();
         let body_text = m.body.trim().to_owned();
-        if sender.is_empty() { return Err(bad_request("sender must not be empty")); }
-        if recipient.is_empty() { return Err(bad_request("recipient must not be empty")); }
-        if topic.is_empty() { return Err(bad_request("topic must not be empty")); }
-        if body_text.is_empty() { return Err(bad_request("body must not be empty")); }
+        if sender.is_empty() {
+            return Err(bad_request("sender must not be empty"));
+        }
+        if recipient.is_empty() {
+            return Err(bad_request("recipient must not be empty"));
+        }
+        if topic.is_empty() {
+            return Err(bad_request("topic must not be empty"));
+        }
+        if body_text.is_empty() {
+            return Err(bad_request("body must not be empty"));
+        }
         validate_priority(&m.priority).map_err(|e| bad_request(format!("{e:#}")))?;
         let effective_schema = infer_schema_from_topic(&topic, m.schema.as_deref());
         let fitted_body = auto_fit_schema(&body_text, effective_schema);
@@ -963,16 +986,35 @@ pub(crate) async fn http_batch_send_handler(
             .clone()
             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
         validated.push((
-            sender, recipient, topic, fitted_body,
-            m.thread_id.clone(), m.tags.clone(), m.priority.clone(),
-            m.request_ack, m.reply_to.clone(), metadata,
+            sender,
+            recipient,
+            topic,
+            fitted_body,
+            m.thread_id.clone(),
+            m.tags.clone(),
+            m.priority.clone(),
+            m.request_ack,
+            m.reply_to.clone(),
+            metadata,
         ));
     }
 
     let ids = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
         let mut ids = Vec::with_capacity(validated.len());
-        for (sender, recipient, topic, body, thread_id, tags, priority, request_ack, reply_to, metadata) in validated {
+        for (
+            sender,
+            recipient,
+            topic,
+            body,
+            thread_id,
+            tags,
+            priority,
+            request_ack,
+            reply_to,
+            metadata,
+        ) in validated
+        {
             let msg = bus_post_message(
                 &mut conn,
                 &state.settings,
@@ -1159,24 +1201,38 @@ async fn http_direct_send_handler(
     let sender = req.sender.trim().to_owned();
     let recipient = recipient.trim().to_owned();
     let body = req.body.trim().to_owned();
-    if sender.is_empty() { return Err(bad_request("sender must not be empty")); }
-    if recipient.is_empty() { return Err(bad_request("recipient must not be empty")); }
-    if body.is_empty() { return Err(bad_request("body must not be empty")); }
+    if sender.is_empty() {
+        return Err(bad_request("sender must not be empty"));
+    }
+    if recipient.is_empty() {
+        return Err(bad_request("recipient must not be empty"));
+    }
+    if body.is_empty() {
+        return Err(bad_request("body must not be empty"));
+    }
     let topic = req.topic;
     let thread_id = req.thread_id;
     let tags = req.tags;
 
     let msg = tokio::task::spawn_blocking(move || {
         crate::channels::post_direct(
-            &state.settings, &sender, &recipient, &topic, &body,
-            thread_id.as_deref(), &tags,
+            &state.settings,
+            &sender,
+            &recipient,
+            &topic,
+            &body,
+            thread_id.as_deref(),
+            &tags,
         )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
-    Ok((StatusCode::OK, Json(serde_json::to_value(&msg).unwrap_or_default())))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::to_value(&msg).unwrap_or_default()),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1220,7 +1276,9 @@ async fn http_create_group_handler(
     Json(req): Json<HttpCreateGroupRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let name = req.name.trim().to_owned();
-    if name.is_empty() { return Err(bad_request("name must not be empty")); }
+    if name.is_empty() {
+        return Err(bad_request("name must not be empty"));
+    }
     let members = req.members;
     let created_by = req.created_by;
 
@@ -1231,18 +1289,19 @@ async fn http_create_group_handler(
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
-    Ok((StatusCode::OK, Json(serde_json::to_value(&info).unwrap_or_default())))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::to_value(&info).unwrap_or_default()),
+    ))
 }
 
 async fn http_list_groups_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let groups = tokio::task::spawn_blocking(move || {
-        crate::channels::list_groups(&state.settings)
-    })
-    .await
-    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    let groups = tokio::task::spawn_blocking(move || crate::channels::list_groups(&state.settings))
+        .await
+        .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+        .map_err(internal_error)?;
 
     Ok(Json(serde_json::to_value(&groups).unwrap_or_default()))
 }
@@ -1271,21 +1330,33 @@ async fn http_group_send_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let sender = req.sender.trim().to_owned();
     let body = req.body.trim().to_owned();
-    if sender.is_empty() { return Err(bad_request("sender must not be empty")); }
-    if body.is_empty() { return Err(bad_request("body must not be empty")); }
+    if sender.is_empty() {
+        return Err(bad_request("sender must not be empty"));
+    }
+    if body.is_empty() {
+        return Err(bad_request("body must not be empty"));
+    }
     let topic = req.topic;
     let thread_id = req.thread_id;
 
     let msg = tokio::task::spawn_blocking(move || {
         crate::channels::post_to_group(
-            &state.settings, &group_name, &sender, &topic, &body, thread_id.as_deref(),
+            &state.settings,
+            &group_name,
+            &sender,
+            &topic,
+            &body,
+            thread_id.as_deref(),
         )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
-    Ok((StatusCode::OK, Json(serde_json::to_value(&msg).unwrap_or_default())))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::to_value(&msg).unwrap_or_default()),
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -1330,19 +1401,32 @@ async fn http_escalate_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let sender = req.sender.trim().to_owned();
     let body = req.body.trim().to_owned();
-    if sender.is_empty() { return Err(bad_request("sender must not be empty")); }
-    if body.is_empty() { return Err(bad_request("body must not be empty")); }
+    if sender.is_empty() {
+        return Err(bad_request("sender must not be empty"));
+    }
+    if body.is_empty() {
+        return Err(bad_request("body must not be empty"));
+    }
     let thread_id = req.thread_id;
     let tags = req.tags;
 
     let msg = tokio::task::spawn_blocking(move || {
-        crate::channels::post_escalation(&state.settings, &sender, &body, thread_id.as_deref(), &tags)
+        crate::channels::post_escalation(
+            &state.settings,
+            &sender,
+            &body,
+            thread_id.as_deref(),
+            &tags,
+        )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
-    Ok((StatusCode::OK, Json(serde_json::to_value(&msg).unwrap_or_default())))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::to_value(&msg).unwrap_or_default()),
+    ))
 }
 
 // --- POST /channels/arbitrate/:resource  /  GET /channels/arbitrate/:resource
@@ -1365,7 +1449,9 @@ async fn http_claim_handler(
     Json(req): Json<HttpClaimRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let agent = req.agent.trim().to_owned();
-    if agent.is_empty() { return Err(bad_request("agent must not be empty")); }
+    if agent.is_empty() {
+        return Err(bad_request("agent must not be empty"));
+    }
     let priority_argument = req.priority_argument;
 
     let claim = tokio::task::spawn_blocking(move || {
@@ -1375,7 +1461,10 @@ async fn http_claim_handler(
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
-    Ok((StatusCode::OK, Json(serde_json::to_value(&claim).unwrap_or_default())))
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::to_value(&claim).unwrap_or_default()),
+    ))
 }
 
 async fn http_arbitration_state_handler(
@@ -1418,7 +1507,9 @@ async fn http_resolve_handler(
     Json(req): Json<HttpResolveRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let winner = req.winner.trim().to_owned();
-    if winner.is_empty() { return Err(bad_request("winner must not be empty")); }
+    if winner.is_empty() {
+        return Err(bad_request("winner must not be empty"));
+    }
     let reason = req.reason;
     let resolved_by = req.resolved_by;
 
@@ -1437,12 +1528,11 @@ async fn http_resolve_handler(
 async fn http_channel_summary_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let summary = tokio::task::spawn_blocking(move || {
-        crate::channels::channel_summary(&state.settings)
-    })
-    .await
-    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    let summary =
+        tokio::task::spawn_blocking(move || crate::channels::channel_summary(&state.settings))
+            .await
+            .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+            .map_err(internal_error)?;
 
     Ok(Json(serde_json::to_value(&summary).unwrap_or_default()))
 }

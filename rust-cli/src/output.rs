@@ -96,7 +96,9 @@ pub(crate) fn output_presence(p: &Presence, encoding: &Encoding) {
 /// ok=true r=561 p=492 v=1.0
 /// ```
 pub(crate) fn format_health_toon(h: &Health) -> String {
-    let r = h.stream_length.map_or_else(|| "?".to_owned(), |n| n.to_string());
+    let r = h
+        .stream_length
+        .map_or_else(|| "?".to_owned(), |n| n.to_string());
     let p = h
         .pg_message_count
         .map_or_else(|| "?".to_owned(), |n| n.to_string());
@@ -119,7 +121,10 @@ pub(crate) fn format_message_toon(msg: &Message) -> String {
         format!(" [{}]", msg.tags.join(","))
     };
     let body_preview: String = msg.body.chars().take(120).collect();
-    format!("@{}→{} #{}{} {}", msg.from, msg.to, msg.topic, tags_str, body_preview)
+    format!(
+        "@{}→{} #{}{} {}",
+        msg.from, msg.to, msg.topic, tags_str, body_preview
+    )
 }
 
 /// Format a [`Presence`] record as a single TOON line.
@@ -137,7 +142,10 @@ pub(crate) fn format_presence_toon(p: &Presence) -> String {
     } else {
         format!(" [{}]", p.capabilities.join(","))
     };
-    format!("~{} {}{} ttl={}s", p.agent, p.status, caps_str, p.ttl_seconds)
+    format!(
+        "~{} {}{} ttl={}s",
+        p.agent, p.status, caps_str, p.ttl_seconds
+    )
 }
 
 pub(crate) fn minimize_value(value: &serde_json::Value) -> serde_json::Value {

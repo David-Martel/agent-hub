@@ -96,7 +96,10 @@ async fn health_toon_encoding_returns_text() {
     assert!(ct.contains("text/plain"), "expected text/plain, got {ct}");
     let text = resp.text().await.expect("response not text");
     // TOON health format: `ok=true r=<n> p=<n> v=<version>`
-    assert!(text.starts_with("ok="), "TOON health should start with ok=, got: {text}");
+    assert!(
+        text.starts_with("ok="),
+        "TOON health should start with ok=, got: {text}"
+    );
     assert!(text.contains("r="), "TOON health missing r= field: {text}");
 }
 
@@ -115,10 +118,16 @@ async fn health_json_contains_pool_metrics() {
         .expect("GET /health failed");
 
     let body: Value = resp.json().await.expect("response not JSON");
-    assert!(body.get("pool").is_some(), "health response missing pool metrics");
+    assert!(
+        body.get("pool").is_some(),
+        "health response missing pool metrics"
+    );
     let pool = &body["pool"];
     assert!(pool.get("idle").is_some(), "pool missing idle field");
-    assert!(pool.get("max_size").is_some(), "pool missing max_size field");
+    assert!(
+        pool.get("max_size").is_some(),
+        "pool missing max_size field"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -203,7 +212,11 @@ async fn post_message_empty_sender_returns_400() {
         .await
         .expect("POST /messages failed");
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "whitespace-only sender should be 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "whitespace-only sender should be 400"
+    );
     let body: Value = resp.json().await.expect("response not JSON");
     assert!(
         body["error"].as_str().unwrap_or("").contains("sender"),
@@ -231,7 +244,11 @@ async fn post_message_empty_body_returns_400() {
         .await
         .expect("POST /messages failed");
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "empty body should be 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "empty body should be 400"
+    );
 }
 
 #[tokio::test]
@@ -250,7 +267,10 @@ async fn get_messages_returns_array() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let body: Value = resp.json().await.expect("response not JSON");
-    assert!(body.is_array(), "GET /messages should return a JSON array, got: {body}");
+    assert!(
+        body.is_array(),
+        "GET /messages should return a JSON array, got: {body}"
+    );
 }
 
 #[tokio::test]
@@ -278,7 +298,9 @@ async fn get_messages_toon_encoding_returns_text() {
         .expect("send failed");
 
     let resp = client
-        .get(format!("{BASE_URL}/messages?agent={agent}&encoding=toon&since=1"))
+        .get(format!(
+            "{BASE_URL}/messages?agent={agent}&encoding=toon&since=1"
+        ))
         .send()
         .await
         .expect("GET /messages?encoding=toon failed");
@@ -346,20 +368,23 @@ async fn toon_format_matches_spec() {
     let text = resp.text().await.expect("response not text");
     assert!(!text.is_empty(), "expected at least one TOON line");
 
-    let line = text.lines().next().unwrap_or("");
+    // Find our specific message in the TOON output (bus may have other messages)
+    let our_line = text
+        .lines()
+        .find(|l| l.contains("Hello TOON world"))
+        .expect("expected our TOON message in output");
     // Format: `@from→to #topic [tag1,tag2] body`
     assert!(
-        line.starts_with('@'),
-        "TOON line should start with '@': {line}"
-    );
-    assert!(line.contains("→"), "TOON line should contain '→': {line}");
-    assert!(
-        line.contains("#spec-check"),
-        "TOON line should contain #spec-check: {line}"
+        our_line.starts_with('@'),
+        "TOON line should start with '@': {our_line}"
     );
     assert!(
-        line.contains("Hello TOON world"),
-        "TOON line should contain body: {line}"
+        our_line.contains("→"),
+        "TOON line should contain '→': {our_line}"
+    );
+    assert!(
+        our_line.contains("#spec-check"),
+        "TOON line should contain #spec-check: {our_line}"
     );
 }
 
@@ -465,7 +490,10 @@ async fn toon_shows_tags_in_brackets() {
         return;
     }
 
-    let line = text.lines().next().unwrap_or("");
+    let line = text
+        .lines()
+        .find(|l| l.contains("testing tag display"))
+        .unwrap_or("");
     assert!(
         line.contains("[alpha,beta]"),
         "TOON line should show [alpha,beta]: {line}"
@@ -487,11 +515,7 @@ async fn large_body_is_compressed_and_decompressed() {
     let ts = unique_suffix();
     let agent = format!("lz4-test-{ts}");
     // Body > 512 bytes — should trigger LZ4 compression.
-    let large_body = format!(
-        "LZ4-compression-test: {} {}",
-        ts,
-        "A".repeat(600)
-    );
+    let large_body = format!("LZ4-compression-test: {} {}", ts, "A".repeat(600));
 
     let send_resp = client
         .post(format!("{BASE_URL}/messages"))
@@ -511,7 +535,9 @@ async fn large_body_is_compressed_and_decompressed() {
 
     // Read back — body should be transparently decompressed.
     let read_resp = client
-        .get(format!("{BASE_URL}/messages?agent={agent}&since=1&limit=10"))
+        .get(format!(
+            "{BASE_URL}/messages?agent={agent}&since=1&limit=10"
+        ))
         .send()
         .await
         .expect("read failed");
@@ -520,7 +546,10 @@ async fn large_body_is_compressed_and_decompressed() {
     let msgs = messages.as_array().expect("expected array");
 
     let found = msgs.iter().find(|m| m["id"].as_str() == Some(msg_id));
-    assert!(found.is_some(), "message {msg_id} not found in read response");
+    assert!(
+        found.is_some(),
+        "message {msg_id} not found in read response"
+    );
 
     let found_msg = found.unwrap();
     assert_eq!(
@@ -637,7 +666,11 @@ async fn batch_send_empty_array_returns_400() {
         .await
         .expect("POST /messages/batch failed");
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "empty batch should be 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "empty batch should be 400"
+    );
 }
 
 #[tokio::test]
@@ -666,7 +699,11 @@ async fn batch_send_over_100_messages_returns_400() {
         .await
         .expect("POST /messages/batch failed");
 
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "101 messages should be 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "101 messages should be 400"
+    );
     let body: Value = resp.json().await.expect("response not JSON");
     assert!(
         body["error"]
@@ -722,11 +759,7 @@ async fn batch_ack_valid_ids_returns_ok() {
 
     assert_eq!(ack_resp.status(), StatusCode::OK);
     let ack_body: Value = ack_resp.json().await.expect("ack response not JSON");
-    assert_eq!(
-        ack_body["acked"],
-        json!(2),
-        "should have acked 2 messages"
-    );
+    assert_eq!(ack_body["acked"], json!(2), "should have acked 2 messages");
 }
 
 // ---------------------------------------------------------------------------
@@ -756,7 +789,11 @@ async fn direct_channel_send_and_read() {
         .await
         .expect("POST /channels/direct/:agent failed");
 
-    assert_eq!(send_resp.status(), StatusCode::OK, "direct send should be 200");
+    assert_eq!(
+        send_resp.status(),
+        StatusCode::OK,
+        "direct send should be 200"
+    );
     let sent: Value = send_resp.json().await.expect("send response not JSON");
     assert!(
         sent.get("id").is_some(),
@@ -772,7 +809,11 @@ async fn direct_channel_send_and_read() {
         .await
         .expect("GET /channels/direct/:agent failed");
 
-    assert_eq!(read_resp.status(), StatusCode::OK, "direct read should be 200");
+    assert_eq!(
+        read_resp.status(),
+        StatusCode::OK,
+        "direct read should be 200"
+    );
     let msgs: Value = read_resp.json().await.expect("read response not JSON");
     assert!(msgs.is_array(), "direct read should return array");
     let arr = msgs.as_array().unwrap();
@@ -967,9 +1008,7 @@ async fn arbitrate_resolve_sets_winner() {
 
     // Resolve in favour of agent_a.
     let resp = client
-        .put(format!(
-            "{BASE_URL}/channels/arbitrate/{resource}/resolve"
-        ))
+        .put(format!("{BASE_URL}/channels/arbitrate/{resource}/resolve"))
         .json(&json!({
             "winner": &agent_a,
             "reason": "agent_a has higher priority task",
@@ -1052,7 +1091,10 @@ async fn get_presence_returns_array() {
 
     assert_eq!(resp.status(), StatusCode::OK, "GET /presence should be 200");
     let body: Value = resp.json().await.expect("presence list not JSON");
-    assert!(body.is_array(), "GET /presence should return array, got: {body}");
+    assert!(
+        body.is_array(),
+        "GET /presence should return array, got: {body}"
+    );
 }
 
 #[tokio::test]
@@ -1145,7 +1187,10 @@ async fn pending_ack_message_appears_in_pending_list() {
     let found = arr.iter().any(|entry| {
         entry["id"].as_str() == Some(&msg_id)
             || entry["message_id"].as_str() == Some(&msg_id)
-            || entry.get("id").map(|v| v.as_str() == Some(&msg_id)).unwrap_or(false)
+            || entry
+                .get("id")
+                .map(|v| v.as_str() == Some(&msg_id))
+                .unwrap_or(false)
     });
     assert!(
         found,

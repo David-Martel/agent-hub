@@ -88,7 +88,10 @@ fn format_presence_toon(p: &Presence) -> String {
     } else {
         format!(" [{}]", p.capabilities.join(","))
     };
-    format!("~{} {}{} ttl={}s", p.agent, p.status, caps_str, p.ttl_seconds)
+    format!(
+        "~{} {}{} ttl={}s",
+        p.agent, p.status, caps_str, p.ttl_seconds
+    )
 }
 
 fn format_health_toon(h: &Health) -> String {
@@ -317,8 +320,11 @@ fn bench_lz4_compression(c: &mut Criterion) {
     let mut group = c.benchmark_group("lz4_compression");
 
     for size in [256, 512, 1024, 4096, 16384] {
-        let body = "a]b[c{d}e:f,g ".repeat(size / 15 + 1);
-        let body = &body[..size];
+        // Build a body of exactly `size` bytes using ASCII-only content.
+        let pattern = "a]b[c{d}e:f,g ";
+        let repeats = (size / pattern.len()) + 2;
+        let body_full = pattern.repeat(repeats);
+        let body = &body_full[..size];
 
         group.throughput(Throughput::Bytes(size as u64));
 
@@ -335,16 +341,12 @@ fn bench_lz4_compression(c: &mut Criterion) {
             },
         );
 
-        group.bench_with_input(
-            BenchmarkId::new("round_trip", size),
-            &body,
-            |b, body| {
-                b.iter(|| {
-                    let (compressed, _) = lz4_compress_body(body);
-                    lz4_decompress_body(&compressed)
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("round_trip", size), &body, |b, body| {
+            b.iter(|| {
+                let (compressed, _) = lz4_compress_body(body);
+                lz4_decompress_body(&compressed)
+            });
+        });
     }
 
     group.finish();
@@ -392,13 +394,9 @@ fn bench_message_serde(c: &mut Criterion) {
 
         group.throughput(Throughput::Bytes(body_size as u64));
 
-        group.bench_with_input(
-            BenchmarkId::new("serialize", body_size),
-            &msg,
-            |b, msg| {
-                b.iter(|| serde_json::to_string(msg).unwrap());
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("serialize", body_size), &msg, |b, msg| {
+            b.iter(|| serde_json::to_string(msg).unwrap());
+        });
 
         let json = serde_json::to_string(&msg).unwrap();
         group.bench_with_input(
@@ -487,7 +485,11 @@ fn bench_uuid_generation(c: &mut Criterion) {
 
 fn bench_timestamp_format(c: &mut Criterion) {
     c.bench_function("chrono_utc_format", |b| {
-        b.iter(|| chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string());
+        b.iter(|| {
+            chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                .to_string()
+        });
     });
 }
 

@@ -123,7 +123,7 @@ fn extract_string_value(line: &str, key: &str) -> Option<String> {
     // Handle both `"value"` and `'value'`
     ((line.starts_with('"') && line.ends_with('"'))
         || (line.starts_with('\'') && line.ends_with('\'')))
-        .then(|| line[1..line.len() - 1].to_owned())
+    .then(|| line[1..line.len() - 1].to_owned())
 }
 
 /// Extract an integer value from a line like `key = 1234`.
@@ -439,19 +439,13 @@ some_future_key = "value"
 
     #[test]
     fn extract_severity_finds_high() {
-        assert_eq!(
-            extract_severity("SEVERITY: HIGH\ndetails"),
-            "HIGH"
-        );
+        assert_eq!(extract_severity("SEVERITY: HIGH\ndetails"), "HIGH");
     }
 
     #[test]
     fn extract_severity_prefers_critical_over_high_on_same_line() {
         // Critical check comes first in the chain, so CRITICAL wins.
-        assert_eq!(
-            extract_severity("SEVERITY: CRITICAL HIGH\n"),
-            "CRITICAL"
-        );
+        assert_eq!(extract_severity("SEVERITY: CRITICAL HIGH\n"), "CRITICAL");
     }
 
     #[test]
@@ -562,11 +556,7 @@ some_future_key = "value"
 
     #[test]
     fn normalize_findings_sets_severity_correctly() {
-        let msgs = vec![make_message(
-            "1",
-            "findings",
-            "SEVERITY: CRITICAL\nfoo",
-        )];
+        let msgs = vec![make_message("1", "findings", "SEVERITY: CRITICAL\nfoo")];
         let findings = normalize_findings(&msgs);
         assert_eq!(findings[0].severity, "CRITICAL");
     }

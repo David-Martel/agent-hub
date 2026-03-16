@@ -560,9 +560,8 @@ impl AgentBusMcpServer {
                         let name = Self::get_str(args, "name")
                             .ok_or_else(|| anyhow!("name is required for group channels"))?;
                         let members = Self::get_string_array(args, "members");
-                        let info = crate::channels::create_group(
-                            settings, name, &members, created_by,
-                        )?;
+                        let info =
+                            crate::channels::create_group(settings, name, &members, created_by)?;
                         Ok(serde_json::to_value(&info)?)
                     }
                     other => Err(anyhow!(
@@ -574,10 +573,10 @@ impl AgentBusMcpServer {
             "post_to_channel" => {
                 let channel_type = Self::get_str(args, "channel_type")
                     .ok_or_else(|| anyhow!("channel_type is required"))?;
-                let sender = Self::get_str(args, "sender")
-                    .ok_or_else(|| anyhow!("sender is required"))?;
-                let body = Self::get_str(args, "body")
-                    .ok_or_else(|| anyhow!("body is required"))?;
+                let sender =
+                    Self::get_str(args, "sender").ok_or_else(|| anyhow!("sender is required"))?;
+                let body =
+                    Self::get_str(args, "body").ok_or_else(|| anyhow!("body is required"))?;
                 let topic = Self::get_str_or(args, "topic", channel_type);
                 let thread_id = Self::get_str(args, "thread_id");
                 let tags = Self::get_string_array(args, "tags");
@@ -592,8 +591,9 @@ impl AgentBusMcpServer {
                         Ok(serde_json::to_value(&msg)?)
                     }
                     "group" => {
-                        let group_name = Self::get_str(args, "recipient")
-                            .ok_or_else(|| anyhow!("recipient (group name) is required for group channels"))?;
+                        let group_name = Self::get_str(args, "recipient").ok_or_else(|| {
+                            anyhow!("recipient (group name) is required for group channels")
+                        })?;
                         let msg = crate::channels::post_to_group(
                             settings, group_name, sender, topic, body, thread_id,
                         )?;
@@ -640,8 +640,8 @@ impl AgentBusMcpServer {
             "claim_resource" => {
                 let resource = Self::get_str(args, "resource")
                     .ok_or_else(|| anyhow!("resource is required"))?;
-                let agent = Self::get_str(args, "agent")
-                    .ok_or_else(|| anyhow!("agent is required"))?;
+                let agent =
+                    Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
                 let reason = Self::get_str_or(args, "reason", "first-edit required");
 
                 let claim = crate::channels::claim_resource(settings, resource, agent, reason)?;
@@ -651,13 +651,17 @@ impl AgentBusMcpServer {
             "resolve_claim" => {
                 let resource = Self::get_str(args, "resource")
                     .ok_or_else(|| anyhow!("resource is required"))?;
-                let winner = Self::get_str(args, "winner")
-                    .ok_or_else(|| anyhow!("winner is required"))?;
+                let winner =
+                    Self::get_str(args, "winner").ok_or_else(|| anyhow!("winner is required"))?;
                 let reason = Self::get_str_or(args, "reason", "resolved by orchestrator");
                 let resolved_by = Self::get_str_or(args, "resolved_by", "orchestrator");
 
                 let state = crate::channels::resolve_claim(
-                    settings, resource, winner, reason, resolved_by,
+                    settings,
+                    resource,
+                    winner,
+                    reason,
+                    resolved_by,
                 )?;
                 Ok(serde_json::to_value(&state)?)
             }
@@ -774,9 +778,14 @@ mod tests {
         let val = result.expect("negotiate tool failed");
         let features = val["features"].as_array().expect("features must be array");
         let has_channels = features.iter().any(|f| f.as_str() == Some("channels"));
-        let has_arbitration = features.iter().any(|f| f.as_str() == Some("ownership-arbitration"));
+        let has_arbitration = features
+            .iter()
+            .any(|f| f.as_str() == Some("ownership-arbitration"));
         assert!(has_channels, "negotiate should list 'channels' feature");
-        assert!(has_arbitration, "negotiate should list 'ownership-arbitration' feature");
+        assert!(
+            has_arbitration,
+            "negotiate should list 'ownership-arbitration' feature"
+        );
     }
 
     #[test]
@@ -789,7 +798,10 @@ mod tests {
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("channel_type"), "error should mention channel_type, got: {msg}");
+        assert!(
+            msg.contains("channel_type"),
+            "error should mention channel_type, got: {msg}"
+        );
     }
 
     #[test]
