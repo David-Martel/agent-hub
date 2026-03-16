@@ -388,7 +388,9 @@ impl AgentBusMcpServer {
 
         match name {
             "bus_health" => {
-                let h = bus_health(settings);
+                // MCP stdio transport has no r2d2 pool; pass None so bus_health
+                // falls back to a single fresh connection.
+                let h = bus_health(settings, None);
                 Ok(serde_json::to_value(&h)?)
             }
 
@@ -428,6 +430,7 @@ impl AgentBusMcpServer {
                     reply_to,
                     &metadata,
                     crate::pg_writer(),
+                    false, // MCP-stdio transport: no SSE subscribers
                 )?;
                 Ok(serde_json::to_value(&msg)?)
             }
@@ -473,6 +476,7 @@ impl AgentBusMcpServer {
                     Some(message_id),
                     &meta,
                     crate::pg_writer(),
+                    false, // MCP-stdio transport: no SSE subscribers
                 )?;
                 // Include ack confirmation in response so the caller sees it on stdio.
                 let response = serde_json::json!({

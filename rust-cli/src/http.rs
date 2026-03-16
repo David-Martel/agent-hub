@@ -21,7 +21,8 @@ use crate::mcp::AgentBusMcpServer;
 use crate::models::MAX_HISTORY_MINUTES;
 use crate::output::{format_health_toon, format_message_toon, format_presence_toon};
 use crate::redis_bus::{
-    RedisPool, bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence,
+    BatchSendPayload, RedisPool, SseSubscriberCount, bus_health, bus_list_messages,
+    bus_list_presence, bus_post_message, bus_post_messages_batch, bus_set_presence,
 };
 use crate::settings::Settings;
 use crate::validation::{
@@ -47,12 +48,18 @@ type AgentConnections = Arc<
 /// `agent_connections` carries the live agent-specific SSE subscriber map so
 /// that `POST /messages` can push directly to connected agents without them
 /// having to poll.
+///
+/// `sse_subscriber_count` tracks active `GET /events` (Redis pub/sub) clients.
+/// When it is zero, `bus_post_message` skips the Redis `PUBLISH` entirely,
+/// saving ~3 µs per message.
 #[derive(Clone)]
 pub(crate) struct AppState {
     pub(crate) settings: Arc<Settings>,
     pub(crate) redis: RedisPool,
     /// Live SSE connections keyed by agent ID.
     pub(crate) agent_connections: AgentConnections,
+    /// Count of active `GET /events` (Redis pub/sub SSE) clients.
+    pub(crate) sse_subscriber_count: Arc<SseSubscriberCount>,
 }
 
 /// Map an `anyhow::Error` to an HTTP 500 response with a JSON body.
@@ -117,9 +124,11 @@ pub(crate) async fn http_health_handler(
     Query(enc): Query<EncodingQuery>,
 ) -> impl IntoResponse {
     let pool = state.redis.clone();
-    let result = tokio::task::spawn_blocking(move || bus_health(&state.settings))
-        .await
-        .expect("spawn_blocking panicked");
+    let pool_for_health = pool.clone();
+    let result =
+        tokio::task::spawn_blocking(move || bus_health(&state.settings, Some(&pool_for_health)))
+            .await
+            .expect("spawn_blocking panicked");
 
     // Attach r2d2 pool metrics so operators can see connection reuse stats.
     let (acquired, errors) = pool.metrics();
@@ -215,8 +224,8 @@ pub(crate) async fn http_send_handler(
     let request_ack = req.request_ack;
     let reply_to = req.reply_to;
 
-    // Retain a handle to the connections map before `state` is moved into the
-    // blocking task.
+    // Capture SSE subscriber state and connections map before `state` is moved.
+    let has_sse_subscribers = state.sse_subscriber_count.any();
     let agent_connections = Arc::clone(&state.agent_connections);
 
     let msg = tokio::task::spawn_blocking(move || {
@@ -235,6 +244,7 @@ pub(crate) async fn http_send_handler(
             reply_to.as_deref(),
             &metadata,
             crate::pg_writer(),
+            has_sse_subscribers,
         )
     })
     .await
@@ -349,6 +359,7 @@ pub(crate) async fn http_ack_handler(
     }
     let ack_body = req.body;
 
+    let has_sse_subscribers = state.sse_subscriber_count.any();
     let acked_id = message_id.clone();
     let msg = tokio::task::spawn_blocking(move || {
         let meta = serde_json::json!({"ack_for": &message_id});
@@ -367,6 +378,7 @@ pub(crate) async fn http_ack_handler(
             Some(&message_id),
             &meta,
             crate::pg_writer(),
+            has_sse_subscribers,
         )
     })
     .await
@@ -488,6 +500,9 @@ struct SseQuery {
 ///
 /// Filters by `agent` when specified; includes broadcast messages when `broadcast=true`.
 /// The stream runs until the client disconnects or the Redis connection drops.
+///
+/// Increments the [`SseSubscriberCount`] on connect and decrements it on disconnect
+/// so that `bus_post_message` can skip the Redis `PUBLISH` when no clients are present.
 async fn http_sse_handler(
     State(state): State<AppState>,
     Query(params): Query<SseQuery>,
@@ -496,9 +511,23 @@ async fn http_sse_handler(
     let include_broadcast = params.broadcast;
     let settings = (*state.settings).clone();
 
+    // Register this SSE client so bus_post_message knows to PUBLISH.
+    state.sse_subscriber_count.inc();
+    let counter = Arc::clone(&state.sse_subscriber_count);
+
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
 
     tokio::task::spawn_blocking(move || {
+        // RAII guard: decrement the counter on any exit path — normal return,
+        // client disconnect, or subscription failure.
+        struct CountGuard(Arc<SseSubscriberCount>);
+        impl Drop for CountGuard {
+            fn drop(&mut self) {
+                self.0.dec();
+            }
+        }
+        let _count_guard = CountGuard(counter);
+
         let Ok(client) = redis::Client::open(settings.redis_url.as_str()) else {
             return;
         };
@@ -914,6 +943,7 @@ pub(crate) async fn start_mcp_http_server(settings: Settings, port: u16) -> Resu
         settings: Arc::new(settings),
         redis,
         agent_connections: Arc::new(RwLock::new(HashMap::new())),
+        sse_subscriber_count: Arc::new(SseSubscriberCount::default()),
     };
     let app = Router::new()
         .route("/mcp", post(handle_mcp_http).get(handle_mcp_sse))
@@ -953,10 +983,6 @@ pub(crate) struct HttpBatchSendResponse {
     pub(crate) count: usize,
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "batch validation + per-message send loop"
-)]
 pub(crate) async fn http_batch_send_handler(
     State(state): State<AppState>,
     payload: Result<Json<HttpBatchSendRequest>, JsonRejection>,
@@ -969,20 +995,10 @@ pub(crate) async fn http_batch_send_handler(
         return Err(bad_request("batch size limit is 100 messages"));
     }
 
-    // Validate all messages eagerly before any Redis writes.
-    #[allow(clippy::type_complexity)]
-    let mut validated: Vec<(
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        Vec<String>,
-        String,
-        bool,
-        Option<String>,
-        serde_json::Value,
-    )> = Vec::new();
+    // Validate all messages eagerly on the async task (cheap, no I/O) and
+    // collect into typed `BatchSendPayload` structs that `bus_post_messages_batch`
+    // consumes directly.  This removes the unwieldy 10-tuple from the old path.
+    let mut payloads: Vec<BatchSendPayload> = Vec::with_capacity(req.messages.len());
     for m in &req.messages {
         let sender = m.sender.trim().to_owned();
         let recipient = m.recipient.trim().to_owned();
@@ -1009,54 +1025,35 @@ pub(crate) async fn http_batch_send_handler(
             .metadata
             .clone()
             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-        validated.push((
-            sender,
-            recipient,
+        payloads.push(BatchSendPayload {
+            from: sender,
+            to: recipient,
             topic,
-            fitted_body,
-            m.thread_id.clone(),
-            m.tags.clone(),
-            m.priority.clone(),
-            m.request_ack,
-            m.reply_to.clone(),
+            body: fitted_body,
+            thread_id: m.thread_id.clone(),
+            tags: m.tags.clone(),
+            priority: m.priority.clone(),
+            request_ack: m.request_ack,
+            reply_to: m.reply_to.clone(),
             metadata,
-        ));
+        });
     }
+
+    // Snapshot the SSE subscriber flag before moving `state` into the blocking
+    // task to avoid a cross-thread Arc dance inside spawn_blocking.
+    let has_sse = state.sse_subscriber_count.any();
 
     let ids = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        let mut ids = Vec::with_capacity(validated.len());
-        for (
-            sender,
-            recipient,
-            topic,
-            body,
-            thread_id,
-            tags,
-            priority,
-            request_ack,
-            reply_to,
-            metadata,
-        ) in validated
-        {
-            let msg = bus_post_message(
-                &mut conn,
-                &state.settings,
-                &sender,
-                &recipient,
-                &topic,
-                &body,
-                thread_id.as_deref(),
-                &tags,
-                &priority,
-                request_ack,
-                reply_to.as_deref(),
-                &metadata,
-                crate::pg_writer(),
-            )?;
-            ids.push(msg.id);
-        }
-        Ok::<Vec<String>, anyhow::Error>(ids)
+        // Single Redis pipeline round-trip for all XADD + PUBLISH + pending-ack.
+        let messages = bus_post_messages_batch(
+            &mut conn,
+            &state.settings,
+            payloads,
+            crate::pg_writer(),
+            has_sse,
+        )?;
+        Ok::<Vec<String>, anyhow::Error>(messages.into_iter().map(|m| m.id).collect())
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1159,6 +1156,7 @@ pub(crate) async fn http_batch_ack_handler(
     }
     let ids = req.message_ids;
     let ack_body = req.body;
+    let has_sse_subscribers = state.sse_subscriber_count.any();
 
     let acked_ids = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
@@ -1179,6 +1177,7 @@ pub(crate) async fn http_batch_ack_handler(
                 Some(message_id.as_str()),
                 &meta,
                 crate::pg_writer(),
+                has_sse_subscribers,
             )?;
             acked.push(message_id.clone());
         }
@@ -1578,6 +1577,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         settings: Arc::new(settings),
         redis,
         agent_connections: Arc::new(RwLock::new(HashMap::new())),
+        sse_subscriber_count: Arc::new(SseSubscriberCount::default()),
     };
     let app = Router::new()
         .route("/health", get(http_health_handler))

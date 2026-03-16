@@ -121,6 +121,7 @@ fn maybe_announce_startup(settings: &Settings) {
         None,
         &meta,
         writer,
+        false, // startup broadcast: no SSE clients yet
     );
 }
 

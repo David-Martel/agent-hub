@@ -59,7 +59,7 @@ pub(crate) struct PresenceArgs<'a> {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding) {
-    let health = bus_health(settings);
+    let health = bus_health(settings, None);
     if matches!(encoding, Encoding::Toon) {
         println!("{}", format_health_toon(&health));
     } else {
@@ -93,6 +93,7 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
         args.reply_to.as_deref(),
         &meta,
         crate::pg_writer(),
+        false, // CLI transport: no SSE subscribers
     )?;
     output(&msg, args.encoding);
     Ok(())
@@ -202,6 +203,7 @@ pub(crate) fn cmd_ack(
         Some(message_id), // reply_to = the message being acked
         &meta,
         crate::pg_writer(),
+        false, // CLI transport: no SSE subscribers
     )?;
     // Clear the pending-ack entry now that the acknowledgement has been sent.
     // Non-fatal: the entry will expire automatically after 300 seconds anyway.
@@ -532,6 +534,7 @@ pub(crate) fn cmd_batch_send(settings: &Settings, file: &str, encoding: &Encodin
             entry.reply_to.as_deref(),
             &meta,
             crate::pg_writer(),
+            false, // CLI transport: no SSE subscribers
         )
         .with_context(|| format!("line {}: Redis write failed", line_no + 1))?;
         ids.push(msg.id);

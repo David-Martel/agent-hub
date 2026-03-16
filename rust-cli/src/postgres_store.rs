@@ -590,41 +590,35 @@ pub(crate) fn list_messages_by_tag(
     })
 }
 
-pub(crate) fn count_messages_postgres(settings: &Settings) -> Option<i64> {
+/// Fetch both message and presence event counts in a single `PostgreSQL` round-trip.
+///
+/// Returns `(msg_count, presence_count)`.  Either component is `None` when
+/// `PostgreSQL` is not configured or the query fails.
+///
+/// This replaces the previous two-query path (`count_messages_postgres` +
+/// `count_presence_postgres`) with a single subquery so the health endpoint
+/// incurs one round-trip instead of two.
+pub(crate) fn count_both_postgres(settings: &Settings) -> (Option<i64>, Option<i64>) {
     run_postgres_blocking(|| {
         let Some(mut client) = get_pg_client(settings)? else {
-            return Ok(None);
-        };
-        let row = client.query_one(
-            &format!("select count(*) as cnt from {}", settings.message_table),
-            &[],
-        )?;
-        let count = row.get::<_, i64>("cnt");
-        return_pg_client(client);
-        Ok(Some(count))
-    })
-    .ok()
-    .flatten()
-}
-
-pub(crate) fn count_presence_postgres(settings: &Settings) -> Option<i64> {
-    run_postgres_blocking(|| {
-        let Some(mut client) = get_pg_client(settings)? else {
-            return Ok(None);
+            return Ok((None, None));
         };
         let row = client.query_one(
             &format!(
-                "select count(*) as cnt from {}",
-                settings.presence_event_table
+                "SELECT \
+                    (SELECT count(*) FROM {msg}) AS msg_count, \
+                    (SELECT count(*) FROM {pres}) AS presence_count",
+                msg = settings.message_table,
+                pres = settings.presence_event_table,
             ),
             &[],
         )?;
-        let count = row.get::<_, i64>("cnt");
+        let msg_count: i64 = row.get("msg_count");
+        let presence_count: i64 = row.get("presence_count");
         return_pg_client(client);
-        Ok(Some(count))
+        Ok((Some(msg_count), Some(presence_count)))
     })
-    .ok()
-    .flatten()
+    .unwrap_or_default()
 }
 
 /// Delete messages older than `older_than_days` days from `PostgreSQL`.
@@ -817,13 +811,30 @@ const PG_BATCH_SIZE: usize = 10;
 const PG_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
 
 impl PgWriter {
-    /// Spawn the background flush task and return a `PgWriter` handle.
+    /// Spawn the background flush task and return a `PgWriter` handle plus a
+    /// join handle for graceful shutdown.
     ///
-    /// The returned handle is `Clone` — each clone shares the same channel.
-    pub(crate) fn spawn(settings: Settings) -> Self {
+    /// The returned `PgWriter` is `Clone` — each clone shares the same channel.
+    /// The join handle should be stored separately and awaited via
+    /// [`PgWriter::shutdown_and_wait`] before process exit in CLI commands.
+    pub(crate) fn spawn(settings: Settings) -> (Self, tokio::task::JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel::<PgWriteRequest>();
-        tokio::spawn(pg_writer_task(settings, rx));
-        Self { tx }
+        let handle = tokio::spawn(pg_writer_task(settings, rx));
+        (Self { tx }, handle)
+    }
+
+    /// Send a `Shutdown` signal and await the background task.
+    ///
+    /// Callers that hold the `JoinHandle` returned by [`spawn`] should call
+    /// this at the end of CLI commands to ensure all enqueued writes are
+    /// flushed to `PostgreSQL` before the process exits.
+    ///
+    /// If the task has already exited (e.g. channel already closed) this is a no-op.
+    pub(crate) fn shutdown_and_wait(&self, handle: tokio::task::JoinHandle<()>) {
+        let _ = self.tx.send(PgWriteRequest::Shutdown);
+        // Block in place so we don't need to restructure main() into async.
+        // This is a CLI-only path; the server transports never call this.
+        let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(handle));
     }
 
     /// Enqueue a message for asynchronous `PostgreSQL` persistence.
