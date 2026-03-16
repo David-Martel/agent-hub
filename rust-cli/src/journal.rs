@@ -168,9 +168,9 @@ mod tests {
             body: "body".to_owned(),
             thread_id: None,
             tags: if tag.is_empty() {
-                vec![]
+                vec![].into()
             } else {
-                vec![tag.to_owned()]
+                vec![tag.to_owned()].into()
             },
             priority: "normal".to_owned(),
             request_ack: false,

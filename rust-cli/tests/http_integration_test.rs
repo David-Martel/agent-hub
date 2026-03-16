@@ -29,10 +29,15 @@ const BASE_URL: &str = "http://localhost:8400";
 
 /// Returns a millisecond-precision timestamp string suitable for unique IDs.
 fn unique_suffix() -> u64 {
-    SystemTime::now()
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "milliseconds since epoch fit in u64 for centuries"
+    )]
+    let ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
-        .as_millis() as u64
+        .as_millis() as u64;
+    ms
 }
 
 /// Returns a reqwest client and `true` when the service is reachable.

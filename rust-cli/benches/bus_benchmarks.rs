@@ -232,12 +232,12 @@ fn claims_key(resource: &str) -> String {
 // Pure functions (mirror redis_bus.rs decode_stream_entry — key extraction)
 // ---------------------------------------------------------------------------
 
-/// Original approach: from_utf8_lossy → Cow → .to_string() (two potential allocs).
+/// Original approach: `from_utf8_lossy` → Cow → `.to_string()` (two potential allocs).
 fn get_field_original(raw: &[u8]) -> String {
     String::from_utf8_lossy(raw).to_string()
 }
 
-/// Optimized approach: try from_utf8 first (zero-copy path), fall back to lossy.
+/// Optimized approach: try `from_utf8` first (zero-copy path), fall back to lossy.
 fn get_field_optimized(raw: &[u8]) -> String {
     match std::str::from_utf8(raw) {
         Ok(s) => s.to_owned(),
@@ -245,7 +245,7 @@ fn get_field_optimized(raw: &[u8]) -> String {
     }
 }
 
-/// Simulated decode: extracts 8 fields from a HashMap of byte slices.
+/// Simulated decode: extracts 8 fields from a `HashMap` of byte slices.
 fn decode_fields_original(fields: &std::collections::HashMap<&str, Vec<u8>>) -> Vec<String> {
     let get = |k: &str| -> String {
         fields

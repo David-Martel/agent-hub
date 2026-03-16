@@ -225,7 +225,7 @@ fn decode_channel_entry(
                 Some(v)
             }
         },
-        tags: get_json_vec("tags"),
+        tags: get_json_vec("tags").into(),
         priority: {
             let v = get("priority");
             if v.is_empty() { "normal".to_owned() } else { v }
@@ -340,7 +340,7 @@ fn xadd_to_stream(
         topic: topic.to_owned(),
         body: body.to_owned(),
         thread_id: thread_id.map(String::from),
-        tags: tags.to_vec(),
+        tags: tags.to_vec().into(),
         priority: priority.to_owned(),
         request_ack: false,
         reply_to: Some(from.to_owned()),

@@ -248,7 +248,7 @@ pub(crate) fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Mes
                 Some(v)
             }
         },
-        tags: get_json_vec("tags"),
+        tags: get_json_vec("tags").into(),
         priority: {
             let v = get("priority");
             if v.is_empty() { "normal".to_owned() } else { v }
@@ -448,7 +448,7 @@ fn prepare_message(
         topic: topic.to_owned(),
         body: body.to_owned(),
         thread_id: thread_id.map(String::from),
-        tags: tags.to_vec(),
+        tags: tags.to_vec().into(),
         priority: priority.to_owned(),
         request_ack,
         reply_to: Some(reply),
@@ -685,7 +685,6 @@ pub(crate) fn bus_post_message(
     // the intermediate `DelayedFormat` heap allocation from `.to_string()`.
     let ts = {
         let mut buf = String::with_capacity(32);
-        use std::fmt::Write as _;
         let _ = write!(buf, "{}", Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ"));
         buf
     };
@@ -806,7 +805,7 @@ pub(crate) fn bus_post_message(
         topic: topic.to_owned(),
         body: body.to_owned(),
         thread_id: thread_id.map(String::from),
-        tags: tags.to_vec(),
+        tags: tags.to_vec().into(),
         priority: priority.to_owned(),
         request_ack,
         reply_to: Some(reply.to_owned()),
@@ -1211,35 +1210,31 @@ pub(crate) fn bus_list_presence(
 /// implementation incurred.  Pass `None` in CLI mode where no pool exists.
 pub(crate) fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
     // Use a pooled connection when available; otherwise open a fresh one.
-    let (ok, stream_length) = match pool.and_then(|p| p.get_connection().ok()) {
-        Some(mut conn) => {
-            let ok = redis::cmd("PING")
-                .query::<String>(&mut *conn)
-                .map(|pong| pong == "PONG")
-                .unwrap_or(false);
-            let stream_length = redis::cmd("XLEN")
-                .arg(&settings.stream_key)
-                .query::<u64>(&mut *conn)
-                .ok();
-            (ok, stream_length)
-        }
-        None => {
-            // CLI mode: fall back to a single fresh connection for both queries.
-            let (ok, stream_length) = match connect(settings) {
-                Ok(mut conn) => {
-                    let ok = redis::cmd("PING")
-                        .query::<String>(&mut conn)
-                        .map(|pong| pong == "PONG")
-                        .unwrap_or(false);
-                    let stream_length = redis::cmd("XLEN")
-                        .arg(&settings.stream_key)
-                        .query::<u64>(&mut conn)
-                        .ok();
-                    (ok, stream_length)
-                }
-                Err(_) => (false, None),
-            };
-            (ok, stream_length)
+    let (ok, stream_length) = if let Some(mut conn) = pool.and_then(|p| p.get_connection().ok()) {
+        let ok = redis::cmd("PING")
+            .query::<String>(&mut *conn)
+            .map(|pong| pong == "PONG")
+            .unwrap_or(false);
+        let stream_length = redis::cmd("XLEN")
+            .arg(&settings.stream_key)
+            .query::<u64>(&mut *conn)
+            .ok();
+        (ok, stream_length)
+    } else {
+        // CLI mode: fall back to a single fresh connection for both queries.
+        match connect(settings) {
+            Ok(mut conn) => {
+                let ok = redis::cmd("PING")
+                    .query::<String>(&mut conn)
+                    .map(|pong| pong == "PONG")
+                    .unwrap_or(false);
+                let stream_length = redis::cmd("XLEN")
+                    .arg(&settings.stream_key)
+                    .query::<u64>(&mut conn)
+                    .ok();
+                (ok, stream_length)
+            }
+            Err(_) => (false, None),
         }
     };
 
@@ -1697,7 +1692,7 @@ mod tests {
         assert_eq!(pm.message.topic, "test");
         assert_eq!(pm.message.body, "hello");
         assert_eq!(pm.message.thread_id, Some("tid".to_owned()));
-        assert_eq!(pm.message.tags, vec!["t1".to_owned()]);
+        assert_eq!(pm.message.tags.as_slice(), &["t1".to_owned()]);
         assert_eq!(pm.message.priority, "normal");
         assert!(pm.message.request_ack);
         assert_eq!(pm.message.reply_to, Some("charlie".to_owned()));

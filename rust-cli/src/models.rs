@@ -1,6 +1,7 @@
 //! Protocol models, constants, and wire types.
 
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 pub(crate) const PROTOCOL_VERSION: &str = "1.0";
 
@@ -29,7 +30,7 @@ pub(crate) struct Message {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) thread_id: Option<String>,
     #[serde(default)]
-    pub(crate) tags: Vec<String>,
+    pub(crate) tags: SmallVec<[String; 4]>,
     #[serde(default = "default_priority")]
     pub(crate) priority: String,
     #[serde(default)]

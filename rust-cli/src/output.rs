@@ -241,7 +241,7 @@ mod tests {
             topic: "coordination".to_owned(),
             body: "Session announced: framework-v0.4".to_owned(),
             thread_id: None,
-            tags: vec!["repo:agent-hub".to_owned()],
+            tags: vec!["repo:agent-hub".to_owned()].into(),
             priority: "normal".to_owned(),
             request_ack: false,
             reply_to: None,
