@@ -112,6 +112,73 @@ mod schemas {
             &[],
         )
     }
+
+    pub(super) fn negotiate() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(serde_json::json!({}), &[])
+    }
+
+    pub(super) fn create_channel() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "channel_type": {"type": "string", "enum": ["direct", "group", "escalate", "arbitrate"]},
+                "name":        {"type": "string", "description": "Group name (for group channels)"},
+                "members":     {"type": "array", "items": {"type": "string"}, "description": "Initial members (for group channels)"},
+                "created_by":  {"type": "string", "description": "Creating agent ID"}
+            }),
+            &["channel_type", "created_by"],
+        )
+    }
+
+    pub(super) fn post_to_channel() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "channel_type": {"type": "string", "enum": ["direct", "group", "escalate"]},
+                "sender":       {"type": "string"},
+                "recipient":    {"type": "string", "description": "Agent ID (for direct) or group name (for group)"},
+                "topic":        {"type": "string"},
+                "body":         {"type": "string"},
+                "thread_id":    {"type": "string"},
+                "tags":         {"type": "array", "items": {"type": "string"}}
+            }),
+            &["channel_type", "sender", "body"],
+        )
+    }
+
+    pub(super) fn read_channel() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "channel_type": {"type": "string", "enum": ["direct", "group"]},
+                "agent_a":      {"type": "string", "description": "First agent (for direct)"},
+                "agent_b":      {"type": "string", "description": "Second agent (for direct)"},
+                "group_name":   {"type": "string", "description": "Group name (for group)"},
+                "limit":        {"type": "integer", "minimum": 1, "maximum": 500}
+            }),
+            &["channel_type"],
+        )
+    }
+
+    pub(super) fn claim_resource() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "resource": {"type": "string", "description": "File/directory path to claim"},
+                "agent":    {"type": "string", "description": "Claiming agent ID"},
+                "reason":   {"type": "string", "description": "Why this agent needs first-edit"}
+            }),
+            &["resource", "agent"],
+        )
+    }
+
+    pub(super) fn resolve_claim() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "resource":     {"type": "string"},
+                "winner":       {"type": "string", "description": "Agent ID that wins first-edit"},
+                "reason":       {"type": "string", "description": "Rationale for the decision"},
+                "resolved_by":  {"type": "string", "description": "Decision-maker agent ID"}
+            }),
+            &["resource", "winner"],
+        )
+    }
 }
 
 /// MCP server handler that exposes agent-bus operations as MCP tools.
@@ -165,7 +232,57 @@ impl AgentBusMcpServer {
                 "Query PostgreSQL for historical presence events within a time window.",
                 schemas::list_presence_history(),
             ),
+            Tool::new(
+                "negotiate",
+                "Return server capabilities: protocol version, supported features, \
+                 transports, schemas, and encoding formats.",
+                schemas::negotiate(),
+            ),
+            Tool::new(
+                "create_channel",
+                "Create a new group channel with an initial member list.",
+                schemas::create_channel(),
+            ),
+            Tool::new(
+                "post_to_channel",
+                "Post a message to a direct, group, or escalation channel.",
+                schemas::post_to_channel(),
+            ),
+            Tool::new(
+                "read_channel",
+                "Read messages from a direct or group channel.",
+                schemas::read_channel(),
+            ),
+            Tool::new(
+                "claim_resource",
+                "Claim first-edit ownership of a resource. First claim is auto-granted; \
+                 contested claims trigger orchestrator escalation.",
+                schemas::claim_resource(),
+            ),
+            Tool::new(
+                "resolve_claim",
+                "Resolve a contested ownership claim by naming a winner and sending \
+                 direct notifications to all claimants.",
+                schemas::resolve_claim(),
+            ),
         ]
+    }
+
+    /// Synchronous tool dispatch used by the MCP Streamable HTTP transport.
+    ///
+    /// Mirrors [`call_tool`] but returns a plain `serde_json::Value` rather than
+    /// `CallToolResult`, making it usable in blocking tasks spawned by the HTTP
+    /// handler without requiring the full `rmcp` async machinery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the tool name is unknown or the tool logic fails.
+    pub(crate) fn call_tool_sync(
+        &self,
+        name: &str,
+        args: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<serde_json::Value> {
+        self.handle_tool_call_inner(name, args)
     }
 
     fn json_to_text(value: &serde_json::Value) -> Content {
@@ -411,6 +528,140 @@ impl AgentBusMcpServer {
                 Ok(serde_json::to_value(&events)?)
             }
 
+            "negotiate" => Ok(serde_json::json!({
+                "protocol_version": crate::models::PROTOCOL_VERSION,
+                "features": [
+                    "compression",
+                    "toon",
+                    "batch",
+                    "sse-routing",
+                    "ack-tracking",
+                    "pending-acks",
+                    "lz4-body-compression",
+                    "channels",
+                    "ownership-arbitration"
+                ],
+                "transports": ["stdio", "http", "mcp-http"],
+                "schemas": ["finding", "status", "benchmark"],
+                "encoding_formats": ["json", "compact", "human", "toon"],
+                "server_version": env!("CARGO_PKG_VERSION"),
+                "mcp_spec_version": "2024-11-05",
+                "tools": AgentBusMcpServer::tool_list().len(),
+            })),
+
+            "create_channel" => {
+                let channel_type = Self::get_str(args, "channel_type")
+                    .ok_or_else(|| anyhow!("channel_type is required"))?;
+                let created_by = Self::get_str(args, "created_by")
+                    .ok_or_else(|| anyhow!("created_by is required"))?;
+
+                match channel_type {
+                    "group" => {
+                        let name = Self::get_str(args, "name")
+                            .ok_or_else(|| anyhow!("name is required for group channels"))?;
+                        let members = Self::get_string_array(args, "members");
+                        let info = crate::channels::create_group(
+                            settings, name, &members, created_by,
+                        )?;
+                        Ok(serde_json::to_value(&info)?)
+                    }
+                    other => Err(anyhow!(
+                        "unsupported channel_type '{other}' for create_channel; supported: group"
+                    )),
+                }
+            }
+
+            "post_to_channel" => {
+                let channel_type = Self::get_str(args, "channel_type")
+                    .ok_or_else(|| anyhow!("channel_type is required"))?;
+                let sender = Self::get_str(args, "sender")
+                    .ok_or_else(|| anyhow!("sender is required"))?;
+                let body = Self::get_str(args, "body")
+                    .ok_or_else(|| anyhow!("body is required"))?;
+                let topic = Self::get_str_or(args, "topic", channel_type);
+                let thread_id = Self::get_str(args, "thread_id");
+                let tags = Self::get_string_array(args, "tags");
+
+                match channel_type {
+                    "direct" => {
+                        let recipient = Self::get_str(args, "recipient")
+                            .ok_or_else(|| anyhow!("recipient is required for direct channels"))?;
+                        let msg = crate::channels::post_direct(
+                            settings, sender, recipient, topic, body, thread_id, &tags,
+                        )?;
+                        Ok(serde_json::to_value(&msg)?)
+                    }
+                    "group" => {
+                        let group_name = Self::get_str(args, "recipient")
+                            .ok_or_else(|| anyhow!("recipient (group name) is required for group channels"))?;
+                        let msg = crate::channels::post_to_group(
+                            settings, group_name, sender, topic, body, thread_id,
+                        )?;
+                        Ok(serde_json::to_value(&msg)?)
+                    }
+                    "escalate" => {
+                        let msg = crate::channels::post_escalation(
+                            settings, sender, body, thread_id, &tags,
+                        )?;
+                        Ok(serde_json::to_value(&msg)?)
+                    }
+                    other => Err(anyhow!(
+                        "unsupported channel_type '{other}'; supported: direct, group, escalate"
+                    )),
+                }
+            }
+
+            "read_channel" => {
+                let channel_type = Self::get_str(args, "channel_type")
+                    .ok_or_else(|| anyhow!("channel_type is required"))?;
+                let limit = Self::get_usize_or(args, "limit", 50);
+
+                match channel_type {
+                    "direct" => {
+                        let agent_a = Self::get_str(args, "agent_a")
+                            .ok_or_else(|| anyhow!("agent_a is required for direct channels"))?;
+                        let agent_b = Self::get_str(args, "agent_b")
+                            .ok_or_else(|| anyhow!("agent_b is required for direct channels"))?;
+                        let msgs = crate::channels::read_direct(settings, agent_a, agent_b, limit)?;
+                        Ok(serde_json::to_value(&msgs)?)
+                    }
+                    "group" => {
+                        let group_name = Self::get_str(args, "group_name")
+                            .ok_or_else(|| anyhow!("group_name is required for group channels"))?;
+                        let msgs = crate::channels::read_group(settings, group_name, limit)?;
+                        Ok(serde_json::to_value(&msgs)?)
+                    }
+                    other => Err(anyhow!(
+                        "unsupported channel_type '{other}' for read_channel; supported: direct, group"
+                    )),
+                }
+            }
+
+            "claim_resource" => {
+                let resource = Self::get_str(args, "resource")
+                    .ok_or_else(|| anyhow!("resource is required"))?;
+                let agent = Self::get_str(args, "agent")
+                    .ok_or_else(|| anyhow!("agent is required"))?;
+                let reason = Self::get_str_or(args, "reason", "first-edit required");
+
+                let claim = crate::channels::claim_resource(settings, resource, agent, reason)?;
+                Ok(serde_json::to_value(&claim)?)
+            }
+
+            "resolve_claim" => {
+                let resource = Self::get_str(args, "resource")
+                    .ok_or_else(|| anyhow!("resource is required"))?;
+                let winner = Self::get_str(args, "winner")
+                    .ok_or_else(|| anyhow!("winner is required"))?;
+                let reason = Self::get_str_or(args, "reason", "resolved by orchestrator");
+                let resolved_by = Self::get_str_or(args, "resolved_by", "orchestrator");
+
+                let state = crate::channels::resolve_claim(
+                    settings, resource, winner, reason, resolved_by,
+                )?;
+                Ok(serde_json::to_value(&state)?)
+            }
+
             other => Err(anyhow!("unknown tool: {other}")),
         }
     }
@@ -474,13 +725,14 @@ mod tests {
     #[test]
     fn tool_list_has_expected_count() {
         let tools = AgentBusMcpServer::tool_list();
-        assert_eq!(tools.len(), 7, "expected 7 MCP tools");
+        assert_eq!(tools.len(), 13, "expected 13 MCP tools (8 bus + 5 channel)");
     }
 
     #[test]
     fn tool_list_names_are_correct() {
         let tools = AgentBusMcpServer::tool_list();
         let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+        // Original bus tools
         assert!(names.iter().any(|n| n == "bus_health"));
         assert!(names.iter().any(|n| n == "post_message"));
         assert!(names.iter().any(|n| n == "list_messages"));
@@ -488,5 +740,86 @@ mod tests {
         assert!(names.iter().any(|n| n == "set_presence"));
         assert!(names.iter().any(|n| n == "list_presence"));
         assert!(names.iter().any(|n| n == "list_presence_history"));
+        assert!(names.iter().any(|n| n == "negotiate"));
+        // Channel tools
+        assert!(names.iter().any(|n| n == "create_channel"));
+        assert!(names.iter().any(|n| n == "post_to_channel"));
+        assert!(names.iter().any(|n| n == "read_channel"));
+        assert!(names.iter().any(|n| n == "claim_resource"));
+        assert!(names.iter().any(|n| n == "resolve_claim"));
+    }
+
+    #[test]
+    fn negotiate_returns_protocol_version() {
+        let server = AgentBusMcpServer::new(crate::settings::Settings::from_env());
+        let result = server.call_tool_sync("negotiate", &serde_json::Map::new());
+        let val = result.expect("negotiate tool failed");
+        assert_eq!(val["protocol_version"], crate::models::PROTOCOL_VERSION);
+        assert!(val["transports"].as_array().is_some());
+        assert!(val["schemas"].as_array().is_some());
+    }
+
+    #[test]
+    fn call_tool_sync_unknown_tool_returns_error() {
+        let server = AgentBusMcpServer::new(crate::settings::Settings::from_env());
+        let result = server.call_tool_sync("nonexistent_tool", &serde_json::Map::new());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unknown tool"));
+    }
+
+    #[test]
+    fn negotiate_lists_channel_features() {
+        let server = AgentBusMcpServer::new(crate::settings::Settings::from_env());
+        let result = server.call_tool_sync("negotiate", &serde_json::Map::new());
+        let val = result.expect("negotiate tool failed");
+        let features = val["features"].as_array().expect("features must be array");
+        let has_channels = features.iter().any(|f| f.as_str() == Some("channels"));
+        let has_arbitration = features.iter().any(|f| f.as_str() == Some("ownership-arbitration"));
+        assert!(has_channels, "negotiate should list 'channels' feature");
+        assert!(has_arbitration, "negotiate should list 'ownership-arbitration' feature");
+    }
+
+    #[test]
+    fn create_channel_requires_channel_type() {
+        let server = AgentBusMcpServer::new(crate::settings::Settings::from_env());
+        let args = serde_json::json!({"created_by": "claude"});
+        let result = server.call_tool_sync(
+            "create_channel",
+            args.as_object().expect("args must be object"),
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("channel_type"), "error should mention channel_type, got: {msg}");
+    }
+
+    #[test]
+    fn post_to_channel_rejects_unknown_channel_type() {
+        let server = AgentBusMcpServer::new(crate::settings::Settings::from_env());
+        let args = serde_json::json!({
+            "channel_type": "invalid",
+            "sender": "claude",
+            "body": "hello"
+        });
+        let result = server.call_tool_sync(
+            "post_to_channel",
+            args.as_object().expect("args must be object"),
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("unsupported"));
+    }
+
+    #[test]
+    fn claim_resource_requires_resource_and_agent() {
+        let server = AgentBusMcpServer::new(crate::settings::Settings::from_env());
+
+        // Missing agent
+        let args1 = serde_json::json!({"resource": "src/main.rs"});
+        let r1 = server.call_tool_sync("claim_resource", args1.as_object().unwrap());
+        assert!(r1.is_err());
+
+        // Missing resource
+        let args2 = serde_json::json!({"agent": "claude"});
+        let r2 = server.call_tool_sync("claim_resource", args2.as_object().unwrap());
+        assert!(r2.is_err());
     }
 }

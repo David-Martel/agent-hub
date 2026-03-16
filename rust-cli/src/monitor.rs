@@ -118,7 +118,9 @@ pub(crate) fn monitor_session(
             sev.tally(&m.body);
         }
 
-        render_dashboard(filtered.len(), &agents, sev);
+        // Gather channel summary (best-effort — failure is non-fatal).
+        let channels = crate::channels::channel_summary(settings).ok();
+        render_dashboard(filtered.len(), &agents, sev, channels.as_ref());
 
         std::thread::sleep(std::time::Duration::from_secs(refresh_seconds));
     }
@@ -131,7 +133,12 @@ pub(crate) fn monitor_session(
 /// Width of the dashboard box (inner content, excluding border chars).
 const BOX_WIDTH: usize = 47;
 
-fn render_dashboard(total: usize, agents: &HashMap<&str, AgentSummary>, sev: Severities) {
+fn render_dashboard(
+    total: usize,
+    agents: &HashMap<&str, AgentSummary>,
+    sev: Severities,
+    channels: Option<&crate::channels::ChannelSummary>,
+) {
     let header = format!(" Agent Hub Monitor | {total} messages ");
     println!("{}", box_top());
     println!("{}", box_row(&header));
@@ -153,6 +160,33 @@ fn render_dashboard(total: usize, agents: &HashMap<&str, AgentSummary>, sev: Sev
         sev.critical, sev.high, sev.medium, sev.low
     );
     println!("{}", box_row(&sev_row));
+
+    // --- Channel summary section ---
+    if let Some(ch) = channels {
+        println!("{}", box_divider());
+        let ch_row = format!(
+            " Channels: direct={} groups={} claims={}",
+            ch.direct_channel_count,
+            ch.groups.len(),
+            ch.claims.len(),
+        );
+        println!("{}", box_row(&ch_row));
+        if ch.contested_count > 0 {
+            let contested_row = format!(" CONTESTED CLAIMS: {}", ch.contested_count);
+            println!("{}", box_row(&contested_row));
+        }
+        for group in &ch.groups {
+            let group_row = format!(
+                "  grp:{:20} {:3} msgs {:2} members",
+                group.name,
+                group.message_count,
+                group.members.len()
+            );
+            println!("{}", box_row(&group_row));
+        }
+    }
+    // --------------------------------
+
     println!("{}", box_bottom());
 }
 
@@ -247,6 +281,27 @@ mod tests {
         let agents = HashMap::new();
         let sev = Severities::default();
         // Should complete without panic.
-        render_dashboard(0, &agents, sev);
+        render_dashboard(0, &agents, sev, None);
+    }
+
+    #[test]
+    fn render_dashboard_does_not_panic_with_channel_summary() {
+        use crate::channels::{ChannelSummary, GroupInfo};
+        let agents = HashMap::new();
+        let sev = Severities::default();
+        let summary = ChannelSummary {
+            direct_channel_count: 2,
+            groups: vec![GroupInfo {
+                name: "test-group".to_owned(),
+                members: vec!["claude".to_owned()],
+                created_at: "2026-01-01T00:00:00.000000Z".to_owned(),
+                created_by: "claude".to_owned(),
+                message_count: 5,
+            }],
+            claims: vec![],
+            contested_count: 0,
+        };
+        // Should complete without panic.
+        render_dashboard(0, &agents, sev, Some(&summary));
     }
 }

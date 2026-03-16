@@ -20,7 +20,9 @@
     reason = "dependency diamond between rmcp and redis — not our choice"
 )]
 
+mod channels;
 mod cli;
+mod codex_bridge;
 mod commands;
 mod http;
 mod journal;
@@ -43,11 +45,13 @@ use rmcp::serve_server;
 
 use cli::{Cli, Cmd};
 use commands::{
-    PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_export, cmd_health, cmd_journal, cmd_monitor,
-    cmd_presence, cmd_presence_history, cmd_presence_list, cmd_prune, cmd_read, cmd_send, cmd_sync,
+    PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_batch_send, cmd_claim, cmd_claims,
+    cmd_codex_sync, cmd_export, cmd_health, cmd_journal, cmd_monitor, cmd_pending_acks,
+    cmd_post_direct, cmd_post_group, cmd_presence, cmd_presence_history, cmd_presence_list,
+    cmd_prune, cmd_read, cmd_read_direct, cmd_read_group, cmd_resolve, cmd_send, cmd_sync,
     cmd_watch,
 };
-use http::start_http_server;
+use http::{start_http_server, start_mcp_http_server};
 use mcp::AgentBusMcpServer;
 use models::STARTUP_PRESENCE_TTL;
 use postgres_store::{PgWriter, probe_postgres};
@@ -300,11 +304,25 @@ async fn main() -> Result<()> {
             )?;
         }
 
+        Cmd::PendingAcks {
+            ref agent,
+            ref encoding,
+        } => {
+            cmd_pending_acks(&settings, agent.as_deref(), encoding)?;
+        }
+
         Cmd::Sync {
             limit,
             ref encoding,
         } => {
             cmd_sync(&settings, limit, encoding)?;
+        }
+
+        Cmd::CodexSync {
+            limit,
+            ref encoding,
+        } => {
+            cmd_codex_sync(&settings, limit, encoding)?;
         }
 
         Cmd::Monitor {
@@ -321,6 +339,11 @@ async fn main() -> Result<()> {
             if transport == "http" {
                 maybe_announce_startup(&settings);
                 start_http_server(settings, port).await?;
+            } else if transport == "mcp-http" {
+                // MCP Streamable HTTP transport (spec 2025-06-18).
+                // Announces startup then starts the Axum server on /mcp.
+                maybe_announce_startup(&settings);
+                start_mcp_http_server(settings, port).await?;
             } else {
                 // Default: MCP stdio transport.
                 // Start the MCP server FIRST so it can respond to initialize
@@ -337,6 +360,82 @@ async fn main() -> Result<()> {
                 });
                 service.waiting().await.context("MCP server loop error")?;
             }
+        }
+
+        Cmd::BatchSend {
+            ref file,
+            ref encoding,
+        } => {
+            cmd_batch_send(&settings, file, encoding)?;
+        }
+
+        // --- Channel commands ------------------------------------------------
+
+        Cmd::PostDirect {
+            ref from_agent,
+            ref to_agent,
+            ref topic,
+            ref body,
+            ref thread_id,
+            ref tag,
+            ref encoding,
+        } => {
+            cmd_post_direct(&settings, from_agent, to_agent, topic, body, thread_id.as_deref(), tag, encoding)?;
+        }
+
+        Cmd::ReadDirect {
+            ref agent_a,
+            ref agent_b,
+            limit,
+            ref encoding,
+        } => {
+            cmd_read_direct(&settings, agent_a, agent_b, limit, encoding)?;
+        }
+
+        Cmd::PostGroup {
+            ref group,
+            ref from_agent,
+            ref topic,
+            ref body,
+            ref thread_id,
+            ref encoding,
+        } => {
+            cmd_post_group(&settings, group, from_agent, topic, body, thread_id.as_deref(), encoding)?;
+        }
+
+        Cmd::ReadGroup {
+            ref group,
+            limit,
+            ref encoding,
+        } => {
+            cmd_read_group(&settings, group, limit, encoding)?;
+        }
+
+        Cmd::Claim {
+            ref resource,
+            ref agent,
+            ref reason,
+            ref encoding,
+        } => {
+            cmd_claim(&settings, resource, agent, reason, encoding)?;
+        }
+
+        Cmd::Claims {
+            ref resource,
+            ref status,
+            ref encoding,
+        } => {
+            cmd_claims(&settings, resource.as_deref(), status.as_deref(), encoding)?;
+        }
+
+        Cmd::Resolve {
+            ref resource,
+            ref winner,
+            ref reason,
+            ref resolved_by,
+            ref encoding,
+        } => {
+            cmd_resolve(&settings, resource, winner, reason, resolved_by, encoding)?;
         }
     }
 

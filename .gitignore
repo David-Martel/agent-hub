@@ -28,3 +28,4 @@ Thumbs.db
 
 # Lock files managed externally
 uv.lock
+logs/

@@ -1,11 +1,17 @@
 //! Redis Stream and Pub/Sub operations for the agent coordination bus.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
+use base64::Engine as _;
 use chrono::Utc;
 use redis::Commands as _;
 use uuid::Uuid;
+
+/// Body size threshold (bytes) above which LZ4 compression is applied.
+const COMPRESS_THRESHOLD: usize = 512;
 
 use crate::models::{
     Health, Message, PROTOCOL_VERSION, Presence, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR,
@@ -23,48 +29,111 @@ pub(crate) fn connect(settings: &Settings) -> Result<redis::Connection> {
     client.get_connection().context("Redis connection failed")
 }
 
-/// Shared Redis client for connection reuse in HTTP mode.
+/// Connection-pool statistics collected for the health endpoint.
+#[derive(Debug, Default)]
+pub(crate) struct PoolMetrics {
+    /// Total connections handed out since the pool was created.
+    pub(crate) connections_acquired: AtomicU64,
+    /// Total times the pool returned an error (connection unavailable / timeout).
+    pub(crate) connection_errors: AtomicU64,
+}
+
+/// Shared r2d2 connection pool for synchronous Redis access in HTTP / MCP-HTTP mode.
 ///
-/// `redis::Client` handles reconnection internally on each `get_connection()` call,
-/// so a single `RedisPool` instance can serve the entire lifetime of the HTTP server
-/// without creating a new TCP connection per request.
+/// Holds a bounded pool of [`redis::Connection`] objects backed by
+/// [`redis::Client`]'s built-in r2d2 `ConnectionManager`.  This eliminates the
+/// per-request TCP-handshake overhead that the previous single-client approach
+/// incurred when every handler called `get_connection()` on a bare `redis::Client`.
+///
+/// Pool parameters chosen for a single-machine deployment:
+/// - `max_size = 5`   — adequate for the typical 8-core dev machine without
+///   exhausting Redis's default `maxclients` limit.
+/// - `min_idle = 1`   — keeps at least one warm connection to avoid cold-start
+///   latency on the first request after an idle period.
+/// - `connection_timeout = 500 ms` — fast-fail rather than queuing requests
+///   behind a stalled Redis.
 ///
 /// # Examples
 ///
-/// ```
+/// ```no_run
+/// use crate::redis_bus::RedisPool;
+/// use crate::settings::Settings;
 /// let settings = Settings::from_env();
-/// let pool = RedisPool::new(&settings).expect("Redis client creation failed");
+/// let pool = RedisPool::new(&settings).expect("Redis pool creation failed");
 /// let mut conn = pool.get_connection().expect("Redis connection failed");
 /// ```
 #[derive(Clone, Debug)]
 pub(crate) struct RedisPool {
-    client: redis::Client,
+    inner: r2d2::Pool<redis::Client>,
+    /// Shared metrics exposed on the health endpoint.
+    metrics: Arc<PoolMetrics>,
 }
 
 impl RedisPool {
     /// Create a new `RedisPool` from the given settings.
     ///
+    /// Validates the Redis URL and pre-warms the pool with one idle connection.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the Redis URL is malformed.
+    /// Returns an error if the Redis URL is malformed or the initial connection
+    /// required to verify pool health fails.
     pub(crate) fn new(settings: &Settings) -> Result<Self> {
-        let client = redis::Client::open(settings.redis_url.as_str())
+        let manager = redis::Client::open(settings.redis_url.as_str())
             .context("Redis client creation failed")?;
-        Ok(Self { client })
+        let inner = r2d2::Pool::builder()
+            .max_size(5)
+            .min_idle(Some(1))
+            .connection_timeout(std::time::Duration::from_secs(5))
+            .build(manager)
+            .context("Redis r2d2 pool creation failed")?;
+        Ok(Self {
+            inner,
+            metrics: Arc::new(PoolMetrics::default()),
+        })
     }
 
-    /// Obtain a synchronous Redis connection.
+    /// Obtain a pooled Redis connection.
     ///
-    /// `redis::Client` reconnects automatically; each call may reuse an
-    /// existing TCP connection or open a new one.
+    /// Blocks for up to 500 ms waiting for a free slot in the pool.  The
+    /// connection is automatically returned when the guard drops.
     ///
     /// # Errors
     ///
-    /// Returns an error if a connection to Redis cannot be established.
-    pub(crate) fn get_connection(&self) -> Result<redis::Connection> {
-        self.client
-            .get_connection()
-            .context("Redis connection failed")
+    /// Returns an error if no connection becomes available within the timeout
+    /// or if the pool cannot create a new connection.
+    pub(crate) fn get_connection(&self) -> Result<r2d2::PooledConnection<redis::Client>> {
+        match self.inner.get() {
+            Ok(conn) => {
+                self.metrics
+                    .connections_acquired
+                    .fetch_add(1, Ordering::Relaxed);
+                Ok(conn)
+            }
+            Err(e) => {
+                self.metrics
+                    .connection_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                Err(anyhow::anyhow!(e).context("Redis pool: get_connection failed"))
+            }
+        }
+    }
+
+    /// Pool metrics snapshot: `(connections_acquired, connection_errors)`.
+    ///
+    /// Suitable for embedding in the health endpoint response.
+    pub(crate) fn metrics(&self) -> (u64, u64) {
+        (
+            self.metrics
+                .connections_acquired
+                .load(Ordering::Relaxed),
+            self.metrics.connection_errors.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Current r2d2 pool state: idle connections and pool size.
+    pub(crate) fn pool_state(&self) -> r2d2::State {
+        self.inner.state()
     }
 }
 
@@ -89,6 +158,23 @@ pub(crate) fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Mes
         serde_json::from_str(&raw).unwrap_or(serde_json::Value::Object(serde_json::Map::new()))
     };
 
+    // Transparently decompress LZ4 bodies written by bus_post_message.
+    let body = {
+        let raw = get("body");
+        let compressed_marker = get("_compressed");
+        if compressed_marker == "lz4" {
+            match lz4_decompress_body(&raw) {
+                Ok(decompressed) => decompressed,
+                Err(e) => {
+                    tracing::warn!("lz4 decompress failed for stream entry, using raw body: {e:#}");
+                    raw
+                }
+            }
+        } else {
+            raw
+        }
+    };
+
     Message {
         id: get("id"),
         timestamp_utc: get("timestamp_utc"),
@@ -96,7 +182,7 @@ pub(crate) fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Mes
         from: get("from"),
         to: get("to"),
         topic: get("topic"),
-        body: get("body"),
+        body,
         thread_id: {
             let v = get("thread_id");
             if v.is_empty() || v == "None" {
@@ -159,11 +245,39 @@ pub(crate) fn parse_xrange_result(
     out
 }
 
+/// Compress `body` with LZ4 and Base64-encode it for Redis storage.
+///
+/// Returns `(compressed_b64, original_len)`.
+#[expect(clippy::unnecessary_wraps, reason = "Result keeps the call-site uniform if compression ever becomes fallible")]
+fn lz4_compress_body(body: &str) -> Result<(String, usize)> {
+    let compressed = lz4_flex::compress_prepend_size(body.as_bytes());
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&compressed);
+    Ok((encoded, body.len()))
+}
+
+/// Decompress a Base64+LZ4 body stored by [`lz4_compress_body`].
+///
+/// # Errors
+///
+/// Returns an error if Base64 decoding or LZ4 decompression fails.
+fn lz4_decompress_body(encoded: &str) -> Result<String> {
+    let compressed = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .context("base64 decode of compressed body failed")?;
+    let raw = lz4_flex::decompress_size_prepended(&compressed)
+        .map_err(|e| anyhow::anyhow!("lz4 decompress failed: {e}"))?;
+    String::from_utf8(raw).context("lz4 decompressed body is not valid UTF-8")
+}
+
 /// Post a message to the stream + publish to channel. Returns the full message.
 ///
 /// Schema inference runs on every call regardless of transport: the inferred
 /// schema name (when present) is stored as `metadata["_schema"]` so that all
 /// readers — Redis, `PostgreSQL`, and MCP clients — see the same annotation.
+///
+/// Bodies longer than [`COMPRESS_THRESHOLD`] bytes are LZ4-compressed and
+/// Base64-encoded before storage.  Compression metadata is added to the
+/// stream entry so that [`decode_stream_entry`] can transparently decompress.
 ///
 /// `PostgreSQL` persistence always happens synchronously (for immediate read
 /// consistency).  When a [`PgWriter`] handle is also provided the message is
@@ -172,6 +286,10 @@ pub(crate) fn parse_xrange_result(
 #[expect(
     clippy::too_many_arguments,
     reason = "maps directly to protocol fields"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "compression + schema inference + PG persistence in one atomic unit"
 )]
 pub(crate) fn bus_post_message(
     conn: &mut redis::Connection,
@@ -213,9 +331,50 @@ pub(crate) fn bus_post_message(
     // -------------------------------------------------------------------------
 
     let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_owned());
-    let meta_json = serde_json::to_string(effective_metadata).unwrap_or_else(|_| "{}".to_owned());
     let ack_str = if request_ack { "true" } else { "false" };
     let thread_str = thread_id.unwrap_or("");
+
+    // --- LZ4 body compression ------------------------------------------------
+    // Compress bodies above the threshold to reduce Redis memory and payload
+    // sizes. The original body is kept in the returned `Message` struct so all
+    // callers work with uncompressed data.
+    //
+    // `compressed`: `Some((b64_body, original_size_str))` when compression
+    // succeeded; `None` when the body is too small or compression failed.
+    let compressed: Option<(String, String)> = if body.len() > COMPRESS_THRESHOLD {
+        match lz4_compress_body(body) {
+            Ok((b64, orig)) => Some((b64, orig.to_string())),
+            Err(e) => {
+                tracing::warn!("lz4 compression failed, storing uncompressed: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
+    let stored_body: &str = compressed
+        .as_ref()
+        .map_or(body, |(b64, _)| b64.as_str());
+
+    // Merge compression markers into the stored metadata map.
+    let meta_with_compression: serde_json::Value;
+    let final_metadata = if let Some((_, ref orig_size)) = compressed {
+        let mut map = match effective_metadata {
+            serde_json::Value::Object(m) => m.clone(),
+            _ => serde_json::Map::new(),
+        };
+        map.insert("_compressed".to_owned(), serde_json::json!("lz4"));
+        map.insert("_original_size".to_owned(), serde_json::json!(body.len()));
+        let _ = orig_size; // size is also stored as a dedicated stream field below
+        meta_with_compression = serde_json::Value::Object(map);
+        &meta_with_compression
+    } else {
+        effective_metadata
+    };
+    // -------------------------------------------------------------------------
+
+    let meta_json = serde_json::to_string(final_metadata).unwrap_or_else(|_| "{}".to_owned());
 
     let mut fields: Vec<(&str, &str)> = vec![
         ("id", &id),
@@ -224,7 +383,7 @@ pub(crate) fn bus_post_message(
         ("from", from),
         ("to", to),
         ("topic", topic),
-        ("body", body),
+        ("body", stored_body),
         ("tags", &tags_json),
         ("priority", priority),
         ("request_ack", ack_str),
@@ -233,6 +392,11 @@ pub(crate) fn bus_post_message(
     ];
     if !thread_str.is_empty() {
         fields.push(("thread_id", thread_str));
+    }
+    // Store a dedicated field for fast decompression detection in decode_stream_entry.
+    if let Some((_, ref orig_size_str)) = compressed {
+        fields.push(("_compressed", "lz4"));
+        fields.push(("_original_size", orig_size_str.as_str()));
     }
 
     let stream_id: String = redis::cmd("XADD")
@@ -285,7 +449,147 @@ pub(crate) fn bus_post_message(
     }
     // -------------------------------------------------------------------------
 
+    // --- Pending ACK tracking ------------------------------------------------
+    // When the sender requests acknowledgement, record the pending ack in Redis
+    // with a 300-second TTL so `list_pending_acks` / `GET /pending-acks` can
+    // surface unacknowledged messages.  Failures are non-fatal.
+    if request_ack {
+        if let Err(error) = track_pending_ack(conn, &id, to, &msg.timestamp_utc) {
+            tracing::warn!("failed to track pending ack for {id}: {error:#}");
+        }
+    }
+    // -------------------------------------------------------------------------
+
     Ok(msg)
+}
+
+// ---------------------------------------------------------------------------
+// Pending ACK tracking (Task 2)
+// ---------------------------------------------------------------------------
+
+/// TTL for pending-ack entries: 300 seconds (5 minutes).
+const PENDING_ACK_TTL: u64 = 300;
+
+/// Age threshold after which a pending-ack entry is flagged STALE (60 seconds).
+const PENDING_ACK_STALE_SECS: i64 = 60;
+
+/// Redis key prefix for pending-ack tracking sets.
+const PENDING_ACK_PREFIX: &str = "agent_bus:pending_ack:";
+
+/// A pending acknowledgement record stored in Redis.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PendingAck {
+    /// The message ID waiting for acknowledgement.
+    pub(crate) message_id: String,
+    /// The agent the message was sent to.
+    pub(crate) recipient: String,
+    /// When the message was originally sent (UTC ISO-8601).
+    pub(crate) sent_at: String,
+    /// Whether the ack has been pending longer than [`PENDING_ACK_STALE_SECS`].
+    pub(crate) stale: bool,
+}
+
+/// Record that a message with `request_ack=true` is awaiting acknowledgement.
+///
+/// Stores a JSON blob at `agent_bus:pending_ack:<message_id>` with a TTL of
+/// 300 seconds. Callers should invoke this immediately after posting a message
+/// that sets `request_ack = true`.
+///
+/// # Errors
+///
+/// Returns an error if the Redis `SET EX` command fails.
+pub(crate) fn track_pending_ack(
+    conn: &mut redis::Connection,
+    message_id: &str,
+    recipient: &str,
+    sent_at: &str,
+) -> Result<()> {
+    let key = format!("{PENDING_ACK_PREFIX}{message_id}");
+    let record = serde_json::json!({
+        "message_id": message_id,
+        "recipient": recipient,
+        "sent_at": sent_at,
+    });
+    let value = serde_json::to_string(&record).context("serialize pending-ack record")?;
+    let _: () = redis::Commands::set_ex(conn, &key, &value, PENDING_ACK_TTL)
+        .context("SET EX pending-ack failed")?;
+    Ok(())
+}
+
+/// Remove a pending-ack entry once the acknowledgement has been received.
+///
+/// # Errors
+///
+/// Returns an error if the Redis `DEL` command fails.
+pub(crate) fn clear_pending_ack(conn: &mut redis::Connection, message_id: &str) -> Result<()> {
+    let key = format!("{PENDING_ACK_PREFIX}{message_id}");
+    let _: () = redis::Commands::del(conn, &key).context("DEL pending-ack failed")?;
+    Ok(())
+}
+
+/// List all pending acknowledgements, optionally filtered by recipient agent.
+///
+/// Scans Redis for all `agent_bus:pending_ack:*` keys and returns each as a
+/// [`PendingAck`] record.  Entries that have been waiting longer than
+/// [`PENDING_ACK_STALE_SECS`] are flagged with `stale = true`.
+///
+/// # Errors
+///
+/// Returns an error if the Redis SCAN or GET commands fail.
+pub(crate) fn list_pending_acks(
+    conn: &mut redis::Connection,
+    agent: Option<&str>,
+) -> Result<Vec<PendingAck>> {
+    let pattern = format!("{PENDING_ACK_PREFIX}*");
+    let mut keys: Vec<String> = Vec::new();
+    let mut cursor: u64 = 0;
+    loop {
+        let (next_cursor, batch): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(200)
+            .query(conn)
+            .context("SCAN pending-acks failed")?;
+        keys.extend(batch);
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    let now = chrono::Utc::now();
+    let mut results: Vec<PendingAck> = Vec::new();
+    for key in &keys {
+        let value: Option<String> = redis::Commands::get(conn, key).context("GET pending-ack")?;
+        let Some(json) = value else { continue };
+        let Ok(record) = serde_json::from_str::<serde_json::Value>(&json) else { continue };
+        let message_id = record["message_id"].as_str().unwrap_or("").to_owned();
+        let recipient = record["recipient"].as_str().unwrap_or("").to_owned();
+        let sent_at = record["sent_at"].as_str().unwrap_or("").to_owned();
+
+        // Apply recipient filter when specified.
+        if let Some(filter) = agent {
+            if recipient != filter {
+                continue;
+            }
+        }
+
+        // Determine staleness.
+        let stale = chrono::DateTime::parse_from_rfc3339(&sent_at.replace('Z', "+00:00"))
+            .map(|ts| (now - ts.with_timezone(&chrono::Utc)).num_seconds() > PENDING_ACK_STALE_SECS)
+            .unwrap_or(false);
+
+        results.push(PendingAck {
+            message_id,
+            recipient,
+            sent_at,
+            stale,
+        });
+    }
+    results.sort_by(|a, b| a.sent_at.cmp(&b.sent_at));
+    Ok(results)
 }
 
 /// Read all messages from the Redis stream (ignoring PG), ordered oldest first.

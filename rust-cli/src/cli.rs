@@ -282,6 +282,36 @@ pub(crate) enum Cmd {
         output: String,
     },
 
+    /// List messages waiting for acknowledgement.
+    #[command(
+        long_about = "Scan Redis for all messages sent with --request-ack that have not yet\n\
+            been acknowledged.  Entries older than 60 seconds are flagged STALE.\n\
+            Entries expire automatically after 300 seconds.\n\n\
+            HTTP endpoint: GET /pending-acks (same data via HTTP server)"
+    )]
+    PendingAcks {
+        #[arg(long, help = "Filter by recipient agent ID")]
+        agent: Option<String>,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Sync findings between Claude and Codex sessions.
+    #[command(
+        long_about = "Discover Codex configuration from ~/.codex/config.toml, read recent\n\
+            bus messages addressed to the Codex agent, and normalize any finding-type\n\
+            messages.  Outputs a summary JSON with counts and per-finding details.\n\n\
+            This command reads from the bus but does not post any messages.  Use\n\
+            'agent-bus send' to route formatted findings to Codex after reviewing the\n\
+            sync output."
+    )]
+    CodexSync {
+        #[arg(long, default_value_t = 100, help = "Max messages to read per agent")]
+        limit: usize,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
     /// Backfill Redis messages into `PostgreSQL` (one-time sync).
     #[command(
         long_about = "Read all messages from the Redis stream and insert any missing\n\
@@ -321,29 +351,195 @@ pub(crate) enum Cmd {
         refresh: u64,
     },
 
-    /// Run as an MCP server (stdio transport) or HTTP REST server.
+    /// Run as an MCP server (stdio transport), HTTP REST server, or MCP Streamable HTTP server.
     #[command(
-        long_about = "Start a Model Context Protocol (MCP) server on stdio, or an HTTP REST server.\n\n\
-        MCP mode (default):\n\
-        Exposes 6 tools to LLM agents: bus_health, post_message, list_messages,\n\
-        ack_message, set_presence, list_presence.\n\
+        long_about = "Start a Model Context Protocol (MCP) server on stdio, an HTTP REST server,\n\
+        or an MCP Streamable HTTP server (spec 2025-06-18).\n\n\
+        MCP stdio mode (default, --transport stdio):\n\
+        Exposes 8 tools to LLM agents: bus_health, post_message, list_messages,\n\
+        ack_message, set_presence, list_presence, list_presence_history, negotiate.\n\
         Register in mcp.json / config.toml / settings.json:\n\
         {\"command\": \"agent-bus\", \"args\": [\"serve\", \"--transport\", \"stdio\"]}\n\n\
-        HTTP mode (--transport http):\n\
-        Starts an axum HTTP server on localhost:PORT (default 8400).\n\
+        HTTP REST mode (--transport http, default port 8400):\n\
+        Starts an axum HTTP server on localhost:PORT.\n\
         Routes: GET /health, POST /messages, GET /messages, POST /messages/:id/ack,\n\
-        PUT /presence/:agent, GET /presence\n\n\
+        PUT /presence/:agent, GET /presence, GET /events (SSE)\n\n\
+        MCP Streamable HTTP mode (--transport mcp-http, default port 8401):\n\
+        Implements the MCP Streamable HTTP transport spec (2025-06-18).\n\
+        Routes: POST /mcp (JSON-RPC tool dispatch), GET /mcp (capability discovery).\n\
+        Supports SSE streaming when client sends Accept: text/event-stream.\n\
+        Session continuity via Mcp-Session-Id response header.\n\n\
         On startup, announces presence and posts a startup message if\n\
         AGENT_BUS_STARTUP_ENABLED=true (default)."
     )]
     Serve {
-        #[arg(long, default_value = "stdio", help = "Transport protocol: stdio|http")]
+        #[arg(
+            long,
+            default_value = "stdio",
+            help = "Transport protocol: stdio|http|mcp-http"
+        )]
         transport: String,
         #[arg(
             long,
             default_value_t = 8400,
-            help = "HTTP server port (only used when --transport http)"
+            help = "Server port (http default: 8400; mcp-http should use 8401)"
         )]
         port: u16,
+    },
+
+    /// Send multiple messages from a NDJSON file (one JSON object per line).
+    #[command(
+        long_about = "Read a newline-delimited JSON file where each line is a message object\n\
+        with fields: sender, recipient, topic, body (and optionally: tags, priority,\n\
+        thread_id, request_ack, reply_to, metadata, schema).\n\n\
+        Each message is validated and posted. Results (message IDs) are printed\n\
+        to stdout one per line.\n\n\
+        Example NDJSON line:\n\
+        {\"sender\":\"euler\",\"recipient\":\"claude\",\"topic\":\"status\",\"body\":\"done\",\"tags\":[\"repo:agent-hub\"]}"
+    )]
+    BatchSend {
+        #[arg(long, help = "Path to NDJSON file (use '-' for stdin)")]
+        file: String,
+        #[arg(long, default_value = "compact", help = "Output format for results")]
+        encoding: Encoding,
+    },
+
+    // -----------------------------------------------------------------------
+    // Channel commands
+    // -----------------------------------------------------------------------
+
+    /// Send a direct private message to another agent.
+    #[command(
+        long_about = "Post a message to the private direct channel between two agents.\n\n\
+        Stored in Redis stream 'bus:direct:<a>:<b>' (agents sorted alphabetically).\n\
+        Use for private coordination that should not appear in the shared bus stream."
+    )]
+    PostDirect {
+        #[arg(long, help = "Sender agent ID")]
+        from_agent: String,
+        #[arg(long, help = "Recipient agent ID")]
+        to_agent: String,
+        #[arg(long, default_value = "direct", help = "Message topic")]
+        topic: String,
+        #[arg(long, help = "Message body")]
+        body: String,
+        #[arg(long, help = "Optional thread ID")]
+        thread_id: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append, help = "Tag (repeatable)")]
+        tag: Vec<String>,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Read direct messages between two agents.
+    #[command(
+        long_about = "Read messages from the private direct channel between two agents.\n\n\
+        Returns messages in chronological order (oldest first), up to --limit."
+    )]
+    ReadDirect {
+        #[arg(long, help = "First agent ID")]
+        agent_a: String,
+        #[arg(long, help = "Second agent ID")]
+        agent_b: String,
+        #[arg(long, default_value_t = 50, help = "Max messages to return [1-500]")]
+        limit: usize,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Post a message to a named group channel.
+    #[command(
+        long_about = "Post a message to a named group discussion channel.\n\n\
+        The group must already exist (create it first via the HTTP API or MCP tool).\n\
+        Stored in Redis stream 'bus:group:<name>'."
+    )]
+    PostGroup {
+        #[arg(long, help = "Group name (alphanumerics, hyphens, underscores)")]
+        group: String,
+        #[arg(long, help = "Sender agent ID")]
+        from_agent: String,
+        #[arg(long, default_value = "group", help = "Message topic")]
+        topic: String,
+        #[arg(long, help = "Message body")]
+        body: String,
+        #[arg(long, help = "Optional thread ID")]
+        thread_id: Option<String>,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Read messages from a named group channel.
+    #[command(
+        long_about = "Read messages from a named group discussion channel.\n\n\
+        Returns messages in chronological order (oldest first), up to --limit."
+    )]
+    ReadGroup {
+        #[arg(long, help = "Group name")]
+        group: String,
+        #[arg(long, default_value_t = 50, help = "Max messages to return [1-500]")]
+        limit: usize,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Claim ownership of a resource (file, directory, etc.).
+    #[command(
+        long_about = "Claim first-edit ownership of a resource.\n\n\
+        First claim is auto-granted. Subsequent claims from other agents trigger\n\
+        arbitration: both claimants are notified and the orchestrator receives an\n\
+        escalation message to resolve the conflict.\n\n\
+        Claims expire automatically after 1 hour.\n\n\
+        Examples:\n  \
+        agent-bus claim src/redis_bus.rs --agent claude --reason \"Adding compression\"\n  \
+        agent-bus claim src/ --agent codex --reason \"Refactoring module layout\""
+    )]
+    Claim {
+        #[arg(help = "Resource path to claim (e.g. src/redis_bus.rs)")]
+        resource: String,
+        #[arg(long, help = "Your agent ID")]
+        agent: String,
+        #[arg(long, default_value = "first-edit required", help = "Why you need first-edit")]
+        reason: String,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// List ownership claims, optionally filtered by resource or status.
+    #[command(
+        long_about = "List all outstanding ownership claims.\n\n\
+        Filter by --resource to see claims for a specific file.\n\
+        Filter by --status to see only contested claims:\n\
+          status values: pending|granted|contested|review_assigned"
+    )]
+    Claims {
+        #[arg(long, help = "Filter by resource path")]
+        resource: Option<String>,
+        #[arg(long, help = "Filter by status: pending|granted|contested|review_assigned")]
+        status: Option<String>,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Resolve a contested ownership claim by naming a winner.
+    #[command(
+        long_about = "Resolve a contested ownership claim.\n\n\
+        The winner receives 'granted' status and may proceed with first-edit.\n\
+        Losing agents receive 'review_assigned' status and are notified via\n\
+        direct message. A resolution reason is stored for audit.\n\n\
+        Example:\n  \
+        agent-bus resolve src/redis_bus.rs --winner claude \\\n  \
+          --reason \"claude owns compression\" --resolved-by orchestrator"
+    )]
+    Resolve {
+        #[arg(help = "Resource path to resolve")]
+        resource: String,
+        #[arg(long, help = "Winning agent ID")]
+        winner: String,
+        #[arg(long, default_value = "resolved by orchestrator", help = "Resolution rationale")]
+        reason: String,
+        #[arg(long, default_value = "orchestrator", help = "Who is making this decision")]
+        resolved_by: String,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
     },
 }

@@ -3,9 +3,12 @@
 use anyhow::{Context as _, Result};
 
 use crate::models::{MAX_HISTORY_MINUTES, Message, Presence};
-use crate::output::{Encoding, output, output_message, output_messages, output_presence};
+use crate::output::{
+    Encoding, format_health_toon, output, output_message, output_messages, output_presence,
+};
 use crate::redis_bus::{
-    bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence, connect,
+    bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence,
+    clear_pending_ack, connect, list_pending_acks,
 };
 use crate::settings::Settings;
 use crate::validation::{
@@ -57,7 +60,11 @@ pub(crate) struct PresenceArgs<'a> {
 
 pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding) {
     let health = bus_health(settings);
-    output(&health, encoding);
+    if matches!(encoding, Encoding::Toon) {
+        println!("{}", format_health_toon(&health));
+    } else {
+        output(&health, encoding);
+    }
 }
 
 pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
@@ -196,7 +203,45 @@ pub(crate) fn cmd_ack(
         &meta,
         crate::pg_writer(),
     )?;
+    // Clear the pending-ack entry now that the acknowledgement has been sent.
+    // Non-fatal: the entry will expire automatically after 300 seconds anyway.
+    if let Err(error) = clear_pending_ack(&mut conn, message_id) {
+        tracing::warn!("failed to clear pending ack for {message_id}: {error:#}");
+    }
     output(&msg, encoding);
+    Ok(())
+}
+
+/// List messages awaiting acknowledgement.
+///
+/// Scans Redis for all `agent_bus:pending_ack:*` keys and prints the results.
+/// Entries older than 60 seconds are flagged as STALE.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or SCAN commands fail.
+pub(crate) fn cmd_pending_acks(
+    settings: &Settings,
+    agent: Option<&str>,
+    encoding: &Encoding,
+) -> Result<()> {
+    let mut conn = connect(settings)?;
+    let pending = list_pending_acks(&mut conn, agent)?;
+    if matches!(encoding, Encoding::Human) {
+        if pending.is_empty() {
+            println!("No pending acknowledgements.");
+        } else {
+            println!("{:<38}  {:<12}  {:<26}  STATUS", "MESSAGE ID", "RECIPIENT", "SENT AT");
+            println!("{}", "-".repeat(90));
+            for p in &pending {
+                let status = if p.stale { "STALE" } else { "waiting" };
+                println!("{:<38}  {:<12}  {:<26}  {}", p.message_id, p.recipient, p.sent_at, status);
+            }
+            println!("\n{} pending ack(s)", pending.len());
+        }
+    } else {
+        output(&pending, encoding);
+    }
     Ok(())
 }
 
@@ -353,5 +398,286 @@ pub(crate) fn cmd_journal(
         "Exported {count} new messages to {output} ({} total in query)",
         messages.len()
     );
+    Ok(())
+}
+
+/// Sync findings between Claude and Codex sessions.
+///
+/// Discovers the Codex agent ID from `~/.codex/config.toml`, reads recent bus
+/// messages addressed to Codex, normalizes finding-type messages, and outputs
+/// a JSON summary.  Does not post any messages.
+///
+/// # Errors
+///
+/// Returns an error if the home directory is unavailable or the Redis query fails.
+pub(crate) fn cmd_codex_sync(settings: &Settings, limit: usize, encoding: &Encoding) -> Result<()> {
+    let (summary, findings) = crate::codex_bridge::run_codex_sync(settings, limit)?;
+
+    // Combine summary and findings into a single output object.
+    let mut result = serde_json::to_value(&summary).unwrap_or_default();
+    if let serde_json::Value::Object(ref mut map) = result {
+        let findings_val: Vec<serde_json::Value> = findings
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "message_id": f.message_id,
+                    "from": f.from_agent,
+                    "topic": f.topic,
+                    "severity": f.severity,
+                    "timestamp": f.timestamp,
+                    "tags": f.tags,
+                    "body": f.body,
+                })
+            })
+            .collect();
+        map.insert("findings".to_owned(), serde_json::Value::Array(findings_val));
+    }
+    output(&result, encoding);
+    Ok(())
+}
+
+/// Send multiple messages from a NDJSON file (one JSON object per line).
+///
+/// Each line must be a JSON object with `sender`, `recipient`, `topic`, and `body`
+/// fields. Optional fields: `tags`, `priority`, `thread_id`, `request_ack`,
+/// `reply_to`, `metadata`, `schema`.
+///
+/// Pass `file = "-"` to read from stdin.
+///
+/// # Errors
+///
+/// Returns an error if the file cannot be opened, any line fails JSON parsing,
+/// or any message fails validation or Redis write.
+pub(crate) fn cmd_batch_send(
+    settings: &Settings,
+    file: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    use std::io::BufRead as _;
+
+    #[derive(serde::Deserialize)]
+    struct BatchLine {
+        sender: String,
+        recipient: String,
+        topic: String,
+        body: String,
+        #[serde(default)]
+        tags: Vec<String>,
+        #[serde(default = "crate::models::default_priority")]
+        priority: String,
+        #[serde(default)]
+        thread_id: Option<String>,
+        #[serde(default)]
+        request_ack: bool,
+        #[serde(default)]
+        reply_to: Option<String>,
+        #[serde(default)]
+        metadata: Option<serde_json::Value>,
+        #[serde(default)]
+        schema: Option<String>,
+    }
+
+    let lines: Vec<String> = if file == "-" {
+        let stdin = std::io::stdin();
+        stdin.lock().lines().collect::<std::io::Result<_>>()?
+    } else {
+        let f = std::fs::File::open(file)
+            .with_context(|| format!("failed to open batch file: {file}"))?;
+        std::io::BufReader::new(f)
+            .lines()
+            .collect::<std::io::Result<_>>()?
+    };
+
+    let mut conn = connect(settings)?;
+    let mut ids: Vec<String> = Vec::new();
+
+    for (line_no, line) in lines.iter().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let entry: BatchLine = serde_json::from_str(line)
+            .with_context(|| format!("line {}: JSON parse error", line_no + 1))?;
+
+        validate_priority(&entry.priority)
+            .with_context(|| format!("line {}: invalid priority", line_no + 1))?;
+        let from = non_empty(&entry.sender, "sender")?;
+        let to = non_empty(&entry.recipient, "recipient")?;
+        let topic = non_empty(&entry.topic, "topic")?;
+        let body = non_empty(&entry.body, "body")?;
+        let effective_schema = infer_schema_from_topic(topic, entry.schema.as_deref());
+        let fitted_body = auto_fit_schema(body, effective_schema);
+        validate_message_schema(&fitted_body, effective_schema)
+            .with_context(|| format!("line {}: schema validation failed", line_no + 1))?;
+        let meta = entry
+            .metadata
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+
+        let msg = bus_post_message(
+            &mut conn,
+            settings,
+            from,
+            to,
+            topic,
+            &fitted_body,
+            entry.thread_id.as_deref(),
+            &entry.tags,
+            &entry.priority,
+            entry.request_ack,
+            entry.reply_to.as_deref(),
+            &meta,
+            crate::pg_writer(),
+        )
+        .with_context(|| format!("line {}: Redis write failed", line_no + 1))?;
+        ids.push(msg.id);
+    }
+
+    let result = serde_json::json!({
+        "sent": ids.len(),
+        "ids": ids,
+    });
+    output(&result, encoding);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Channel command implementations
+// ---------------------------------------------------------------------------
+
+/// Post a private direct message between two agents.
+///
+/// # Errors
+///
+/// Returns an error if the agents or body are empty, or if Redis write fails.
+pub(crate) fn cmd_post_direct(
+    settings: &Settings,
+    from_agent: &str,
+    to_agent: &str,
+    topic: &str,
+    body: &str,
+    thread_id: Option<&str>,
+    tags: &[String],
+    encoding: &Encoding,
+) -> Result<()> {
+    let from = non_empty(from_agent, "--from-agent")?;
+    let to = non_empty(to_agent, "--to-agent")?;
+    let body = non_empty(body, "--body")?;
+    let msg = crate::channels::post_direct(settings, from, to, topic, body, thread_id, tags)?;
+    output(&msg, encoding);
+    Ok(())
+}
+
+/// Read direct messages between two agents.
+///
+/// # Errors
+///
+/// Returns an error if Redis query fails.
+pub(crate) fn cmd_read_direct(
+    settings: &Settings,
+    agent_a: &str,
+    agent_b: &str,
+    limit: usize,
+    encoding: &Encoding,
+) -> Result<()> {
+    let msgs = crate::channels::read_direct(settings, agent_a, agent_b, limit)?;
+    output_messages(&msgs, encoding);
+    Ok(())
+}
+
+/// Post a message to a named group channel.
+///
+/// # Errors
+///
+/// Returns an error if the group does not exist or Redis write fails.
+pub(crate) fn cmd_post_group(
+    settings: &Settings,
+    group: &str,
+    from_agent: &str,
+    topic: &str,
+    body: &str,
+    thread_id: Option<&str>,
+    encoding: &Encoding,
+) -> Result<()> {
+    let group = non_empty(group, "--group")?;
+    let from = non_empty(from_agent, "--from-agent")?;
+    let body = non_empty(body, "--body")?;
+    let msg = crate::channels::post_to_group(settings, group, from, topic, body, thread_id)?;
+    output(&msg, encoding);
+    Ok(())
+}
+
+/// Read messages from a named group channel.
+///
+/// # Errors
+///
+/// Returns an error if Redis query fails.
+pub(crate) fn cmd_read_group(
+    settings: &Settings,
+    group: &str,
+    limit: usize,
+    encoding: &Encoding,
+) -> Result<()> {
+    let msgs = crate::channels::read_group(settings, group, limit)?;
+    output_messages(&msgs, encoding);
+    Ok(())
+}
+
+/// Claim ownership of a resource.
+///
+/// # Errors
+///
+/// Returns an error if the resource or agent are empty, or if Redis write fails.
+pub(crate) fn cmd_claim(
+    settings: &Settings,
+    resource: &str,
+    agent: &str,
+    reason: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    let claim = crate::channels::claim_resource(settings, resource, agent, reason)?;
+    output(&claim, encoding);
+    Ok(())
+}
+
+/// List ownership claims with optional filters.
+///
+/// # Errors
+///
+/// Returns an error if Redis scan fails.
+pub(crate) fn cmd_claims(
+    settings: &Settings,
+    resource: Option<&str>,
+    status_str: Option<&str>,
+    encoding: &Encoding,
+) -> Result<()> {
+    use crate::channels::ClaimStatus;
+    let status_filter: Option<ClaimStatus> = status_str.map(|s| match s {
+        "granted" => ClaimStatus::Granted,
+        "contested" => ClaimStatus::Contested,
+        "review_assigned" => ClaimStatus::ReviewAssigned,
+        _ => ClaimStatus::Pending, // "pending" and unrecognised values
+    });
+    let claims =
+        crate::channels::list_claims(settings, resource, status_filter.as_ref())?;
+    output(&serde_json::json!({"claims": claims, "count": claims.len()}), encoding);
+    Ok(())
+}
+
+/// Resolve a contested claim by naming a winner.
+///
+/// # Errors
+///
+/// Returns an error if no claims exist for the resource, or if Redis write fails.
+pub(crate) fn cmd_resolve(
+    settings: &Settings,
+    resource: &str,
+    winner: &str,
+    reason: &str,
+    resolved_by: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    let state =
+        crate::channels::resolve_claim(settings, resource, winner, reason, resolved_by)?;
+    output(&state, encoding);
     Ok(())
 }
