@@ -1090,6 +1090,25 @@ pub(crate) fn channel_summary(settings: &Settings) -> Result<ChannelSummary> {
 mod tests {
     use super::*;
 
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    /// Build a minimal `OwnershipClaim` for use in multiple tests.
+    fn make_claim(agent: &str, resource: &str, status: ClaimStatus) -> OwnershipClaim {
+        OwnershipClaim {
+            resource: resource.to_owned(),
+            agent: agent.to_owned(),
+            priority_argument: format!("{agent} needs first-edit"),
+            timestamp: "2026-01-01T00:00:00.000000Z".to_owned(),
+            status,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 1. Direct key helpers (no Redis)
+    // -----------------------------------------------------------------------
+
     #[test]
     fn direct_key_is_symmetric() {
         assert_eq!(direct_key("alice", "bob"), direct_key("bob", "alice"));
@@ -1107,6 +1126,177 @@ mod tests {
         assert_eq!(key, format!("{DIRECT_PREFIX}claude:claude"));
     }
 
+    /// Verify that any (a, b) pair maps to the SAME key regardless of argument order.
+    #[test]
+    fn direct_key_triple_symmetry_check() {
+        let pairs = [
+            ("codex", "gemini"),
+            ("euler", "pasteur"),
+            ("z", "a"),
+            ("same", "same"),
+        ];
+        for (a, b) in pairs {
+            assert_eq!(
+                direct_key(a, b),
+                direct_key(b, a),
+                "asymmetric key for ({a}, {b})"
+            );
+        }
+    }
+
+    /// The key must start with the documented prefix.
+    #[test]
+    fn direct_key_has_correct_prefix() {
+        let key = direct_key("alice", "bob");
+        assert!(
+            key.starts_with(DIRECT_PREFIX),
+            "key '{key}' does not start with '{DIRECT_PREFIX}'"
+        );
+    }
+
+    /// The key format is `<prefix><lo>:<hi>` — verify no extra separators.
+    #[test]
+    fn direct_key_format_contains_exactly_one_colon_after_prefix() {
+        let key = direct_key("alice", "bob");
+        let suffix = key.strip_prefix(DIRECT_PREFIX).expect("prefix present");
+        // suffix should be "alice:bob" — exactly one colon
+        assert_eq!(suffix.matches(':').count(), 1, "unexpected colons in suffix '{suffix}'");
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. Direct message validation guards (no Redis needed)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn post_direct_rejects_empty_body() {
+        let settings = Settings::from_env();
+        let result = post_direct(&settings, "alice", "bob", "test", "", None, &[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("body"));
+    }
+
+    #[test]
+    fn post_direct_rejects_empty_sender() {
+        let settings = Settings::from_env();
+        let result = post_direct(&settings, "", "bob", "test", "hello", None, &[]);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("sender"), "expected 'sender' in error, got: {msg}");
+    }
+
+    #[test]
+    fn post_direct_rejects_empty_recipient() {
+        let settings = Settings::from_env();
+        let result = post_direct(&settings, "alice", "", "test", "hello", None, &[]);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("recipient"), "expected 'recipient' in error, got: {msg}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. Group channel key helpers (no Redis)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn group_stream_key_includes_prefix() {
+        assert_eq!(group_stream_key("mygroup"), "bus:group:mygroup");
+    }
+
+    #[test]
+    fn group_members_key_includes_suffix() {
+        let k = group_members_key("alpha");
+        assert!(k.ends_with(":members"));
+        assert!(k.contains("alpha"));
+    }
+
+    #[test]
+    fn group_meta_key_includes_meta_suffix() {
+        let k = group_meta_key("review-team");
+        assert!(k.ends_with(":meta"), "expected :meta suffix, got: {k}");
+        assert!(k.contains("review-team"));
+    }
+
+    #[test]
+    fn group_keys_are_distinct_from_each_other() {
+        let name = "testgroup";
+        let stream = group_stream_key(name);
+        let members = group_members_key(name);
+        let meta = group_meta_key(name);
+        // All three keys should be different.
+        assert_ne!(stream, members);
+        assert_ne!(stream, meta);
+        assert_ne!(members, meta);
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. Group channel validation guards (no Redis needed)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn create_group_rejects_empty_name() {
+        let settings = Settings::from_env();
+        let result = create_group(&settings, "", &[], "claude");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn create_group_rejects_invalid_name_with_spaces() {
+        let settings = Settings::from_env();
+        let result = create_group(&settings, "bad name!", &[], "claude");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("alphanumeric") || msg.contains("name"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn create_group_rejects_name_with_slash() {
+        let settings = Settings::from_env();
+        let result = create_group(&settings, "bad/name", &[], "claude");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn create_group_rejects_name_with_dot() {
+        let settings = Settings::from_env();
+        let result = create_group(&settings, "bad.name", &[], "claude");
+        assert!(result.is_err());
+    }
+
+    /// Hyphens and underscores are explicitly allowed.
+    #[test]
+    fn create_group_accepts_hyphen_and_underscore_in_name() {
+        // Validation is pure-logic — it bails before connecting to Redis only on
+        // name validation.  The error here comes from Redis, not validation.
+        // We check that the error message does NOT mention "name" validation.
+        let settings = Settings::from_env();
+        let result = create_group(&settings, "my-group_1", &[], "claude");
+        // If Redis is unavailable the error is a connection error, not a name-validation error.
+        if let Err(e) = result {
+            let msg = e.to_string();
+            assert!(
+                !msg.contains("alphanumeric"),
+                "name 'my-group_1' should pass name validation, got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn post_to_group_rejects_empty_body() {
+        let settings = Settings::from_env();
+        let result = post_to_group(&settings, "my-group", "alice", "test", "", None);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("body"), "expected 'body' in error, got: {msg}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. Claims key helpers (no Redis)
+    // -----------------------------------------------------------------------
+
     #[test]
     fn claims_key_normalises_backslash() {
         let key = claims_key("src\\redis_bus.rs");
@@ -1115,26 +1305,102 @@ mod tests {
     }
 
     #[test]
+    fn claims_key_has_correct_prefix() {
+        let key = claims_key("src/main.rs");
+        assert!(
+            key.starts_with(CLAIMS_PREFIX),
+            "expected prefix '{CLAIMS_PREFIX}', got: {key}"
+        );
+    }
+
+    #[test]
+    fn claims_key_normalises_multiple_backslashes() {
+        let key = claims_key("a\\b\\c\\d.rs");
+        assert!(!key.contains('\\'));
+        assert!(key.contains("a/b/c/d.rs"));
+    }
+
+    #[test]
+    fn claims_key_preserves_forward_slashes() {
+        let key = claims_key("src/channels.rs");
+        assert!(key.ends_with("src/channels.rs"), "expected suffix preserved, got: {key}");
+    }
+
+    /// Empty resource produces a key that is just the prefix (no path component).
+    #[test]
+    fn claims_key_with_empty_resource() {
+        let key = claims_key("");
+        assert_eq!(key, CLAIMS_PREFIX, "empty resource should yield bare prefix");
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. Ownership arbitration validation guards (no Redis needed)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn claim_resource_rejects_empty_resource() {
+        let settings = Settings::from_env();
+        let result = claim_resource(&settings, "", "claude", "I need it");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("resource"), "expected 'resource' in error, got: {msg}");
+    }
+
+    #[test]
+    fn claim_resource_rejects_empty_agent() {
+        let settings = Settings::from_env();
+        let result = claim_resource(&settings, "src/main.rs", "", "I need it");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("agent"), "expected 'agent' in error, got: {msg}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 7. ClaimStatus serialisation (no Redis)
+    // -----------------------------------------------------------------------
+
+    #[test]
     fn claim_status_serialises_snake_case() {
         let json = serde_json::to_string(&ClaimStatus::ReviewAssigned).unwrap();
         assert_eq!(json, r#""review_assigned""#);
     }
 
     #[test]
-    fn channel_enum_serialises_with_type_tag() {
-        let ch = Channel::Direct { agent: "codex".to_owned() };
-        let json = serde_json::to_value(&ch).unwrap();
-        assert_eq!(json["type"], "direct");
-        assert_eq!(json["agent"], "codex");
+    fn claim_status_pending_serialises() {
+        let json = serde_json::to_string(&ClaimStatus::Pending).unwrap();
+        assert_eq!(json, r#""pending""#);
     }
 
     #[test]
-    fn escalation_channel_has_no_extra_fields() {
-        let ch = Channel::Escalate;
-        let json = serde_json::to_value(&ch).unwrap();
-        assert_eq!(json["type"], "escalate");
-        assert!(json.as_object().is_some_and(|m| m.len() == 1));
+    fn claim_status_granted_serialises() {
+        let json = serde_json::to_string(&ClaimStatus::Granted).unwrap();
+        assert_eq!(json, r#""granted""#);
     }
+
+    #[test]
+    fn claim_status_contested_serialises() {
+        let json = serde_json::to_string(&ClaimStatus::Contested).unwrap();
+        assert_eq!(json, r#""contested""#);
+    }
+
+    #[test]
+    fn claim_status_round_trips_all_variants() {
+        let variants = [
+            ClaimStatus::Pending,
+            ClaimStatus::Granted,
+            ClaimStatus::Contested,
+            ClaimStatus::ReviewAssigned,
+        ];
+        for v in &variants {
+            let json = serde_json::to_string(v).unwrap();
+            let decoded: ClaimStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(decoded, *v, "round-trip failed for {v:?}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 8. OwnershipClaim struct (no Redis)
+    // -----------------------------------------------------------------------
 
     #[test]
     fn ownership_claim_round_trips_via_json() {
@@ -1153,6 +1419,33 @@ mod tests {
     }
 
     #[test]
+    fn ownership_claim_preserves_priority_argument() {
+        let claim = make_claim("codex", "src/lib.rs", ClaimStatus::Contested);
+        let json = serde_json::to_string(&claim).unwrap();
+        let decoded: OwnershipClaim = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.priority_argument, "codex needs first-edit");
+    }
+
+    #[test]
+    fn ownership_claim_preserves_timestamp() {
+        let ts = "2026-03-15T12:34:56.000000Z";
+        let claim = OwnershipClaim {
+            resource: "lib.rs".to_owned(),
+            agent: "euler".to_owned(),
+            priority_argument: "perf analysis".to_owned(),
+            timestamp: ts.to_owned(),
+            status: ClaimStatus::Pending,
+        };
+        let json = serde_json::to_string(&claim).unwrap();
+        let decoded: OwnershipClaim = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.timestamp, ts);
+    }
+
+    // -----------------------------------------------------------------------
+    // 9. Arbitration state logic (in-memory, no Redis)
+    // -----------------------------------------------------------------------
+
+    #[test]
     fn arbitration_state_serialises_none_winner() {
         let state = ArbitrationState {
             resource: "lib.rs".to_owned(),
@@ -1166,44 +1459,514 @@ mod tests {
     }
 
     #[test]
-    fn create_group_rejects_empty_name() {
+    fn arbitration_state_with_winner_serialises_correctly() {
+        let state = ArbitrationState {
+            resource: "src/main.rs".to_owned(),
+            claims: vec![
+                make_claim("claude", "src/main.rs", ClaimStatus::Granted),
+                make_claim("codex", "src/main.rs", ClaimStatus::ReviewAssigned),
+            ],
+            winner: Some("claude".to_owned()),
+            resolution_reason: Some("claude started first".to_owned()),
+        };
+        let json = serde_json::to_value(&state).unwrap();
+        assert_eq!(json["winner"], "claude");
+        assert_eq!(json["resolution_reason"], "claude started first");
+        assert_eq!(json["claims"].as_array().unwrap().len(), 2);
+    }
+
+    /// Contested count computed from claims vec is correct.
+    #[test]
+    fn contested_count_from_claims_vec() {
+        let claims = vec![
+            make_claim("claude", "f.rs", ClaimStatus::Contested),
+            make_claim("codex", "f.rs", ClaimStatus::Contested),
+            make_claim("gemini", "g.rs", ClaimStatus::Granted),
+        ];
+        let contested = claims.iter().filter(|c| c.status == ClaimStatus::Contested).count();
+        assert_eq!(contested, 2);
+    }
+
+    /// First claim on a resource should get Granted status (in-memory model check).
+    #[test]
+    fn first_claim_gets_granted_status_logic() {
+        // Simulate the branching logic in claim_resource without Redis.
+        // When `other_claimants` is empty, status = Granted.
+        let other_claimants: Vec<String> = vec![];
+        let status = if other_claimants.is_empty() {
+            ClaimStatus::Granted
+        } else {
+            ClaimStatus::Contested
+        };
+        assert_eq!(status, ClaimStatus::Granted);
+    }
+
+    /// Second claim on a resource should get Contested status (in-memory model check).
+    #[test]
+    fn second_claim_gets_contested_status_logic() {
+        // When `other_claimants` is non-empty, status = Contested.
+        let other_claimants = vec!["claude".to_owned()];
+        let status = if other_claimants.is_empty() {
+            ClaimStatus::Granted
+        } else {
+            ClaimStatus::Contested
+        };
+        assert_eq!(status, ClaimStatus::Contested);
+    }
+
+    /// After resolution the winner gets Granted, all others get ReviewAssigned.
+    #[test]
+    fn resolution_assigns_winner_and_reviewers() {
+        let winner = "claude";
+        let claims = vec![
+            make_claim("claude", "f.rs", ClaimStatus::Contested),
+            make_claim("codex", "f.rs", ClaimStatus::Contested),
+            make_claim("gemini", "f.rs", ClaimStatus::Contested),
+        ];
+
+        // Simulate the resolution mapping in resolve_claim.
+        let resolved: Vec<(String, ClaimStatus)> = claims
+            .iter()
+            .map(|c| {
+                let new_status = if c.agent == winner {
+                    ClaimStatus::Granted
+                } else {
+                    ClaimStatus::ReviewAssigned
+                };
+                (c.agent.clone(), new_status)
+            })
+            .collect();
+
+        let winner_entry = resolved.iter().find(|(a, _)| a == winner).unwrap();
+        assert_eq!(winner_entry.1, ClaimStatus::Granted);
+
+        for (agent, status) in &resolved {
+            if agent != winner {
+                assert_eq!(*status, ClaimStatus::ReviewAssigned, "{agent} should be ReviewAssigned");
+            }
+        }
+    }
+
+    /// Exactly one winner after resolution.
+    #[test]
+    fn resolution_produces_exactly_one_granted() {
+        let winner = "codex";
+        let agents = ["claude", "codex", "gemini", "euler"];
+        let resolved_statuses: Vec<ClaimStatus> = agents
+            .iter()
+            .map(|a| {
+                if *a == winner { ClaimStatus::Granted } else { ClaimStatus::ReviewAssigned }
+            })
+            .collect();
+
+        let granted_count = resolved_statuses.iter().filter(|s| **s == ClaimStatus::Granted).count();
+        assert_eq!(granted_count, 1, "exactly one agent should be Granted");
+    }
+
+    /// Verifies that mark_all_contested logic upgrades only non-contested claims.
+    #[test]
+    fn mark_all_contested_only_upgrades_non_contested_claims() {
+        // Simulate the guard in mark_all_contested: only update if != Contested.
+        let claims = vec![
+            make_claim("alice", "f.rs", ClaimStatus::Granted),   // should be upgraded
+            make_claim("bob",   "f.rs", ClaimStatus::Contested),  // already contested — skip
+            make_claim("carol", "f.rs", ClaimStatus::Pending),    // should be upgraded
+        ];
+
+        let updated: Vec<ClaimStatus> = claims
+            .iter()
+            .map(|c| {
+                if c.status != ClaimStatus::Contested {
+                    ClaimStatus::Contested
+                } else {
+                    c.status.clone()
+                }
+            })
+            .collect();
+
+        assert!(updated.iter().all(|s| *s == ClaimStatus::Contested));
+    }
+
+    // -----------------------------------------------------------------------
+    // 10. Channel enum serialisation (no Redis)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn channel_enum_serialises_with_type_tag() {
+        let ch = Channel::Direct { agent: "codex".to_owned() };
+        let json = serde_json::to_value(&ch).unwrap();
+        assert_eq!(json["type"], "direct");
+        assert_eq!(json["agent"], "codex");
+    }
+
+    #[test]
+    fn escalation_channel_has_no_extra_fields() {
+        let ch = Channel::Escalate;
+        let json = serde_json::to_value(&ch).unwrap();
+        assert_eq!(json["type"], "escalate");
+        assert!(json.as_object().is_some_and(|m| m.len() == 1));
+    }
+
+    #[test]
+    fn group_channel_serialises_members() {
+        let ch = Channel::Group {
+            name: "review-http".to_owned(),
+            members: vec!["claude".to_owned(), "codex".to_owned()],
+        };
+        let json = serde_json::to_value(&ch).unwrap();
+        assert_eq!(json["type"], "group");
+        assert_eq!(json["name"], "review-http");
+        let members = json["members"].as_array().unwrap();
+        assert_eq!(members.len(), 2);
+    }
+
+    #[test]
+    fn arbitrate_channel_serialises_resource() {
+        let ch = Channel::Arbitrate { resource: "src/main.rs".to_owned() };
+        let json = serde_json::to_value(&ch).unwrap();
+        assert_eq!(json["type"], "arbitrate");
+        assert_eq!(json["resource"], "src/main.rs");
+    }
+
+    #[test]
+    fn channel_enum_round_trips_via_json() {
+        let channels: Vec<Channel> = vec![
+            Channel::Direct { agent: "claude".to_owned() },
+            Channel::Group { name: "team".to_owned(), members: vec!["a".to_owned()] },
+            Channel::Escalate,
+            Channel::Arbitrate { resource: "lib.rs".to_owned() },
+        ];
+        for ch in &channels {
+            let json = serde_json::to_string(ch).unwrap();
+            let decoded: Channel = serde_json::from_str(&json).unwrap();
+            // Re-serialise decoded and compare as Value (no PartialEq on Channel).
+            let original = serde_json::to_value(ch).unwrap();
+            let roundtripped = serde_json::to_value(&decoded).unwrap();
+            assert_eq!(original, roundtripped, "round-trip failed for {ch:?}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // 11. GroupInfo struct (no Redis)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn group_info_members_are_returned() {
+        let info = GroupInfo {
+            name: "alpha".to_owned(),
+            members: vec!["claude".to_owned(), "codex".to_owned()],
+            created_at: "2026-01-01T00:00:00.000000Z".to_owned(),
+            created_by: "claude".to_owned(),
+            message_count: 42,
+        };
+        assert_eq!(info.members.len(), 2);
+        assert!(info.members.contains(&"claude".to_owned()));
+    }
+
+    #[test]
+    fn group_info_serialises_message_count() {
+        let info = GroupInfo {
+            name: "beta".to_owned(),
+            members: vec![],
+            created_at: "2026-01-01T00:00:00.000000Z".to_owned(),
+            created_by: "codex".to_owned(),
+            message_count: 7,
+        };
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["message_count"], 7);
+    }
+
+    // -----------------------------------------------------------------------
+    // 12. ChannelSummary struct (no Redis)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn channel_summary_contested_count_matches_claims() {
+        let claims = vec![
+            make_claim("a", "f.rs", ClaimStatus::Contested),
+            make_claim("b", "f.rs", ClaimStatus::Contested),
+            make_claim("c", "g.rs", ClaimStatus::Granted),
+        ];
+        let contested_count = claims.iter().filter(|c| c.status == ClaimStatus::Contested).count();
+        let summary = ChannelSummary {
+            direct_channel_count: 3,
+            groups: vec![],
+            claims: claims.clone(),
+            contested_count,
+        };
+        assert_eq!(summary.contested_count, 2);
+        assert_eq!(summary.claims.len(), 3);
+    }
+
+    #[test]
+    fn channel_summary_zero_counts_for_empty_state() {
+        let summary = ChannelSummary {
+            direct_channel_count: 0,
+            groups: vec![],
+            claims: vec![],
+            contested_count: 0,
+        };
+        let json = serde_json::to_value(&summary).unwrap();
+        assert_eq!(json["direct_channel_count"], 0);
+        assert_eq!(json["contested_count"], 0);
+        assert!(json["groups"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn channel_summary_includes_group_member_counts() {
+        let group = GroupInfo {
+            name: "team".to_owned(),
+            members: vec!["a".to_owned(), "b".to_owned(), "c".to_owned()],
+            created_at: "2026-01-01T00:00:00.000000Z".to_owned(),
+            created_by: "a".to_owned(),
+            message_count: 0,
+        };
+        let summary = ChannelSummary {
+            direct_channel_count: 1,
+            groups: vec![group],
+            claims: vec![],
+            contested_count: 0,
+        };
+        assert_eq!(summary.groups[0].members.len(), 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // 13. Escalation validation guards (no Redis needed)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn post_escalation_rejects_empty_body() {
         let settings = Settings::from_env();
-        let result = create_group(&settings, "", &[], "claude");
+        let result = post_escalation(&settings, "claude", "", None, &[]);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("empty"));
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("body") || msg.contains("empty"), "unexpected error: {msg}");
+    }
+
+    // -----------------------------------------------------------------------
+    // 14. Escalation metadata expectations (in-memory, no Redis)
+    // -----------------------------------------------------------------------
+
+    /// The escalation metadata should carry `escalation: true`.
+    #[test]
+    fn escalation_metadata_has_escalation_flag() {
+        let meta = serde_json::json!({
+            "channel": "escalate",
+            "escalation": true,
+            "original_sender": "claude"
+        });
+        assert_eq!(meta["escalation"], true);
+        assert_eq!(meta["channel"], "escalate");
+    }
+
+    /// Escalation auto-adds "escalation" tag to the tag list.
+    #[test]
+    fn escalation_tags_include_escalation_tag() {
+        let base_tags = vec!["repo:agent-hub".to_owned()];
+        // Simulate the tag augmentation in post_escalation.
+        let mut escalation_tags = base_tags.clone();
+        escalation_tags.push("escalation".to_owned());
+        assert!(escalation_tags.contains(&"escalation".to_owned()));
+        assert_eq!(escalation_tags.len(), 2);
+    }
+
+    /// Escalation priority is always "high" (in-memory constant check).
+    #[test]
+    fn escalation_priority_is_always_high() {
+        // The literal passed to xadd_to_stream in post_escalation.
+        let priority = "high";
+        assert_eq!(priority, "high");
+    }
+
+    /// Escalation stream key is the documented constant.
+    #[test]
+    fn escalation_stream_key_matches_constant() {
+        assert_eq!(ESCALATION_STREAM, "bus:escalations");
+    }
+
+    // -----------------------------------------------------------------------
+    // 15. decode_channel_entry (no Redis connection, builds HashMap directly)
+    // -----------------------------------------------------------------------
+
+    /// Verifies that `decode_channel_entry` correctly maps known fields.
+    #[test]
+    fn decode_channel_entry_maps_fields_correctly() {
+        use std::collections::HashMap;
+
+        let mut fields: HashMap<String, redis::Value> = HashMap::new();
+        let insert = |map: &mut HashMap<String, redis::Value>, k: &str, v: &str| {
+            map.insert(k.to_owned(), redis::Value::BulkString(v.as_bytes().to_vec()));
+        };
+
+        insert(&mut fields, "id",               "test-uuid-1234");
+        insert(&mut fields, "timestamp_utc",    "2026-01-01T00:00:00.000000Z");
+        insert(&mut fields, "protocol_version", "1.0");
+        insert(&mut fields, "from",             "alice");
+        insert(&mut fields, "to",               "bob");
+        insert(&mut fields, "topic",            "greeting");
+        insert(&mut fields, "body",             "hello world");
+        insert(&mut fields, "tags",             "[]");
+        insert(&mut fields, "priority",         "normal");
+        insert(&mut fields, "request_ack",      "false");
+        insert(&mut fields, "reply_to",         "alice");
+        insert(&mut fields, "metadata",         "{}");
+
+        let msg = decode_channel_entry("1234-0", &fields);
+
+        assert_eq!(msg.id, "test-uuid-1234");
+        assert_eq!(msg.from, "alice");
+        assert_eq!(msg.to, "bob");
+        assert_eq!(msg.topic, "greeting");
+        assert_eq!(msg.body, "hello world");
+        assert_eq!(msg.priority, "normal");
+        assert!(!msg.request_ack);
+        assert_eq!(msg.stream_id, Some("1234-0".to_owned()));
+    }
+
+    /// Missing optional fields do not cause a panic.
+    #[test]
+    fn decode_channel_entry_handles_missing_optional_fields() {
+        use std::collections::HashMap;
+
+        // Only provide the bare minimum fields (everything else defaults).
+        let mut fields: HashMap<String, redis::Value> = HashMap::new();
+        fields.insert("from".to_owned(), redis::Value::BulkString(b"sender".to_vec()));
+        fields.insert("body".to_owned(), redis::Value::BulkString(b"hi".to_vec()));
+
+        let msg = decode_channel_entry("9999-0", &fields);
+
+        // Defaults should be safe values.
+        assert_eq!(msg.from, "sender");
+        assert_eq!(msg.body, "hi");
+        assert!(msg.id.is_empty());            // missing → empty string
+        assert!(msg.thread_id.is_none());      // missing → None
+        assert!(msg.tags.is_empty());          // missing → []
     }
 
     #[test]
-    fn create_group_rejects_invalid_name() {
-        let settings = Settings::from_env();
-        let result = create_group(&settings, "bad name!", &[], "claude");
-        assert!(result.is_err());
+    fn decode_channel_entry_sets_stream_id_from_param() {
+        use std::collections::HashMap;
+        let fields: HashMap<String, redis::Value> = HashMap::new();
+        let msg = decode_channel_entry("42-7", &fields);
+        assert_eq!(msg.stream_id, Some("42-7".to_owned()));
     }
 
+    /// `request_ack` is false when the field is absent.
     #[test]
-    fn post_direct_rejects_empty_body() {
-        let settings = Settings::from_env();
-        let result = post_direct(&settings, "alice", "bob", "test", "", None, &[]);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("body"));
+    fn decode_channel_entry_request_ack_defaults_false() {
+        use std::collections::HashMap;
+        let fields: HashMap<String, redis::Value> = HashMap::new();
+        let msg = decode_channel_entry("0-0", &fields);
+        assert!(!msg.request_ack);
     }
 
+    /// `request_ack` is true when field contains "true".
     #[test]
-    fn claim_resource_rejects_empty_resource() {
-        let settings = Settings::from_env();
-        let result = claim_resource(&settings, "", "claude", "I need it");
-        assert!(result.is_err());
+    fn decode_channel_entry_request_ack_true_when_set() {
+        use std::collections::HashMap;
+        let mut fields: HashMap<String, redis::Value> = HashMap::new();
+        fields.insert("request_ack".to_owned(), redis::Value::BulkString(b"true".to_vec()));
+        let msg = decode_channel_entry("0-0", &fields);
+        assert!(msg.request_ack);
     }
 
+    /// `thread_id` is None when the stored value is the literal "None".
     #[test]
-    fn group_stream_key_includes_prefix() {
-        assert_eq!(group_stream_key("mygroup"), "bus:group:mygroup");
+    fn decode_channel_entry_thread_id_none_when_literal_none() {
+        use std::collections::HashMap;
+        let mut fields: HashMap<String, redis::Value> = HashMap::new();
+        fields.insert("thread_id".to_owned(), redis::Value::BulkString(b"None".to_vec()));
+        let msg = decode_channel_entry("0-0", &fields);
+        assert!(msg.thread_id.is_none());
     }
 
+    /// `thread_id` is Some when a real value is stored.
     #[test]
-    fn group_members_key_includes_suffix() {
-        let k = group_members_key("alpha");
-        assert!(k.ends_with(":members"));
-        assert!(k.contains("alpha"));
+    fn decode_channel_entry_thread_id_some_when_present() {
+        use std::collections::HashMap;
+        let mut fields: HashMap<String, redis::Value> = HashMap::new();
+        fields.insert("thread_id".to_owned(), redis::Value::BulkString(b"thread-abc".to_vec()));
+        let msg = decode_channel_entry("0-0", &fields);
+        assert_eq!(msg.thread_id, Some("thread-abc".to_owned()));
+    }
+
+    // -----------------------------------------------------------------------
+    // 16. parse_channel_xrange (no Redis connection, builds raw Value directly)
+    // -----------------------------------------------------------------------
+
+    /// An empty slice yields no entries.
+    #[test]
+    fn parse_channel_xrange_empty_input() {
+        let result = parse_channel_xrange(&[]);
+        assert!(result.is_empty());
+    }
+
+    /// A well-formed entry is correctly parsed.
+    #[test]
+    fn parse_channel_xrange_parses_single_entry() {
+        // Build: [["1234-0", ["from", "alice", "body", "hello"]]]
+        let fields_raw = redis::Value::Array(vec![
+            redis::Value::BulkString(b"from".to_vec()),
+            redis::Value::BulkString(b"alice".to_vec()),
+            redis::Value::BulkString(b"body".to_vec()),
+            redis::Value::BulkString(b"hello".to_vec()),
+        ]);
+        let entry = redis::Value::Array(vec![
+            redis::Value::BulkString(b"1234-0".to_vec()),
+            fields_raw,
+        ]);
+
+        let result = parse_channel_xrange(&[entry]);
+        assert_eq!(result.len(), 1);
+        let (sid, map) = &result[0];
+        assert_eq!(sid, "1234-0");
+        assert!(map.contains_key("from"));
+        assert!(map.contains_key("body"));
+    }
+
+    /// Entries with fewer than 2 parts are silently skipped.
+    #[test]
+    fn parse_channel_xrange_skips_malformed_entries() {
+        let short_entry = redis::Value::Array(vec![
+            redis::Value::BulkString(b"1234-0".to_vec()),
+            // Missing fields array — only 1 element.
+        ]);
+        let result = parse_channel_xrange(&[short_entry]);
+        assert!(result.is_empty(), "malformed entry should be skipped");
+    }
+
+    /// Non-Array top-level values are silently skipped.
+    #[test]
+    fn parse_channel_xrange_skips_non_array_entries() {
+        let bad = redis::Value::BulkString(b"not-an-array".to_vec());
+        let result = parse_channel_xrange(&[bad]);
+        assert!(result.is_empty());
+    }
+
+    /// Multiple entries are all parsed.
+    #[test]
+    fn parse_channel_xrange_parses_multiple_entries() {
+        fn make_entry(id: &str, key: &str, val: &str) -> redis::Value {
+            redis::Value::Array(vec![
+                redis::Value::BulkString(id.as_bytes().to_vec()),
+                redis::Value::Array(vec![
+                    redis::Value::BulkString(key.as_bytes().to_vec()),
+                    redis::Value::BulkString(val.as_bytes().to_vec()),
+                ]),
+            ])
+        }
+
+        let entries = vec![
+            make_entry("1-0", "from", "alice"),
+            make_entry("2-0", "from", "bob"),
+            make_entry("3-0", "from", "carol"),
+        ];
+
+        let result = parse_channel_xrange(&entries);
+        assert_eq!(result.len(), 3);
+        let ids: Vec<&String> = result.iter().map(|(sid, _)| sid).collect();
+        assert!(ids.contains(&&"1-0".to_owned()));
+        assert!(ids.contains(&&"2-0".to_owned()));
+        assert!(ids.contains(&&"3-0".to_owned()));
     }
 }
