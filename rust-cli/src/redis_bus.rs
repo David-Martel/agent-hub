@@ -1472,6 +1472,32 @@ pub(crate) fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Healt
     }
 }
 
+/// Return a degraded [`Health`] value for use when the health probe panics.
+///
+/// Used by the dashboard handler as the `unwrap_or_else` fallback when the
+/// `spawn_blocking` task join fails (which only happens on task panic, not on
+/// Redis/PG errors — those are handled inside [`bus_health`] itself).
+pub(crate) fn health_error_fallback() -> Health {
+    Health {
+        ok: false,
+        protocol_version: PROTOCOL_VERSION.to_owned(),
+        redis_url: "unknown".to_owned(),
+        database_url: None,
+        database_ok: None,
+        database_error: Some("health probe task panicked".to_owned()),
+        storage_ready: false,
+        runtime: "rust-native".to_owned(),
+        codec: "serde_json+lz4".to_owned(),
+        stream_length: None,
+        pg_message_count: None,
+        pg_presence_count: None,
+        pg_writes_queued: None,
+        pg_writes_completed: None,
+        pg_batches: None,
+        pg_write_errors: None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Task queue — Redis LIST per agent (RPUSH / LPOP / LRANGE / LLEN)
 // ---------------------------------------------------------------------------

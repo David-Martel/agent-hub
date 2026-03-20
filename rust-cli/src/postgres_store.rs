@@ -305,6 +305,11 @@ pub(crate) fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings
             on {message_table} (stream_id) where stream_id is not null;
         create index if not exists agent_bus_messages_tags_idx
             on {message_table} using gin (tags);
+        -- Timestamp-only index: enables index-only scans for count(*) and range
+        -- queries that do not filter by recipient/sender/topic.  Added 2026-03-20
+        -- after EXPLAIN ANALYZE showed 993 seq scans on the health count path.
+        create index if not exists agent_bus_messages_ts_idx
+            on {message_table} (timestamp_utc desc);
 
         create table if not exists {presence_event_table} (
             id bigserial primary key,
@@ -320,6 +325,10 @@ pub(crate) fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings
         alter table {presence_event_table} add column if not exists protocol_version text not null default '1.0';
         create index if not exists agent_bus_presence_events_agent_ts_idx
             on {presence_event_table} (agent, timestamp_utc desc);
+        -- Timestamp-only index: enables index-only scans for count(*) and
+        -- unfiltered time-range queries on presence_events.  Added 2026-03-20.
+        create index if not exists agent_bus_presence_events_ts_idx
+            on {presence_event_table} (timestamp_utc desc);
         ",
         message_table = settings.message_table,
         presence_event_table = settings.presence_event_table,

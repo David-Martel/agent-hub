@@ -4,6 +4,11 @@ version = "0.3.0"
 edition = "2024"
 publish = false
 description = "Fast standalone CLI + MCP server for agent-bus coordination (no Python required)"
+license = "MIT"
+repository = "https://github.com/David-Martel/agent-hub"
+keywords = ["agent", "coordination", "mcp", "redis", "bus"]
+categories = ["development-tools", "command-line-utilities"]
+readme = "../README.md"
 
 [[bin]]
 name = "agent-bus"

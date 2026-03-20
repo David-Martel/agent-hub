@@ -1,0 +1,126 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: ""
+  CARGO_HOME: T:\RustCache\cargo-home
+  CARGO_TARGET_DIR: T:\RustCache\cargo-target
+
+jobs:
+  release:
+    name: Build & Publish Release
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag.TrimStart('v')
+          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+          echo "TAG=$tag" >> $env:GITHUB_OUTPUT
+          Write-Host "Releasing version $version (tag $tag)"
+
+      - name: Verify Cargo.toml version matches tag
+        shell: pwsh
+        working-directory: rust-cli
+        run: |
+          $cargoVersion = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"').Matches[0].Groups[1].Value
+          $tagVersion = "${{ steps.version.outputs.VERSION }}"
+          if ($cargoVersion -ne $tagVersion) {
+            Write-Error "Cargo.toml version ($cargoVersion) does not match tag ($tagVersion). Update Cargo.toml before tagging."
+            exit 1
+          }
+          Write-Host "Version match confirmed: $cargoVersion"
+
+      - name: Format check
+        working-directory: rust-cli
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        working-directory: rust-cli
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        working-directory: rust-cli
+        run: cargo test --bin agent-bus -- --test-threads=4
+        env:
+          AGENT_BUS_REDIS_URL: redis://localhost:6380/0
+          AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
+
+      - name: Build release binary
+        working-directory: rust-cli
+        run: cargo build --release
+
+      - name: Verify binary runs
+        shell: pwsh
+        run: |
+          $binary = "T:\RustCache\cargo-target\release\agent-bus.exe"
+          $out = & $binary --version 2>&1
+          Write-Host "Binary version output: $out"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Binary failed to execute"
+            exit 1
+          }
+
+      - name: Stage release artifact
+        shell: pwsh
+        run: |
+          $src = "T:\RustCache\cargo-target\release\agent-bus.exe"
+          $dst = "${{ github.workspace }}\dist\agent-bus-windows-x64.exe"
+          New-Item -ItemType Directory -Path "${{ github.workspace }}\dist" -Force | Out-Null
+          Copy-Item $src $dst -Force
+          $size = (Get-Item $dst).Length / 1MB
+          Write-Host "Staged: $dst  ($([math]::Round($size, 2)) MB)"
+
+      - name: Generate SHA256 checksum
+        shell: pwsh
+        run: |
+          $exe = "${{ github.workspace }}\dist\agent-bus-windows-x64.exe"
+          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
+          "$hash  agent-bus-windows-x64.exe" | Out-File "${{ github.workspace }}\dist\agent-bus-windows-x64.exe.sha256" -Encoding ascii
+          Write-Host "SHA256: $hash"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/agent-bus-windows-x64.exe
+            dist/agent-bus-windows-x64.exe.sha256
+          generate_release_notes: true
+          body: |
+            ## agent-bus ${{ steps.version.outputs.TAG }}
+
+            Redis + PostgreSQL coordination bus for multi-agent AI systems.
+
+            ### Installation
+
+            1. Download `agent-bus-windows-x64.exe`
+            2. Verify SHA256: `Get-FileHash agent-bus-windows-x64.exe -Algorithm SHA256`
+            3. Copy to `~/bin/agent-bus.exe`
+            4. Run: `agent-bus health --encoding json`
+
+            Or use the bootstrap script (requires admin):
+            ```powershell
+            pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
+            ```
+
+            ### Quick start
+            ```powershell
+            agent-bus serve --transport stdio      # MCP stdio server
+            agent-bus serve --transport http --port 8400  # REST + SSE server
+            agent-bus health --encoding json
+            ```
+
+            See [AGENT_COMMUNICATIONS.md](AGENT_COMMUNICATIONS.md) for full API reference.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
