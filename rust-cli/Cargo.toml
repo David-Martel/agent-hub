@@ -1,6 +1,6 @@
 [package]
 name = "agent-bus"
-version = "0.3.0"
+version = "0.5.0"
 edition = "2024"
 publish = false
 description = "Fast standalone CLI + MCP server for agent-bus coordination (no Python required)"
