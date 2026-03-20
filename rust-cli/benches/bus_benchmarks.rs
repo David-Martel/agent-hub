@@ -7,6 +7,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use serde::{Deserialize, Serialize};
 
+
 // ---------------------------------------------------------------------------
 // Types (mirror models.rs)
 // ---------------------------------------------------------------------------
@@ -653,6 +654,379 @@ fn bench_decode_stream_fields(c: &mut Criterion) {
 }
 
 // ---------------------------------------------------------------------------
+// Redis availability guard
+// ---------------------------------------------------------------------------
+
+/// Return `true` when a Redis server is reachable at the default address.
+///
+/// All Redis I/O benchmarks call this at the top of their setup block and
+/// return early (printing a skip notice) when it returns `false`.  This
+/// keeps the benchmark binary runnable in CI environments without a Redis
+/// instance — it simply reports no measurements for the Redis groups.
+fn redis_available() -> bool {
+    redis::Client::open("redis://localhost:6380/0")
+        .and_then(|c| c.get_connection())
+        .is_ok()
+}
+
+// ---------------------------------------------------------------------------
+// Helpers shared across Redis benchmarks
+// ---------------------------------------------------------------------------
+
+/// Settings wired to the same Redis URL used by the live server.
+///
+/// No PG URL is set so all benchmarks stay Redis-only unless the PG group
+/// explicitly overrides the URL.
+fn bench_settings() -> BenchSettings {
+    BenchSettings {
+        redis_url: "redis://localhost:6380/0".to_owned(),
+        stream_key: "agent_bus:bench:messages".to_owned(),
+        channel_key: "agent_bus:bench:events".to_owned(),
+        presence_prefix: "agent_bus:bench:presence:".to_owned(),
+        stream_maxlen: 10_000,
+    }
+}
+
+/// Minimal settings bag so benchmarks do not depend on the binary's internal
+/// `Settings` type (binary crate — no lib target to import from).
+#[derive(Clone)]
+struct BenchSettings {
+    redis_url: String,
+    stream_key: String,
+    channel_key: String,
+    #[expect(dead_code, reason = "reserved for presence benchmarks in future")]
+    presence_prefix: String,
+    stream_maxlen: u64,
+}
+
+/// Open a single blocking Redis connection.  Panics if Redis is unavailable —
+/// callers must guard with `redis_available()` before calling this.
+fn open_conn(s: &BenchSettings) -> redis::Connection {
+    redis::Client::open(s.redis_url.as_str())
+        .expect("Redis client")
+        .get_connection()
+        .expect("Redis connection")
+}
+
+/// Post one message via `XADD` and `PUBLISH` and return the stream ID.
+///
+/// This mirrors what `bus_post_message` does on the hot path.
+fn xadd_one(conn: &mut redis::Connection, s: &BenchSettings, from: &str, to: &str) -> String {
+    use redis::Commands as _;
+    let id = uuid::Uuid::new_v4().to_string();
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+        .to_string();
+    let tags_json = r#"["bench:true"]"#;
+    let meta_json = "{}";
+
+    let stream_id: String = redis::cmd("XADD")
+        .arg(&s.stream_key)
+        .arg("MAXLEN")
+        .arg("~")
+        .arg(s.stream_maxlen)
+        .arg("*")
+        .arg(&[
+            ("id", id.as_str()),
+            ("timestamp_utc", ts.as_str()),
+            ("protocol_version", "1.0"),
+            ("from", from),
+            ("to", to),
+            ("topic", "bench"),
+            ("body", "benchmark payload — measuring real Redis round-trip"),
+            ("tags", tags_json),
+            ("priority", "normal"),
+            ("request_ack", "false"),
+            ("reply_to", from),
+            ("metadata", meta_json),
+        ])
+        .query(conn)
+        .expect("XADD");
+
+    // PUBLISH to the pub/sub channel (mirrors has_sse_subscribers=true path).
+    let event = format!(r#"{{"event":"message","from":"{from}","to":"{to}"}}"#);
+    let _: i64 = conn.publish(&s.channel_key, &event).unwrap_or(0);
+
+    stream_id
+}
+
+/// Post `count` messages using a single Redis pipeline (mirrors
+/// `bus_post_messages_batch`).  Returns all stream IDs.
+fn xadd_batch(
+    conn: &mut redis::Connection,
+    s: &BenchSettings,
+    count: usize,
+) -> Vec<String> {
+    // Pure-computation pass: build all owned strings before the pipeline.
+    let ids: Vec<String> = (0..count).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    let ts = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+        .to_string();
+
+    let mut pipe = redis::pipe();
+    for id in &ids {
+        pipe.cmd("XADD")
+            .arg(&s.stream_key)
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(s.stream_maxlen)
+            .arg("*")
+            .arg(&[
+                ("id", id.as_str()),
+                ("timestamp_utc", ts.as_str()),
+                ("protocol_version", "1.0"),
+                ("from", "bench-sender"),
+                ("to", "bench-recv"),
+                ("topic", "bench"),
+                ("body", "batch benchmark payload"),
+                ("tags", r#"["bench:true"]"#),
+                ("priority", "normal"),
+                ("request_ack", "false"),
+                ("reply_to", "bench-sender"),
+                ("metadata", "{}"),
+            ]);
+    }
+    pipe.query::<Vec<String>>(conn).expect("pipeline XADD")
+}
+
+/// Read up to `count` messages via `XREVRANGE` (mirrors `bus_list_messages_from_redis`).
+fn xrevrange(conn: &mut redis::Connection, s: &BenchSettings, count: usize) -> usize {
+    let raw: Vec<redis::Value> = redis::cmd("XREVRANGE")
+        .arg(&s.stream_key)
+        .arg("+")
+        .arg("-")
+        .arg("COUNT")
+        .arg(count)
+        .query(conn)
+        .expect("XREVRANGE");
+    raw.len()
+}
+
+/// Seed the bench stream with `n` messages so read benchmarks have data.
+fn seed_stream(conn: &mut redis::Connection, s: &BenchSettings, n: usize) {
+    if n == 0 {
+        return;
+    }
+    let mut pipe = redis::pipe();
+    for i in 0..n {
+        let id = format!("bench-seed-{i}");
+        let ts = "2026-03-20T10:00:00.000000Z";
+        pipe.cmd("XADD")
+            .arg(&s.stream_key)
+            .arg("MAXLEN")
+            .arg("~")
+            .arg(s.stream_maxlen)
+            .arg("*")
+            .arg(&[
+                ("id", id.as_str()),
+                ("timestamp_utc", ts),
+                ("protocol_version", "1.0"),
+                ("from", "bench-seeder"),
+                ("to", "bench-consumer"),
+                ("topic", "bench-seed"),
+                ("body", "seed message for read benchmarks"),
+                ("tags", r#"["bench:seed"]"#),
+                ("priority", "normal"),
+                ("request_ack", "false"),
+                ("reply_to", "bench-seeder"),
+                ("metadata", "{}"),
+            ]);
+    }
+    let _: Vec<String> = pipe.query(conn).unwrap_or_default();
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark 10: bus_post_message — single Redis XADD + PUBLISH round-trip
+// ---------------------------------------------------------------------------
+
+fn bench_redis_post_message(c: &mut Criterion) {
+    if !redis_available() {
+        eprintln!(
+            "[bench_redis_post_message] SKIP — Redis not available at redis://localhost:6380/0"
+        );
+        return;
+    }
+
+    let s = bench_settings();
+    let mut conn = open_conn(&s);
+
+    // Use a unique sender per run so messages don't collide with other bench groups.
+    let sender = format!("bench-post-{}", uuid::Uuid::new_v4());
+
+    let mut group = c.benchmark_group("redis_post_message");
+    group.measurement_time(std::time::Duration::from_secs(5));
+    group.sample_size(50);
+
+    group.bench_function("xadd_and_publish", |b| {
+        b.iter(|| xadd_one(&mut conn, &s, &sender, "bench-recv"));
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark 11: bus_list_messages — XREVRANGE read at 10 / 100 / 1 000 counts
+// ---------------------------------------------------------------------------
+
+fn bench_redis_list_messages(c: &mut Criterion) {
+    if !redis_available() {
+        eprintln!(
+            "[bench_redis_list_messages] SKIP — Redis not available at redis://localhost:6380/0"
+        );
+        return;
+    }
+
+    let s = bench_settings();
+    let mut conn = open_conn(&s);
+
+    // Ensure we have at least 1 000 messages in the stream for the largest read.
+    seed_stream(&mut conn, &s, 1_000);
+
+    let mut group = c.benchmark_group("redis_list_messages");
+    group.measurement_time(std::time::Duration::from_secs(5));
+    group.sample_size(30);
+
+    for count in [10usize, 100, 1_000] {
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(
+            BenchmarkId::new("xrevrange", count),
+            &count,
+            |b, &count| {
+                b.iter(|| xrevrange(&mut conn, &s, count));
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark 12: batch send — pipeline N messages in a single round-trip
+// ---------------------------------------------------------------------------
+
+fn bench_redis_batch_send(c: &mut Criterion) {
+    if !redis_available() {
+        eprintln!(
+            "[bench_redis_batch_send] SKIP — Redis not available at redis://localhost:6380/0"
+        );
+        return;
+    }
+
+    let s = bench_settings();
+    let mut conn = open_conn(&s);
+
+    let mut group = c.benchmark_group("redis_batch_send");
+    group.measurement_time(std::time::Duration::from_secs(5));
+    group.sample_size(30);
+
+    for count in [10usize, 50, 100] {
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(
+            BenchmarkId::new("pipeline_xadd", count),
+            &count,
+            |b, &count| {
+                b.iter(|| xadd_batch(&mut conn, &s, count));
+            },
+        );
+    }
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
+// Benchmark 13: check_inbox — cursor read (XRANGE with exclusive lower bound)
+// ---------------------------------------------------------------------------
+
+fn bench_redis_check_inbox(c: &mut Criterion) {
+    if !redis_available() {
+        eprintln!(
+            "[bench_redis_check_inbox] SKIP — Redis not available at redis://localhost:6380/0"
+        );
+        return;
+    }
+
+    let s = bench_settings();
+    let mut conn = open_conn(&s);
+
+    // Seed the stream and capture the oldest stream ID to use as a cursor.
+    seed_stream(&mut conn, &s, 100);
+    let first_id: String = {
+        let raw: Vec<redis::Value> = redis::cmd("XRANGE")
+            .arg(&s.stream_key)
+            .arg("-")
+            .arg("+")
+            .arg("COUNT")
+            .arg(1)
+            .query(&mut conn)
+            .unwrap_or_default();
+        // Extract stream ID from the first entry.
+        if let Some(redis::Value::Array(parts)) = raw.first()
+            && let Some(redis::Value::BulkString(id_bytes)) = parts.first()
+        {
+            String::from_utf8_lossy(id_bytes).to_string()
+        } else {
+            "0-0".to_owned()
+        }
+    };
+
+    let mut group = c.benchmark_group("redis_check_inbox");
+    group.measurement_time(std::time::Duration::from_secs(5));
+    group.sample_size(50);
+
+    // Benchmark reading from the stream origin ("first delivery" scenario).
+    group.bench_function("xrange_from_origin", |b| {
+        b.iter(|| {
+            let exclusive_start = format!("({first_id}");
+            let _raw: Vec<redis::Value> = redis::cmd("XRANGE")
+                .arg(&s.stream_key)
+                .arg(&exclusive_start)
+                .arg("+")
+                .arg("COUNT")
+                .arg(10)
+                .query(&mut conn)
+                .unwrap_or_default();
+        });
+    });
+
+    // Benchmark the cursor GET + XRANGE + cursor SET triple (full check_inbox path).
+    let cursor_key = format!("bus:cursor:bench-inbox-{}", uuid::Uuid::new_v4());
+    group.bench_function("full_cursor_read_advance", |b| {
+        b.iter(|| {
+            // GET cursor
+            let cursor: String = redis::cmd("GET")
+                .arg(&cursor_key)
+                .query(&mut conn)
+                .unwrap_or_else(|_| "0-0".to_owned());
+
+            // XRANGE with exclusive start
+            let exclusive = format!("({cursor}");
+            let raw: Vec<redis::Value> = redis::cmd("XRANGE")
+                .arg(&s.stream_key)
+                .arg(&exclusive)
+                .arg("+")
+                .arg("COUNT")
+                .arg(10)
+                .query(&mut conn)
+                .unwrap_or_default();
+
+            // Advance cursor if we got results.
+            if let Some(redis::Value::Array(parts)) = raw.last()
+                && let Some(redis::Value::BulkString(id_bytes)) = parts.first()
+            {
+                let new_cursor = String::from_utf8_lossy(id_bytes).to_string();
+                let _: () = redis::cmd("SET")
+                    .arg(&cursor_key)
+                    .arg(&new_cursor)
+                    .query(&mut conn)
+                    .unwrap_or(());
+            }
+        });
+    });
+
+    group.finish();
+}
+
+// ---------------------------------------------------------------------------
 // Criterion groups
 // ---------------------------------------------------------------------------
 
@@ -669,4 +1043,12 @@ criterion_group!(
     bench_decode_stream_fields,
 );
 
-criterion_main!(benches);
+criterion_group!(
+    redis_benches,
+    bench_redis_post_message,
+    bench_redis_list_messages,
+    bench_redis_batch_send,
+    bench_redis_check_inbox,
+);
+
+criterion_main!(benches, redis_benches);
