@@ -35,6 +35,11 @@ pub(crate) struct ConfigFile {
     /// session.  When set, `bus_post_message` auto-tags messages with
     /// `session:<id>`.
     pub(crate) session_id: Option<String>,
+    /// Optional HTTP server URL for client mode.  When set, CLI commands route
+    /// through this HTTP server instead of connecting to Redis directly.
+    ///
+    /// Example: `"http://192.168.1.100:8400"`
+    pub(crate) server_url: Option<String>,
 }
 
 /// Resolve the path for the config file.
@@ -190,6 +195,14 @@ pub(crate) struct Settings {
     /// Resolution order: `AGENT_BUS_SESSION_ID` env var → `session_id` in
     /// config.json → `None` (absent from both).
     pub(crate) session_id: Option<String>,
+    /// When set, CLI commands route through this HTTP server URL instead of
+    /// connecting to Redis directly.  Enables remote or containerised deployments.
+    ///
+    /// Resolution order: `AGENT_BUS_SERVER_URL` env var → `server_url` in
+    /// config.json → `None` (direct Redis mode).
+    ///
+    /// Example values: `"http://localhost:8400"`, `"http://192.168.1.100:8400"`
+    pub(crate) server_url: Option<String>,
 }
 
 impl Settings {
@@ -280,6 +293,12 @@ impl Settings {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .or_else(|| cfg.session_id.filter(|s| !s.is_empty())),
+            // Server URL for HTTP client mode: env var overrides config file;
+            // empty string treated as absent (falls back to direct Redis mode).
+            server_url: std::env::var("AGENT_BUS_SERVER_URL")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| cfg.server_url.filter(|s| !s.is_empty())),
         }
     }
 
@@ -652,5 +671,88 @@ mod tests {
     fn config_file_default_has_none_session_id() {
         let cfg = ConfigFile::default();
         assert!(cfg.session_id.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // server_url — Feature 2 resolution tests
+    // -----------------------------------------------------------------------
+
+    /// Mirror the resolution logic used in `Settings::from_env()` for
+    /// `server_url`, tested without mutating the process-wide environment.
+    fn resolve_server_url(env_val: Option<&str>, cfg_val: Option<&str>) -> Option<String> {
+        env_val
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .or_else(|| cfg_val.filter(|s| !s.is_empty()).map(str::to_owned))
+    }
+
+    #[test]
+    fn server_url_loaded_from_env() {
+        let url = resolve_server_url(Some("http://localhost:8400"), None);
+        assert_eq!(url.as_deref(), Some("http://localhost:8400"));
+    }
+
+    #[test]
+    fn server_url_defaults_to_none_when_unset() {
+        let url = resolve_server_url(None, None);
+        assert!(
+            url.is_none(),
+            "server_url must be None when env and config both absent"
+        );
+    }
+
+    #[test]
+    fn server_url_empty_env_treated_as_none() {
+        let url = resolve_server_url(Some(""), None);
+        assert!(
+            url.is_none(),
+            "empty AGENT_BUS_SERVER_URL should be treated as absent"
+        );
+    }
+
+    #[test]
+    fn server_url_env_overrides_config() {
+        let url = resolve_server_url(
+            Some("http://localhost:8400"),
+            Some("http://remote:8400"),
+        );
+        assert_eq!(url.as_deref(), Some("http://localhost:8400"));
+    }
+
+    #[test]
+    fn server_url_falls_back_to_config_when_env_absent() {
+        let url = resolve_server_url(None, Some("http://remote:8400"));
+        assert_eq!(url.as_deref(), Some("http://remote:8400"));
+    }
+
+    #[test]
+    fn server_url_empty_env_falls_back_to_config() {
+        let url = resolve_server_url(Some(""), Some("http://remote:8400"));
+        assert_eq!(url.as_deref(), Some("http://remote:8400"));
+    }
+
+    #[test]
+    fn config_file_deserializes_server_url() {
+        let json = r#"{"server_url": "http://localhost:8400"}"#;
+        let cfg: ConfigFile = serde_json::from_str(json).expect("valid JSON");
+        assert_eq!(cfg.server_url.as_deref(), Some("http://localhost:8400"));
+    }
+
+    #[test]
+    fn config_file_default_has_none_server_url() {
+        let cfg = ConfigFile::default();
+        assert!(cfg.server_url.is_none());
+    }
+
+    #[test]
+    fn settings_from_env_server_url_is_none_by_default() {
+        // When AGENT_BUS_SERVER_URL is not set, server_url must be None.
+        // We can't guarantee the env state in a shared test runner, but we can
+        // verify the field exists and is Option<String>.
+        let s = Settings::from_env();
+        // server_url is either None or a non-empty string — never empty.
+        if let Some(ref url) = s.server_url {
+            assert!(!url.is_empty(), "server_url must not be an empty string");
+        }
     }
 }

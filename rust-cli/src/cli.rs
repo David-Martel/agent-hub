@@ -29,6 +29,7 @@ use crate::output::Encoding;
         AGENT_BUS_STARTUP_TOPIC      Startup message topic [default: status]\n  \
         AGENT_BUS_STARTUP_BODY       Startup message body\n  \
         AGENT_BUS_SESSION_ID         Auto-tag all messages with session:<id>\n  \
+        AGENT_BUS_SERVER_URL         Route CLI commands through this HTTP server (e.g. http://localhost:8400)\n  \
         AGENT_BUS_CONFIG             Config file path [default: ~/.config/agent-bus/config.json]\n  \
         RUST_LOG                     Log level filter [default: error]\n\n\
         ENCODING MODES:\n  \
@@ -627,6 +628,74 @@ pub(crate) enum Cmd {
         #[arg(long, default_value = "compact", value_enum)]
         encoding: Encoding,
     },
+
+    // -----------------------------------------------------------------------
+    // Task queue commands
+    // -----------------------------------------------------------------------
+
+    /// Push a task to an agent's task queue.
+    ///
+    /// Orchestrators use this to dispatch work items to idle agents.  The
+    /// queue is a Redis LIST (RPUSH); agents consume with `pull-task`.
+    #[command(
+        long_about = "Push a task JSON string (or plain text) to the tail of the target\n\
+            agent's task queue. Tasks are stored as a Redis LIST under the key\n\
+            'bus:tasks:<agent>'. Returns the new queue length.\n\n\
+            Use 'pull-task' to consume the next task and 'peek-tasks' to\n\
+            inspect pending work without consuming it.\n\n\
+            Example:\n  \
+            agent-bus push-task --agent codex --task '{\"type\":\"review\",\"file\":\"src/main.rs\"}'"
+    )]
+    PushTask {
+        #[arg(long, help = "Target agent ID (e.g. codex, euler)")]
+        agent: String,
+        #[arg(long, help = "Task payload (JSON object or plain text)")]
+        task: String,
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Pull the next task from an agent's queue (destructive).
+    ///
+    /// Consumes and returns the oldest pending task.  Returns `null` when
+    /// the queue is empty.
+    #[command(
+        long_about = "Pop and return the next task from the head of an agent's task\n\
+            queue (LPOP).  The task is permanently removed from the queue.\n\n\
+            Returns JSON: {\"agent\": \"<id>\", \"task\": \"<payload>\" | null}\n\n\
+            Example:\n  \
+            agent-bus pull-task --agent codex"
+    )]
+    PullTask {
+        #[arg(long, help = "Agent ID to pull tasks for")]
+        agent: String,
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Peek at pending tasks without consuming them.
+    ///
+    /// Returns the first `--limit` tasks from the queue head without removing
+    /// them.  Use `pull-task` to actually consume work.
+    #[command(
+        long_about = "Read up to --limit tasks from the head of an agent's queue\n\
+            without consuming them (LRANGE).  Use --limit 0 to return all entries.\n\n\
+            Returns JSON: {\"agent\": \"<id>\", \"tasks\": [...], \"count\": N}\n\n\
+            Example:\n  \
+            agent-bus peek-tasks --agent codex --limit 5 --encoding json"
+    )]
+    PeekTasks {
+        #[arg(long, help = "Agent ID to inspect")]
+        agent: String,
+        #[arg(
+            long,
+            default_value_t = 10,
+            help = "Max tasks to return (0 = all)"
+        )]
+        limit: usize,
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
 }
 
 #[cfg(test)]
@@ -961,6 +1030,107 @@ mod tests {
             assert_eq!(max_tokens, 4000);
         } else {
             panic!("expected Cmd::CompactContext");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // push-task
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_push_task_required_args() {
+        let cli = parse(&[
+            "agent-bus", "push-task",
+            "--agent", "codex",
+            "--task", r#"{"type":"review"}"#,
+        ])
+        .expect("push-task must parse");
+
+        if let Cmd::PushTask { agent, task, .. } = cli.command {
+            assert_eq!(agent, "codex");
+            assert_eq!(task, r#"{"type":"review"}"#);
+        } else {
+            panic!("expected Cmd::PushTask");
+        }
+    }
+
+    #[test]
+    fn parse_push_task_missing_task_fails() {
+        let result = parse(&["agent-bus", "push-task", "--agent", "codex"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_push_task_missing_agent_fails() {
+        let result = parse(&["agent-bus", "push-task", "--task", "do something"]);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // pull-task
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_pull_task_required_agent() {
+        let cli = parse(&["agent-bus", "pull-task", "--agent", "euler"])
+            .expect("pull-task must parse");
+
+        if let Cmd::PullTask { agent, .. } = cli.command {
+            assert_eq!(agent, "euler");
+        } else {
+            panic!("expected Cmd::PullTask");
+        }
+    }
+
+    #[test]
+    fn parse_pull_task_missing_agent_fails() {
+        let result = parse(&["agent-bus", "pull-task"]);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // peek-tasks
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_peek_tasks_defaults() {
+        let cli = parse(&["agent-bus", "peek-tasks", "--agent", "claude"])
+            .expect("peek-tasks must parse");
+
+        if let Cmd::PeekTasks { agent, limit, .. } = cli.command {
+            assert_eq!(agent, "claude");
+            assert_eq!(limit, 10); // default
+        } else {
+            panic!("expected Cmd::PeekTasks");
+        }
+    }
+
+    #[test]
+    fn parse_peek_tasks_custom_limit() {
+        let cli = parse(&[
+            "agent-bus", "peek-tasks",
+            "--agent", "claude",
+            "--limit", "25",
+        ])
+        .expect("peek-tasks with custom limit must parse");
+
+        if let Cmd::PeekTasks { limit, .. } = cli.command {
+            assert_eq!(limit, 25);
+        } else {
+            panic!("expected Cmd::PeekTasks");
+        }
+    }
+
+    #[test]
+    fn parse_peek_tasks_zero_limit() {
+        // limit = 0 is the "return all" sentinel
+        let cli = parse(&["agent-bus", "peek-tasks", "--agent", "claude", "--limit", "0"])
+            .expect("peek-tasks --limit 0 must parse");
+
+        if let Cmd::PeekTasks { limit, .. } = cli.command {
+            assert_eq!(limit, 0);
+        } else {
+            panic!("expected Cmd::PeekTasks");
         }
     }
 

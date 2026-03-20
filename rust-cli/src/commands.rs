@@ -17,6 +17,81 @@ use crate::validation::{
 };
 
 // ---------------------------------------------------------------------------
+// HTTP client helper — used when AGENT_BUS_SERVER_URL is set
+// ---------------------------------------------------------------------------
+
+/// Returns `true` when the caller should route through the HTTP server instead
+/// of connecting to Redis directly.
+#[cfg(feature = "server-mode")]
+fn use_server_mode(settings: &Settings) -> bool {
+    settings.server_url.is_some()
+}
+
+/// Shared HTTP client helper for server-mode commands.
+///
+/// Performs a `GET` request and returns the parsed JSON body.
+///
+/// # Errors
+///
+/// Returns an error if the URL is unreachable, the response is not 2xx,
+/// or JSON deserialisation fails.
+#[cfg(feature = "server-mode")]
+fn http_get(url: &str) -> Result<serde_json::Value> {
+    let resp = reqwest::blocking::get(url).with_context(|| format!("GET {url} failed"))?;
+    let status = resp.status();
+    let body: serde_json::Value = resp.json().context("HTTP response JSON decode failed")?;
+    if !status.is_success() {
+        anyhow::bail!("HTTP {status}: {body}");
+    }
+    Ok(body)
+}
+
+/// Performs a `POST` request with a JSON body and returns the parsed JSON
+/// response.
+///
+/// # Errors
+///
+/// Returns an error if the request fails, the server returns a non-2xx status,
+/// or JSON deserialisation fails.
+#[cfg(feature = "server-mode")]
+fn http_post(url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .post(url)
+        .json(body)
+        .send()
+        .with_context(|| format!("POST {url} failed"))?;
+    let status = resp.status();
+    let resp_body: serde_json::Value = resp.json().context("HTTP response JSON decode failed")?;
+    if !status.is_success() {
+        anyhow::bail!("HTTP {status}: {resp_body}");
+    }
+    Ok(resp_body)
+}
+
+/// Performs a `PUT` request with a JSON body and returns the parsed JSON
+/// response.
+///
+/// # Errors
+///
+/// Returns an error on network failure, non-2xx response, or JSON error.
+#[cfg(feature = "server-mode")]
+fn http_put(url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
+    let client = reqwest::blocking::Client::new();
+    let resp = client
+        .put(url)
+        .json(body)
+        .send()
+        .with_context(|| format!("PUT {url} failed"))?;
+    let status = resp.status();
+    let resp_body: serde_json::Value = resp.json().context("HTTP response JSON decode failed")?;
+    if !status.is_success() {
+        anyhow::bail!("HTTP {status}: {resp_body}");
+    }
+    Ok(resp_body)
+}
+
+// ---------------------------------------------------------------------------
 // Argument structs (avoid cloning in Cmd match)
 // ---------------------------------------------------------------------------
 
@@ -59,6 +134,21 @@ pub(crate) struct PresenceArgs<'a> {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding) {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let url = format!("{}/health", settings.server_url.as_deref().unwrap_or(""));
+        match http_get(&url) {
+            Ok(val) => {
+                output(&val, encoding);
+                return;
+            }
+            Err(e) => {
+                eprintln!("server-mode health failed: {e:#}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let health = bus_health(settings, None);
     if matches!(encoding, Encoding::Toon) {
         println!("{}", format_health_toon(&health));
@@ -77,6 +167,30 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
     let fitted_body = auto_fit_schema(body, effective_schema);
     validate_message_schema(&fitted_body, effective_schema)?;
     let meta = parse_metadata_arg(args.metadata)?;
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let url = format!("{}/messages", settings.server_url.as_deref().unwrap_or(""));
+        let mut payload = serde_json::json!({
+            "sender": from,
+            "recipient": to,
+            "topic": topic,
+            "body": fitted_body,
+            "priority": args.priority,
+            "request_ack": args.request_ack,
+            "tags": args.tags,
+            "metadata": meta,
+        });
+        if let Some(tid) = args.thread_id.as_deref() {
+            payload["thread_id"] = serde_json::Value::String(tid.to_owned());
+        }
+        if let Some(rt) = args.reply_to.as_deref() {
+            payload["reply_to"] = serde_json::Value::String(rt.to_owned());
+        }
+        let val = http_post(&url, &payload)?;
+        output(&val, args.encoding);
+        return Ok(());
+    }
 
     let mut conn = connect(settings)?;
     let msg = bus_post_message(
@@ -100,6 +214,26 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
 }
 
 pub(crate) fn cmd_read(settings: &Settings, args: &ReadArgs<'_>) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        use std::fmt::Write as _;
+        let base = settings.server_url.as_deref().unwrap_or("");
+        let mut query = format!("since={}&limit={}", args.since_minutes, args.limit);
+        if let Some(agent) = args.agent.as_deref() {
+            let _ = write!(query, "&agent={agent}");
+        }
+        if let Some(from) = args.from_agent.as_deref() {
+            let _ = write!(query, "&from={from}");
+        }
+        if args.exclude_broadcast {
+            query.push_str("&broadcast=false");
+        }
+        let url = format!("{base}/messages?{query}");
+        let val = http_get(&url)?;
+        output(&val, args.encoding);
+        return Ok(());
+    }
+
     let msgs = bus_list_messages(
         settings,
         args.agent.as_deref(),
@@ -256,6 +390,25 @@ pub(crate) fn cmd_pending_acks(
 pub(crate) fn cmd_presence(settings: &Settings, args: &PresenceArgs<'_>) -> Result<()> {
     let agent = non_empty(args.agent, "--agent")?;
     let meta = parse_metadata_arg(args.metadata)?;
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = settings.server_url.as_deref().unwrap_or("");
+        let url = format!("{base}/presence/{agent}");
+        let mut payload = serde_json::json!({
+            "status": args.status,
+            "ttl_seconds": args.ttl_seconds,
+            "capabilities": args.capabilities,
+            "metadata": meta,
+        });
+        if let Some(sid) = args.session_id.as_deref() {
+            payload["session_id"] = serde_json::Value::String(sid.to_owned());
+        }
+        let val = http_put(&url, &payload)?;
+        output(&val, args.encoding);
+        return Ok(());
+    }
+
     let mut conn = connect(settings)?;
     let presence = bus_set_presence(
         &mut conn,
@@ -327,6 +480,14 @@ pub(crate) fn cmd_presence_history(
 }
 
 pub(crate) fn cmd_presence_list(settings: &Settings, encoding: &Encoding) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let url = format!("{}/presence", settings.server_url.as_deref().unwrap_or(""));
+        let val = http_get(&url)?;
+        output(&val, encoding);
+        return Ok(());
+    }
+
     let mut conn = connect(settings)?;
     let results = bus_list_presence(&mut conn, settings)?;
     if matches!(encoding, Encoding::Human) {
@@ -955,5 +1116,71 @@ pub(crate) fn cmd_compact_context(
 
     let compacted = crate::token::compact_context(&msgs, max_tokens);
     output(&compacted, encoding);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Task queue command implementations
+// ---------------------------------------------------------------------------
+
+/// Push a task JSON string to the tail of an agent's task queue.
+///
+/// Outputs `{"agent": "<id>", "queue_length": N}` on success.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or `RPUSH` fails, or if `agent`
+/// is empty.
+pub(crate) fn cmd_push_task(
+    settings: &Settings,
+    agent: &str,
+    task: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    let agent = non_empty(agent, "--agent")?;
+    let task = non_empty(task, "--task")?;
+    let len = crate::redis_bus::push_task(settings, agent, task)?;
+    output(
+        &serde_json::json!({"agent": agent, "queue_length": len}),
+        encoding,
+    );
+    Ok(())
+}
+
+/// Pop and return the next task from an agent's queue.
+///
+/// Outputs `{"agent": "<id>", "task": "<payload>"}` where `task` is `null`
+/// when the queue is empty.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or `LPOP` fails.
+pub(crate) fn cmd_pull_task(settings: &Settings, agent: &str, encoding: &Encoding) -> Result<()> {
+    let agent = non_empty(agent, "--agent")?;
+    let task = crate::redis_bus::pull_task(settings, agent)?;
+    output(&serde_json::json!({"agent": agent, "task": task}), encoding);
+    Ok(())
+}
+
+/// Peek at the pending tasks in an agent's queue without consuming them.
+///
+/// Outputs `{"agent": "<id>", "tasks": [...], "count": N}`.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or `LRANGE` fails.
+pub(crate) fn cmd_peek_tasks(
+    settings: &Settings,
+    agent: &str,
+    limit: usize,
+    encoding: &Encoding,
+) -> Result<()> {
+    let agent = non_empty(agent, "--agent")?;
+    let tasks = crate::redis_bus::peek_tasks(settings, agent, limit)?;
+    let count = tasks.len();
+    output(
+        &serde_json::json!({"agent": agent, "tasks": tasks, "count": count}),
+        encoding,
+    );
     Ok(())
 }

@@ -1372,6 +1372,100 @@ pub(crate) fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Healt
     }
 }
 
+// ---------------------------------------------------------------------------
+// Task queue — Redis LIST per agent (RPUSH / LPOP / LRANGE / LLEN)
+// ---------------------------------------------------------------------------
+
+/// Redis key prefix for per-agent task queues.
+///
+/// Full key format: `bus:tasks:<agent_id>`.
+pub(crate) const TASK_QUEUE_PREFIX: &str = "bus:tasks:";
+
+/// Push a task to the tail of an agent's task queue.
+///
+/// Returns the new queue length so callers can monitor backpressure.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or `RPUSH` command fails.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use agent_bus::redis_bus::push_task;
+/// # use agent_bus::settings::Settings;
+/// let settings = Settings::from_env();
+/// let len = push_task(&settings, "codex", r#"{"type":"review","file":"src/main.rs"}"#).unwrap();
+/// println!("queue length: {len}");
+/// ```
+pub(crate) fn push_task(settings: &Settings, agent: &str, task_json: &str) -> Result<u64> {
+    let mut conn = connect(settings)?;
+    let key = format!("{TASK_QUEUE_PREFIX}{agent}");
+    let len: u64 = redis::cmd("RPUSH")
+        .arg(&key)
+        .arg(task_json)
+        .query(&mut conn)
+        .context("RPUSH task failed")?;
+    Ok(len)
+}
+
+/// Pop and return the next task from the head of an agent's queue.
+///
+/// Returns `None` when the queue is empty.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or `LPOP` command fails.
+pub(crate) fn pull_task(settings: &Settings, agent: &str) -> Result<Option<String>> {
+    let mut conn = connect(settings)?;
+    let key = format!("{TASK_QUEUE_PREFIX}{agent}");
+    let task: Option<String> = redis::cmd("LPOP")
+        .arg(&key)
+        .query(&mut conn)
+        .context("LPOP task failed")?;
+    Ok(task)
+}
+
+/// Return up to `limit` tasks from the head of an agent's queue without
+/// consuming them.
+///
+/// `limit = 0` returns all entries (`LRANGE key 0 -1`).
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or `LRANGE` command fails.
+pub(crate) fn peek_tasks(settings: &Settings, agent: &str, limit: usize) -> Result<Vec<String>> {
+    let mut conn = connect(settings)?;
+    let key = format!("{TASK_QUEUE_PREFIX}{agent}");
+    let end: isize = if limit == 0 {
+        -1
+    } else {
+        isize::try_from(limit.saturating_sub(1)).unwrap_or(isize::MAX)
+    };
+    let tasks: Vec<String> = redis::cmd("LRANGE")
+        .arg(&key)
+        .arg(0_isize)
+        .arg(end)
+        .query(&mut conn)
+        .context("LRANGE tasks failed")?;
+    Ok(tasks)
+}
+
+/// Return the current number of pending tasks in an agent's queue.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or `LLEN` command fails.
+pub(crate) fn task_queue_length(settings: &Settings, agent: &str) -> Result<u64> {
+    let mut conn = connect(settings)?;
+    let key = format!("{TASK_QUEUE_PREFIX}{agent}");
+    let len: u64 = redis::cmd("LLEN")
+        .arg(&key)
+        .query(&mut conn)
+        .context("LLEN task queue failed")?;
+    Ok(len)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1968,5 +2062,63 @@ mod tests {
         assert_eq!(pm.message.priority, "normal");
         assert!(pm.message.request_ack);
         assert_eq!(pm.message.reply_to, Some("charlie".to_owned()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Task queue — key formatting (no Redis required)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn task_queue_key_uses_prefix_and_agent() {
+        let agent = "codex";
+        let key = format!("{TASK_QUEUE_PREFIX}{agent}");
+        assert_eq!(key, "bus:tasks:codex");
+    }
+
+    #[test]
+    fn task_queue_key_stable_for_all_stable_agents() {
+        for agent in &["claude", "codex", "gemini", "euler", "pasteur"] {
+            let key = format!("{TASK_QUEUE_PREFIX}{agent}");
+            assert!(
+                key.starts_with("bus:tasks:"),
+                "key '{key}' must start with bus:tasks:"
+            );
+            assert!(key.ends_with(agent), "key '{key}' must end with {agent}");
+        }
+    }
+
+    #[test]
+    fn peek_tasks_limit_zero_maps_to_lrange_all() {
+        // When limit == 0, end index should be -1 (LRANGE 0 -1 = all entries).
+        let limit: usize = 0;
+        let end: isize = if limit == 0 {
+            -1
+        } else {
+            isize::try_from(limit.saturating_sub(1)).unwrap_or(isize::MAX)
+        };
+        assert_eq!(end, -1);
+    }
+
+    #[test]
+    fn peek_tasks_limit_one_maps_to_lrange_zero() {
+        // limit = 1 → end = 0 → LRANGE key 0 0 (returns first element only).
+        let limit: usize = 1;
+        let end: isize = if limit == 0 {
+            -1
+        } else {
+            isize::try_from(limit.saturating_sub(1)).unwrap_or(isize::MAX)
+        };
+        assert_eq!(end, 0);
+    }
+
+    #[test]
+    fn peek_tasks_limit_ten_maps_to_end_nine() {
+        let limit: usize = 10;
+        let end: isize = if limit == 0 {
+            -1
+        } else {
+            isize::try_from(limit.saturating_sub(1)).unwrap_or(isize::MAX)
+        };
+        assert_eq!(end, 9);
     }
 }

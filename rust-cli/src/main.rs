@@ -48,9 +48,10 @@ use cli::{Cli, Cmd};
 use commands::{
     PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_batch_send, cmd_claim, cmd_claims,
     cmd_codex_sync, cmd_compact_context, cmd_dedup, cmd_export, cmd_health, cmd_journal,
-    cmd_monitor, cmd_pending_acks, cmd_post_direct, cmd_post_group, cmd_presence,
-    cmd_presence_history, cmd_presence_list, cmd_prune, cmd_read, cmd_read_direct, cmd_read_group,
-    cmd_resolve, cmd_send, cmd_session_summary, cmd_sync, cmd_token_count, cmd_watch,
+    cmd_monitor, cmd_pending_acks, cmd_peek_tasks, cmd_post_direct, cmd_post_group, cmd_presence,
+    cmd_presence_history, cmd_presence_list, cmd_prune, cmd_pull_task, cmd_push_task, cmd_read,
+    cmd_read_direct, cmd_read_group, cmd_resolve, cmd_send, cmd_session_summary, cmd_sync,
+    cmd_token_count, cmd_watch,
 };
 use http::{start_http_server, start_mcp_http_server};
 use mcp::AgentBusMcpServer;
@@ -496,6 +497,27 @@ async fn main() -> Result<()> {
 
         Cmd::CompactContext { ref agent, since_minutes, max_tokens, ref encoding } => {
             cmd_compact_context(&settings, agent.as_deref(), since_minutes, max_tokens, encoding)?;
+        }
+
+        // --- Task queue commands -----------------------------------------
+        Cmd::PushTask {
+            ref agent,
+            ref task,
+            ref encoding,
+        } => {
+            cmd_push_task(&settings, agent, task, encoding)?;
+        }
+
+        Cmd::PullTask { ref agent, ref encoding } => {
+            cmd_pull_task(&settings, agent, encoding)?;
+        }
+
+        Cmd::PeekTasks {
+            ref agent,
+            limit,
+            ref encoding,
+        } => {
+            cmd_peek_tasks(&settings, agent, limit, encoding)?;
         }
     }
 

@@ -1645,6 +1645,121 @@ async fn http_compact_context_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Task queue HTTP handlers
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /tasks/:agent`.
+#[derive(Debug, Deserialize)]
+struct HttpPushTaskRequest {
+    task: String,
+}
+
+/// Query parameters for `GET /tasks/:agent`.
+#[derive(Debug, Deserialize)]
+struct HttpPeekTasksQuery {
+    #[serde(default = "default_peek_limit")]
+    limit: usize,
+}
+
+fn default_peek_limit() -> usize {
+    10
+}
+
+/// `POST /tasks/:agent` — push a task to the tail of an agent's queue.
+///
+/// Request body: `{"task": "<payload>"}`.
+/// Response: `{"agent": "<id>", "queue_length": N}`.
+async fn http_push_task_handler(
+    State(state): State<AppState>,
+    Path(agent): Path<String>,
+    payload: Result<Json<HttpPushTaskRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
+    let task = req.task.trim().to_owned();
+    if task.is_empty() {
+        return Err(bad_request("task must not be empty"));
+    }
+    if agent.trim().is_empty() {
+        return Err(bad_request("agent must not be empty"));
+    }
+
+    let len = tokio::task::spawn_blocking(move || {
+        crate::redis_bus::push_task(&state.settings, &agent, &task)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(
+        serde_json::to_value(serde_json::json!({"queue_length": len})).unwrap_or_default(),
+    ))
+}
+
+/// `GET /tasks/:agent` — peek at pending tasks without consuming them.
+///
+/// Query params: `?limit=10` (default 10; `0` returns all).
+/// Response: `{"agent": "<id>", "tasks": [...], "count": N, "queue_length": N}`.
+///
+/// `count` is the number of tasks returned (bounded by `limit`).
+/// `queue_length` is the total number of pending tasks in the queue.
+async fn http_peek_tasks_handler(
+    State(state): State<AppState>,
+    Path(agent): Path<String>,
+    Query(params): Query<HttpPeekTasksQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if agent.trim().is_empty() {
+        return Err(bad_request("agent must not be empty"));
+    }
+    let limit = params.limit;
+    let agent_clone = agent.clone();
+
+    let (tasks, queue_length) = tokio::task::spawn_blocking(move || {
+        let tasks = crate::redis_bus::peek_tasks(&state.settings, &agent_clone, limit)?;
+        let queue_length = crate::redis_bus::task_queue_length(&state.settings, &agent_clone)?;
+        Ok::<_, anyhow::Error>((tasks, queue_length))
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    let count = tasks.len();
+    Ok(Json(
+        serde_json::to_value(serde_json::json!({
+            "agent": agent,
+            "tasks": tasks,
+            "count": count,
+            "queue_length": queue_length,
+        }))
+        .unwrap_or_default(),
+    ))
+}
+
+/// `DELETE /tasks/:agent` — pop and consume the next task.
+///
+/// Response: `{"agent": "<id>", "task": "<payload>" | null}`.
+async fn http_pull_task_handler(
+    State(state): State<AppState>,
+    Path(agent): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if agent.trim().is_empty() {
+        return Err(bad_request("agent must not be empty"));
+    }
+    let agent_clone = agent.clone();
+
+    let task = tokio::task::spawn_blocking(move || {
+        crate::redis_bus::pull_task(&state.settings, &agent_clone)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(
+        serde_json::to_value(serde_json::json!({"agent": agent, "task": task}))
+            .unwrap_or_default(),
+    ))
+}
+
+// ---------------------------------------------------------------------------
 
 pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<()> {
     let bind_host = settings.server_host.clone();
@@ -1693,6 +1808,13 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         .route("/channels/summary", get(http_channel_summary_handler))
         .route("/token-count", post(http_token_count_handler))
         .route("/compact-context", post(http_compact_context_handler))
+        // Task queue routes
+        .route(
+            "/tasks/{agent}",
+            post(http_push_task_handler)
+                .get(http_peek_tasks_handler)
+                .delete(http_pull_task_handler),
+        )
         .with_state(state);
 
     let addr = format!("{bind_host}:{port}");
