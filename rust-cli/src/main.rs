@@ -46,10 +46,10 @@ use rmcp::serve_server;
 use cli::{Cli, Cmd};
 use commands::{
     PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_batch_send, cmd_claim, cmd_claims,
-    cmd_codex_sync, cmd_export, cmd_health, cmd_journal, cmd_monitor, cmd_pending_acks,
+    cmd_codex_sync, cmd_dedup, cmd_export, cmd_health, cmd_journal, cmd_monitor, cmd_pending_acks,
     cmd_post_direct, cmd_post_group, cmd_presence, cmd_presence_history, cmd_presence_list,
-    cmd_prune, cmd_read, cmd_read_direct, cmd_read_group, cmd_resolve, cmd_send, cmd_sync,
-    cmd_watch,
+    cmd_prune, cmd_read, cmd_read_direct, cmd_read_group, cmd_resolve, cmd_send, cmd_session_summary,
+    cmd_sync, cmd_watch,
 };
 use http::{start_http_server, start_mcp_http_server};
 use mcp::AgentBusMcpServer;
@@ -458,6 +458,29 @@ async fn main() -> Result<()> {
             ref encoding,
         } => {
             cmd_resolve(&settings, resource, winner, reason, resolved_by, encoding)?;
+        }
+
+        // --- Session management commands (Task 4.2 / 4.3) -------------------
+        Cmd::SessionSummary {
+            ref session,
+            ref encoding,
+        } => {
+            cmd_session_summary(&settings, session, encoding)?;
+        }
+
+        Cmd::Dedup {
+            ref session,
+            ref agent,
+            since_minutes,
+            ref encoding,
+        } => {
+            cmd_dedup(
+                &settings,
+                session.as_deref(),
+                agent.as_deref(),
+                since_minutes,
+                encoding,
+            )?;
         }
     }
 

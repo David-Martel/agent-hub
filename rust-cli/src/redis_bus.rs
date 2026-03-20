@@ -360,6 +360,10 @@ struct PreparedMessage {
 /// Extract and prepare all per-message state needed for a Redis XADD.
 ///
 /// Runs schema inference, optional LZ4 compression, and metadata enrichment.
+/// When `session_id` is `Some`, a `session:<id>` tag is injected into the
+/// tags array (if not already present), enabling session-level filtering via
+/// the `session-summary` command.
+///
 /// The resulting [`PreparedMessage`] owns every string referenced by the
 /// eventual XADD field list so that multiple prepared messages can coexist in
 /// memory during pipeline construction.
@@ -381,6 +385,7 @@ fn prepare_message(
     request_ack: bool,
     reply_to: Option<&str>,
     metadata: &serde_json::Value,
+    session_id: Option<&str>,
 ) -> PreparedMessage {
     let id = Uuid::new_v4().to_string();
     let ts = {
@@ -389,6 +394,12 @@ fn prepare_message(
         buf
     };
     let reply = reply_to.unwrap_or(from).to_owned();
+
+    // Task 4.4: auto-infer thread_id from reply_to when not explicitly set.
+    // When a message is a reply (reply_to is Some) but has no explicit
+    // thread_id, the replied-to message ID becomes the thread root, grouping
+    // all replies into a single thread automatically.
+    let effective_thread_id: Option<&str> = thread_id.or(reply_to);
 
     // Schema inference: annotate metadata with `_schema` when the topic maps
     // to a known schema so all transports see a consistent annotation.
@@ -434,9 +445,26 @@ fn prepare_message(
         metadata.clone()
     };
 
-    let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_owned());
+    // Task 4.1: inject session tag when a session_id is configured.
+    // Build the effective tags, adding "session:<id>" only when not already
+    // present.  We avoid cloning the slice when no injection is needed.
+    let effective_tags: smallvec::SmallVec<[String; 4]> = if let Some(sid) = session_id {
+        let tag = format!("session:{sid}");
+        if tags.iter().any(|t| t == &tag) {
+            tags.to_vec().into()
+        } else {
+            let mut v: smallvec::SmallVec<[String; 4]> = tags.to_vec().into();
+            v.push(tag);
+            v
+        }
+    } else {
+        tags.to_vec().into()
+    };
+
+    let tags_json =
+        serde_json::to_string(effective_tags.as_slice()).unwrap_or_else(|_| "[]".to_owned());
     let ack_str: &'static str = if request_ack { "true" } else { "false" };
-    let thread_str = thread_id.unwrap_or("").to_owned();
+    let thread_str = effective_thread_id.unwrap_or("").to_owned();
     let meta_json = serde_json::to_string(&final_metadata).unwrap_or_else(|_| "{}".to_owned());
 
     let message = Message {
@@ -447,8 +475,8 @@ fn prepare_message(
         to: to.to_owned(),
         topic: topic.to_owned(),
         body: body.to_owned(),
-        thread_id: thread_id.map(String::from),
-        tags: tags.to_vec().into(),
+        thread_id: effective_thread_id.map(String::from),
+        tags: effective_tags,
         priority: priority.to_owned(),
         request_ack,
         reply_to: Some(reply),
@@ -510,6 +538,7 @@ pub(crate) fn bus_post_messages_batch(
     pg_writer: Option<&PgWriter>,
     has_sse_subscribers: bool,
 ) -> Result<Vec<Message>> {
+    let session_id = settings.session_id.as_deref();
     if payloads.is_empty() {
         return Ok(Vec::new());
     }
@@ -529,6 +558,7 @@ pub(crate) fn bus_post_messages_batch(
             p.request_ack,
             p.reply_to.as_deref(),
             &p.metadata,
+            session_id,
         ));
     }
 
@@ -721,6 +751,10 @@ pub(crate) fn bus_post_message(
 
     let stored_body: &str = compressed.as_deref().unwrap_or(body);
 
+    // Task 4.4: auto-infer thread_id from reply_to when not explicitly set.
+    // Mirror the logic in prepare_message so both paths behave identically.
+    let effective_thread_id: Option<&str> = thread_id.or(reply_to);
+
     // Build final metadata in one clone, merging schema + compression markers.
     let final_metadata_owned: serde_json::Value;
     let final_metadata: &serde_json::Value = if inferred_schema.is_some() || compressed.is_some() {
@@ -755,9 +789,25 @@ pub(crate) fn bus_post_message(
     };
     // -------------------------------------------------------------------------
 
-    let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_owned());
+    // Task 4.1: inject session tag when a session_id is configured.
+    let effective_tags: smallvec::SmallVec<[String; 4]> =
+        if let Some(sid) = settings.session_id.as_deref() {
+            let tag = format!("session:{sid}");
+            if tags.iter().any(|t| t == &tag) {
+                tags.to_vec().into()
+            } else {
+                let mut v: smallvec::SmallVec<[String; 4]> = tags.to_vec().into();
+                v.push(tag);
+                v
+            }
+        } else {
+            tags.to_vec().into()
+        };
+
+    let tags_json =
+        serde_json::to_string(effective_tags.as_slice()).unwrap_or_else(|_| "[]".to_owned());
     let ack_str = if request_ack { "true" } else { "false" };
-    let thread_str = thread_id.unwrap_or("");
+    let thread_str = effective_thread_id.unwrap_or("");
 
     let meta_json = serde_json::to_string(final_metadata).unwrap_or_else(|_| "{}".to_owned());
 
@@ -804,8 +854,8 @@ pub(crate) fn bus_post_message(
         to: to.to_owned(),
         topic: topic.to_owned(),
         body: body.to_owned(),
-        thread_id: thread_id.map(String::from),
-        tags: tags.to_vec().into(),
+        thread_id: effective_thread_id.map(String::from),
+        tags: effective_tags,
         priority: priority.to_owned(),
         request_ack,
         reply_to: Some(reply.to_owned()),
@@ -1443,6 +1493,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
         );
         // id must be a valid UUID (36-char hyphenated string)
         assert_eq!(pm.message.id.len(), 36, "id should be UUID length");
@@ -1468,6 +1519,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
         );
         assert_eq!(pm.message.metadata["_schema"], "status");
     }
@@ -1486,6 +1538,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
         );
         assert!(!pm.is_compressed, "short body should not be compressed");
         assert_eq!(pm.stored_body, "short", "stored body should equal original");
@@ -1506,6 +1559,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
         );
         assert!(pm.is_compressed, "large body should be compressed");
         assert_ne!(
@@ -1536,6 +1590,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
         );
         assert_eq!(pm.message.reply_to.as_deref(), Some("alice"));
     }
@@ -1554,6 +1609,7 @@ mod tests {
             false,
             Some("charlie"),
             &meta,
+            None,
         );
         assert_eq!(pm.message.reply_to.as_deref(), Some("charlie"));
     }
@@ -1572,6 +1628,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
         );
         assert!(
             pm.thread_str.is_empty(),
@@ -1593,6 +1650,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
         );
         assert_eq!(pm.thread_str, "tid-123");
         assert_eq!(pm.message.thread_id, Some("tid-123".to_owned()));
@@ -1612,6 +1670,7 @@ mod tests {
             true,
             None,
             &meta,
+            None,
         );
         assert_eq!(pm.ack_str, "true");
         assert!(pm.message.request_ack);
@@ -1631,6 +1690,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
         );
         assert_eq!(pm.ack_str, "false");
         assert!(!pm.message.request_ack);
@@ -1641,11 +1701,158 @@ mod tests {
         let tags = vec!["alpha".to_owned(), "beta".to_owned()];
         let meta = serde_json::Value::Object(serde_json::Map::new());
         let pm = prepare_message(
-            "a", "b", "t", "body", None, &tags, "normal", false, None, &meta,
+            "a", "b", "t", "body", None, &tags, "normal", false, None, &meta, None,
         );
         let parsed: Vec<String> =
             serde_json::from_str(&pm.tags_json).expect("tags_json not valid JSON");
         assert_eq!(parsed, tags);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4.1 — session tag auto-injection in prepare_message
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn prepare_message_injects_session_tag_when_session_id_set() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "alice",
+            "bob",
+            "status",
+            "ok",
+            None,
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+            Some("sprint-42"),
+        );
+        assert!(
+            pm.message.tags.iter().any(|t| t == "session:sprint-42"),
+            "session tag should be injected"
+        );
+    }
+
+    #[test]
+    fn prepare_message_does_not_duplicate_session_tag() {
+        let tags = vec!["session:sprint-42".to_owned()];
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "alice",
+            "bob",
+            "status",
+            "ok",
+            None,
+            &tags,
+            "normal",
+            false,
+            None,
+            &meta,
+            Some("sprint-42"),
+        );
+        let count = pm
+            .message
+            .tags
+            .iter()
+            .filter(|t| t.as_str() == "session:sprint-42")
+            .count();
+        assert_eq!(count, 1, "session tag must not be duplicated");
+    }
+
+    #[test]
+    fn prepare_message_no_session_tag_when_session_id_none() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "alice",
+            "bob",
+            "status",
+            "ok",
+            None,
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+            None,
+        );
+        assert!(
+            !pm.message.tags.iter().any(|t| t.starts_with("session:")),
+            "no session tag should be added when session_id is None"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 4.4 — thread_id auto-inferred from reply_to in prepare_message
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn prepare_message_infers_thread_id_from_reply_to_when_thread_absent() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "alice",
+            "bob",
+            "ack",
+            "ok",
+            None,             // no explicit thread_id
+            &[],
+            "normal",
+            false,
+            Some("msg-root"), // reply_to points to the root message
+            &meta,
+            None,
+        );
+        assert_eq!(
+            pm.message.thread_id.as_deref(),
+            Some("msg-root"),
+            "thread_id should be inferred from reply_to when absent"
+        );
+        assert!(!pm.thread_str.is_empty(), "thread_str must be non-empty");
+    }
+
+    #[test]
+    fn prepare_message_explicit_thread_id_takes_precedence_over_reply_to() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "alice",
+            "bob",
+            "ack",
+            "ok",
+            Some("explicit-thread"), // explicit thread_id
+            &[],
+            "normal",
+            false,
+            Some("msg-root"), // reply_to differs
+            &meta,
+            None,
+        );
+        assert_eq!(
+            pm.message.thread_id.as_deref(),
+            Some("explicit-thread"),
+            "explicit thread_id must take precedence over reply_to"
+        );
+    }
+
+    #[test]
+    fn prepare_message_thread_id_none_when_both_absent() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "alice",
+            "bob",
+            "status",
+            "ok",
+            None, // no thread_id
+            &[],
+            "normal",
+            false,
+            None, // no reply_to
+            &meta,
+            None,
+        );
+        assert!(
+            pm.message.thread_id.is_none(),
+            "thread_id should be None when neither thread_id nor reply_to is set"
+        );
     }
 
     #[test]
@@ -1686,6 +1893,7 @@ mod tests {
             payload.request_ack,
             payload.reply_to.as_deref(),
             &payload.metadata,
+            None,
         );
         assert_eq!(pm.message.from, "alice");
         assert_eq!(pm.message.to, "bob");

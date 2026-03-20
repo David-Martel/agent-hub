@@ -31,6 +31,10 @@ pub(crate) struct ConfigFile {
     pub(crate) startup_recipient: Option<String>,
     pub(crate) startup_topic: Option<String>,
     pub(crate) startup_body: Option<String>,
+    /// Optional session identifier shared across all messages in a coordination
+    /// session.  When set, `bus_post_message` auto-tags messages with
+    /// `session:<id>`.
+    pub(crate) session_id: Option<String>,
 }
 
 /// Resolve the path for the config file.
@@ -180,6 +184,12 @@ pub(crate) struct Settings {
     pub(crate) startup_topic: String,
     pub(crate) startup_body: String,
     pub(crate) server_host: String,
+    /// Session identifier propagated to every outgoing message as a
+    /// `session:<id>` tag.  `None` means no session tagging.
+    ///
+    /// Resolution order: `AGENT_BUS_SESSION_ID` env var → `session_id` in
+    /// config.json → `None` (absent from both).
+    pub(crate) session_id: Option<String>,
 }
 
 impl Settings {
@@ -264,6 +274,12 @@ impl Settings {
                 cfg.server_host.as_deref(),
                 "localhost",
             ),
+            // Session ID: env var overrides config file; empty string is
+            // treated as absent so callers can unset a file-configured value.
+            session_id: std::env::var("AGENT_BUS_SESSION_ID")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| cfg.session_id.filter(|s| !s.is_empty())),
         }
     }
 
@@ -561,5 +577,80 @@ mod tests {
         assert_eq!(cfg.startup_body.as_deref(), Some("hello"));
         assert!(cfg.redis_url.is_none());
         assert!(cfg.stream_maxlen.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // session_id — Task 4.1
+    // -----------------------------------------------------------------------
+
+    /// Simulate the env+config-file resolution logic for session_id.
+    ///
+    /// Mirrors what `Settings::from_env()` does:
+    /// env var (non-empty) → config-file value (non-empty) → None.
+    fn resolve_session_id(env_val: Option<&str>, cfg_val: Option<&str>) -> Option<String> {
+        env_val
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .or_else(|| cfg_val.filter(|s| !s.is_empty()).map(str::to_owned))
+    }
+
+    #[test]
+    fn session_id_loaded_from_env() {
+        // Test the resolution logic directly — avoids process-wide env races
+        // with other parallel test threads that may touch AGENT_BUS_SESSION_ID.
+        let sid = resolve_session_id(Some("test-session-abc"), None);
+        assert_eq!(sid.as_deref(), Some("test-session-abc"));
+    }
+
+    #[test]
+    fn session_id_defaults_to_none_when_unset() {
+        let sid = resolve_session_id(None, None);
+        assert!(
+            sid.is_none(),
+            "session_id should be None when env and config both omit it"
+        );
+    }
+
+    #[test]
+    fn session_id_empty_env_treated_as_none() {
+        // Empty string from env → falls through to config (also absent) → None.
+        let sid = resolve_session_id(Some(""), None);
+        assert!(
+            sid.is_none(),
+            "empty AGENT_BUS_SESSION_ID should be treated as absent"
+        );
+    }
+
+    #[test]
+    fn session_id_env_overrides_config() {
+        // Env var takes precedence even when config also specifies a session_id.
+        let sid = resolve_session_id(Some("from-env"), Some("from-config"));
+        assert_eq!(sid.as_deref(), Some("from-env"));
+    }
+
+    #[test]
+    fn session_id_falls_back_to_config_when_env_absent() {
+        let sid = resolve_session_id(None, Some("from-config"));
+        assert_eq!(sid.as_deref(), Some("from-config"));
+    }
+
+    #[test]
+    fn session_id_empty_env_falls_back_to_config() {
+        // Empty env → config value used.
+        let sid = resolve_session_id(Some(""), Some("from-config"));
+        assert_eq!(sid.as_deref(), Some("from-config"));
+    }
+
+    #[test]
+    fn config_file_deserializes_session_id() {
+        let json = r#"{"session_id": "sprint-2026-03-19"}"#;
+        let cfg: ConfigFile = serde_json::from_str(json).expect("valid JSON");
+        assert_eq!(cfg.session_id.as_deref(), Some("sprint-2026-03-19"));
+    }
+
+    #[test]
+    fn config_file_default_has_none_session_id() {
+        let cfg = ConfigFile::default();
+        assert!(cfg.session_id.is_none());
     }
 }

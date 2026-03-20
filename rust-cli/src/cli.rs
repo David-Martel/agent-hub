@@ -548,4 +548,52 @@ pub(crate) enum Cmd {
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
+
+    // -----------------------------------------------------------------------
+    // Session management commands (Task 4.2 / 4.3)
+    // -----------------------------------------------------------------------
+
+    /// Summarize all messages in a session.
+    #[command(
+        long_about = "Read all messages tagged with 'session:<id>' and produce a JSON summary.\n\n\
+            Reports: agents involved, topic distribution, severity counts, and time range.\n\
+            Useful for post-session analysis and handoff documentation.\n\n\
+            Example:\n  \
+            agent-bus session-summary --session sprint-42 --encoding json"
+    )]
+    SessionSummary {
+        #[arg(long, help = "Session ID to summarize (matches tag 'session:<id>')")]
+        session: String,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Deduplicate findings across messages, grouped by file path.
+    #[command(
+        long_about = "Read recent messages and group findings by file path.\n\n\
+            For each file path found in message bodies (any token containing\n\
+            '/' or '\\' with a file extension), reports: finding count, max\n\
+            severity (CRITICAL > HIGH > MEDIUM > LOW), and contributing agents.\n\n\
+            Filter by --session to scope to a specific coordination session.\n\
+            Filter by --agent to restrict to messages from one sender.\n\n\
+            Example:\n  \
+            agent-bus dedup --session sprint-42 --since-minutes 480"
+    )]
+    Dedup {
+        #[arg(
+            long,
+            help = "Restrict to messages tagged with 'session:<id>'"
+        )]
+        session: Option<String>,
+        #[arg(long, help = "Restrict to messages from this sender agent")]
+        agent: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 1440,
+            help = "Look back this many minutes [default: 1 day]"
+        )]
+        since_minutes: u64,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
 }

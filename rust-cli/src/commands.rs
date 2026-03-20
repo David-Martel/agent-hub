@@ -673,6 +673,228 @@ pub(crate) fn cmd_claims(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Session management command implementations (Task 4.2 / 4.3)
+// ---------------------------------------------------------------------------
+
+/// Summarise all messages belonging to a session.
+///
+/// Reads all messages tagged `session:<id>` from the last 7 days (up to
+/// 10 000 entries) and produces a compact JSON summary with:
+/// - `session`: the session ID
+/// - `message_count`: total messages in the session
+/// - `agents`: sorted list of all unique senders
+/// - `topics`: map of topic → count
+/// - `severity_counts`: map of CRITICAL/HIGH/MEDIUM/LOW → count
+/// - `time_range`: `{first, last}` ISO-8601 timestamps (null when empty)
+///
+/// # Errors
+///
+/// Returns an error if the Redis (or `PostgreSQL`) query fails.
+pub(crate) fn cmd_session_summary(
+    settings: &Settings,
+    session: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    use std::collections::HashMap;
+
+    let tag_filter = format!("session:{session}");
+
+    // Read all messages from the last 7 days; the tag filter is applied below.
+    // We cannot push tag filtering into bus_list_messages without a dedicated
+    // index, so we over-fetch and filter client-side.
+    let all = bus_list_messages(settings, None, None, 10_080, 10_000, true)?;
+
+    let msgs: Vec<&crate::models::Message> = all
+        .iter()
+        .filter(|m| m.tags.iter().any(|t| t == &tag_filter))
+        .collect();
+
+    let mut agents: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut topics: HashMap<String, u64> = HashMap::new();
+    let mut severities: HashMap<&'static str, u64> = HashMap::new();
+    let mut first_ts: Option<&str> = None;
+    let mut last_ts: Option<&str> = None;
+
+    for msg in &msgs {
+        agents.insert(msg.from.clone());
+        *topics.entry(msg.topic.clone()).or_insert(0) += 1;
+
+        // Extract severity from body: look for SEVERITY:<level> pattern.
+        for line in msg.body.lines() {
+            let line_upper = line.to_uppercase();
+            if let Some(rest) = line_upper.strip_prefix("SEVERITY:") {
+                let level = rest.trim();
+                let key: &'static str = if level.starts_with("CRITICAL") {
+                    "CRITICAL"
+                } else if level.starts_with("HIGH") {
+                    "HIGH"
+                } else if level.starts_with("MEDIUM") {
+                    "MEDIUM"
+                } else if level.starts_with("LOW") {
+                    "LOW"
+                } else {
+                    continue;
+                };
+                *severities.entry(key).or_insert(0) += 1;
+            }
+        }
+
+        // Track time range using ISO-8601 string ordering (lexicographic = chronological).
+        let ts = msg.timestamp_utc.as_str();
+        if first_ts.is_none_or(|f| ts < f) {
+            first_ts = Some(ts);
+        }
+        if last_ts.is_none_or(|l| ts > l) {
+            last_ts = Some(ts);
+        }
+    }
+
+    let summary = serde_json::json!({
+        "session": session,
+        "message_count": msgs.len(),
+        "agents": agents.into_iter().collect::<Vec<_>>(),
+        "topics": topics,
+        "severity_counts": {
+            "CRITICAL": severities.get("CRITICAL").copied().unwrap_or(0),
+            "HIGH": severities.get("HIGH").copied().unwrap_or(0),
+            "MEDIUM": severities.get("MEDIUM").copied().unwrap_or(0),
+            "LOW": severities.get("LOW").copied().unwrap_or(0),
+        },
+        "time_range": {
+            "first": first_ts,
+            "last": last_ts,
+        },
+    });
+    output(&summary, encoding);
+    Ok(())
+}
+
+/// Return a numeric rank for a severity string.
+///
+/// Higher rank = higher severity.  Unknown strings rank as 0 (below LOW).
+fn severity_rank(s: &str) -> u8 {
+    match s {
+        "CRITICAL" => 4,
+        "HIGH" => 3,
+        "MEDIUM" => 2,
+        "LOW" => 1,
+        _ => 0,
+    }
+}
+
+/// Deduplicate findings grouped by file path.
+///
+/// Reads recent messages (optionally filtered by session tag or sender agent),
+/// scans each message body for path-like tokens (containing `/` or `\` and a
+/// `.ext`), then groups findings by path.  For each path the output reports:
+/// - `path`: the file path token
+/// - `count`: how many messages mention it
+/// - `max_severity`: highest severity seen (CRITICAL > HIGH > MEDIUM > LOW)
+/// - `agents`: sorted unique sender IDs that mentioned this path
+///
+/// # Errors
+///
+/// Returns an error if the Redis (or `PostgreSQL`) query fails.
+pub(crate) fn cmd_dedup(
+    settings: &Settings,
+    session: Option<&str>,
+    agent: Option<&str>,
+    since_minutes: u64,
+    encoding: &Encoding,
+) -> Result<()> {
+    use std::collections::HashMap;
+
+    let session_tag = session.map(|s| format!("session:{s}"));
+
+    let all = bus_list_messages(settings, None, agent, since_minutes, 10_000, true)?;
+
+    let msgs = all.iter().filter(|m| {
+        session_tag
+            .as_deref()
+            .is_none_or(|tag| m.tags.iter().any(|t| t == tag))
+    });
+
+    // path → (count, max_severity_str, BTreeSet<agent>)
+    let mut by_path: HashMap<String, (u64, &'static str, std::collections::BTreeSet<String>)> =
+        HashMap::new();
+
+    for msg in msgs {
+        // Extract severity from body for this message.
+        let mut msg_severity: &'static str = "LOW";
+        for line in msg.body.lines() {
+            let upper = line.to_uppercase();
+            if let Some(rest) = upper.strip_prefix("SEVERITY:") {
+                let level = rest.trim();
+                let s: &'static str = if level.starts_with("CRITICAL") {
+                    "CRITICAL"
+                } else if level.starts_with("HIGH") {
+                    "HIGH"
+                } else if level.starts_with("MEDIUM") {
+                    "MEDIUM"
+                } else {
+                    "LOW"
+                };
+                if severity_rank(s) > severity_rank(msg_severity) {
+                    msg_severity = s;
+                }
+            }
+        }
+
+        // Scan body tokens for path-like strings.
+        for token in msg.body.split_whitespace() {
+            let has_separator = token.contains(['/', '\\']);
+            // Must contain a dot after the last separator (file extension).
+            let last_sep = token.rfind(['/', '\\']).unwrap_or(0);
+            let after_sep = &token[last_sep..];
+            if !has_separator || !after_sep.contains('.') {
+                continue;
+            }
+            // Strip common punctuation that isn't part of the path.
+            let path = token.trim_matches(|c: char| matches!(c, ',' | ';' | ':' | ')' | '('));
+            if path.is_empty() {
+                continue;
+            }
+            let entry = by_path
+                .entry(path.to_owned())
+                .or_insert((0, "LOW", std::collections::BTreeSet::new()));
+            entry.0 += 1;
+            if severity_rank(msg_severity) > severity_rank(entry.1) {
+                entry.1 = msg_severity;
+            }
+            entry.2.insert(msg.from.clone());
+        }
+    }
+
+    // Build sorted output (by path for determinism).
+    let mut rows: Vec<_> = by_path
+        .into_iter()
+        .map(|(path, (count, max_sev, agents))| {
+            serde_json::json!({
+                "path": path,
+                "count": count,
+                "max_severity": max_sev,
+                "agents": agents.into_iter().collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        a["path"]
+            .as_str()
+            .unwrap_or("")
+            .cmp(b["path"].as_str().unwrap_or(""))
+    });
+
+    let result = serde_json::json!({
+        "session": session,
+        "since_minutes": since_minutes,
+        "unique_paths": rows.len(),
+        "findings": rows,
+    });
+    output(&result, encoding);
+    Ok(())
+}
+
 /// Resolve a contested claim by naming a winner.
 ///
 /// # Errors
