@@ -67,6 +67,69 @@ pub(crate) fn infer_schema_from_topic<'a>(
     }
 }
 
+/// Determine the effective schema for a message given the transport, an optional explicit
+/// schema, and the topic.
+///
+/// Resolution order:
+/// 1. If `explicit_schema` names a known schema (`finding`, `status`, `benchmark`), use it.
+/// 2. Otherwise try topic-based inference via [`infer_schema_from_topic`].
+/// 3. If transport is `"mcp"` or `"http"` and no schema was resolved, default to `"status"`.
+/// 4. For `"cli"` and all other transports, return `None` (schema remains optional).
+///
+/// # Examples
+///
+/// ```
+/// use agent_bus::validation::enforce_schema_for_transport;
+/// // MCP always gets at least "status"
+/// assert_eq!(enforce_schema_for_transport("mcp", None, "unknown"), Some("status"));
+/// // CLI stays optional for unknown topics
+/// assert_eq!(enforce_schema_for_transport("cli", None, "unknown"), None);
+/// // Explicit schema is always honoured
+/// assert_eq!(enforce_schema_for_transport("cli", Some("finding"), "anything"), Some("finding"));
+/// ```
+pub(crate) fn enforce_schema_for_transport(
+    transport: &str,
+    explicit_schema: Option<&str>,
+    topic: &str,
+) -> Option<&'static str> {
+    // Map an arbitrary &str to its canonical &'static str equivalent.
+    let to_static = |s: &str| -> Option<&'static str> {
+        match s {
+            SCHEMA_FINDING => Some(SCHEMA_FINDING),
+            SCHEMA_STATUS => Some(SCHEMA_STATUS),
+            SCHEMA_BENCHMARK => Some(SCHEMA_BENCHMARK),
+            _ => None,
+        }
+    };
+
+    // 1. Explicit schema takes priority.
+    if let Some(schema) = explicit_schema
+        && let Some(s) = to_static(schema)
+    {
+        return Some(s);
+    }
+    // Unknown explicit schema: fall through so topic inference still runs.
+
+    // 2. Topic-based inference (returns a &'static str via match).
+    let inferred: Option<&'static str> = match topic {
+        t if t.contains("findings") || t.starts_with("review") => Some(SCHEMA_FINDING),
+        "status" | "ownership" | "coordination" | "handoff" => Some(SCHEMA_STATUS),
+        "benchmark" => Some(SCHEMA_BENCHMARK),
+        _ => None,
+    };
+    if inferred.is_some() {
+        return inferred;
+    }
+
+    // 3. MCP/HTTP mandate at least a status schema.
+    if transport == "mcp" || transport == "http" {
+        return Some(SCHEMA_STATUS);
+    }
+
+    // 4. CLI and other transports: schema is optional.
+    None
+}
+
 /// Auto-fit a message body to match the required schema format.
 ///
 /// Returns the body unchanged when no schema is specified, or a cleaned
@@ -392,5 +455,92 @@ mod tests {
     fn auto_fit_schema_benchmark_already_valid_passthrough() {
         let body = "duration=5.2s msgs=100";
         assert_eq!(auto_fit_schema(body, Some("benchmark")), body);
+    }
+
+    // -----------------------------------------------------------------------
+    // enforce_schema_for_transport tests (Task 3.2 / WS3)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn enforce_schema_mcp_infers_from_topic_findings() {
+        // Topic inference takes priority over transport default.
+        assert_eq!(
+            enforce_schema_for_transport("mcp", None, "code-findings"),
+            Some("finding")
+        );
+    }
+
+    #[test]
+    fn enforce_schema_mcp_defaults_to_status_for_unknown_topic() {
+        assert_eq!(
+            enforce_schema_for_transport("mcp", None, "unknown-topic"),
+            Some("status")
+        );
+    }
+
+    #[test]
+    fn enforce_schema_http_infers_from_topic_benchmark() {
+        assert_eq!(
+            enforce_schema_for_transport("http", None, "benchmark"),
+            Some("benchmark")
+        );
+    }
+
+    #[test]
+    fn enforce_schema_http_defaults_to_status_for_unknown_topic() {
+        assert_eq!(
+            enforce_schema_for_transport("http", None, "chat"),
+            Some("status")
+        );
+    }
+
+    #[test]
+    fn enforce_schema_cli_returns_none_for_unknown_topic() {
+        assert_eq!(enforce_schema_for_transport("cli", None, "chat"), None);
+    }
+
+    #[test]
+    fn enforce_schema_cli_infers_from_known_topic() {
+        assert_eq!(
+            enforce_schema_for_transport("cli", None, "status"),
+            Some("status")
+        );
+    }
+
+    #[test]
+    fn enforce_schema_explicit_preserved_all_transports() {
+        for transport in &["mcp", "http", "cli"] {
+            assert_eq!(
+                enforce_schema_for_transport(transport, Some("finding"), "anything"),
+                Some("finding"),
+                "explicit schema must be honoured for transport={transport}"
+            );
+        }
+    }
+
+    #[test]
+    fn enforce_schema_explicit_benchmark_preserved() {
+        assert_eq!(
+            enforce_schema_for_transport("mcp", Some("benchmark"), "status"),
+            Some("benchmark")
+        );
+    }
+
+    #[test]
+    fn enforce_schema_unknown_explicit_falls_back_to_topic_inference() {
+        // Unknown explicit schema + known topic → topic inference wins.
+        assert_eq!(
+            enforce_schema_for_transport("cli", Some("bogus"), "ownership"),
+            Some("status")
+        );
+    }
+
+    #[test]
+    fn enforce_schema_unknown_explicit_mcp_defaults_to_status() {
+        // Unknown explicit schema + unknown topic on MCP → status default.
+        assert_eq!(
+            enforce_schema_for_transport("mcp", Some("bogus"), "chat"),
+            Some("status")
+        );
     }
 }

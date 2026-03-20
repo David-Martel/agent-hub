@@ -22,6 +22,7 @@ use crate::postgres_store::{
     probe_postgres,
 };
 use crate::settings::{Settings, redact_url};
+use crate::channels::{extract_claimed_files, global_ownership_tracker};
 use crate::validation::infer_schema_from_topic;
 
 pub(crate) fn connect(settings: &Settings) -> Result<redis::Connection> {
@@ -840,9 +841,43 @@ pub(crate) fn bus_post_message(
     // When the sender requests acknowledgement, record the pending ack in Redis
     // with a 300-second TTL so `list_pending_acks` / `GET /pending-acks` can
     // surface unacknowledged messages.  Failures are non-fatal.
-    if request_ack {
-        if let Err(error) = track_pending_ack(conn, &id, to, &msg.timestamp_utc) {
-            tracing::warn!("failed to track pending ack for {id}: {error:#}");
+    if request_ack
+        && let Err(error) = track_pending_ack(conn, &id, to, &msg.timestamp_utc)
+    {
+        tracing::warn!("failed to track pending ack for {id}: {error:#}");
+    }
+    // -------------------------------------------------------------------------
+
+    // --- Ownership conflict detection ----------------------------------------
+    // When an agent posts with topic="ownership", extract file paths from the
+    // body, check for in-process conflicts, emit warnings, then record the
+    // claim.  This is a lightweight complement to the Redis-backed arbitration
+    // in `channels::claim_resource`; it fires synchronously on the hot path
+    // but is non-fatal (lock errors or parse failures are warned and skipped).
+    if topic == "ownership" {
+        let file_refs: Vec<String> = extract_claimed_files(body);
+        if !file_refs.is_empty() {
+            let file_slices: Vec<&str> = file_refs.iter().map(String::as_str).collect();
+            match global_ownership_tracker().lock() {
+                Ok(mut tracker) => {
+                    let conflicts = tracker.check_conflicts(from, &file_slices);
+                    for conflict in &conflicts {
+                        tracing::warn!(
+                            file = %conflict.file,
+                            current_owner = %conflict.claimed_by,
+                            claimed_at = %conflict.claimed_at,
+                            new_claimant = %from,
+                            "ownership conflict: {} is already claimed by {}",
+                            conflict.file,
+                            conflict.claimed_by
+                        );
+                    }
+                    tracker.record_claim(from, &file_slices);
+                }
+                Err(e) => {
+                    tracing::warn!("ownership tracker lock poisoned, skipping: {e}");
+                }
+            }
         }
     }
     // -------------------------------------------------------------------------
@@ -959,10 +994,8 @@ pub(crate) fn list_pending_acks(
         let sent_at = record["sent_at"].as_str().unwrap_or("").to_owned();
 
         // Apply recipient filter when specified.
-        if let Some(filter) = agent {
-            if recipient != filter {
-                continue;
-            }
+        if agent.is_some_and(|filter| recipient != filter) {
+            continue;
         }
 
         // Determine staleness.
@@ -1043,16 +1076,13 @@ pub(crate) fn bus_list_messages_from_redis(
         // time-based cutoff
         if let Ok(ts) =
             chrono::DateTime::parse_from_rfc3339(&msg.timestamp_utc.replace('Z', "+00:00"))
+            && ts < cutoff
         {
-            if ts < cutoff {
-                continue;
-            }
+            continue;
         }
 
-        if let Some(f) = from_agent {
-            if msg.from != f {
-                continue;
-            }
+        if from_agent.is_some_and(|f| msg.from != f) {
+            continue;
         }
         if let Some(a) = agent {
             let to_matches = msg.to == a;
@@ -1193,10 +1223,10 @@ pub(crate) fn bus_list_presence(
     let mut results: Vec<Presence> = Vec::new();
     for key in &keys {
         let value: Option<String> = conn.get(key).context("GET failed")?;
-        if let Some(json) = value {
-            if let Ok(p) = serde_json::from_str::<Presence>(&json) {
-                results.push(p);
-            }
+        if let Some(json) = value
+            && let Ok(p) = serde_json::from_str::<Presence>(&json)
+        {
+            results.push(p);
         }
     }
     results.sort_by(|a, b| a.agent.cmp(&b.agent));

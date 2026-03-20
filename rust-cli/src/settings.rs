@@ -39,10 +39,10 @@ pub(crate) struct ConfigFile {
 /// `%USERPROFILE%\.config\agent-bus\config.json` (Windows) or
 /// `~/.config/agent-bus/config.json` (other platforms).
 fn config_file_path() -> Option<std::path::PathBuf> {
-    if let Ok(custom) = std::env::var("AGENT_BUS_CONFIG") {
-        if !custom.trim().is_empty() {
-            return Some(std::path::PathBuf::from(custom));
-        }
+    if let Ok(custom) = std::env::var("AGENT_BUS_CONFIG")
+        && !custom.trim().is_empty()
+    {
+        return Some(std::path::PathBuf::from(custom));
     }
 
     // Prefer USERPROFILE on Windows; fall back to HOME on Unix.
@@ -130,10 +130,10 @@ fn resolve_parse<T>(env_key: &str, config_value: Option<T>, default: T) -> T
 where
     T: std::str::FromStr + Copy,
 {
-    if let Ok(raw) = std::env::var(env_key) {
-        if let Ok(parsed) = raw.parse::<T>() {
-            return parsed;
-        }
+    if let Ok(raw) = std::env::var(env_key)
+        && let Ok(parsed) = raw.parse::<T>()
+    {
+        return parsed;
     }
     config_value.unwrap_or(default)
 }

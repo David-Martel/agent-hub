@@ -27,13 +27,12 @@ pub(crate) fn query_messages_by_tag(
     limit: usize,
 ) -> Result<Vec<Message>> {
     // Try PG first (has GIN index on tags).
-    if settings.database_url.is_some() {
-        if let Ok(msgs) = postgres_store::list_messages_by_tag(settings, tag, since_minutes, limit)
-        {
-            if !msgs.is_empty() {
-                return Ok(msgs);
-            }
-        }
+    if settings.database_url.is_some()
+        && let Ok(msgs) =
+            postgres_store::list_messages_by_tag(settings, tag, since_minutes, limit)
+        && !msgs.is_empty()
+    {
+        return Ok(msgs);
     }
 
     // Fallback: read all from Redis and filter client-side.
@@ -59,10 +58,10 @@ fn load_existing_ids(path: &Path) -> HashSet<String> {
         return ids;
     };
     for line in BufReader::new(file).lines().map_while(Result::ok) {
-        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line) {
-            if let Some(id) = msg.get("id").and_then(|v| v.as_str()) {
-                ids.insert(id.to_owned());
-            }
+        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
+            && let Some(id) = msg.get("id").and_then(|v| v.as_str())
+        {
+            ids.insert(id.to_owned());
         }
     }
     ids
@@ -79,10 +78,10 @@ fn load_existing_ids(path: &Path) -> HashSet<String> {
 /// opened or written.
 pub(crate) fn export_journal(messages: &[Message], output_path: &Path) -> Result<usize> {
     // Create parent directory if needed.
-    if let Some(parent) = output_path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent).context("failed to create journal directory")?;
-        }
+    if let Some(parent) = output_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).context("failed to create journal directory")?;
     }
 
     let existing = load_existing_ids(output_path);
@@ -138,13 +137,14 @@ fn maybe_deploy_protocol_doc(output_path: &Path) {
             if !doc_path.exists() {
                 let canonical = home_dir()
                     .map(|h| h.join(".codex/tools/agent-bus-mcp/AGENT_COMMUNICATIONS.md"));
-                if let Some(src) = canonical {
-                    if src.exists() && std::fs::copy(&src, &doc_path).is_ok() {
-                        tracing::info!(
-                            "Deployed AGENT_COMMUNICATIONS.md to {}",
-                            doc_path.display()
-                        );
-                    }
+                if let Some(src) = canonical
+                    && src.exists()
+                    && std::fs::copy(&src, &doc_path).is_ok()
+                {
+                    tracing::info!(
+                        "Deployed AGENT_COMMUNICATIONS.md to {}",
+                        doc_path.display()
+                    );
                 }
             }
             break;

@@ -14,7 +14,7 @@ use crate::redis_bus::{
 };
 use crate::settings::Settings;
 use crate::validation::{
-    auto_fit_schema, infer_schema_from_topic, validate_message_schema, validate_priority,
+    auto_fit_schema, enforce_schema_for_transport, validate_message_schema, validate_priority,
 };
 
 /// Tool input schemas, separated from execution logic.
@@ -410,7 +410,7 @@ impl AgentBusMcpServer {
                 let reply_to = Self::get_str(args, "reply_to");
                 let metadata = Self::get_object_or_empty(args, "metadata");
                 let schema = Self::get_str(args, "schema");
-                let effective_schema = infer_schema_from_topic(topic, schema);
+                let effective_schema = enforce_schema_for_transport("mcp", schema, topic);
 
                 validate_priority(priority)?;
                 let fitted_body = auto_fit_schema(body, effective_schema);

@@ -557,6 +557,7 @@ pub(crate) fn cmd_batch_send(settings: &Settings, file: &str, encoding: &Encodin
 /// # Errors
 ///
 /// Returns an error if the agents or body are empty, or if Redis write fails.
+#[expect(clippy::too_many_arguments, reason = "maps directly to CLI positional parameters")]
 pub(crate) fn cmd_post_direct(
     settings: &Settings,
     from_agent: &str,
