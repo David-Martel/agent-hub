@@ -22,7 +22,7 @@ use crate::postgres_store::{
     pg_metrics, probe_postgres,
 };
 use crate::settings::{Settings, redact_url};
-use crate::channels::{extract_claimed_files, global_ownership_tracker};
+use crate::channels::{check_redis_ownership, extract_claimed_files, global_ownership_tracker};
 use crate::validation::infer_schema_from_topic;
 
 pub(crate) fn connect(settings: &Settings) -> Result<redis::Connection> {
@@ -908,16 +908,32 @@ pub(crate) fn bus_post_message(
         let file_refs: Vec<String> = extract_claimed_files(body);
         if !file_refs.is_empty() {
             let file_slices: Vec<&str> = file_refs.iter().map(String::as_str).collect();
+
+            // Check Redis for cross-process conflicts (persistent across CLI invocations)
+            let redis_conflicts = check_redis_ownership(settings, from, &file_slices);
+            for conflict in &redis_conflicts {
+                tracing::warn!(
+                    file = %conflict.file,
+                    current_owner = %conflict.claimed_by,
+                    claimed_at = %conflict.claimed_at,
+                    new_claimant = %from,
+                    "ownership conflict (Redis): {} is claimed by {}",
+                    conflict.file,
+                    conflict.claimed_by
+                );
+            }
+
+            // Also check in-memory tracker (for same-process conflicts in HTTP server)
             match global_ownership_tracker().lock() {
                 Ok(mut tracker) => {
-                    let conflicts = tracker.check_conflicts(from, &file_slices);
-                    for conflict in &conflicts {
+                    let mem_conflicts = tracker.check_conflicts(from, &file_slices);
+                    for conflict in &mem_conflicts {
                         tracing::warn!(
                             file = %conflict.file,
                             current_owner = %conflict.claimed_by,
                             claimed_at = %conflict.claimed_at,
                             new_claimant = %from,
-                            "ownership conflict: {} is already claimed by {}",
+                            "ownership conflict (in-memory): {} is claimed by {}",
                             conflict.file,
                             conflict.claimed_by
                         );

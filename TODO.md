@@ -193,7 +193,7 @@
 - [ ] Agent task queue — push-based dispatch from orchestrator to agents (agents don't self-poll)
 - [ ] `--server` client mode (CLI → HTTP → Redis) for LAN/multi-machine access
 - [ ] Agent inbox notification — MCP push when new messages arrive for an agent
-- [ ] Ownership conflict detection at `send` layer (currently only in `claim` system)
+- [x] Ownership conflict detection at `send` layer (Redis-backed, cross-process)
 
 **Performance:**
 - [ ] Redis-only vs Redis+PG throughput benchmarks (criterion, end-to-end)

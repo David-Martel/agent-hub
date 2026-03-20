@@ -1266,7 +1266,7 @@ mod tests {
         writer.send_message(&msg);
         let after = pg_metrics().messages_queued.load(Ordering::Relaxed);
         assert!(
-            after >= before + 1,
+            after > before,
             "messages_queued must increment after send_message (before={before}, after={after})"
         );
     }
@@ -1292,7 +1292,7 @@ mod tests {
         writer.send_presence(&presence);
         let after = pg_metrics().messages_queued.load(Ordering::Relaxed);
         assert!(
-            after >= before + 1,
+            after > before,
             "messages_queued must increment after send_presence (before={before}, after={after})"
         );
     }

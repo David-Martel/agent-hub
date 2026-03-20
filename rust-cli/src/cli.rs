@@ -365,14 +365,16 @@ pub(crate) enum Cmd {
         long_about = "Start a Model Context Protocol (MCP) server on stdio, an HTTP REST server,\n\
         or an MCP Streamable HTTP server (spec 2025-06-18).\n\n\
         MCP stdio mode (default, --transport stdio):\n\
-        Exposes 8 tools to LLM agents: bus_health, post_message, list_messages,\n\
-        ack_message, set_presence, list_presence, list_presence_history, negotiate.\n\
+        Exposes 13 tools to LLM agents: bus_health, post_message, list_messages,\n\
+        ack_message, set_presence, list_presence, list_presence_history, negotiate,\n\
+        create_channel, post_to_channel, read_channel, claim_resource, resolve_claim.\n\
         Register in mcp.json / config.toml / settings.json:\n\
         {\"command\": \"agent-bus\", \"args\": [\"serve\", \"--transport\", \"stdio\"]}\n\n\
         HTTP REST mode (--transport http, default port 8400):\n\
         Starts an axum HTTP server on localhost:PORT.\n\
         Routes: GET /health, POST /messages, GET /messages, POST /messages/:id/ack,\n\
-        PUT /presence/:agent, GET /presence, GET /events (SSE)\n\n\
+        PUT /presence/:agent, GET /presence, GET /events (SSE),\n\
+        POST /token-count, POST /compact-context, /channels/*, /pending-acks\n\n\
         MCP Streamable HTTP mode (--transport mcp-http, default port 8401):\n\
         Implements the MCP Streamable HTTP transport spec (2025-06-18).\n\
         Routes: POST /mcp (JSON-RPC tool dispatch), GET /mcp (capability discovery).\n\

@@ -1196,6 +1196,44 @@ pub(crate) fn global_ownership_tracker() -> &'static Mutex<OwnershipTracker> {
     TRACKER.get_or_init(|| Mutex::new(OwnershipTracker::new()))
 }
 
+/// Check Redis for existing claims on files (cross-process conflict detection).
+///
+/// Unlike the in-memory `OwnershipTracker` which only lives within a single
+/// process, this queries the Redis `bus:claims:*` hashes used by `claim_resource`.
+/// Returns conflicts where a different agent has a granted/contested claim.
+pub(crate) fn check_redis_ownership(
+    settings: &Settings,
+    agent: &str,
+    files: &[&str],
+) -> Vec<OwnershipConflict> {
+    let Ok(mut conn) = connect(settings) else {
+        return Vec::new();
+    };
+    let mut conflicts = Vec::new();
+    for file in files {
+        let key = claims_key(file);
+        let all: Vec<(String, String)> = redis::cmd("HGETALL")
+            .arg(&key)
+            .query(&mut conn)
+            .unwrap_or_default();
+        for (_agent_id, claim_json) in &all {
+            let Ok(claim) = serde_json::from_str::<OwnershipClaim>(claim_json) else {
+                continue;
+            };
+            if claim.agent != agent
+                && matches!(claim.status, ClaimStatus::Granted | ClaimStatus::Contested)
+            {
+                conflicts.push(OwnershipConflict {
+                    file: (*file).to_string(),
+                    claimed_by: claim.agent.clone(),
+                    claimed_at: claim.timestamp.clone(),
+                });
+            }
+        }
+    }
+    conflicts
+}
+
 // ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
