@@ -1760,6 +1760,228 @@ async fn http_pull_task_handler(
 }
 
 // ---------------------------------------------------------------------------
+// GET /dashboard — monitoring web dashboard
+// ---------------------------------------------------------------------------
+
+/// Render a self-contained HTML monitoring dashboard with auto-refresh.
+///
+/// The page is fully self-contained (no external CSS/JS) and refreshes every
+/// 10 seconds via a `setInterval` call that re-fetches `/presence` and
+/// `/messages` from the live server.
+///
+/// # Errors
+///
+/// Returns an internal-server error when the health spawn-blocking call fails.
+pub(crate) async fn http_dashboard_handler(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let pool = state.redis.clone();
+    let settings = Arc::clone(&state.settings);
+    let health = tokio::task::spawn_blocking(move || bus_health(&settings, Some(&pool)))
+        .await
+        .unwrap_or_else(|_| crate::redis_bus::health_error_fallback());
+
+    axum::response::Html(generate_dashboard_html(&health))
+}
+
+/// Generate the self-contained dashboard HTML string from a [`Health`] snapshot.
+///
+/// Static health values (Redis status, PG status, stream length, counts) are
+/// inlined server-side.  Agent presence and recent messages are fetched by
+/// client-side JavaScript every 10 seconds so the page stays live without a
+/// full reload.
+#[expect(
+    clippy::too_many_lines,
+    reason = "HTML template — splitting it would hurt readability without improving correctness"
+)]
+fn generate_dashboard_html(health: &crate::models::Health) -> String {
+    let redis_class = if health.ok { "ok" } else { "err" };
+    let redis_status = if health.ok { "Connected" } else { "Error" };
+    let pg_ok = health.database_ok.unwrap_or(false);
+    let pg_class = if pg_ok { "ok" } else { "err" };
+    let pg_status = if pg_ok { "Connected" } else { "Unavailable" };
+    let stream_length = health.stream_length.unwrap_or(0);
+    let pg_count = health.pg_message_count.unwrap_or(0);
+    let pg_presence = health.pg_presence_count.unwrap_or(0);
+    let writes_queued = health.pg_writes_queued.unwrap_or(0);
+    let writes_done = health.pg_writes_completed.unwrap_or(0);
+    let write_errors = health.pg_write_errors.unwrap_or(0);
+
+    format!(
+        r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Hub Dashboard</title>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#0d1117;color:#c9d1d9;padding:20px;font-size:14px}}
+h1{{color:#58a6ff;margin-bottom:16px;font-size:22px;font-weight:600}}
+.subtitle{{color:#8b949e;font-size:12px;margin-bottom:20px}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:20px}}
+.card{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px}}
+.card h2{{color:#f0883e;font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px;font-weight:600}}
+.stat{{display:flex;justify-content:space-between;align-items:center;padding:4px 0;border-bottom:1px solid #21262d}}
+.stat:last-child{{border-bottom:none}}
+.stat-label{{color:#8b949e}}
+.stat-value{{font-weight:500;font-variant-numeric:tabular-nums}}
+.ok{{color:#3fb950}}
+.err{{color:#f85149}}
+.warn{{color:#d29922}}
+.section{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:16px;margin-bottom:16px}}
+.section h2{{color:#f0883e;font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin-bottom:12px;font-weight:600;display:flex;justify-content:space-between;align-items:center}}
+.refresh-ts{{color:#8b949e;font-weight:400;font-size:10px;text-transform:none;letter-spacing:0}}
+table{{width:100%;border-collapse:collapse;font-size:13px}}
+th{{color:#58a6ff;text-align:left;padding:6px 8px;border-bottom:2px solid #30363d;font-weight:600;font-size:11px;text-transform:uppercase}}
+td{{padding:5px 8px;border-bottom:1px solid #21262d;vertical-align:top;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
+tr:last-child td{{border-bottom:none}}
+tr:hover td{{background:#1c2128}}
+.badge{{display:inline-block;padding:1px 7px;border-radius:12px;font-size:10px;font-weight:600;text-transform:uppercase}}
+.badge-online{{background:#0d4a1f;color:#3fb950;border:1px solid #238636}}
+.badge-busy{{background:#4a2c0a;color:#d29922;border:1px solid #9e6a03}}
+.badge-offline{{background:#1c1c1c;color:#8b949e;border:1px solid #30363d}}
+.badge-critical{{background:#490202;color:#f85149;border:1px solid #da3633}}
+.badge-high{{background:#4a2c0a;color:#d29922;border:1px solid #9e6a03}}
+.badge-medium{{background:#1a2f1a;color:#3fb950;border:1px solid #238636}}
+.badge-low{{background:#1c2128;color:#8b949e;border:1px solid #30363d}}
+.spinner{{display:inline-block;width:10px;height:10px;border:2px solid #30363d;border-top-color:#58a6ff;border-radius:50%;animation:spin .8s linear infinite;margin-right:6px}}
+@keyframes spin{{to{{transform:rotate(360deg)}}}}
+.empty{{color:#8b949e;text-align:center;padding:20px;font-style:italic}}
+</style>
+</head>
+<body>
+<h1>Agent Hub Dashboard</h1>
+<p class="subtitle">Live view — auto-refreshes every 10 s &nbsp;|&nbsp; Data from Redis (realtime) + PostgreSQL (durable)</p>
+
+<div class="grid">
+  <div class="card">
+    <h2>System Health</h2>
+    <div class="stat"><span class="stat-label">Redis</span><span class="stat-value {redis_class}">{redis_status}</span></div>
+    <div class="stat"><span class="stat-label">PostgreSQL</span><span class="stat-value {pg_class}">{pg_status}</span></div>
+    <div class="stat"><span class="stat-label">Redis stream length</span><span class="stat-value">{stream_length}</span></div>
+    <div class="stat"><span class="stat-label">PG messages</span><span class="stat-value">{pg_count}</span></div>
+    <div class="stat"><span class="stat-label">PG presence events</span><span class="stat-value">{pg_presence}</span></div>
+  </div>
+  <div class="card">
+    <h2>PG Write-Through</h2>
+    <div class="stat"><span class="stat-label">Writes queued</span><span class="stat-value">{writes_queued}</span></div>
+    <div class="stat"><span class="stat-label">Writes completed</span><span class="stat-value">{writes_done}</span></div>
+    <div class="stat"><span class="stat-label">Write errors</span><span class="stat-value {err_class}">{write_errors}</span></div>
+    <div class="stat"><span class="stat-label">Codec</span><span class="stat-value">{codec}</span></div>
+  </div>
+</div>
+
+<div class="section" id="agents-section">
+  <h2>Active Agents <span class="refresh-ts" id="agents-ts"></span></h2>
+  <div id="agents-body"><span class="spinner"></span>Loading&hellip;</div>
+</div>
+
+<div class="section" id="messages-section">
+  <h2>Recent Messages (last 60 min) <span class="refresh-ts" id="messages-ts"></span></h2>
+  <div id="messages-body"><span class="spinner"></span>Loading&hellip;</div>
+</div>
+
+<script>
+function ts() {{
+  return new Date().toLocaleTimeString();
+}}
+
+function statusBadge(s) {{
+  const cls = s === 'online' ? 'online' : s === 'busy' ? 'busy' : 'offline';
+  return '<span class="badge badge-' + cls + '">' + esc(s) + '</span>';
+}}
+
+function esc(s) {{
+  return String(s)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
+}}
+
+function fmtTime(iso) {{
+  if (!iso) return '';
+  return iso.substring(11, 19);
+}}
+
+async function refreshAgents() {{
+  try {{
+    const data = await fetch('/presence').then(r => r.json());
+    const list = Array.isArray(data) ? data : [];
+    let html;
+    if (list.length === 0) {{
+      html = '<p class="empty">No active agents</p>';
+    }} else {{
+      html = '<table><thead><tr><th>Agent</th><th>Status</th><th>Capabilities</th><th>Session</th></tr></thead><tbody>';
+      list.forEach(p => {{
+        const caps = (p.capabilities || []).map(esc).join(', ') || '—';
+        const sess = esc((p.session_id || '').substring(0, 16));
+        html += '<tr><td>' + esc(p.agent) + '</td><td>' + statusBadge(p.status)
+              + '</td><td>' + caps + '</td><td>' + sess + '</td></tr>';
+      }});
+      html += '</tbody></table>';
+    }}
+    document.getElementById('agents-body').innerHTML = html;
+    document.getElementById('agents-ts').textContent = 'updated ' + ts();
+  }} catch(e) {{
+    document.getElementById('agents-body').innerHTML = '<p class="empty err">Failed to load: ' + esc(String(e)) + '</p>';
+  }}
+}}
+
+async function refreshMessages() {{
+  try {{
+    const data = await fetch('/messages?since=60&limit=20').then(r => r.json());
+    const list = Array.isArray(data) ? data : [];
+    let html;
+    if (list.length === 0) {{
+      html = '<p class="empty">No messages in last 60 minutes</p>';
+    }} else {{
+      html = '<table><thead><tr><th>Time</th><th>From</th><th>To</th><th>Topic</th><th>Priority</th><th>Body</th></tr></thead><tbody>';
+      list.slice().reverse().forEach(m => {{
+        const body = esc((m.body || '').substring(0, 100));
+        const prio = m.priority || 'normal';
+        const prioCls = prio === 'critical' ? 'critical' : prio === 'high' ? 'high'
+                      : prio === 'low' ? 'low' : 'medium';
+        html += '<tr><td>' + fmtTime(m.timestamp_utc) + '</td><td>' + esc(m.from)
+              + '</td><td>' + esc(m.to) + '</td><td>' + esc(m.topic)
+              + '</td><td><span class="badge badge-' + prioCls + '">' + esc(prio) + '</span></td>'
+              + '<td title="' + esc(m.body || '') + '">' + body + '</td></tr>';
+      }});
+      html += '</tbody></table>';
+    }}
+    document.getElementById('messages-body').innerHTML = html;
+    document.getElementById('messages-ts').textContent = 'updated ' + ts();
+  }} catch(e) {{
+    document.getElementById('messages-body').innerHTML = '<p class="empty err">Failed to load: ' + esc(String(e)) + '</p>';
+  }}
+}}
+
+async function refresh() {{
+  await Promise.all([refreshAgents(), refreshMessages()]);
+}}
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>"#,
+        redis_class = redis_class,
+        redis_status = redis_status,
+        pg_class = pg_class,
+        pg_status = pg_status,
+        stream_length = stream_length,
+        pg_count = pg_count,
+        pg_presence = pg_presence,
+        writes_queued = writes_queued,
+        writes_done = writes_done,
+        write_errors = write_errors,
+        err_class = if write_errors > 0 { "err" } else { "ok" },
+        codec = health.codec.as_str(),
+    )
+}
+
+// ---------------------------------------------------------------------------
 
 pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<()> {
     let bind_host = settings.server_host.clone();
@@ -1815,6 +2037,8 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
                 .get(http_peek_tasks_handler)
                 .delete(http_pull_task_handler),
         )
+        // Monitoring dashboard
+        .route("/dashboard", get(http_dashboard_handler))
         .with_state(state);
 
     let addr = format!("{bind_host}:{port}");
@@ -1827,4 +2051,114 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         .await
         .context("HTTP server error")?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{Health, PROTOCOL_VERSION};
+
+    fn make_health(redis_ok: bool, pg_ok: bool) -> Health {
+        Health {
+            ok: redis_ok,
+            protocol_version: PROTOCOL_VERSION.to_owned(),
+            redis_url: "redis://localhost:6380/0".to_owned(),
+            database_url: Some("postgresql://localhost:5300/redis_backend".to_owned()),
+            database_ok: Some(pg_ok),
+            database_error: None,
+            storage_ready: pg_ok,
+            runtime: "rust-native".to_owned(),
+            codec: "serde_json+lz4".to_owned(),
+            stream_length: Some(42),
+            pg_message_count: Some(3805),
+            pg_presence_count: Some(881),
+            pg_writes_queued: Some(100),
+            pg_writes_completed: Some(99),
+            pg_batches: Some(20),
+            pg_write_errors: Some(1),
+        }
+    }
+
+    #[test]
+    fn dashboard_html_contains_health_values() {
+        let health = make_health(true, true);
+        let html = generate_dashboard_html(&health);
+
+        assert!(html.contains("Agent Hub Dashboard"), "title missing");
+        assert!(html.contains("Connected"), "redis status missing");
+        assert!(html.contains("42"), "stream_length missing");
+        assert!(html.contains("3805"), "pg_message_count missing");
+        assert!(html.contains("881"), "pg_presence_count missing");
+        assert!(html.contains("serde_json+lz4"), "codec missing");
+    }
+
+    #[test]
+    fn dashboard_html_shows_redis_error_class_when_down() {
+        let health = make_health(false, false);
+        let html = generate_dashboard_html(&health);
+
+        // Both Redis and PG are down — the err CSS class must appear.
+        assert!(html.contains("class=\"stat-value err\""), "err class missing");
+        assert!(html.contains("Error"), "Redis error status missing");
+        assert!(html.contains("Unavailable"), "PG unavailable status missing");
+    }
+
+    #[test]
+    fn dashboard_html_is_valid_html_structure() {
+        let health = make_health(true, true);
+        let html = generate_dashboard_html(&health);
+
+        assert!(html.starts_with("<!DOCTYPE html>"), "DOCTYPE missing");
+        assert!(html.contains("<html"), "html tag missing");
+        assert!(html.contains("</html>"), "html close tag missing");
+        assert!(html.contains("<head>"), "head tag missing");
+        assert!(html.contains("</head>"), "head close tag missing");
+        assert!(html.contains("<body>"), "body tag missing");
+        assert!(html.contains("</body>"), "body close tag missing");
+        assert!(html.contains("<script>"), "script tag missing");
+        assert!(html.contains("setInterval"), "auto-refresh JS missing");
+    }
+
+    #[test]
+    fn dashboard_html_contains_api_fetch_calls() {
+        let health = make_health(true, true);
+        let html = generate_dashboard_html(&health);
+
+        assert!(html.contains("fetch('/presence')"), "presence fetch missing");
+        assert!(html.contains("fetch('/messages?since=60&limit=20')"), "messages fetch missing");
+        assert!(html.contains("setInterval(refresh, 10000)"), "10 s interval missing");
+    }
+
+    #[test]
+    fn dashboard_html_has_no_external_resources() {
+        let health = make_health(true, true);
+        let html = generate_dashboard_html(&health);
+
+        // Must not reference any external CDN/font/script URLs.
+        assert!(!html.contains("cdn."), "unexpected CDN reference");
+        assert!(!html.contains("googleapis.com"), "unexpected Google reference");
+        assert!(!html.contains("unpkg.com"), "unexpected unpkg reference");
+        assert!(!html.contains("<link"), "unexpected external link tag");
+        assert!(!html.contains("src="), "unexpected external script src");
+    }
+
+    #[test]
+    fn dashboard_write_errors_show_err_class_when_nonzero() {
+        // make_health has pg_write_errors = 1, so err_class resolves to "err".
+        let html = generate_dashboard_html(&make_health(true, true));
+        // The format! macro must substitute the placeholder — raw placeholder must not appear.
+        assert!(!html.contains("{err_class}"), "unformatted placeholder leaked into output");
+        // With write_errors = 1 the "err" class must be present somewhere.
+        assert!(html.contains("class=\"stat-value err\""), "err class absent when write_errors > 0");
+        // Zero write errors should produce the "ok" class instead.
+        let mut healthy = make_health(true, true);
+        healthy.pg_write_errors = Some(0);
+        let html_zero = generate_dashboard_html(&healthy);
+        assert!(!html_zero.contains("class=\"stat-value err\""), "err class should be absent when write_errors = 0");
+        assert!(html_zero.contains("class=\"stat-value ok\""), "ok class should be present when write_errors = 0");
+    }
 }
