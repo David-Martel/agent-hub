@@ -187,13 +187,24 @@
 - [x] Broadcast protocol update notifications to all agents via bus
 - [x] Add AGENT_BUS_SESSION_ID to CLAUDE.md env vars table
 
+### Completed in 2026-03-20 testing session
+
+- [x] Fix SSH `pageant.conf` PowerShell prompt injection (Match exec -NoProfile)
+- [x] Redis-backed ownership conflict detection at `send` layer (cross-process)
+- [x] GitHub Actions CI/CD workflow (self-hosted runner: fmt, clippy, test, build, audit, bench)
+- [x] PG retry/circuit breaker unit tests (25 tests: state machine, retry exhaustion, metrics)
+- [x] Redis decode/compression unit tests (30 tests: LZ4, stream decode, prepare_message, schema)
+- [x] Models serialization tests (12 tests: round-trip, SmallVec tags, Health optional fields)
+- [x] CLI argument parsing tests (23 tests: all subcommands, positional args, defaults)
+- [x] MCP tool list tests (9 tests: tool count, required fields, schema validation)
+- [x] Test count: 282 → 384 (340 unit + 44 integration)
+
 ### P8 Future development plans (from sprint observations)
 
 **Architecture:**
 - [ ] Agent task queue — push-based dispatch from orchestrator to agents (agents don't self-poll)
 - [ ] `--server` client mode (CLI → HTTP → Redis) for LAN/multi-machine access
 - [ ] Agent inbox notification — MCP push when new messages arrive for an agent
-- [x] Ownership conflict detection at `send` layer (Redis-backed, cross-process)
 
 **Performance:**
 - [ ] Redis-only vs Redis+PG throughput benchmarks (criterion, end-to-end)
@@ -203,12 +214,12 @@
 **Documentation:**
 - [ ] Agent prompt template library (pre-built .md prompts with bus integration)
 - [ ] Orchestrator monitoring web dashboard (read bus, show agent status grid)
-- [ ] Video/GIF walkthrough of multi-agent session using bus
 
 **Packaging:**
 - [ ] Bootstrap script: install binary, configure Redis/PG, create service, validate
 - [ ] GitHub Release with prebuilt binaries (Windows x64)
 - [ ] `cargo install agent-bus` via crates.io
+- [ ] Self-hosted GitHub Actions runner setup documentation
 
 ## Suggested execution order
 

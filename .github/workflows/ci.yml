@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: ""
+  RUST_LOG: error
+  CARGO_HOME: T:\RustCache\cargo-home
+  CARGO_TARGET_DIR: T:\RustCache\cargo-target
+
+jobs:
+  format:
+    name: Format Check
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo fmt --all --check
+        working-directory: rust-cli
+
+  clippy:
+    name: Clippy Lint
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: rust-cli
+
+  test-unit:
+    name: Unit Tests
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --bin agent-bus -- --test-threads=4
+        working-directory: rust-cli
+
+  test-integration:
+    name: Integration Tests
+    runs-on: self-hosted
+    needs: [test-unit]
+    # Uses local Redis at localhost:6380 and PostgreSQL at localhost:5300
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1
+        working-directory: rust-cli
+        env:
+          AGENT_BUS_REDIS_URL: redis://localhost:6380/0
+          AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
+
+  build-release:
+    name: Release Build
+    runs-on: self-hosted
+    needs: [format, clippy, test-unit]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release
+        working-directory: rust-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-bus-windows-x64
+          path: T:\RustCache\cargo-target\release\agent-bus.exe
+
+  audit:
+    name: Security Audit
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo audit
+        working-directory: rust-cli
+        continue-on-error: true
+
+  bench:
+    name: Benchmarks
+    runs-on: self-hosted
+    needs: [test-unit]
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo bench --bench throughput -- --output-format bencher
+        working-directory: rust-cli
+        continue-on-error: true
