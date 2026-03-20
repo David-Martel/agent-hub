@@ -28,15 +28,18 @@ use crate::output::Encoding;
         AGENT_BUS_STARTUP_RECIPIENT  Startup message recipient [default: all]\n  \
         AGENT_BUS_STARTUP_TOPIC      Startup message topic [default: status]\n  \
         AGENT_BUS_STARTUP_BODY       Startup message body\n  \
+        AGENT_BUS_SESSION_ID         Auto-tag all messages with session:<id>\n  \
+        AGENT_BUS_CONFIG             Config file path [default: ~/.config/agent-bus/config.json]\n  \
         RUST_LOG                     Log level filter [default: error]\n\n\
         ENCODING MODES:\n  \
         compact   Machine-optimized JSON, no whitespace (default for scripts/CI)\n  \
         json      Pretty-printed JSON with 2-space indent (debugging)\n  \
         minimal   Token-minimized: short field names, defaults stripped (~50% fewer tokens)\n  \
+        toon      Token-Optimized Object Notation: @from→to #topic [tags] body (~70% fewer tokens)\n  \
         human     Table format for terminal reading (read/watch only)\n\n\
         DOCUMENTATION:\n  \
-        Protocol spec:    ~/.agents/AGENT_COORDINATION.md\n  \
-        Canonical docs:   ~/.codex/docs/AGENT_BUS.md\n  \
+        Protocol spec:    AGENT_COMMUNICATIONS.md (deployed to repo roots via journal)\n  \
+        Project docs:     C:\\codedev\\agent-bus\\AGENT_COMMUNICATIONS.md\n  \
         Rust dev guide:   ~/.agents/rust-development-guide.md\n  \
         Impl notes:       ~/.codex/tools/agent-bus-mcp/IMPLEMENTATION_NOTES.md\n\n\
         EXAMPLES:\n  \
@@ -46,7 +49,13 @@ use crate::output::Encoding;
         agent-bus watch --agent claude --history 10 --encoding human\n  \
         agent-bus ack --agent claude --message-id <UUID>\n  \
         agent-bus presence --agent claude --capability mcp --capability rust\n  \
-        agent-bus serve --transport stdio  # MCP server mode for mcp.json"
+        agent-bus claim --agent claude --resource src/main.rs --reason \"refactoring\"\n  \
+        agent-bus session-summary --session my-session-id\n  \
+        agent-bus dedup --session my-session-id --encoding json\n  \
+        agent-bus token-count --text \"estimate this text\"\n  \
+        agent-bus compact-context --max-tokens 4000 --since-minutes 60\n  \
+        agent-bus serve --transport stdio  # MCP server mode for mcp.json\n  \
+        agent-bus serve --transport http --port 8400  # HTTP REST + SSE"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
