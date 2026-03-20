@@ -10,7 +10,8 @@ use rmcp::model::{
 };
 
 use crate::redis_bus::{
-    bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence, connect,
+    bus_health, bus_list_messages, bus_list_messages_since_id, bus_list_presence, bus_post_message,
+    bus_set_presence, connect, get_inbox_cursor, inbox_cursor_key, set_inbox_cursor,
 };
 use crate::settings::Settings;
 use crate::validation::{
@@ -179,6 +180,28 @@ mod schemas {
             &["resource", "winner"],
         )
     }
+
+    pub(super) fn check_inbox() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "agent": {
+                    "type": "string",
+                    "description": "Agent ID to check inbox for"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum messages to return (default 10, max 100)",
+                    "minimum": 1,
+                    "maximum": 100
+                },
+                "reset_cursor": {
+                    "type": "boolean",
+                    "description": "When true, reset the cursor to 0-0 before reading (re-delivers all messages)"
+                }
+            }),
+            &["agent"],
+        )
+    }
 }
 
 /// MCP server handler that exposes agent-bus operations as MCP tools.
@@ -264,6 +287,13 @@ impl AgentBusMcpServer {
                 "Resolve a contested ownership claim by naming a winner and sending \
                  direct notifications to all claimants.",
                 schemas::resolve_claim(),
+            ),
+            Tool::new(
+                "check_inbox",
+                "Return new messages for an agent since the last check (cursor-based). \
+                 The cursor advances automatically so repeated calls yield only new messages. \
+                 Use reset_cursor=true to re-read from the beginning of the stream.",
+                schemas::check_inbox(),
             ),
         ]
     }
@@ -670,6 +700,43 @@ impl AgentBusMcpServer {
                 Ok(serde_json::to_value(&state)?)
             }
 
+            "check_inbox" => {
+                let agent =
+                    Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
+                let limit = Self::get_usize_or(args, "limit", 10).min(100);
+                let reset_cursor = Self::get_bool_or(args, "reset_cursor", false);
+
+                let mut conn = connect(settings)?;
+
+                // Honour reset_cursor before reading: write "0-0" so the
+                // subsequent read starts from the beginning of the stream.
+                if reset_cursor {
+                    set_inbox_cursor(&mut conn, agent, "0-0")?;
+                }
+
+                let cursor = get_inbox_cursor(&mut conn, agent)?;
+                let messages = bus_list_messages_since_id(settings, agent, &cursor, limit)?;
+
+                // Advance cursor to the stream ID of the last delivered message
+                // so the next call does not re-deliver the same entries.
+                if let Some(last_sid) = messages.last().and_then(|m| m.stream_id.as_deref()) {
+                    set_inbox_cursor(&mut conn, agent, last_sid)?;
+                }
+
+                let result = serde_json::json!({
+                    "agent": agent,
+                    "new_messages": messages.len(),
+                    "messages": messages,
+                    "cursor_was": cursor,
+                    "cursor_now": messages
+                        .last()
+                        .and_then(|m| m.stream_id.as_deref())
+                        .unwrap_or(&cursor),
+                    "inbox_cursor_key": inbox_cursor_key(agent),
+                });
+                Ok(result)
+            }
+
             other => Err(anyhow!("unknown tool: {other}")),
         }
     }
@@ -733,7 +800,11 @@ mod tests {
     #[test]
     fn tool_list_has_expected_count() {
         let tools = AgentBusMcpServer::tool_list();
-        assert_eq!(tools.len(), 13, "expected 13 MCP tools (8 bus + 5 channel)");
+        assert_eq!(
+            tools.len(),
+            14,
+            "expected 14 MCP tools (8 bus + 5 channel + 1 inbox)"
+        );
     }
 
     #[test]
@@ -755,6 +826,8 @@ mod tests {
         assert!(names.iter().any(|n| n == "read_channel"));
         assert!(names.iter().any(|n| n == "claim_resource"));
         assert!(names.iter().any(|n| n == "resolve_claim"));
+        // Inbox notification tool
+        assert!(names.iter().any(|n| n == "check_inbox"));
     }
 
     #[test]
@@ -1077,5 +1150,88 @@ mod tests {
             required_names.contains(&"winner"),
             "resolve_claim 'required' must include 'winner'"
         );
+    }
+
+    // ---------------------------------------------------------------------------
+    // check_inbox tool — schema and dispatch tests (no Redis required)
+    // ---------------------------------------------------------------------------
+
+    /// `check_inbox` schema must require `agent` and expose `limit` and
+    /// `reset_cursor` as optional properties.
+    #[test]
+    fn check_inbox_schema_requires_agent() {
+        let tools = AgentBusMcpServer::tool_list();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "check_inbox")
+            .expect("check_inbox tool must exist");
+
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("check_inbox schema must have a 'required' array");
+
+        let required_names: Vec<&str> =
+            required.iter().filter_map(|v| v.as_str()).collect();
+        assert!(
+            required_names.contains(&"agent"),
+            "check_inbox 'required' must include 'agent', got: {required_names:?}"
+        );
+        assert!(
+            !required_names.contains(&"limit"),
+            "check_inbox 'limit' must be optional"
+        );
+        assert!(
+            !required_names.contains(&"reset_cursor"),
+            "check_inbox 'reset_cursor' must be optional"
+        );
+    }
+
+    /// `check_inbox` schema must declare `limit` and `reset_cursor` properties.
+    #[test]
+    fn check_inbox_schema_optional_properties_present() {
+        let tools = AgentBusMcpServer::tool_list();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "check_inbox")
+            .expect("check_inbox tool must exist");
+
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .expect("check_inbox schema must have 'properties'");
+
+        assert!(props.contains_key("limit"), "check_inbox must have 'limit' property");
+        assert!(
+            props.contains_key("reset_cursor"),
+            "check_inbox must have 'reset_cursor' property"
+        );
+    }
+
+    /// Calling `check_inbox` without the required `agent` argument returns an error.
+    #[test]
+    fn check_inbox_requires_agent_arg() {
+        let server = AgentBusMcpServer::new(crate::settings::Settings::from_env());
+        // Provide limit but omit agent.
+        let args = serde_json::json!({"limit": 5});
+        let result = server.call_tool_sync(
+            "check_inbox",
+            args.as_object().expect("args must be object"),
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("agent"),
+            "error must mention 'agent', got: {msg}"
+        );
+    }
+
+    /// `check_inbox` cursor key format matches the expected `bus:cursor:<agent>` pattern.
+    #[test]
+    fn check_inbox_cursor_key_format() {
+        assert_eq!(inbox_cursor_key("claude"), "bus:cursor:claude");
+        assert_eq!(inbox_cursor_key("codex"), "bus:cursor:codex");
     }
 }

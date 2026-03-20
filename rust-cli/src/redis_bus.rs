@@ -1206,6 +1206,106 @@ pub(crate) fn bus_list_messages(
     )
 }
 
+/// Read messages addressed to `agent` that arrived after `since_id`.
+///
+/// Uses `XRANGE` with an exclusive lower bound (`(since_id` notation when
+/// supported, or `since_id` incremented by one millisecond as a fallback)
+/// so the entry at `since_id` itself is never returned.  This is the
+/// underlying primitive for the cursor-based `check_inbox` MCP tool.
+///
+/// Returns messages in chronological order (oldest first) and respects
+/// `limit` as a hard cap.  Only messages addressed to `agent` or broadcast
+/// to `"all"` are included.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or `XRANGE` command fails.
+pub(crate) fn bus_list_messages_since_id(
+    settings: &Settings,
+    agent: &str,
+    since_id: &str,
+    limit: usize,
+) -> Result<Vec<Message>> {
+    let mut conn = connect(settings)?;
+
+    // Build an exclusive lower bound.  Redis 6.2+ supports the `(id` syntax
+    // for exclusive ranges in XRANGE.  We rely on that here; all supported
+    // Redis versions in this project meet the 6.2 bar.
+    let exclusive_start = format!("({since_id}");
+
+    let raw: Vec<redis::Value> = redis::cmd("XRANGE")
+        .arg(&settings.stream_key)
+        .arg(&exclusive_start)
+        .arg("+")
+        .arg("COUNT")
+        // Overfetch by the broadcast-filter factor so we still hit `limit`
+        // after dropping messages not addressed to this agent.
+        .arg((limit * XREVRANGE_OVERFETCH_FACTOR).max(XREVRANGE_MIN_FETCH))
+        .query(&mut conn)
+        .context("XRANGE since_id failed")?;
+
+    let mut messages: Vec<Message> = Vec::new();
+    for (stream_id, fields) in parse_xrange_result(&raw) {
+        let mut msg = decode_stream_entry(&fields);
+
+        // Include only messages addressed to this agent or broadcast.
+        let to_matches = msg.to == agent;
+        let broadcast_matches = msg.to == "all";
+        if !to_matches && !broadcast_matches {
+            continue;
+        }
+
+        msg.stream_id = Some(stream_id);
+        messages.push(msg);
+        if messages.len() >= limit {
+            break;
+        }
+    }
+
+    Ok(messages)
+}
+
+/// Read or initialise the inbox cursor for `agent` from Redis.
+///
+/// The cursor is the stream ID of the last message the agent acknowledged
+/// via `check_inbox`.  A missing key means the agent has never polled, so
+/// we return `"0-0"` (the Redis stream origin) to deliver all pending
+/// messages on the first call.
+///
+/// # Errors
+///
+/// Returns an error if the Redis `GET` command fails.
+pub(crate) fn get_inbox_cursor(conn: &mut redis::Connection, agent: &str) -> Result<String> {
+    let key = inbox_cursor_key(agent);
+    let val: Option<String> = redis::Commands::get(conn, &key).context("GET inbox cursor")?;
+    Ok(val.unwrap_or_else(|| "0-0".to_owned()))
+}
+
+/// Advance the inbox cursor for `agent` to `stream_id`.
+///
+/// The cursor is stored without a TTL so it persists across restarts.
+/// Callers should only advance after successfully delivering the messages.
+///
+/// # Errors
+///
+/// Returns an error if the Redis `SET` command fails.
+pub(crate) fn set_inbox_cursor(
+    conn: &mut redis::Connection,
+    agent: &str,
+    stream_id: &str,
+) -> Result<()> {
+    let key = inbox_cursor_key(agent);
+    let _: () = redis::Commands::set(conn, &key, stream_id).context("SET inbox cursor")?;
+    Ok(())
+}
+
+/// Redis key for the inbox cursor of `agent`.
+///
+/// Format: `bus:cursor:<agent_id>`
+pub(crate) fn inbox_cursor_key(agent: &str) -> String {
+    format!("bus:cursor:{agent}")
+}
+
 /// Set presence for an agent.
 ///
 /// When `pg_writer` is `Some`, the presence event is enqueued for
@@ -1968,5 +2068,30 @@ mod tests {
         assert_eq!(pm.message.priority, "normal");
         assert!(pm.message.request_ack);
         assert_eq!(pm.message.reply_to, Some("charlie".to_owned()));
+    }
+
+    // ---------------------------------------------------------------------------
+    // check_inbox cursor helpers (unit tests — no Redis required)
+    // ---------------------------------------------------------------------------
+
+    #[test]
+    fn inbox_cursor_key_format() {
+        assert_eq!(inbox_cursor_key("claude"), "bus:cursor:claude");
+        assert_eq!(inbox_cursor_key("codex"), "bus:cursor:codex");
+        assert_eq!(inbox_cursor_key("my-agent"), "bus:cursor:my-agent");
+    }
+
+    #[test]
+    fn inbox_cursor_key_empty_agent() {
+        // Edge case: empty agent ID produces a valid (though unusual) key.
+        assert_eq!(inbox_cursor_key(""), "bus:cursor:");
+    }
+
+    #[test]
+    fn inbox_cursor_key_no_namespace_collision() {
+        // Different agents must produce distinct cursor keys.
+        let k1 = inbox_cursor_key("alpha");
+        let k2 = inbox_cursor_key("beta");
+        assert_ne!(k1, k2);
     }
 }
