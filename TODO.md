@@ -62,10 +62,11 @@
 
 ### P5 Interop and packaging
 - [x] Add Windows service health/restart troubleshooting docs to `README.md`.
+- [x] MessagePack encoding added (`encode_msgpack`/`decode_msgpack` in output.rs).
+- [x] LZ4 compression for bodies >512 bytes (auto-applied, transparent decompression).
 - [ ] Package the native binary and scripts for reproducible machine bootstrap.
 - [ ] Add optional WinSW support if NSSM behavior proves insufficient.
 - [ ] Add A2A adapter mapping once the core schema settles.
-- [ ] Revisit MessagePack/LZ4 only after runtime and storage shape stop moving.
 
 ### Completed in 2026-03-15 session
 
@@ -114,8 +115,10 @@
 - [x] Orchestration patterns (parallel analysis, chained tasks, cross-repo, session recovery)
 - [x] Ownership claims as mandatory protocol step (emergent from finance-warehouse agents)
 - [x] Polling strengthened as numbered step in Quick Start
-- [ ] Per-repo AGENT_COMMUNICATIONS.md auto-deploy (create on first `journal` export)
-- [ ] MCP tool description improvements (include schema examples in tool descriptions)
+- [x] Per-repo AGENT_COMMUNICATIONS.md auto-deploy (journal.rs deploys on first export)
+- [x] MCP tool descriptions include protocol instructions in server `instructions` field
+- [x] AGENT_COORDINATION.md updated for v0.4+ protocol in ~/.claude/ and ~/.codex/
+- [x] CLI --help expanded with TOON encoding, AGENT_BUS_SESSION_ID, new command examples
 - [ ] Agent prompt template library (pre-built prompts for common agent types with bus instructions)
 - [ ] Orchestrator monitoring dashboard (read bus, show agent status, findings by severity)
 
@@ -159,6 +162,47 @@
 
 **Message rate:** 0.7 msgs/min across 6 agents. Acceptable but could batch findings.
 **Session duration:** 27 min for 18 messages (6 agents, 4 ownership + 9 status + 5 completions)
+
+### Completed in 2026-03-20 session (post-sprint hardening)
+
+- [x] Deploy v0.3+ binary with all sprint features to ~/bin/agent-bus.exe
+- [x] Restart AgentHub service with new binary, verify health (PG metrics visible)
+- [x] Validate all new HTTP endpoints: /token-count, /compact-context
+- [x] Validate new CLI commands: token-count, compact-context, session-summary, dedup
+- [x] Test claim/resolve lifecycle: granted → contested → resolved
+- [x] Test direct channel message round-trip
+- [x] Test session ID auto-tagging via AGENT_BUS_SESSION_ID env var
+- [x] Test all 5 encoding modes (json, compact, minimal, toon, human)
+- [x] Update Claude mcp.json: description, version 2.11.0, changelog
+- [x] Update AGENT_COORDINATION.md in ~/.claude/ and ~/.codex/ (v0.4+ protocol)
+- [x] Update AGENT_BUS.md in ~/.codex/docs/
+- [x] Update DEPRECATION.md: Python fully deprecated
+- [x] Add AGENT_BUS_SESSION_ID + AGENT_BUS_CONFIG to CLI --help env vars
+- [x] Add TOON to CLI --help ENCODING MODES
+- [x] Expand CLI --help EXAMPLES with new commands
+
+### P8 Future development plans (from sprint observations)
+
+**Architecture:**
+- [ ] Agent task queue — push-based dispatch from orchestrator to agents (agents don't self-poll)
+- [ ] `--server` client mode (CLI → HTTP → Redis) for LAN/multi-machine access
+- [ ] Agent inbox notification — MCP push when new messages arrive for an agent
+- [ ] Ownership conflict detection at `send` layer (currently only in `claim` system)
+
+**Performance:**
+- [ ] Redis-only vs Redis+PG throughput benchmarks (criterion, end-to-end)
+- [ ] PG query plan review with real message volumes (3500+ messages now available)
+- [ ] Connection pool tuning based on actual load patterns
+
+**Documentation:**
+- [ ] Agent prompt template library (pre-built .md prompts with bus integration)
+- [ ] Orchestrator monitoring web dashboard (read bus, show agent status grid)
+- [ ] Video/GIF walkthrough of multi-agent session using bus
+
+**Packaging:**
+- [ ] Bootstrap script: install binary, configure Redis/PG, create service, validate
+- [ ] GitHub Release with prebuilt binaries (Windows x64)
+- [ ] `cargo install agent-bus` via crates.io
 
 ## Suggested execution order
 
