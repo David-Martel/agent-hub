@@ -26,7 +26,7 @@ use crate::redis_bus::{
 };
 use crate::settings::Settings;
 use crate::validation::{
-    auto_fit_schema, infer_schema_from_topic, validate_message_schema, validate_priority,
+    auto_fit_schema, enforce_schema_for_transport, validate_message_schema, validate_priority,
 };
 
 /// Per-agent live SSE subscriber channels.
@@ -210,7 +210,7 @@ pub(crate) async fn http_send_handler(
         return Err(bad_request("body must not be empty"));
     }
     validate_priority(&req.priority).map_err(|e| bad_request(format!("{e:#}")))?;
-    let effective_schema = infer_schema_from_topic(&topic, req.schema.as_deref());
+    let effective_schema = enforce_schema_for_transport("http", req.schema.as_deref(), &topic);
     let fitted_body = auto_fit_schema(&body_text, effective_schema);
     validate_message_schema(&fitted_body, effective_schema)
         .map_err(|e| bad_request(format!("schema validation failed: {e:#}")))?;
@@ -551,17 +551,17 @@ async fn http_sse_handler(
             };
 
             // Apply agent filter when one was provided.
-            if let Some(ref filter) = agent_filter {
-                if let Ok(event_val) = serde_json::from_str::<serde_json::Value>(&payload) {
-                    let recipient = event_val
-                        .pointer("/message/to")
-                        .or_else(|| event_val.pointer("/presence/agent"))
-                        .and_then(|v| v.as_str());
-                    let matches = recipient == Some(filter.as_str())
-                        || (include_broadcast && recipient == Some("all"));
-                    if !matches {
-                        continue;
-                    }
+            if let Some(ref filter) = agent_filter
+                && let Ok(event_val) = serde_json::from_str::<serde_json::Value>(&payload)
+            {
+                let recipient = event_val
+                    .pointer("/message/to")
+                    .or_else(|| event_val.pointer("/presence/agent"))
+                    .and_then(|v| v.as_str());
+                let matches = recipient == Some(filter.as_str())
+                    || (include_broadcast && recipient == Some("all"));
+                if !matches {
+                    continue;
                 }
             }
 
@@ -1023,7 +1023,8 @@ pub(crate) async fn http_batch_send_handler(
             return Err(bad_request("body must not be empty"));
         }
         validate_priority(&m.priority).map_err(|e| bad_request(format!("{e:#}")))?;
-        let effective_schema = infer_schema_from_topic(&topic, m.schema.as_deref());
+        let effective_schema =
+            enforce_schema_for_transport("http", m.schema.as_deref(), &topic);
         let fitted_body = auto_fit_schema(&body_text, effective_schema);
         validate_message_schema(&fitted_body, effective_schema)
             .map_err(|e| bad_request(format!("schema validation failed: {e:#}")))?;

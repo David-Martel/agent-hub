@@ -25,9 +25,13 @@
 //! // let msgs = read_direct(&settings, "claude", "codex", 50).unwrap();
 //! ```
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use anyhow::{Context as _, Result, bail};
 use chrono::Utc;
 use redis::Commands as _;
+use regex_lite::Regex;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -800,18 +804,18 @@ fn mark_all_contested(conn: &mut redis::Connection, key: &str, resource: &str) -
         .context("HGETALL claims for contest failed")?;
 
     for (agent_id, existing_json) in &all {
-        if let Ok(mut existing_claim) = serde_json::from_str::<OwnershipClaim>(existing_json) {
-            if existing_claim.status != ClaimStatus::Contested {
-                existing_claim.status = ClaimStatus::Contested;
-                resource.clone_into(&mut existing_claim.resource);
-                if let Ok(updated_json) = serde_json::to_string(&existing_claim) {
-                    let _: () = redis::cmd("HSET")
-                        .arg(key)
-                        .arg(agent_id.as_str())
-                        .arg(&updated_json)
-                        .query(conn)
-                        .context("HSET update contested claim")?;
-                }
+        if let Ok(mut existing_claim) = serde_json::from_str::<OwnershipClaim>(existing_json)
+            && existing_claim.status != ClaimStatus::Contested
+        {
+            existing_claim.status = ClaimStatus::Contested;
+            resource.clone_into(&mut existing_claim.resource);
+            if let Ok(updated_json) = serde_json::to_string(&existing_claim) {
+                let _: () = redis::cmd("HSET")
+                    .arg(key)
+                    .arg(agent_id.as_str())
+                    .arg(&updated_json)
+                    .query(conn)
+                    .context("HSET update contested claim")?;
             }
         }
     }
@@ -860,15 +864,11 @@ pub(crate) fn list_claims(
                 continue;
             };
 
-            if let Some(rf) = resource_filter {
-                if claim.resource != rf {
-                    continue;
-                }
+            if resource_filter.is_some_and(|rf| claim.resource != rf) {
+                continue;
             }
-            if let Some(sf) = status_filter {
-                if &claim.status != sf {
-                    continue;
-                }
+            if status_filter.is_some_and(|sf| &claim.status != sf) {
+                continue;
             }
             claims.push(claim);
         }
@@ -1090,6 +1090,113 @@ pub(crate) fn channel_summary(settings: &Settings) -> Result<ChannelSummary> {
 }
 
 // ---------------------------------------------------------------------------
+// In-process ownership conflict detection
+// ---------------------------------------------------------------------------
+
+/// A detected conflict between two agents claiming the same file.
+#[derive(Debug, Clone)]
+pub(crate) struct OwnershipConflict {
+    /// The file path that is contested.
+    pub(crate) file: String,
+    /// The agent that currently holds the claim.
+    pub(crate) claimed_by: String,
+    /// ISO-8601 UTC timestamp when the existing claim was recorded.
+    pub(crate) claimed_at: String,
+}
+
+/// In-process ownership tracker that records which agent last claimed each file.
+///
+/// This is a lightweight, non-Redis complement to the Redis-backed [`claim_resource`]
+/// arbitration.  It detects conflicts for `topic="ownership"` messages posted via
+/// [`crate::redis_bus::bus_post_message`] without a round-trip to Redis.
+#[derive(Debug)]
+pub(crate) struct OwnershipTracker {
+    /// `file_path → (agent_id, iso8601_timestamp)`
+    claims: HashMap<String, (String, String)>,
+}
+
+impl OwnershipTracker {
+    /// Create an empty tracker.
+    pub(crate) fn new() -> Self {
+        Self {
+            claims: HashMap::new(),
+        }
+    }
+
+    /// Record `agent` as the owner of each file in `files` with the current UTC timestamp.
+    ///
+    /// Any previous claim for a file is silently overwritten.  Call [`check_conflicts`]
+    /// first if you want to surface conflicts before recording.
+    pub(crate) fn record_claim(&mut self, agent: &str, files: &[&str]) {
+        let ts = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
+        for &file in files {
+            self.claims
+                .insert(file.to_owned(), (agent.to_owned(), ts.clone()));
+        }
+    }
+
+    /// Return conflicts: files in `files` that are already owned by a *different* agent.
+    ///
+    /// A file claimed by the same `agent` is not a conflict (idempotent re-claim).
+    pub(crate) fn check_conflicts(&self, agent: &str, files: &[&str]) -> Vec<OwnershipConflict> {
+        files
+            .iter()
+            .filter_map(|&file| {
+                let (owner, ts) = self.claims.get(file)?;
+                if owner == agent {
+                    None
+                } else {
+                    Some(OwnershipConflict {
+                        file: file.to_owned(),
+                        claimed_by: owner.clone(),
+                        claimed_at: ts.clone(),
+                    })
+                }
+            })
+            .collect()
+    }
+}
+
+/// Regex that matches file-path-like tokens: must contain `/` or `\` and have a `.ext`.
+///
+/// Examples matched: `src/foo.rs`, `C:\Users\dave\file.txt`, `./config.json`
+fn file_path_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        // Match tokens that contain a slash (forward or back) and a dot extension.
+        Regex::new(r#"[^\s"'`,;]+[/\\][^\s"'`,;]*\.[a-zA-Z0-9]+"#).expect("valid regex")
+    })
+}
+
+/// Extract file-path-like tokens from a free-form message body.
+///
+/// A token is considered a file path when it contains at least one `/` or `\`
+/// and ends with a `.ext` suffix.  Surrounding punctuation (quotes, backticks,
+/// commas, semicolons) is stripped from matches.
+///
+/// # Examples
+///
+/// ```
+/// use agent_bus::channels::extract_claimed_files;
+/// let paths = extract_claimed_files("editing src/main.rs and tests/lib.rs now");
+/// assert_eq!(paths, vec!["src/main.rs", "tests/lib.rs"]);
+/// ```
+pub(crate) fn extract_claimed_files(body: &str) -> Vec<String> {
+    file_path_regex()
+        .find_iter(body)
+        .map(|m| m.as_str().to_owned())
+        .collect()
+}
+
+/// Global singleton `OwnershipTracker` protected by a `Mutex`.
+///
+/// Initialised lazily on first access via [`OnceLock`].
+pub(crate) fn global_ownership_tracker() -> &'static Mutex<OwnershipTracker> {
+    static TRACKER: OnceLock<Mutex<OwnershipTracker>> = OnceLock::new();
+    TRACKER.get_or_init(|| Mutex::new(OwnershipTracker::new()))
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -1097,6 +1204,86 @@ pub(crate) fn channel_summary(settings: &Settings) -> Result<ChannelSummary> {
 #[allow(clippy::useless_vec)]
 mod tests {
     use super::*;
+
+    // -----------------------------------------------------------------------
+    // OwnershipTracker / extract_claimed_files tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn extract_claimed_files_parses_multiple_paths() {
+        let body = "I am editing src/main.rs and also tests/integration_test.rs today";
+        let files = extract_claimed_files(body);
+        assert!(files.contains(&"src/main.rs".to_owned()), "expected src/main.rs");
+        assert!(
+            files.contains(&"tests/integration_test.rs".to_owned()),
+            "expected tests/integration_test.rs"
+        );
+        assert_eq!(files.len(), 2);
+    }
+
+    #[test]
+    fn extract_claimed_files_parses_single_path() {
+        let body = "claiming rust-cli/src/channels.rs";
+        let files = extract_claimed_files(body);
+        assert_eq!(files, vec!["rust-cli/src/channels.rs".to_owned()]);
+    }
+
+    #[test]
+    fn extract_claimed_files_returns_empty_for_plain_body() {
+        let files = extract_claimed_files("no files here, just plain text");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn extract_claimed_files_handles_backslash_paths() {
+        let body = r"editing C:\projects\agent-bus\src\main.rs";
+        let files = extract_claimed_files(body);
+        assert_eq!(files.len(), 1);
+        assert!(files[0].contains("main.rs"));
+    }
+
+    #[test]
+    fn ownership_tracker_conflict_detected_different_agent() {
+        let mut tracker = OwnershipTracker::new();
+        tracker.record_claim("alice", &["src/foo.rs", "src/bar.rs"]);
+
+        let conflicts = tracker.check_conflicts("bob", &["src/foo.rs"]);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].file, "src/foo.rs");
+        assert_eq!(conflicts[0].claimed_by, "alice");
+        assert!(!conflicts[0].claimed_at.is_empty());
+    }
+
+    #[test]
+    fn ownership_tracker_no_conflict_same_agent() {
+        let mut tracker = OwnershipTracker::new();
+        tracker.record_claim("alice", &["src/foo.rs"]);
+
+        let conflicts = tracker.check_conflicts("alice", &["src/foo.rs"]);
+        assert!(conflicts.is_empty(), "same agent re-claiming should not conflict");
+    }
+
+    #[test]
+    fn ownership_tracker_no_conflict_disjoint_files() {
+        let mut tracker = OwnershipTracker::new();
+        tracker.record_claim("alice", &["src/foo.rs"]);
+
+        let conflicts = tracker.check_conflicts("bob", &["src/bar.rs"]);
+        assert!(conflicts.is_empty(), "non-overlapping files should not conflict");
+    }
+
+    #[test]
+    fn ownership_tracker_record_claim_overwrites_previous_owner() {
+        let mut tracker = OwnershipTracker::new();
+        tracker.record_claim("alice", &["src/foo.rs"]);
+        // bob re-claims (after no conflict check in this test)
+        tracker.record_claim("bob", &["src/foo.rs"]);
+
+        // Now alice would be the conflicting party
+        let conflicts = tracker.check_conflicts("alice", &["src/foo.rs"]);
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].claimed_by, "bob");
+    }
 
     // -----------------------------------------------------------------------
     // Helpers
