@@ -327,6 +327,10 @@ mod tests {
             stream_length: Some(561),
             pg_message_count: Some(492),
             pg_presence_count: None,
+            pg_writes_queued: None,
+            pg_writes_completed: None,
+            pg_batches: None,
+            pg_write_errors: None,
         };
         let toon = format_health_toon(&h);
         assert_eq!(toon, "ok=true r=561 p=492 v=1.0");
@@ -347,6 +351,10 @@ mod tests {
             stream_length: None,
             pg_message_count: None,
             pg_presence_count: None,
+            pg_writes_queued: None,
+            pg_writes_completed: None,
+            pg_batches: None,
+            pg_write_errors: None,
         };
         let toon = format_health_toon(&h);
         assert_eq!(toon, "ok=false r=? p=? v=1.0");

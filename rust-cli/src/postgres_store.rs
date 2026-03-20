@@ -16,6 +16,7 @@
 //! whichever comes first.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -36,6 +37,52 @@ const PG_RETRY_BASE_MS: u64 = 50;
 
 /// How long (in seconds) the circuit breaker suppresses retry attempts after a confirmed outage.
 const PG_CIRCUIT_BREAKER_SECONDS: u64 = 60;
+
+// ---------------------------------------------------------------------------
+// Write-through metrics
+// ---------------------------------------------------------------------------
+
+/// Monotonic counters for the async `PostgreSQL` write-through path.
+///
+/// All fields are `AtomicU64` so they can be read from any thread without locking.
+/// The `Relaxed` ordering is sufficient — these are best-effort gauges, not
+/// synchronisation primitives.
+///
+/// Retrieve the process-lifetime singleton via [`pg_metrics`].
+pub(crate) struct PgWriteMetrics {
+    /// Total [`PgWriteRequest::Message`] and [`PgWriteRequest::Presence`] items
+    /// enqueued via [`PgWriter::send_message`] / [`PgWriter::send_presence`].
+    pub(crate) messages_queued: AtomicU64,
+    /// Total items successfully written to `PostgreSQL` (one per row persisted).
+    pub(crate) messages_written: AtomicU64,
+    /// Total flush cycles completed by the background task.
+    pub(crate) batches_flushed: AtomicU64,
+    /// Total write failures (one per failed `persist_*` call inside a batch).
+    pub(crate) write_errors: AtomicU64,
+}
+
+impl PgWriteMetrics {
+    const fn new() -> Self {
+        Self {
+            messages_queued: AtomicU64::new(0),
+            messages_written: AtomicU64::new(0),
+            batches_flushed: AtomicU64::new(0),
+            write_errors: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Returns the process-lifetime [`PgWriteMetrics`] singleton.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// let queued = pg_metrics().messages_queued.load(Ordering::Relaxed);
+/// ```
+pub(crate) fn pg_metrics() -> &'static PgWriteMetrics {
+    static METRICS: PgWriteMetrics = PgWriteMetrics::new();
+    &METRICS
+}
 
 /// Returns the singleton that records the last instant `PostgreSQL` was confirmed unreachable.
 fn pg_down_since() -> &'static Mutex<Option<Instant>> {
@@ -759,6 +806,48 @@ pub(crate) fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<Strin
 }
 
 // ---------------------------------------------------------------------------
+// Proactive circuit-breaker health monitor
+// ---------------------------------------------------------------------------
+
+/// Spawn a background OS thread that proactively resets the circuit breaker.
+///
+/// Every `interval_secs` seconds the thread wakes up. When the circuit breaker
+/// is open (i.e. `PostgreSQL` was recently marked down), it calls
+/// [`probe_postgres`] to test real connectivity. On a successful probe it calls
+/// [`mark_pg_up`] so subsequent write attempts are no longer suppressed.
+///
+/// The thread is named `"pg-health-monitor"` and is a daemon thread — it exits
+/// automatically when the process terminates.
+///
+/// # Examples
+///
+/// ```rust,ignore
+/// spawn_pg_health_monitor(settings.clone(), 30);
+/// ```
+pub(crate) fn spawn_pg_health_monitor(settings: Settings, interval_secs: u64) {
+    std::thread::Builder::new()
+        .name("pg-health-monitor".to_owned())
+        .spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(interval_secs));
+            if is_pg_circuit_open() {
+                tracing::info!(
+                    "pg-health-monitor: circuit open — probing PostgreSQL connectivity"
+                );
+                let (ok, _err, _ready) = probe_postgres(&settings);
+                if ok == Some(true) {
+                    mark_pg_up();
+                    tracing::info!(
+                        "pg-health-monitor: probe succeeded — circuit closed, writes resumed"
+                    );
+                } else {
+                    tracing::info!("pg-health-monitor: probe failed — circuit remains open");
+                }
+            }
+        })
+        .expect("pg-health-monitor thread spawn failed");
+}
+
+// ---------------------------------------------------------------------------
 // Async write-through: PgWriter
 // ---------------------------------------------------------------------------
 
@@ -802,10 +891,13 @@ pub(crate) struct PgWriter {
 }
 
 /// Maximum number of requests to process in a single flush cycle.
-const PG_BATCH_SIZE: usize = 10;
+const PG_BATCH_SIZE: usize = 20;
+
+/// How long (in milliseconds) the flush timer waits between cycles.
+const PG_BATCH_TIMEOUT_MS: u64 = 100;
 
 /// How long to wait between flush cycles.
-const PG_FLUSH_INTERVAL: Duration = Duration::from_millis(100);
+const PG_FLUSH_INTERVAL: Duration = Duration::from_millis(PG_BATCH_TIMEOUT_MS);
 
 impl PgWriter {
     /// Spawn the background flush task and return a `PgWriter` handle plus a
@@ -839,6 +931,9 @@ impl PgWriter {
     /// Drops the write silently if the background task has already exited.
     pub(crate) fn send_message(&self, msg: &Message) {
         let _ = self.tx.send(PgWriteRequest::Message(Box::new(msg.clone())));
+        pg_metrics()
+            .messages_queued
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Enqueue a presence event for asynchronous `PostgreSQL` persistence.
@@ -848,6 +943,9 @@ impl PgWriter {
         let _ = self
             .tx
             .send(PgWriteRequest::Presence(Box::new(presence.clone())));
+        pg_metrics()
+            .messages_queued
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -906,23 +1004,34 @@ async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWr
 ///
 /// Each write is attempted independently; failures are logged as warnings but
 /// do not prevent remaining items from being processed.
+///
+/// Increments [`PgWriteMetrics`] counters for written items, errors, and
+/// completed batch cycles.
 fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>) {
+    let metrics = pg_metrics();
     for req in batch.drain(..) {
         match req {
             PgWriteRequest::Message(msg) => {
                 if let Err(error) = persist_message_postgres(settings, &msg) {
                     tracing::warn!("PgWriter: failed to persist message: {error:#}");
+                    metrics.write_errors.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    metrics.messages_written.fetch_add(1, Ordering::Relaxed);
                 }
             }
             PgWriteRequest::Presence(presence) => {
                 if let Err(error) = persist_presence_postgres(settings, &presence) {
                     tracing::warn!("PgWriter: failed to persist presence: {error:#}");
+                    metrics.write_errors.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    metrics.messages_written.fetch_add(1, Ordering::Relaxed);
                 }
             }
             // Flush/Shutdown are control signals, not data — nothing to persist.
             PgWriteRequest::Flush | PgWriteRequest::Shutdown => {}
         }
     }
+    metrics.batches_flushed.fetch_add(1, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -1056,5 +1165,152 @@ mod tests {
         };
         writer.send_message(&msg);
         writer2.send_message(&msg);
+    }
+
+    // -----------------------------------------------------------------------
+    // Circuit breaker state transition tests (Task 2.1 — TDD)
+    // -----------------------------------------------------------------------
+
+    /// After `mark_pg_down` the circuit is open; `mark_pg_up` closes it.
+    #[test]
+    fn circuit_breaker_open_then_closed() {
+        // Reset to a known state first.
+        mark_pg_up();
+        assert!(
+            !is_pg_circuit_open(),
+            "circuit must start closed after mark_pg_up"
+        );
+
+        mark_pg_down();
+        assert!(
+            is_pg_circuit_open(),
+            "circuit must be open immediately after mark_pg_down"
+        );
+
+        mark_pg_up();
+        assert!(
+            !is_pg_circuit_open(),
+            "circuit must be closed again after mark_pg_up"
+        );
+    }
+
+    /// When the circuit is open, `with_pg_retry` must not invoke the operation.
+    #[test]
+    fn circuit_breaker_suppresses_retries_when_open() {
+        mark_pg_down();
+        assert!(is_pg_circuit_open());
+
+        let mut calls = 0_u32;
+        let result: Result<()> = with_pg_retry(|| {
+            calls += 1;
+            Ok(())
+        });
+        assert!(result.is_err(), "expected circuit-open error");
+        assert_eq!(calls, 0, "closure must not be called while circuit is open");
+
+        // Restore clean state for other tests.
+        mark_pg_up();
+    }
+
+    /// When the circuit is closed, `with_pg_retry` calls the operation normally.
+    #[test]
+    fn circuit_breaker_allows_retries_when_closed() {
+        mark_pg_up();
+        assert!(!is_pg_circuit_open());
+
+        let mut calls = 0_u32;
+        let result: Result<()> = with_pg_retry(|| {
+            calls += 1;
+            Ok(())
+        });
+        assert!(result.is_ok(), "expected success when circuit is closed");
+        assert_eq!(calls, 1, "closure must be called exactly once on first success");
+    }
+
+    // -----------------------------------------------------------------------
+    // PgWriteMetrics tests (Task 2.3 — TDD)
+    // -----------------------------------------------------------------------
+
+    /// `pg_metrics()` must return the same static instance on every call.
+    #[test]
+    fn pg_metrics_returns_same_instance() {
+        let a = pg_metrics() as *const PgWriteMetrics;
+        let b = pg_metrics() as *const PgWriteMetrics;
+        assert_eq!(a, b, "pg_metrics() must be a stable singleton");
+    }
+
+    /// `send_message` increments `messages_queued`.
+    #[tokio::test]
+    async fn pg_metrics_messages_queued_incremented_on_send() {
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+        let (writer, _handle) = PgWriter::spawn(settings);
+
+        let before = pg_metrics().messages_queued.load(Ordering::Relaxed);
+        let msg = crate::models::Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp_utc: "2026-01-01T00:00:00.000000Z".to_owned(),
+            protocol_version: "1.0".to_owned(),
+            from: "metrics-test".to_owned(),
+            to: "all".to_owned(),
+            topic: "test".to_owned(),
+            body: "metrics probe".to_owned(),
+            thread_id: None,
+            tags: vec![].into(),
+            priority: "normal".to_owned(),
+            request_ack: false,
+            reply_to: None,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+            stream_id: None,
+        };
+        writer.send_message(&msg);
+        let after = pg_metrics().messages_queued.load(Ordering::Relaxed);
+        assert_eq!(
+            after,
+            before + 1,
+            "messages_queued must increment by 1 after send_message"
+        );
+    }
+
+    /// `send_presence` also increments `messages_queued`.
+    #[tokio::test]
+    async fn pg_metrics_presence_queued_incremented_on_send() {
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+        let (writer, _handle) = PgWriter::spawn(settings);
+
+        let before = pg_metrics().messages_queued.load(Ordering::Relaxed);
+        let presence = crate::models::Presence {
+            agent: "metrics-test".to_owned(),
+            status: "online".to_owned(),
+            protocol_version: "1.0".to_owned(),
+            timestamp_utc: "2026-01-01T00:00:00.000000Z".to_owned(),
+            session_id: uuid::Uuid::new_v4().to_string(),
+            capabilities: vec![],
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+            ttl_seconds: 300,
+        };
+        writer.send_presence(&presence);
+        let after = pg_metrics().messages_queued.load(Ordering::Relaxed);
+        assert_eq!(
+            after,
+            before + 1,
+            "messages_queued must increment by 1 after send_presence"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // spawn_pg_health_monitor smoke test (Task 2.1)
+    // -----------------------------------------------------------------------
+
+    /// `spawn_pg_health_monitor` must not panic and the thread must be spawnable.
+    /// We use a very short interval so the test is not slow.
+    #[test]
+    fn spawn_pg_health_monitor_does_not_panic() {
+        let mut settings = Settings::from_env();
+        settings.database_url = None; // No PG — monitor will see closed circuit and sleep.
+        // A 1-second interval is long enough to avoid multiple cycles in CI.
+        spawn_pg_health_monitor(settings, 60);
+        // If we reach here, the thread was spawned without panicking.
     }
 }

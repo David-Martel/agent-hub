@@ -19,7 +19,7 @@ use crate::models::{
 };
 use crate::postgres_store::{
     PgWriter, count_both_postgres, list_messages_postgres, persist_presence_postgres,
-    probe_postgres,
+    pg_metrics, probe_postgres,
 };
 use crate::settings::{Settings, redact_url};
 use crate::validation::infer_schema_from_topic;
@@ -1242,6 +1242,20 @@ pub(crate) fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Healt
     // Single round-trip for both PG counts instead of two separate queries.
     let (pg_message_count, pg_presence_count) = count_both_postgres(settings);
 
+    // Populate write-through metrics when PG is configured.
+    let (pg_writes_queued, pg_writes_completed, pg_batches, pg_write_errors) =
+        if settings.database_url.is_some() {
+            let m = pg_metrics();
+            (
+                Some(m.messages_queued.load(Ordering::Relaxed)),
+                Some(m.messages_written.load(Ordering::Relaxed)),
+                Some(m.batches_flushed.load(Ordering::Relaxed)),
+                Some(m.write_errors.load(Ordering::Relaxed)),
+            )
+        } else {
+            (None, None, None, None)
+        };
+
     Health {
         ok,
         protocol_version: PROTOCOL_VERSION.to_owned(),
@@ -1255,6 +1269,10 @@ pub(crate) fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Healt
         stream_length,
         pg_message_count,
         pg_presence_count,
+        pg_writes_queued,
+        pg_writes_completed,
+        pg_batches,
+        pg_write_errors,
     }
 }
 

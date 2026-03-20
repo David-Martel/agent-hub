@@ -95,4 +95,16 @@ pub(crate) struct Health {
     pub(crate) pg_message_count: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) pg_presence_count: Option<i64>,
+    /// Total write requests enqueued to the async `PgWriter` since process start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) pg_writes_queued: Option<u64>,
+    /// Total write requests successfully persisted to `PostgreSQL` since process start.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) pg_writes_completed: Option<u64>,
+    /// Total flush batch cycles completed by the background `PgWriter` task.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) pg_batches: Option<u64>,
+    /// Total write failures logged by the background `PgWriter` task.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) pg_write_errors: Option<u64>,
 }

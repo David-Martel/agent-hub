@@ -152,6 +152,12 @@ async fn main() -> Result<()> {
     let (writer, pg_handle) = PgWriter::spawn(settings.clone());
     let _ = PG_WRITER.set(writer);
 
+    // Proactively reset the circuit breaker every 30 s so that a transient PG
+    // outage does not permanently suppress writes for the lifetime of the process.
+    if settings.database_url.is_some() {
+        crate::postgres_store::spawn_pg_health_monitor(settings.clone(), 30);
+    }
+
     let cli = Cli::parse();
 
     match cli.command {
