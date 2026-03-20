@@ -227,6 +227,28 @@ pub(crate) fn minimize_value(value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+// ---------------------------------------------------------------------------
+// MessagePack codec
+// ---------------------------------------------------------------------------
+
+/// Encode a [`serde_json::Value`] as `MessagePack` bytes.
+// allow: pub(crate) API for future HTTP/MCP binary wire protocol; currently used in tests only.
+#[allow(dead_code)]
+pub(crate) fn encode_msgpack(
+    value: &serde_json::Value,
+) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+    rmp_serde::to_vec_named(value)
+}
+
+/// Decode `MessagePack` bytes into a [`serde_json::Value`].
+// allow: pub(crate) API for future HTTP/MCP binary wire protocol; currently used in tests only.
+#[allow(dead_code)]
+pub(crate) fn decode_msgpack(
+    data: &[u8],
+) -> Result<serde_json::Value, rmp_serde::decode::Error> {
+    rmp_serde::from_slice(data)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -418,5 +440,38 @@ mod tests {
         assert_eq!(obj["tg"], serde_json::json!(["important"]));
         assert_eq!(obj["m"], serde_json::json!({"key": "val"}));
         assert_eq!(obj["tid"], "abc-123");
+    }
+
+    #[test]
+    fn msgpack_round_trip_preserves_value() {
+        let original = serde_json::json!({
+            "ts": "2026-01-01T00:00:00Z",
+            "f": "claude",
+            "t": "codex",
+            "tp": "status",
+            "b": "ready",
+            "tg": ["repo:agent-bus"]
+        });
+        let encoded = encode_msgpack(&original).expect("encode should succeed");
+        let decoded = decode_msgpack(&encoded).expect("decode should succeed");
+        assert_eq!(original, decoded);
+    }
+
+    #[test]
+    fn msgpack_is_smaller_than_json() {
+        let value = serde_json::json!({
+            "from": "claude", "to": "codex", "topic": "status",
+            "body": "analysis complete with findings about codebase quality",
+            "tags": ["repo:test", "session:bench-123"],
+            "priority": "normal", "request_ack": false
+        });
+        let json_bytes = serde_json::to_vec(&value).unwrap();
+        let msgpack_bytes = encode_msgpack(&value).unwrap();
+        assert!(
+            msgpack_bytes.len() < json_bytes.len(),
+            "msgpack {} >= json {}",
+            msgpack_bytes.len(),
+            json_bytes.len()
+        );
     }
 }

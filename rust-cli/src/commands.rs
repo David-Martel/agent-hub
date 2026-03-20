@@ -913,3 +913,47 @@ pub(crate) fn cmd_resolve(
     output(&state, encoding);
     Ok(())
 }
+
+pub(crate) fn cmd_token_count(text: Option<&str>, encoding: &Encoding) -> Result<()> {
+    use std::io::Read as _;
+
+    let input: String = if let Some(t) = text {
+        t.to_owned()
+    } else {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("reading stdin for token-count")?;
+        buf
+    };
+
+    let chars = input.chars().count();
+    let tokens = crate::token::estimate_tokens(&input);
+    let result = serde_json::json!({
+        "characters": chars,
+        "estimated_tokens": tokens,
+    });
+    output(&result, encoding);
+    Ok(())
+}
+
+pub(crate) fn cmd_compact_context(
+    settings: &Settings,
+    agent: Option<&str>,
+    since_minutes: u64,
+    max_tokens: usize,
+    encoding: &Encoding,
+) -> Result<()> {
+    let msgs = bus_list_messages(
+        settings,
+        agent,
+        None,
+        since_minutes,
+        500,
+        true,
+    )?;
+
+    let compacted = crate::token::compact_context(&msgs, max_tokens);
+    output(&compacted, encoding);
+    Ok(())
+}

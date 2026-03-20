@@ -1234,8 +1234,8 @@ mod tests {
     /// `pg_metrics()` must return the same static instance on every call.
     #[test]
     fn pg_metrics_returns_same_instance() {
-        let a = pg_metrics() as *const PgWriteMetrics;
-        let b = pg_metrics() as *const PgWriteMetrics;
+        let a = std::ptr::from_ref::<PgWriteMetrics>(pg_metrics());
+        let b = std::ptr::from_ref::<PgWriteMetrics>(pg_metrics());
         assert_eq!(a, b, "pg_metrics() must be a stable singleton");
     }
 

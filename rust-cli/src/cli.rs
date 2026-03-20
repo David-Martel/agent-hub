@@ -596,4 +596,24 @@ pub(crate) enum Cmd {
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
+
+    /// Estimate the token count for a text string or stdin input.
+    TokenCount {
+        #[arg(long, help = "Text to estimate (reads from stdin when omitted)")]
+        text: Option<String>,
+        #[arg(long, default_value = "compact", value_enum)]
+        encoding: Encoding,
+    },
+
+    /// Compact recent bus messages to fit within a token budget.
+    CompactContext {
+        #[arg(long, help = "Agent ID to read messages for")]
+        agent: Option<String>,
+        #[arg(long, default_value_t = 60)]
+        since_minutes: u64,
+        #[arg(long, default_value_t = 4000)]
+        max_tokens: usize,
+        #[arg(long, default_value = "compact", value_enum)]
+        encoding: Encoding,
+    },
 }

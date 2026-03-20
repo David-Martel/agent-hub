@@ -34,6 +34,7 @@ mod output;
 mod postgres_store;
 mod redis_bus;
 mod settings;
+mod token;
 mod validation;
 
 use std::sync::OnceLock;
@@ -46,10 +47,10 @@ use rmcp::serve_server;
 use cli::{Cli, Cmd};
 use commands::{
     PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_batch_send, cmd_claim, cmd_claims,
-    cmd_codex_sync, cmd_dedup, cmd_export, cmd_health, cmd_journal, cmd_monitor, cmd_pending_acks,
-    cmd_post_direct, cmd_post_group, cmd_presence, cmd_presence_history, cmd_presence_list,
-    cmd_prune, cmd_read, cmd_read_direct, cmd_read_group, cmd_resolve, cmd_send, cmd_session_summary,
-    cmd_sync, cmd_watch,
+    cmd_codex_sync, cmd_compact_context, cmd_dedup, cmd_export, cmd_health, cmd_journal,
+    cmd_monitor, cmd_pending_acks, cmd_post_direct, cmd_post_group, cmd_presence,
+    cmd_presence_history, cmd_presence_list, cmd_prune, cmd_read, cmd_read_direct, cmd_read_group,
+    cmd_resolve, cmd_send, cmd_session_summary, cmd_sync, cmd_token_count, cmd_watch,
 };
 use http::{start_http_server, start_mcp_http_server};
 use mcp::AgentBusMcpServer;
@@ -487,6 +488,14 @@ async fn main() -> Result<()> {
                 since_minutes,
                 encoding,
             )?;
+        }
+
+        Cmd::TokenCount { ref text, ref encoding } => {
+            cmd_token_count(text.as_deref(), encoding)?;
+        }
+
+        Cmd::CompactContext { ref agent, since_minutes, max_tokens, ref encoding } => {
+            cmd_compact_context(&settings, agent.as_deref(), since_minutes, max_tokens, encoding)?;
         }
     }
 

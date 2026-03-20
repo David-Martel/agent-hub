@@ -583,7 +583,7 @@ mod tests {
     // session_id — Task 4.1
     // -----------------------------------------------------------------------
 
-    /// Simulate the env+config-file resolution logic for session_id.
+    /// Simulate the env+config-file resolution logic for `session_id`.
     ///
     /// Mirrors what `Settings::from_env()` does:
     /// env var (non-empty) → config-file value (non-empty) → None.

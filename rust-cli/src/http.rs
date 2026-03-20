@@ -1580,6 +1580,71 @@ async fn http_channel_summary_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Token estimation and context compaction HTTP handlers
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+struct HttpTokenCountRequest {
+    text: String,
+}
+
+async fn http_token_count_handler(
+    payload: Result<Json<HttpTokenCountRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
+    let (characters, estimated_tokens) = tokio::task::spawn_blocking(move || {
+        let chars = req.text.chars().count();
+        let tokens = crate::token::estimate_tokens(&req.text);
+        (chars, tokens)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?;
+
+    Ok(Json(serde_json::json!({
+        "characters": characters,
+        "estimated_tokens": estimated_tokens,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct HttpCompactContextRequest {
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default = "default_since_minutes")]
+    since_minutes: u64,
+    #[serde(default = "default_max_tokens")]
+    max_tokens: usize,
+}
+
+fn default_max_tokens() -> usize {
+    4000
+}
+
+async fn http_compact_context_handler(
+    State(state): State<AppState>,
+    payload: Result<Json<HttpCompactContextRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
+    let since = req.since_minutes.min(MAX_HISTORY_MINUTES);
+    let max_tokens = req.max_tokens;
+    let agent = req.agent;
+    let settings = Arc::clone(&state.settings);
+
+    let compacted = tokio::task::spawn_blocking(move || {
+        let mut conn = state.redis.get_connection()?;
+        crate::redis_bus::bus_list_messages_from_redis(
+            &mut conn, &settings, agent.as_deref(), None, since, 500, true,
+        )
+        .map(|msgs| crate::token::compact_context(&msgs, max_tokens))
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::Value::Array(compacted)))
+}
+
+// ---------------------------------------------------------------------------
 
 pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<()> {
     let bind_host = settings.server_host.clone();
@@ -1626,6 +1691,8 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
             put(http_resolve_handler),
         )
         .route("/channels/summary", get(http_channel_summary_handler))
+        .route("/token-count", post(http_token_count_handler))
+        .route("/compact-context", post(http_compact_context_handler))
         .with_state(state);
 
     let addr = format!("{bind_host}:{port}");
