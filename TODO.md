@@ -92,20 +92,20 @@
 - [x] **Auto-schema inference from topic**: `infer_schema_from_topic()` in validation.rs, wired into CLI, MCP, and HTTP paths. `*-findings` → `finding`, `status`/`ownership`/`coordination` → `status`, `benchmark` → `benchmark`.
 - [x] **Schema auto-fitter**: `auto_fit_schema()` wraps plain bodies with FINDING:/SEVERITY: headers, detects severity from keywords (CRITICAL/HIGH/MEDIUM/LOW). 12 new tests.
 - [x] **Auto-deploy AGENT_COMMUNICATIONS.md**: `journal.rs` deploys protocol doc to repo root on first journal export if missing.
-- [ ] **Ownership conflict detection**: When an agent posts `topic=ownership`, the bus should track claimed files. Subsequent edits to claimed files by OTHER agents should generate a warning.
+- [x] **Ownership conflict detection**: When an agent posts `topic=ownership`, the bus should track claimed files. Subsequent edits to claimed files by OTHER agents should generate a warning.
 
 **Performance and reliability:**
-- [ ] Async PG write-through via tokio mpsc channel (fire-and-forget, batched)
-- [ ] Proactive circuit breaker reset (periodic health check, not just on explicit `health` call)
+- [x] Async PG write-through via tokio mpsc channel (fire-and-forget, batched)
+- [x] Proactive circuit breaker reset (periodic health check, not just on explicit `health` call)
 - [ ] Agent task queue (orchestrator queues tasks; agents pull when idle — enables wave dispatch without manual timing)
 
 **Features:**
-- [ ] Finding deduplication command (group journal entries by file path, merge overlapping)
-- [ ] Session ID auto-generation (env var `AGENT_BUS_SESSION_ID` set by orchestrator)
-- [ ] Session summary auto-generation (from all bus messages with matching session tag)
+- [x] Finding deduplication command (group journal entries by file path, merge overlapping)
+- [x] Session ID auto-generation (env var `AGENT_BUS_SESSION_ID` set by orchestrator)
+- [x] Session summary auto-generation (from all bus messages with matching session tag)
 - [ ] `--server` client mode (CLI → HTTP → Redis) for LAN access from other machines
-- [ ] Message threading enforcement (auto-link finding→fix→verify chains)
-- [ ] TOON/MessagePack exploration for token-efficient message encoding
+- [x] Message threading enforcement (auto-link finding→fix→verify chains)
+- [x] TOON/MessagePack exploration for token-efficient message encoding
 - [ ] Agent inbox notification — MCP server should push notifications when new messages arrive
 
 ### P7 Documentation and protocol (observed from finance-warehouse live session)
@@ -118,6 +118,29 @@
 - [ ] MCP tool description improvements (include schema examples in tool descriptions)
 - [ ] Agent prompt template library (pre-built prompts for common agent types with bus instructions)
 - [ ] Orchestrator monitoring dashboard (read bus, show agent status, findings by severity)
+
+### Completed in 2026-03-19 sprint (5 parallel workstreams)
+
+- [x] Port PyO3 token estimation to Rust (`token.rs`: `estimate_tokens()`)
+- [x] Port PyO3 context compaction to Rust (`token.rs`: `compact_context()`)
+- [x] Port PyO3 message minimization to Rust (`token.rs`: `minimize_message()`)
+- [x] Add MessagePack encoding/decoding (`output.rs`: `encode_msgpack()`/`decode_msgpack()`)
+- [x] Add `token-count` CLI subcommand + `POST /token-count` HTTP endpoint
+- [x] Add `compact-context` CLI subcommand + `POST /compact-context` HTTP endpoint
+- [x] Python agent-bus-mcp fully deprecated — single Rust binary
+- [x] Proactive PG circuit breaker reset (background health monitor, 30s interval)
+- [x] PG write-through metrics (`PgWriteMetrics`: queued/written/batches/errors)
+- [x] PG write metrics exposed in health endpoint
+- [x] Ownership conflict detection (`OwnershipTracker` in channels.rs)
+- [x] File path extraction from ownership claim bodies (regex-lite)
+- [x] Mandatory schema enforcement on MCP and HTTP transports
+- [x] Session ID auto-generation via `AGENT_BUS_SESSION_ID` env var
+- [x] Auto-tag messages with `session:<id>` when session ID is set
+- [x] `session-summary` CLI subcommand (agent count, topic distribution, severity)
+- [x] `dedup` CLI subcommand (finding deduplication by file path)
+- [x] Message threading: auto-infer `thread_id` from `reply_to`
+- [x] E2E channel integration tests (direct, group, claim/resolve)
+- [x] Criterion benchmark harness (token estimation, TOON, MessagePack)
 
 ### Observations from finance-warehouse live session (2026-03-15)
 
@@ -144,5 +167,10 @@
 3. ~~Add integration tests that exercise Redis and PostgreSQL together.~~ Done.
 4. ~~Add HTTP streaming and remote client mode.~~ SSE streaming done. `--server` client mode deferred.
 5. ~~Multi-repo validation (stm32-merge, finance-warehouse).~~ Done. 320+ PG messages.
-6. Async PG write-through + finding dedup + default schema enforcement.
-7. Reassess wire-format and packaging work after the runtime stabilizes.
+6. ~~Async PG write-through + finding dedup + default schema enforcement.~~ Done (2026-03-19 sprint).
+7. ~~Token estimation, context compaction, MessagePack, TOON.~~ Done (2026-03-19 sprint WS1).
+8. ~~E2E channel tests + Criterion benchmark harness.~~ Done (2026-03-19 sprint WS5).
+9. Agent task queue (orchestrator → agent wave dispatch without manual timing).
+10. `--server` client mode (CLI → HTTP → Redis) for LAN access from other machines.
+11. Agent inbox notification (MCP push when new messages arrive).
+12. Reassess wire-format and packaging work after the runtime stabilizes.
