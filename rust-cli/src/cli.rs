@@ -628,3 +628,401 @@ pub(crate) enum Cmd {
         encoding: Encoding,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
+        Cli::try_parse_from(args)
+    }
+
+    // ------------------------------------------------------------------
+    // health
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_health_minimal() {
+        let cli = parse(&["agent-bus", "health"]).expect("health must parse");
+        assert!(matches!(cli.command, Cmd::Health { .. }));
+    }
+
+    #[test]
+    fn parse_health_explicit_encoding() {
+        let cli = parse(&["agent-bus", "health", "--encoding", "json"])
+            .expect("health --encoding json must parse");
+        assert!(matches!(cli.command, Cmd::Health { .. }));
+    }
+
+    // ------------------------------------------------------------------
+    // send
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_send_required_args() {
+        let cli = parse(&[
+            "agent-bus", "send",
+            "--from-agent", "claude",
+            "--to-agent", "codex",
+            "--topic", "status",
+            "--body", "hello",
+        ])
+        .expect("send with required args must parse");
+
+        if let Cmd::Send { from_agent, to_agent, topic, body, .. } = cli.command {
+            assert_eq!(from_agent, "claude");
+            assert_eq!(to_agent, "codex");
+            assert_eq!(topic, "status");
+            assert_eq!(body, "hello");
+        } else {
+            panic!("expected Cmd::Send");
+        }
+    }
+
+    #[test]
+    fn parse_send_optional_args() {
+        let cli = parse(&[
+            "agent-bus", "send",
+            "--from-agent", "euler",
+            "--to-agent", "all",
+            "--topic", "review-findings",
+            "--body", "FINDING: unused import SEVERITY: LOW",
+            "--priority", "high",
+            "--tag", "repo:agent-bus",
+            "--tag", "session:s1",
+            "--request-ack",
+            "--thread-id", "thread-99",
+            "--schema", "finding",
+        ])
+        .expect("send with optional args must parse");
+
+        if let Cmd::Send {
+            from_agent,
+            to_agent,
+            priority,
+            tag,
+            request_ack,
+            thread_id,
+            schema,
+            ..
+        } = cli.command
+        {
+            assert_eq!(from_agent, "euler");
+            assert_eq!(to_agent, "all");
+            assert_eq!(priority, "high");
+            assert_eq!(tag, vec!["repo:agent-bus", "session:s1"]);
+            assert!(request_ack);
+            assert_eq!(thread_id, Some("thread-99".to_owned()));
+            assert_eq!(schema, Some("finding".to_owned()));
+        } else {
+            panic!("expected Cmd::Send");
+        }
+    }
+
+    #[test]
+    fn parse_send_priority_string_is_accepted_by_parser() {
+        // Validation of the priority value is done at runtime, not by clap.
+        // A nonsense priority string must still parse successfully.
+        let result = parse(&[
+            "agent-bus", "send",
+            "--from-agent", "a",
+            "--to-agent", "b",
+            "--topic", "t",
+            "--body", "b",
+            "--priority", "turbo-supreme",
+        ]);
+        assert!(result.is_ok(), "clap must not reject unknown priority strings");
+    }
+
+    #[test]
+    fn parse_send_missing_required_arg_fails() {
+        // Missing --body must cause a parse error.
+        let result = parse(&[
+            "agent-bus", "send",
+            "--from-agent", "a",
+            "--to-agent", "b",
+            "--topic", "t",
+        ]);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // read
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_read_with_agent_and_since_minutes() {
+        let cli = parse(&[
+            "agent-bus", "read",
+            "--agent", "claude",
+            "--since-minutes", "60",
+        ])
+        .expect("read must parse");
+
+        if let Cmd::Read { agent, since_minutes, .. } = cli.command {
+            assert_eq!(agent, Some("claude".to_owned()));
+            assert_eq!(since_minutes, 60);
+        } else {
+            panic!("expected Cmd::Read");
+        }
+    }
+
+    #[test]
+    fn parse_read_defaults() {
+        let cli = parse(&["agent-bus", "read"]).expect("read with no args must parse");
+        if let Cmd::Read { agent, since_minutes, limit, exclude_broadcast, .. } = cli.command {
+            assert!(agent.is_none());
+            assert_eq!(since_minutes, 1440);
+            assert_eq!(limit, 50);
+            assert!(!exclude_broadcast);
+        } else {
+            panic!("expected Cmd::Read");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // serve
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_serve_stdio_default() {
+        let cli = parse(&["agent-bus", "serve", "--transport", "stdio"])
+            .expect("serve stdio must parse");
+        if let Cmd::Serve { transport, port } = cli.command {
+            assert_eq!(transport, "stdio");
+            assert_eq!(port, 8400); // default port
+        } else {
+            panic!("expected Cmd::Serve");
+        }
+    }
+
+    #[test]
+    fn parse_serve_http_custom_port() {
+        let cli = parse(&["agent-bus", "serve", "--transport", "http", "--port", "9000"])
+            .expect("serve http --port 9000 must parse");
+        if let Cmd::Serve { transport, port } = cli.command {
+            assert_eq!(transport, "http");
+            assert_eq!(port, 9000);
+        } else {
+            panic!("expected Cmd::Serve");
+        }
+    }
+
+    #[test]
+    fn parse_serve_mcp_http_transport() {
+        let cli = parse(&["agent-bus", "serve", "--transport", "mcp-http", "--port", "8401"])
+            .expect("serve mcp-http must parse");
+        if let Cmd::Serve { transport, .. } = cli.command {
+            assert_eq!(transport, "mcp-http");
+        } else {
+            panic!("expected Cmd::Serve");
+        }
+    }
+
+    #[test]
+    fn parse_serve_default_no_args() {
+        // --transport has a default value of "stdio"
+        let cli = parse(&["agent-bus", "serve"]).expect("serve with no args must parse");
+        assert!(matches!(cli.command, Cmd::Serve { .. }));
+    }
+
+    // ------------------------------------------------------------------
+    // claim (positional resource arg)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_claim_positional_resource() {
+        let cli = parse(&[
+            "agent-bus", "claim",
+            "src/redis_bus.rs",
+            "--agent", "claude",
+        ])
+        .expect("claim with positional resource must parse");
+
+        if let Cmd::Claim { resource, agent, reason, .. } = cli.command {
+            assert_eq!(resource, "src/redis_bus.rs");
+            assert_eq!(agent, "claude");
+            assert_eq!(reason, "first-edit required"); // default
+        } else {
+            panic!("expected Cmd::Claim");
+        }
+    }
+
+    #[test]
+    fn parse_claim_with_custom_reason() {
+        let cli = parse(&[
+            "agent-bus", "claim",
+            "src/",
+            "--agent", "codex",
+            "--reason", "full module refactor",
+        ])
+        .expect("claim with reason must parse");
+
+        if let Cmd::Claim { resource, agent, reason, .. } = cli.command {
+            assert_eq!(resource, "src/");
+            assert_eq!(agent, "codex");
+            assert_eq!(reason, "full module refactor");
+        } else {
+            panic!("expected Cmd::Claim");
+        }
+    }
+
+    #[test]
+    fn parse_claim_missing_agent_fails() {
+        // --agent is required (no default)
+        let result = parse(&["agent-bus", "claim", "src/main.rs"]);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // session-summary
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_session_summary() {
+        let cli = parse(&["agent-bus", "session-summary", "--session", "test-123"])
+            .expect("session-summary must parse");
+
+        if let Cmd::SessionSummary { session, .. } = cli.command {
+            assert_eq!(session, "test-123");
+        } else {
+            panic!("expected Cmd::SessionSummary");
+        }
+    }
+
+    #[test]
+    fn parse_session_summary_missing_session_fails() {
+        let result = parse(&["agent-bus", "session-summary"]);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // token-count
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_token_count_with_text() {
+        let cli = parse(&["agent-bus", "token-count", "--text", "estimate this"])
+            .expect("token-count --text must parse");
+
+        if let Cmd::TokenCount { text, .. } = cli.command {
+            assert_eq!(text, Some("estimate this".to_owned()));
+        } else {
+            panic!("expected Cmd::TokenCount");
+        }
+    }
+
+    #[test]
+    fn parse_token_count_without_text() {
+        // text is optional — reads stdin when omitted
+        let cli = parse(&["agent-bus", "token-count"]).expect("token-count with no args must parse");
+        if let Cmd::TokenCount { text, .. } = cli.command {
+            assert!(text.is_none());
+        } else {
+            panic!("expected Cmd::TokenCount");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // compact-context
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_compact_context_all_options() {
+        let cli = parse(&[
+            "agent-bus", "compact-context",
+            "--agent", "claude",
+            "--since-minutes", "120",
+            "--max-tokens", "8000",
+            "--encoding", "json",
+        ])
+        .expect("compact-context with all options must parse");
+
+        if let Cmd::CompactContext { agent, since_minutes, max_tokens, .. } = cli.command {
+            assert_eq!(agent, Some("claude".to_owned()));
+            assert_eq!(since_minutes, 120);
+            assert_eq!(max_tokens, 8000);
+        } else {
+            panic!("expected Cmd::CompactContext");
+        }
+    }
+
+    #[test]
+    fn parse_compact_context_defaults() {
+        let cli = parse(&["agent-bus", "compact-context"])
+            .expect("compact-context with no args must parse");
+        if let Cmd::CompactContext { agent, since_minutes, max_tokens, .. } = cli.command {
+            assert!(agent.is_none());
+            assert_eq!(since_minutes, 60);
+            assert_eq!(max_tokens, 4000);
+        } else {
+            panic!("expected Cmd::CompactContext");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // resolve (positional resource arg)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_resolve_positional_resource() {
+        let cli = parse(&[
+            "agent-bus", "resolve",
+            "src/redis_bus.rs",
+            "--winner", "claude",
+        ])
+        .expect("resolve with positional resource must parse");
+
+        if let Cmd::Resolve { resource, winner, .. } = cli.command {
+            assert_eq!(resource, "src/redis_bus.rs");
+            assert_eq!(winner, "claude");
+        } else {
+            panic!("expected Cmd::Resolve");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // watch
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_watch_required_agent() {
+        let cli = parse(&["agent-bus", "watch", "--agent", "gemini"])
+            .expect("watch must parse");
+        if let Cmd::Watch { agent, history, exclude_broadcast, .. } = cli.command {
+            assert_eq!(agent, "gemini");
+            assert_eq!(history, 0);
+            assert!(!exclude_broadcast);
+        } else {
+            panic!("expected Cmd::Watch");
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // presence
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_presence_with_multiple_capabilities() {
+        let cli = parse(&[
+            "agent-bus", "presence",
+            "--agent", "euler",
+            "--capability", "mcp",
+            "--capability", "rust",
+            "--status", "busy",
+        ])
+        .expect("presence must parse");
+
+        if let Cmd::Presence { agent, capability, status, .. } = cli.command {
+            assert_eq!(agent, "euler");
+            assert_eq!(status, "busy");
+            assert_eq!(capability, vec!["mcp", "rust"]);
+        } else {
+            panic!("expected Cmd::Presence");
+        }
+    }
+}

@@ -838,4 +838,244 @@ mod tests {
         let r2 = server.call_tool_sync("claim_resource", args2.as_object().unwrap());
         assert!(r2.is_err());
     }
+
+    // ------------------------------------------------------------------
+    // Schema inspection — no Redis/PG required
+    // ------------------------------------------------------------------
+
+    /// Every tool must carry a non-empty description so LLMs understand its purpose.
+    #[test]
+    fn all_tools_have_non_empty_description() {
+        for tool in AgentBusMcpServer::tool_list() {
+            let name = tool.name.as_ref();
+            let desc = tool
+                .description
+                .as_deref()
+                .unwrap_or("");
+            assert!(
+                !desc.is_empty(),
+                "tool '{name}' has an empty description"
+            );
+        }
+    }
+
+    /// Every tool's `input_schema` must declare `"type": "object"` at the root,
+    /// satisfying the JSON Schema requirement for MCP tool input objects.
+    #[test]
+    fn all_tool_schemas_declare_type_object() {
+        for tool in AgentBusMcpServer::tool_list() {
+            let name = tool.name.as_ref();
+            let schema_type = tool
+                .input_schema
+                .get("type")
+                .and_then(|v| v.as_str());
+            assert_eq!(
+                schema_type,
+                Some("object"),
+                "tool '{name}' input_schema must have \"type\": \"object\""
+            );
+        }
+    }
+
+    /// `post_message` schema must declare the four mandatory fields as required.
+    #[test]
+    fn post_message_schema_has_required_fields() {
+        let tools = AgentBusMcpServer::tool_list();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "post_message")
+            .expect("post_message tool must exist");
+
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("post_message schema must have a 'required' array");
+
+        let required_names: Vec<&str> = required
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+
+        for field in &["sender", "recipient", "topic", "body"] {
+            assert!(
+                required_names.contains(field),
+                "post_message 'required' must include '{field}', got: {required_names:?}"
+            );
+        }
+    }
+
+    /// `post_message` schema must declare each required field as a property.
+    #[test]
+    fn post_message_schema_properties_include_all_required_fields() {
+        let tools = AgentBusMcpServer::tool_list();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "post_message")
+            .expect("post_message tool must exist");
+
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .expect("post_message schema must have 'properties'");
+
+        for field in &["sender", "recipient", "topic", "body"] {
+            assert!(
+                props.contains_key(*field),
+                "post_message 'properties' must include '{field}'"
+            );
+        }
+    }
+
+    /// `claim_resource` schema must require both `resource` and `agent`.
+    #[test]
+    fn claim_resource_schema_has_required_fields() {
+        let tools = AgentBusMcpServer::tool_list();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "claim_resource")
+            .expect("claim_resource tool must exist");
+
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("claim_resource schema must have a 'required' array");
+
+        let required_names: Vec<&str> = required
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+
+        assert!(
+            required_names.contains(&"resource"),
+            "claim_resource 'required' must include 'resource', got: {required_names:?}"
+        );
+        assert!(
+            required_names.contains(&"agent"),
+            "claim_resource 'required' must include 'agent', got: {required_names:?}"
+        );
+    }
+
+    /// `ack_message` schema must require `agent` and `message_id`.
+    #[test]
+    fn ack_message_schema_has_required_fields() {
+        let tools = AgentBusMcpServer::tool_list();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "ack_message")
+            .expect("ack_message tool must exist");
+
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("ack_message schema must have a 'required' array");
+
+        let required_names: Vec<&str> = required
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+
+        assert!(
+            required_names.contains(&"agent"),
+            "ack_message 'required' must include 'agent'"
+        );
+        assert!(
+            required_names.contains(&"message_id"),
+            "ack_message 'required' must include 'message_id'"
+        );
+    }
+
+    /// Tools with no required fields (`bus_health`, `list_presence`, `list_messages`,
+    /// `list_presence_history`, `negotiate`) must not have a `required` key, or have
+    /// an empty array — consistent with how `schema_for` works when `required` is `&[]`.
+    #[test]
+    fn schema_for_empty_required_omits_required_key() {
+        // schema_for(props, &[]) does not insert "required" at all.
+        let schema = schemas::bus_health();
+        assert!(
+            !schema.contains_key("required"),
+            "bus_health schema must not have 'required' key when no fields are required"
+        );
+
+        let schema = schemas::list_presence();
+        assert!(
+            !schema.contains_key("required"),
+            "list_presence schema must not have 'required' key"
+        );
+
+        let schema = schemas::negotiate();
+        assert!(
+            !schema.contains_key("required"),
+            "negotiate schema must not have 'required' key"
+        );
+    }
+
+    /// `negotiate` tool must be in the list exactly once.
+    #[test]
+    fn negotiate_tool_appears_exactly_once() {
+        let count = AgentBusMcpServer::tool_list()
+            .iter()
+            .filter(|t| t.name == "negotiate")
+            .count();
+        assert_eq!(count, 1, "negotiate must appear exactly once in tool_list");
+    }
+
+    /// `set_presence` schema must require `agent`.
+    #[test]
+    fn set_presence_schema_requires_agent() {
+        let tools = AgentBusMcpServer::tool_list();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "set_presence")
+            .expect("set_presence tool must exist");
+
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("set_presence schema must have a 'required' array");
+
+        let required_names: Vec<&str> = required
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+
+        assert!(
+            required_names.contains(&"agent"),
+            "set_presence 'required' must include 'agent', got: {required_names:?}"
+        );
+    }
+
+    /// `resolve_claim` schema must require `resource` and `winner`.
+    #[test]
+    fn resolve_claim_schema_has_required_fields() {
+        let tools = AgentBusMcpServer::tool_list();
+        let tool = tools
+            .iter()
+            .find(|t| t.name == "resolve_claim")
+            .expect("resolve_claim tool must exist");
+
+        let required = tool
+            .input_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .expect("resolve_claim schema must have a 'required' array");
+
+        let required_names: Vec<&str> = required
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+
+        assert!(
+            required_names.contains(&"resource"),
+            "resolve_claim 'required' must include 'resource'"
+        );
+        assert!(
+            required_names.contains(&"winner"),
+            "resolve_claim 'required' must include 'winner'"
+        );
+    }
 }

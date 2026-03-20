@@ -1311,4 +1311,250 @@ mod tests {
         spawn_pg_health_monitor(settings, 60);
         // If we reach here, the thread was spawned without panicking.
     }
+
+    // -----------------------------------------------------------------------
+    // with_pg_retry behaviour — retry logic without a real PostgreSQL instance
+    // -----------------------------------------------------------------------
+
+    /// Operation that fails once then succeeds: `with_pg_retry` should retry
+    /// and return `Ok` on the second attempt.
+    #[test]
+    fn with_pg_retry_succeeds_after_one_transient_failure() {
+        // Ensure the circuit is closed so the retry path is exercised.
+        mark_pg_up();
+
+        let mut attempt = 0_u32;
+        let result: Result<&str> = with_pg_retry(|| {
+            attempt += 1;
+            if attempt == 1 {
+                Err(anyhow::anyhow!("transient error"))
+            } else {
+                Ok("done")
+            }
+        });
+
+        assert!(result.is_ok(), "expected Ok after one transient failure");
+        assert_eq!(result.unwrap(), "done");
+        assert_eq!(attempt, 2, "should have been called exactly twice");
+
+        // Restore clean state.
+        mark_pg_up();
+    }
+
+    /// When every attempt fails, `with_pg_retry` exhausts all retries, opens
+    /// the circuit breaker, and returns the final error.
+    #[test]
+    fn with_pg_retry_exhausts_all_retries_and_opens_circuit() {
+        // Start with a closed circuit so retries are not suppressed.
+        mark_pg_up();
+        assert!(!is_pg_circuit_open());
+
+        let mut attempt = 0_u32;
+        let result: Result<()> = with_pg_retry(|| {
+            attempt += 1;
+            Err(anyhow::anyhow!("persistent failure #{attempt}"))
+        });
+
+        assert!(result.is_err(), "expected Err after all retries exhausted");
+        assert_eq!(
+            attempt, PG_MAX_RETRIES,
+            "closure must be called exactly PG_MAX_RETRIES times"
+        );
+        // Circuit breaker must have been opened after exhausting retries.
+        assert!(
+            is_pg_circuit_open(),
+            "circuit breaker must be open after all retries fail"
+        );
+
+        // Restore clean state so other tests are not affected.
+        mark_pg_up();
+    }
+
+    /// Rapid alternation of `mark_pg_down` / `mark_pg_up` must not deadlock or
+    /// produce inconsistent final state.
+    #[test]
+    fn circuit_breaker_rapid_down_up_transitions_are_safe() {
+        for i in 0..20_u32 {
+            if i % 2 == 0 {
+                mark_pg_down();
+                assert!(
+                    is_pg_circuit_open(),
+                    "circuit must be open after mark_pg_down (iteration {i})"
+                );
+            } else {
+                mark_pg_up();
+                assert!(
+                    !is_pg_circuit_open(),
+                    "circuit must be closed after mark_pg_up (iteration {i})"
+                );
+            }
+        }
+        // Leave in a clean (closed) state.
+        mark_pg_up();
+    }
+
+    /// The circuit stays open when queried within `PG_CIRCUIT_BREAKER_SECONDS`
+    /// of being marked down.  We set the timestamp directly by calling
+    /// `mark_pg_down` and then immediately checking — no sleep needed.
+    #[test]
+    fn circuit_breaker_remains_open_within_cooldown_window() {
+        mark_pg_down();
+        // Immediately after marking down, elapsed time is ~0 s, well within
+        // the PG_CIRCUIT_BREAKER_SECONDS window.
+        assert!(
+            is_pg_circuit_open(),
+            "circuit must remain open immediately after mark_pg_down"
+        );
+        mark_pg_up();
+    }
+
+    // -----------------------------------------------------------------------
+    // PgWriteMetrics concurrent safety
+    // -----------------------------------------------------------------------
+
+    /// Two threads both calling `send_message` concurrently must produce a
+    /// total increment of exactly 2 on `messages_queued`.
+    #[tokio::test]
+    async fn pg_metrics_concurrent_increment_is_safe() {
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+
+        let (writer, _handle) = PgWriter::spawn(settings);
+        let writer2 = writer.clone();
+
+        let before = pg_metrics().messages_queued.load(Ordering::Relaxed);
+
+        let make_msg = || crate::models::Message {
+            id: uuid::Uuid::new_v4().to_string(),
+            timestamp_utc: "2026-01-01T00:00:00.000000Z".to_owned(),
+            protocol_version: "1.0".to_owned(),
+            from: "concurrent-a".to_owned(),
+            to: "all".to_owned(),
+            topic: "test".to_owned(),
+            body: "concurrent test".to_owned(),
+            thread_id: None,
+            tags: vec![].into(),
+            priority: "normal".to_owned(),
+            request_ack: false,
+            reply_to: None,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+            stream_id: None,
+        };
+
+        // Spawn two OS threads, each sending one message through its own writer clone.
+        let msg_a = make_msg();
+        let msg_b = make_msg();
+        let t1 = std::thread::spawn(move || writer.send_message(&msg_a));
+        let t2 = std::thread::spawn(move || writer2.send_message(&msg_b));
+        t1.join().expect("thread 1 must not panic");
+        t2.join().expect("thread 2 must not panic");
+
+        let after = pg_metrics().messages_queued.load(Ordering::Relaxed);
+        assert!(
+            after >= before + 2,
+            "messages_queued must increase by at least 2 (before={before}, after={after})"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // PG_BATCH_SIZE and PG_BATCH_TIMEOUT_MS constant range assertions
+    // -----------------------------------------------------------------------
+
+    /// `PG_BATCH_SIZE` must be within the reasonable range [5, 100].  Values
+    /// outside this range indicate a misconfiguration — too small wastes
+    /// round-trips; too large risks memory pressure or slow flushes.
+    #[test]
+    fn pg_batch_size_is_within_reasonable_range() {
+        const { assert!(PG_BATCH_SIZE >= 5, "PG_BATCH_SIZE is too small — minimum is 5") };
+        const { assert!(PG_BATCH_SIZE <= 100, "PG_BATCH_SIZE is too large — maximum is 100") };
+    }
+
+    /// `PG_BATCH_TIMEOUT_MS` must be within [50, 500] ms.  Values outside
+    /// this range risk either spinning too fast (CPU waste) or delaying writes
+    /// too long (data-loss window on crash).
+    #[test]
+    fn pg_batch_timeout_ms_is_within_reasonable_range() {
+        const {
+            assert!(
+                PG_BATCH_TIMEOUT_MS >= 50,
+                "PG_BATCH_TIMEOUT_MS is too small — minimum is 50 ms"
+            );
+        };
+        const {
+            assert!(
+                PG_BATCH_TIMEOUT_MS <= 500,
+                "PG_BATCH_TIMEOUT_MS is too large — maximum is 500 ms"
+            );
+        };
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_timestamp_utc
+    // -----------------------------------------------------------------------
+
+    /// Valid RFC-3339 timestamps (with Z suffix) must parse without error.
+    #[test]
+    fn parse_timestamp_utc_accepts_valid_rfc3339() {
+        let ts = "2026-03-20T12:34:56.000000Z";
+        let result = parse_timestamp_utc(ts);
+        assert!(result.is_ok(), "expected Ok for valid timestamp: {ts}");
+    }
+
+    /// Invalid timestamp strings must return an error with context.
+    #[test]
+    fn parse_timestamp_utc_rejects_garbage() {
+        let result = parse_timestamp_utc("not-a-timestamp");
+        assert!(
+            result.is_err(),
+            "expected Err for unparseable timestamp string"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_tags
+    // -----------------------------------------------------------------------
+
+    /// A JSON array of strings must be converted to a `Vec<String>`.
+    #[test]
+    fn parse_tags_extracts_string_array() {
+        let value = serde_json::json!(["alpha", "beta", "gamma"]);
+        let tags = parse_tags(&value);
+        assert_eq!(tags, vec!["alpha", "beta", "gamma"]);
+    }
+
+    /// A non-array JSON value must return an empty vec (graceful degradation).
+    #[test]
+    fn parse_tags_returns_empty_for_non_array() {
+        let value = serde_json::json!(null);
+        let tags = parse_tags(&value);
+        assert!(tags.is_empty(), "parse_tags(null) must return empty vec");
+    }
+
+    /// An empty JSON array must return an empty vec.
+    #[test]
+    fn parse_tags_returns_empty_for_empty_array() {
+        let value = serde_json::json!([]);
+        let tags = parse_tags(&value);
+        assert!(tags.is_empty(), "parse_tags([]) must return empty vec");
+    }
+
+    // -----------------------------------------------------------------------
+    // storage_cache_key / storage_ready
+    // -----------------------------------------------------------------------
+
+    /// When `database_url` is `None`, `storage_cache_key` returns `None` and
+    /// `storage_ready` returns `false`.
+    #[test]
+    fn storage_ready_false_when_no_database_url() {
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+        assert!(
+            storage_cache_key(&settings).is_none(),
+            "cache key must be None when database_url absent"
+        );
+        assert!(
+            !storage_ready(&settings),
+            "storage_ready must be false when database_url absent"
+        );
+    }
 }
