@@ -181,6 +181,12 @@
 - [x] Add TOON to CLI --help ENCODING MODES
 - [x] Expand CLI --help EXAMPLES with new commands
 
+- [x] Replace ~/.codex/tools/agent-bus-mcp/ with junction to C:\codedev\agent-bus
+- [x] Redirect service logs from old dir to C:\ProgramData\AgentHub\logs\
+- [x] Deploy AGENT_COORDINATION.md to stm32-merge, finance-warehouse, Gen3_0
+- [x] Broadcast protocol update notifications to all agents via bus
+- [x] Add AGENT_BUS_SESSION_ID to CLAUDE.md env vars table
+
 ### P8 Future development plans (from sprint observations)
 
 **Architecture:**
