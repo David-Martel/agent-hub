@@ -17,18 +17,25 @@ cd rust-cli && RUSTC_WRAPPER="" cargo build --release
 # Clippy (required — pre-push hook enforces)
 cd rust-cli && RUSTC_WRAPPER="" cargo clippy --all-targets -- -D warnings
 
-# Tests (149 total: 145 unit + 4 integration)
+# Tests (326 total: 282 unit + 40 integration + 4 channel)
 cd rust-cli && RUSTC_WRAPPER="" cargo test
+
+# Benchmarks (criterion: token estimation, TOON, MessagePack)
+cd rust-cli && RUSTC_WRAPPER="" cargo bench
 
 # Format
 cd rust-cli && cargo fmt --all --check
+
+# Build + Deploy + Restart service (one command)
+pwsh -NoLogo -NoProfile -File scripts/build-deploy.ps1
+# Or skip build: scripts/build-deploy.ps1 -SkipBuild
 ```
 
 **sccache note**: If builds fail with `SCCACHE_SERVER_PORT` errors, set `RUSTC_WRAPPER=""`.
 
 ## Architecture
 
-The Rust implementation (`rust-cli/src/`, ~10000 LOC) is split into 17 modules:
+The Rust implementation (`rust-cli/src/`, ~13800 LOC, 326 tests) is split into 18 modules:
 
 | Module | Purpose |
 |--------|---------|
@@ -48,6 +55,7 @@ The Rust implementation (`rust-cli/src/`, ~10000 LOC) is split into 17 modules:
 | `mcp_discovery.rs` | Auto-discover MCP tools from `.claude/mcp.json` for preambles |
 | `channels.rs` | Structured comms: direct, group, escalate, arbitrate channels |
 | `codex_bridge.rs` | Codex CLI integration: config discovery, finding sync, formatting |
+| `token.rs` | Token estimation, message minimization, LLM context compaction |
 
 ### Transport Modes
 
@@ -58,11 +66,18 @@ The Rust implementation (`rust-cli/src/`, ~10000 LOC) is split into 17 modules:
 
 ### CLI Subcommands
 
-`health`, `send`, `read`, `watch`, `ack`, `presence`, `presence-list`, `serve`, `prune`, `export`, `presence-history`, `journal`, `sync`, `monitor`, `batch-send`, `pending-acks`, `claim`, `claims`, `resolve`, `codex`
+`health`, `send`, `read`, `watch`, `ack`, `presence`, `presence-list`, `serve`, `prune`, `export`, `presence-history`, `journal`, `sync`, `monitor`, `batch-send`, `pending-acks`, `claim`, `claims`, `resolve`, `codex`, `session-summary`, `dedup`, `token-count`, `compact-context`
 
-### MCP Tool Names (for stdio and mcp-http transports)
+### MCP Tool Names (13 tools for stdio and mcp-http transports)
 
-Exposes 7+ tools: `bus_health`, `post_message`, `list_messages`, `ack_message`, `set_presence`, `list_presence`, `list_presence_history`, plus channel tools: `create_channel`, `post_to_channel`, `read_channel`, `claim_resource`, `resolve_claim`. See [`AGENT_COMMUNICATIONS.md`](AGENT_COMMUNICATIONS.md) for full parameter docs.
+`bus_health`, `post_message`, `list_messages`, `ack_message`, `set_presence`, `list_presence`, `list_presence_history`, `negotiate`, `create_channel`, `post_to_channel`, `read_channel`, `claim_resource`, `resolve_claim`. See [`AGENT_COMMUNICATIONS.md`](AGENT_COMMUNICATIONS.md) for full parameter docs.
+
+### Build & Deploy
+
+```powershell
+# One-command build + deploy + restart:
+pwsh -NoLogo -NoProfile -File scripts/build-deploy.ps1
+```
 
 ### Channel System (v0.4)
 
