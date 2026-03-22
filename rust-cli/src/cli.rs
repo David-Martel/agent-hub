@@ -42,7 +42,7 @@ use crate::output::Encoding;
         Protocol spec:    AGENT_COMMUNICATIONS.md (deployed to repo roots via journal)\n  \
         Project docs:     C:\\codedev\\agent-bus\\AGENT_COMMUNICATIONS.md\n  \
         Rust dev guide:   ~/.agents/rust-development-guide.md\n  \
-        Impl notes:       ~/.codex/tools/agent-bus-mcp/IMPLEMENTATION_NOTES.md\n\n\
+        Impl notes:       C:\\codedev\\agent-bus\\IMPLEMENTATION_NOTES.md\n\n\
         EXAMPLES:\n  \
         agent-bus health\n  \
         agent-bus send --from-agent claude --to-agent codex --topic status --body \"ready\"\n  \

@@ -1,11 +1,10 @@
-# Agent Bus MCP
+# Agent Bus
 
 Rust-native coordination bus for Codex, Claude, Gemini, and local sub-agents.
 
 The active implementation lives in `rust-cli/` and uses Redis for live
 transport plus PostgreSQL for durable history and presence-event persistence.
-The legacy Python package remains in the repo only as deprecated reference
-material.
+Deprecated Python runtime code has been removed from this repository.
 
 Current protocol metadata:
 - Bus protocol: `agent-bus` message contract v1.0
@@ -19,7 +18,7 @@ Current protocol metadata:
 pwsh -NoLogo -NoProfile -File C:\Users\david\.codex\tools\agent-bus-mcp\scripts\send-agent-bus.ps1 -From codex -To claude -Topic status -Body "message" -Encoding compact
 pwsh -NoLogo -NoProfile -File C:\Users\david\.codex\tools\agent-bus-mcp\scripts\read-agent-bus.ps1 -Agent codex -SinceMinutes 120
 pwsh -NoLogo -NoProfile -File C:\Users\david\.codex\tools\agent-bus-mcp\scripts\watch-agent-bus.ps1 -Agent codex
-uv --directory C:\Users\david\.codex\tools\agent-bus-mcp run agent-bus-mcp health
+agent-bus health --encoding compact
 pwsh -NoLogo -NoProfile -File C:\Users\david\.codex\tools\agent-bus-mcp\scripts\validate-agent-bus.ps1
 ```
 
@@ -61,8 +60,8 @@ Common issues:
 ### MCP launch
 
 ```powershell
-uv --directory C:\Users\david\.codex\tools\agent-bus-mcp run agent-bus-mcp serve --transport stdio
-uv --directory C:\Users\david\.codex\tools\agent-bus-mcp run agent-bus-mcp serve --transport streamable-http --port 8765
+agent-bus serve --transport stdio
+agent-bus serve --transport mcp-http --port 8765
 ```
 
 ## Notes
@@ -89,16 +88,14 @@ uv --directory C:\Users\david\.codex\tools\agent-bus-mcp run agent-bus-mcp serve
 ### Interop & runtime metadata
 
 - `bus_health` now returns `protocol_version` and `runtime_metadata` for monitoring hooks.
-- `bus_health.runtime_metadata.codec` reports serializer backend (`native`/`python`) and is safe for observability pipelines.
+- `bus_health.runtime_metadata.codec` reports the active Rust serializer backend and is safe for observability pipelines.
 - Suggested integration order:
   - Use compact JSON for all machine pipelines and script-to-script transport.
   - Use human mode only for direct operator viewing.
   - Keep payload contracts additive (`protocol_version`, `thread_id`) to preserve forward compatibility.
 - See [IMPLEMENTATION_NOTES.md](./IMPLEMENTATION_NOTES.md) for a concrete A2A/TOON/protobuf comparison and Rust migration sequence.
 
-### Performance and Rust path
+### Performance roadmap
 
-- High-throughput target: keep Redis stream reads/writes in Python for now, then migrate hot serialization/deserialization paths (`message` / `event` shaping + watch formatting) to a Rust `pyo3` extension with:
-  - zero-copy JSON serialization for NDJSON/compact output,
-  - bounded message reuse in worker pools, and
-  - optional C ABI fallback while retaining pure-Python path parity.
+- High-throughput work now focuses on Redis/PostgreSQL query efficiency, server-side summaries, and better repo/session filtering rather than Python fallback paths.
+- See [IMPLEMENTATION_NOTES.md](./IMPLEMENTATION_NOTES.md) and [docs/agent-bus-assessment-2026-03-22.md](./docs/agent-bus-assessment-2026-03-22.md) for the current interop and roadmap notes.

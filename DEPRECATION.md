@@ -1,6 +1,12 @@
-# Python agent-bus-mcp — Deprecated
+# Python agent-bus-mcp — Removed
 
-**Status:** Deprecated as of 2026-03-15. Use the Rust `agent-bus` CLI instead.
+**Status:** Enforced as of 2026-03-22. The repository is now Rust-only.
+
+## Outcome
+
+- The deprecated Python package and pytest suite have been removed from this repo.
+- The supported runtime is the Rust `agent-bus` CLI and server in `rust-cli/`.
+- PowerShell wrappers remain supported because they call the Rust binary directly.
 
 ## Migration
 
@@ -15,33 +21,23 @@
 | `agent-bus-mcp presence-list ...` | `agent-bus presence-list ...` |
 | `agent-bus-mcp serve --transport stdio` | `agent-bus serve --transport stdio` |
 
-All flags are identical. The Rust CLI is a drop-in replacement.
+All flags remain aligned with the Rust CLI surface.
 
-## What's new in Rust CLI
+## Supported Code Paths
 
-- Instant startup (no Python interpreter load)
-- Built-in MCP server (`serve --transport stdio`) using rmcp SDK
-- `--encoding minimal` for 50% token reduction
-- `--encoding human` for terminal-friendly table output
-- Full validation (priority enum, non-empty fields, metadata JSON)
-- `--version` and comprehensive `--help` with env var docs
+- `rust-cli/`: primary implementation, CLI, HTTP server, MCP server, benches, and tests
+- `scripts/`: PowerShell wrappers and deployment helpers
+- `docs/`: protocol, assessment, and operational guidance
 
-## What's kept
+## Removed Code Paths
 
-The Python package remains at `~/.codex/tools/agent-bus-mcp/` for:
-- **PyO3 native codec** used by the MCP server venv (14 Rust functions)
-- **PostgreSQL persistence** (not yet ported to Rust CLI)
-- **pytest suite** (61 tests) for codec/bus/settings validation
-- **PowerShell wrapper scripts** (which can call either CLI)
+- `src/agent_bus_mcp/`
+- `tests/test_*.py`
+- `pyproject.toml`
+- `scripts/build-native-codec.ps1`
+- `rust/` PyO3 codec crate
 
-## MCP configs updated
+## Follow-up
 
-All three agent platforms now point to the Rust binary:
-- `~/.claude/mcp.json` → `~/bin/agent-bus.exe`
-- `~/.codex/config.toml` → `~/bin/agent-bus.exe`
-- `~/.gemini/settings.json` → `~/bin/agent-bus.exe`
-
-## Timeline
-
-- **2026-03-15:** Python CLI deprecated, Rust CLI is primary
-- **Future:** PostgreSQL persistence ported to Rust, Python package archived
+- Keep removing stale Python references from docs and examples when discovered.
+- Do not add new Python runtime code back into this repository.

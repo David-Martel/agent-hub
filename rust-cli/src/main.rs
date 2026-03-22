@@ -1,7 +1,7 @@
 //! Fast standalone CLI + MCP server for agent-bus coordination.
 //!
 //! Direct Redis client — no Python interpreter, no GIL, instant startup.
-//! Full feature parity with the Python agent-bus-mcp server, including MCP stdio mode.
+//! Supports CLI, MCP stdio, MCP Streamable HTTP, and HTTP REST flows.
 //!
 //! # Example
 //!
