@@ -1,10 +1,10 @@
-# Agent Hub Communication Protocol (v0.4)
+# Agent Hub Communication Protocol (v0.5)
 
 > **Generalized for Claude, Codex, Gemini, Copilot, and any MCP-compatible agent.**
 > **This document MUST be included in every agent's system prompt.**
 > Agents that do not follow this protocol will have their findings rejected or deprioritized.
 >
-> Protocol Version: v0.4 | Implementation: Rust native (zero Python)
+> Protocol Version: v0.5 | Implementation: Rust native (zero Python)
 > Storage: Redis (realtime) + PostgreSQL (durable history)
 
 ## Quick Start (Copy These 5 Steps Into Your First Actions)
@@ -90,7 +90,7 @@ linter → all | ownership | CLAIMING: Task #11 — lint and format. Skipping fi
   by active agents: tax_parser.py (tax-integrator), test_doc_type_detector.py (doctype-expander)
 ```
 
-## Channel System (v0.4)
+## Channel System (v0.5)
 
 Beyond broadcast messages, the bus provides focused communication channels for coordinated multi-agent work.
 
@@ -428,7 +428,7 @@ Before reading files, check if these tools have already indexed the repo:
 
 ## MCP Tool Names (When Agent-Bus Is Loaded as MCP Server)
 
-If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), these 8 tools are available directly in your LLM session:
+If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), these 14 tools are available directly in your LLM session:
 
 | MCP Tool | Purpose | Key Parameters |
 |----------|---------|----------------|
@@ -440,6 +440,14 @@ If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), thes
 | `list_presence` | List all active agents | (none) |
 | `list_presence_history` | PG presence audit trail | `agent`, `since_minutes`, `limit` |
 | `negotiate` | Discover protocol capabilities | (none) — returns: protocol_version, features, transports, schemas, encoding_formats |
+| `create_channel` | Create a group channel | `channel_type`, `name`, `members[]`, `created_by` |
+| `post_to_channel` | Post to a direct, group, or escalation channel | `channel_type`, `sender`, `recipient`, `topic`, `body`, `tags[]` |
+| `read_channel` | Read direct or group channel traffic | `channel_type`, `agent_a`, `agent_b`, `group_name`, `limit` |
+| `claim_resource` | Register first-edit ownership | `resource`, `agent`, `reason` |
+| `resolve_claim` | Resolve a contested ownership claim | `resource`, `winner`, `reason`, `resolved_by` |
+| `check_inbox` | Cursor-based inbox polling for only new messages | `agent`, `limit`, `reset_cursor` |
+
+Use `check_inbox` for routine follow-up polling; it advances a per-agent cursor and avoids repeatedly re-reading the same bus history.
 
 **Schema validation is enforced on `post_message`** when the `schema` parameter is provided.
 
@@ -623,7 +631,7 @@ agent-bus serve --transport http --port 8400 # HTTP REST + SSE
 agent-bus serve --transport mcp-http --port 8401  # MCP Streamable HTTP (2025-06-18 spec)
 ```
 
-## Codex Integration (v0.4)
+## Codex Integration (v0.5)
 
 The bus includes bidirectional Codex bridge for syncing findings between coordinating agents and the Codex CLI.
 
@@ -639,7 +647,7 @@ agent-bus codex-sync --limit 100 --encoding json
 
 **Use case:** Multi-agent sessions can post findings to the bus, then use `codex-sync` to integrate them into Codex's internal finding registry for downstream processing (fixes, verification, etc.).
 
-## Protocol Negotiation (v0.4)
+## Protocol Negotiation (v0.5)
 
 Clients can discover bus capabilities and supported features:
 

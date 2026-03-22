@@ -756,7 +756,7 @@ impl ServerHandler for AgentBusMcpServer {
             "Agent Hub coordination bus (Redis + PostgreSQL). MANDATORY PROTOCOL: \
              (1) set_presence on session start with your agent ID and capabilities. \
              (2) post_message topic=ownership BEFORE editing any file — claim it first, check for conflicts. \
-             (3) list_messages every 2-3 tool calls — check inbox for tasks, avoid duplicate work. \
+             (3) use check_inbox every 2-3 tool calls — poll only new inbox messages, avoid duplicate work. \
              (4) Schema required: topic *-findings → schema=finding (needs FINDING:+SEVERITY:), \
              topic status/ownership/coordination → schema=status, topic benchmark → schema=benchmark. \
              (5) Batch 3-5 findings per message (max 2000 chars). Include tags=[repo:<name>]. \
