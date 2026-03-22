@@ -14,15 +14,15 @@ use uuid::Uuid;
 /// Body size threshold (bytes) above which LZ4 compression is applied.
 const COMPRESS_THRESHOLD: usize = 512;
 
+use crate::channels::{check_redis_ownership, extract_claimed_files, global_ownership_tracker};
 use crate::models::{
     Health, Message, PROTOCOL_VERSION, Presence, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR,
 };
 use crate::postgres_store::{
-    PgWriter, count_both_postgres, list_messages_postgres, persist_presence_postgres,
-    pg_metrics, probe_postgres,
+    PgWriter, count_both_postgres, list_messages_postgres, list_messages_postgres_with_filters,
+    persist_presence_postgres, pg_metrics, probe_postgres,
 };
 use crate::settings::{Settings, redact_url};
-use crate::channels::{check_redis_ownership, extract_claimed_files, global_ownership_tracker};
 use crate::validation::infer_schema_from_topic;
 
 pub(crate) fn connect(settings: &Settings) -> Result<redis::Connection> {
@@ -262,6 +262,34 @@ pub(crate) fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Mes
         metadata: get_json_value("metadata"),
         stream_id: None,
     }
+}
+
+fn message_matches_filters(
+    msg: &Message,
+    agent: Option<&str>,
+    from_agent: Option<&str>,
+    include_broadcast: bool,
+    thread_id: Option<&str>,
+    required_tags: &[&str],
+) -> bool {
+    if from_agent.is_some_and(|filter| msg.from != filter) {
+        return false;
+    }
+    if let Some(filter) = agent {
+        let to_matches = msg.to == filter;
+        let broadcast_matches = include_broadcast && msg.to == "all";
+        if !to_matches && !broadcast_matches {
+            return false;
+        }
+    }
+    if let Some(thread_filter) = thread_id
+        && msg.thread_id.as_deref() != Some(thread_filter)
+    {
+        return false;
+    }
+    required_tags
+        .iter()
+        .all(|tag| msg.tags.iter().any(|candidate| candidate == tag))
 }
 
 /// Parse stream results from XRANGE / XREVRANGE.
@@ -891,9 +919,7 @@ pub(crate) fn bus_post_message(
     // When the sender requests acknowledgement, record the pending ack in Redis
     // with a 300-second TTL so `list_pending_acks` / `GET /pending-acks` can
     // surface unacknowledged messages.  Failures are non-fatal.
-    if request_ack
-        && let Err(error) = track_pending_ack(conn, &id, to, &msg.timestamp_utc)
-    {
+    if request_ack && let Err(error) = track_pending_ack(conn, &id, to, &msg.timestamp_utc) {
         tracing::warn!("failed to track pending ack for {id}: {error:#}");
     }
     // -------------------------------------------------------------------------
@@ -1118,8 +1144,40 @@ pub(crate) fn bus_list_messages_from_redis(
     limit: usize,
     include_broadcast: bool,
 ) -> Result<Vec<Message>> {
-    // XREVRANGE to get newest first; overfetch by 5x to allow filtering
-    let fetch_count = (limit * XREVRANGE_OVERFETCH_FACTOR).max(XREVRANGE_MIN_FETCH);
+    bus_list_messages_from_redis_with_filters(
+        conn,
+        settings,
+        agent,
+        from_agent,
+        since_minutes,
+        limit,
+        include_broadcast,
+        None,
+        &[],
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Redis read helper mirrors the transport filter surface"
+)]
+pub(crate) fn bus_list_messages_from_redis_with_filters(
+    conn: &mut redis::Connection,
+    settings: &Settings,
+    agent: Option<&str>,
+    from_agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+    include_broadcast: bool,
+    thread_id: Option<&str>,
+    required_tags: &[&str],
+) -> Result<Vec<Message>> {
+    let fetch_multiplier = if thread_id.is_some() || !required_tags.is_empty() {
+        XREVRANGE_OVERFETCH_FACTOR.saturating_mul(2)
+    } else {
+        XREVRANGE_OVERFETCH_FACTOR
+    };
+    let fetch_count = (limit.saturating_mul(fetch_multiplier)).max(XREVRANGE_MIN_FETCH);
     let raw: Vec<redis::Value> = redis::cmd("XREVRANGE")
         .arg(&settings.stream_key)
         .arg("+")
@@ -1147,15 +1205,15 @@ pub(crate) fn bus_list_messages_from_redis(
             continue;
         }
 
-        if from_agent.is_some_and(|f| msg.from != f) {
+        if !message_matches_filters(
+            &msg,
+            agent,
+            from_agent,
+            include_broadcast,
+            thread_id,
+            required_tags,
+        ) {
             continue;
-        }
-        if let Some(a) = agent {
-            let to_matches = msg.to == a;
-            let broadcast_matches = include_broadcast && msg.to == "all";
-            if !to_matches && !broadcast_matches {
-                continue;
-            }
         }
 
         msg.stream_id = Some(stream_id);
@@ -1206,6 +1264,53 @@ pub(crate) fn bus_list_messages(
     )
 }
 
+#[allow(dead_code)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "top-level read helper mirrors the transport filter surface"
+)]
+pub(crate) fn bus_list_messages_with_filters(
+    settings: &Settings,
+    agent: Option<&str>,
+    from_agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+    include_broadcast: bool,
+    thread_id: Option<&str>,
+    required_tags: &[&str],
+) -> Result<Vec<Message>> {
+    if settings.database_url.is_some() {
+        match list_messages_postgres_with_filters(
+            settings,
+            agent,
+            from_agent,
+            since_minutes,
+            limit,
+            include_broadcast,
+            thread_id,
+            required_tags,
+        ) {
+            Ok(messages) => return Ok(messages),
+            Err(error) => {
+                tracing::warn!("Postgres message query failed, falling back to Redis: {error:#}");
+            }
+        }
+    }
+
+    let mut conn = connect(settings)?;
+    bus_list_messages_from_redis_with_filters(
+        &mut conn,
+        settings,
+        agent,
+        from_agent,
+        since_minutes,
+        limit,
+        include_broadcast,
+        thread_id,
+        required_tags,
+    )
+}
+
 /// Read messages addressed to `agent` that arrived after `since_id`.
 ///
 /// Uses `XRANGE` with an exclusive lower bound (`(since_id` notation when
@@ -1220,11 +1325,23 @@ pub(crate) fn bus_list_messages(
 /// # Errors
 ///
 /// Returns an error if the Redis connection or `XRANGE` command fails.
+#[allow(dead_code)]
 pub(crate) fn bus_list_messages_since_id(
     settings: &Settings,
     agent: &str,
     since_id: &str,
     limit: usize,
+) -> Result<Vec<Message>> {
+    bus_list_messages_since_id_with_filters(settings, agent, since_id, limit, None, &[])
+}
+
+pub(crate) fn bus_list_messages_since_id_with_filters(
+    settings: &Settings,
+    agent: &str,
+    since_id: &str,
+    limit: usize,
+    thread_id: Option<&str>,
+    required_tags: &[&str],
 ) -> Result<Vec<Message>> {
     let mut conn = connect(settings)?;
 
@@ -1232,6 +1349,11 @@ pub(crate) fn bus_list_messages_since_id(
     // for exclusive ranges in XRANGE.  We rely on that here; all supported
     // Redis versions in this project meet the 6.2 bar.
     let exclusive_start = format!("({since_id}");
+    let fetch_multiplier = if thread_id.is_some() || !required_tags.is_empty() {
+        XREVRANGE_OVERFETCH_FACTOR.saturating_mul(2)
+    } else {
+        XREVRANGE_OVERFETCH_FACTOR
+    };
 
     let raw: Vec<redis::Value> = redis::cmd("XRANGE")
         .arg(&settings.stream_key)
@@ -1240,7 +1362,7 @@ pub(crate) fn bus_list_messages_since_id(
         .arg("COUNT")
         // Overfetch by the broadcast-filter factor so we still hit `limit`
         // after dropping messages not addressed to this agent.
-        .arg((limit * XREVRANGE_OVERFETCH_FACTOR).max(XREVRANGE_MIN_FETCH))
+        .arg((limit.saturating_mul(fetch_multiplier)).max(XREVRANGE_MIN_FETCH))
         .query(&mut conn)
         .context("XRANGE since_id failed")?;
 
@@ -1249,9 +1371,7 @@ pub(crate) fn bus_list_messages_since_id(
         let mut msg = decode_stream_entry(&fields);
 
         // Include only messages addressed to this agent or broadcast.
-        let to_matches = msg.to == agent;
-        let broadcast_matches = msg.to == "all";
-        if !to_matches && !broadcast_matches {
+        if !message_matches_filters(&msg, Some(agent), None, true, thread_id, required_tags) {
             continue;
         }
 
@@ -1596,6 +1716,30 @@ pub(crate) fn task_queue_length(settings: &Settings, agent: &str) -> Result<u64>
 mod tests {
     use super::*;
 
+    fn sample_message() -> Message {
+        Message {
+            id: "msg-1".to_owned(),
+            timestamp_utc: "2026-03-22T12:00:00.000000Z".to_owned(),
+            protocol_version: PROTOCOL_VERSION.to_owned(),
+            from: "claude".to_owned(),
+            to: "codex".to_owned(),
+            topic: "status".to_owned(),
+            body: "hello".to_owned(),
+            thread_id: Some("thread-1".to_owned()),
+            tags: vec![
+                "repo:agent-bus".to_owned(),
+                "session:s1".to_owned(),
+                "wave:1".to_owned(),
+            ]
+            .into(),
+            priority: "normal".to_owned(),
+            request_ack: false,
+            reply_to: None,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+            stream_id: None,
+        }
+    }
+
     #[test]
     fn decode_stream_entry_handles_empty_fields() {
         let fields: HashMap<String, redis::Value> = HashMap::new();
@@ -1664,6 +1808,40 @@ mod tests {
         );
         let msg = decode_stream_entry(&fields);
         assert_eq!(msg.thread_id, None);
+    }
+
+    #[test]
+    fn message_matches_filters_requires_thread_and_tags() {
+        let msg = sample_message();
+        assert!(message_matches_filters(
+            &msg,
+            Some("codex"),
+            Some("claude"),
+            true,
+            Some("thread-1"),
+            &["repo:agent-bus", "session:s1"],
+        ));
+    }
+
+    #[test]
+    fn message_matches_filters_rejects_missing_thread_or_tag() {
+        let msg = sample_message();
+        assert!(!message_matches_filters(
+            &msg,
+            Some("codex"),
+            Some("claude"),
+            true,
+            Some("thread-2"),
+            &["repo:agent-bus"],
+        ));
+        assert!(!message_matches_filters(
+            &msg,
+            Some("codex"),
+            Some("claude"),
+            true,
+            Some("thread-1"),
+            &["repo:other"],
+        ));
     }
 
     #[test]
@@ -2078,7 +2256,7 @@ mod tests {
             "bob",
             "ack",
             "ok",
-            None,             // no explicit thread_id
+            None, // no explicit thread_id
             &[],
             "normal",
             false,

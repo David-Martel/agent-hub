@@ -299,6 +299,8 @@ pub(crate) fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings
             on {message_table} (sender, timestamp_utc desc);
         create index if not exists agent_bus_messages_topic_ts_idx
             on {message_table} (topic, timestamp_utc desc);
+        create index if not exists agent_bus_messages_thread_id_ts_idx
+            on {message_table} (thread_id, timestamp_utc desc);
         create index if not exists agent_bus_messages_reply_to_idx
             on {message_table} (reply_to);
         create unique index if not exists agent_bus_messages_stream_id_idx
@@ -563,13 +565,55 @@ pub(crate) fn row_to_message(row: &postgres::Row) -> Message {
     }
 }
 
-pub(crate) fn list_messages_postgres(
+/// Build a de-duplicated tag list for query-layer scope filters.
+///
+/// Callers can pass `repo:<name>` and `session:<id>` through this helper so the
+/// query functions only need to reason about tags.
+pub(crate) fn query_scope_tags(
+    repo: Option<&str>,
+    session: Option<&str>,
+    tags: &[&str],
+) -> Vec<String> {
+    let mut scoped = Vec::with_capacity(tags.len() + 2);
+    let mut seen = HashSet::new();
+
+    for tag in repo
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("repo:{value}"))
+        .into_iter()
+        .chain(
+            session
+                .filter(|value| !value.is_empty())
+                .map(|value| format!("session:{value}")),
+        )
+        .chain(
+            tags.iter()
+                .copied()
+                .filter(|tag| !tag.is_empty())
+                .map(str::to_owned),
+        )
+    {
+        if seen.insert(tag.clone()) {
+            scoped.push(tag);
+        }
+    }
+
+    scoped
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "query helpers accept transport-level filters without allocating wrapper structs"
+)]
+pub(crate) fn list_messages_postgres_with_filters(
     settings: &Settings,
     agent: Option<&str>,
     from_agent: Option<&str>,
     since_minutes: u64,
     limit: usize,
     include_broadcast: bool,
+    thread_id: Option<&str>,
+    required_tags: &[&str],
 ) -> Result<Vec<Message>> {
     run_postgres_blocking(|| {
         let Some(mut client) = get_pg_client(settings)? else {
@@ -581,6 +625,12 @@ pub(crate) fn list_messages_postgres(
         let limit = i64::try_from(limit).context("limit exceeds i64")?;
         let agent_filter = agent.map(str::to_owned);
         let sender_filter = from_agent.map(str::to_owned);
+        let thread_filter = thread_id.map(str::to_owned);
+        let tag_filter = if required_tags.is_empty() {
+            None
+        } else {
+            Some(serde_json::json!(required_tags).to_string())
+        };
 
         let rows = client.query(
             &format!(
@@ -589,11 +639,21 @@ pub(crate) fn list_messages_postgres(
                  where timestamp_utc >= now() - ($1::bigint * interval '1 minute') \
                    and ($2::text is null or sender = $2) \
                    and ($3::text is null or recipient = $3 or ($4 and recipient = 'all')) \
+                   and ($5::text is null or thread_id = $5) \
+                   and ($6::jsonb is null or tags @> $6::jsonb) \
                  order by timestamp_utc desc \
-                 limit $5",
+                 limit $7",
                 settings.message_table
             ),
-            &[&since_minutes, &sender_filter, &agent_filter, &include_broadcast, &limit],
+            &[
+                &since_minutes,
+                &sender_filter,
+                &agent_filter,
+                &include_broadcast,
+                &thread_filter,
+                &tag_filter,
+                &limit,
+            ],
         )?;
 
         let mut messages: Vec<Message> = rows.iter().map(row_to_message).collect();
@@ -601,6 +661,62 @@ pub(crate) fn list_messages_postgres(
         return_pg_client(client);
         Ok(messages)
     })
+}
+
+pub(crate) fn list_messages_postgres(
+    settings: &Settings,
+    agent: Option<&str>,
+    from_agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+    include_broadcast: bool,
+) -> Result<Vec<Message>> {
+    list_messages_postgres_with_filters(
+        settings,
+        agent,
+        from_agent,
+        since_minutes,
+        limit,
+        include_broadcast,
+        None,
+        &[],
+    )
+}
+
+/// Convenience wrapper for query-layer scope tags.
+///
+/// This is the preferred entry point when a caller wants to scope a message
+/// query by repo/session tags without assembling the `repo:<name>` and
+/// `session:<id>` strings itself.
+#[allow(dead_code)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "scoped wrapper forwards the full filter set to the shared query path"
+)]
+pub(crate) fn list_messages_postgres_scoped(
+    settings: &Settings,
+    agent: Option<&str>,
+    from_agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+    include_broadcast: bool,
+    thread_id: Option<&str>,
+    repo: Option<&str>,
+    session: Option<&str>,
+    tags: &[&str],
+) -> Result<Vec<Message>> {
+    let scoped_tags = query_scope_tags(repo, session, tags);
+    let scoped_tag_refs: Vec<&str> = scoped_tags.iter().map(String::as_str).collect();
+    list_messages_postgres_with_filters(
+        settings,
+        agent,
+        from_agent,
+        since_minutes,
+        limit,
+        include_broadcast,
+        thread_id,
+        &scoped_tag_refs,
+    )
 }
 
 /// Query messages whose `tags` array contains `tag` (uses the GIN index).
@@ -612,38 +728,24 @@ pub(crate) fn list_messages_postgres(
 /// # Errors
 ///
 /// Returns an error if the database operation fails.
+#[allow(dead_code)]
 pub(crate) fn list_messages_by_tag(
     settings: &Settings,
     tag: &str,
     since_minutes: u64,
     limit: usize,
 ) -> Result<Vec<Message>> {
-    run_postgres_blocking(|| {
-        let Some(mut client) = get_pg_client(settings)? else {
-            return Ok(Vec::new());
-        };
-        ensure_postgres_storage(&mut client, settings)?;
-        let since = i64::try_from(since_minutes).context("since_minutes exceeds i64")?;
-        let limit_i64 = i64::try_from(limit).context("limit exceeds i64")?;
-        let tag_json = serde_json::json!([tag]);
-        let rows = client.query(
-            &format!(
-                "SELECT id, timestamp_utc, protocol_version, sender, recipient, topic, body, \
-                 thread_id, tags, priority, request_ack, reply_to, metadata, stream_id \
-                 FROM {} \
-                 WHERE timestamp_utc >= now() - ($1::bigint * interval '1 minute') \
-                   AND tags @> $2::jsonb \
-                 ORDER BY timestamp_utc DESC \
-                 LIMIT $3",
-                settings.message_table
-            ),
-            &[&since, &tag_json, &limit_i64],
-        )?;
-        let mut messages: Vec<Message> = rows.iter().map(row_to_message).collect();
-        messages.reverse();
-        return_pg_client(client);
-        Ok(messages)
-    })
+    let tags = [tag];
+    list_messages_postgres_with_filters(
+        settings,
+        None,
+        None,
+        since_minutes,
+        limit,
+        true,
+        None,
+        &tags,
+    )
 }
 
 /// Fetch both message and presence event counts in a single `PostgreSQL` round-trip.
@@ -836,20 +938,22 @@ pub(crate) fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<Strin
 pub(crate) fn spawn_pg_health_monitor(settings: Settings, interval_secs: u64) {
     std::thread::Builder::new()
         .name("pg-health-monitor".to_owned())
-        .spawn(move || loop {
-            std::thread::sleep(Duration::from_secs(interval_secs));
-            if is_pg_circuit_open() {
-                tracing::info!(
-                    "pg-health-monitor: circuit open — probing PostgreSQL connectivity"
-                );
-                let (ok, _err, _ready) = probe_postgres(&settings);
-                if ok == Some(true) {
-                    mark_pg_up();
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(interval_secs));
+                if is_pg_circuit_open() {
                     tracing::info!(
-                        "pg-health-monitor: probe succeeded — circuit closed, writes resumed"
+                        "pg-health-monitor: circuit open — probing PostgreSQL connectivity"
                     );
-                } else {
-                    tracing::info!("pg-health-monitor: probe failed — circuit remains open");
+                    let (ok, _err, _ready) = probe_postgres(&settings);
+                    if ok == Some(true) {
+                        mark_pg_up();
+                        tracing::info!(
+                            "pg-health-monitor: probe succeeded — circuit closed, writes resumed"
+                        );
+                    } else {
+                        tracing::info!("pg-health-monitor: probe failed — circuit remains open");
+                    }
                 }
             }
         })
@@ -940,9 +1044,7 @@ impl PgWriter {
     /// Drops the write silently if the background task has already exited.
     pub(crate) fn send_message(&self, msg: &Message) {
         let _ = self.tx.send(PgWriteRequest::Message(Box::new(msg.clone())));
-        pg_metrics()
-            .messages_queued
-            .fetch_add(1, Ordering::Relaxed);
+        pg_metrics().messages_queued.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Enqueue a presence event for asynchronous `PostgreSQL` persistence.
@@ -952,9 +1054,7 @@ impl PgWriter {
         let _ = self
             .tx
             .send(PgWriteRequest::Presence(Box::new(presence.clone())));
-        pg_metrics()
-            .messages_queued
-            .fetch_add(1, Ordering::Relaxed);
+        pg_metrics().messages_queued.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1233,7 +1333,10 @@ mod tests {
             Ok(())
         });
         assert!(result.is_ok(), "expected success when circuit is closed");
-        assert_eq!(calls, 1, "closure must be called exactly once on first success");
+        assert_eq!(
+            calls, 1,
+            "closure must be called exactly once on first success"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1474,8 +1577,18 @@ mod tests {
     /// round-trips; too large risks memory pressure or slow flushes.
     #[test]
     fn pg_batch_size_is_within_reasonable_range() {
-        const { assert!(PG_BATCH_SIZE >= 5, "PG_BATCH_SIZE is too small — minimum is 5") };
-        const { assert!(PG_BATCH_SIZE <= 100, "PG_BATCH_SIZE is too large — maximum is 100") };
+        const {
+            assert!(
+                PG_BATCH_SIZE >= 5,
+                "PG_BATCH_SIZE is too small — minimum is 5"
+            );
+        };
+        const {
+            assert!(
+                PG_BATCH_SIZE <= 100,
+                "PG_BATCH_SIZE is too large — maximum is 100"
+            );
+        };
     }
 
     /// `PG_BATCH_TIMEOUT_MS` must be within [50, 500] ms.  Values outside
@@ -1545,6 +1658,24 @@ mod tests {
         let value = serde_json::json!([]);
         let tags = parse_tags(&value);
         assert!(tags.is_empty(), "parse_tags([]) must return empty vec");
+    }
+
+    // -----------------------------------------------------------------------
+    // query_scope_tags
+    // -----------------------------------------------------------------------
+
+    /// Repo/session scope tags are prefixed once and preserved in input order.
+    #[test]
+    fn query_scope_tags_prefixes_repo_and_session() {
+        let tags = query_scope_tags(Some("agent-bus"), Some("s1"), &["wave:1", "wave:1"]);
+        assert_eq!(tags, vec!["repo:agent-bus", "session:s1", "wave:1"]);
+    }
+
+    /// Empty scope components should be ignored rather than producing blank tags.
+    #[test]
+    fn query_scope_tags_ignores_empty_scope_components() {
+        let tags = query_scope_tags(Some(""), None, &["repo:agent-bus"]);
+        assert_eq!(tags, vec!["repo:agent-bus"]);
     }
 
     // -----------------------------------------------------------------------

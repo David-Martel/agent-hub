@@ -17,12 +17,14 @@ use serde::Deserialize;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::ReceiverStream;
 
+use crate::commands::scoped_required_tags;
 use crate::mcp::AgentBusMcpServer;
 use crate::models::MAX_HISTORY_MINUTES;
 use crate::output::{format_health_toon, format_message_toon, format_presence_toon};
 use crate::redis_bus::{
     BatchSendPayload, RedisPool, SseSubscriberCount, bus_health, bus_list_messages_from_redis,
-    bus_list_presence, bus_post_message, bus_post_messages_batch, bus_set_presence,
+    bus_list_messages_from_redis_with_filters, bus_list_presence, bus_post_message,
+    bus_post_messages_batch, bus_set_presence,
 };
 use crate::settings::Settings;
 use crate::validation::{
@@ -268,6 +270,14 @@ pub(crate) async fn http_send_handler(
 pub(crate) struct HttpReadQuery {
     pub(crate) agent: Option<String>,
     pub(crate) from: Option<String>,
+    #[serde(default)]
+    pub(crate) repo: Option<String>,
+    #[serde(default)]
+    pub(crate) session: Option<String>,
+    #[serde(default)]
+    pub(crate) tag: Vec<String>,
+    #[serde(default)]
+    pub(crate) thread_id: Option<String>,
     #[serde(default = "default_since_minutes")]
     pub(crate) since: u64,
     #[serde(default = "default_limit")]
@@ -299,8 +309,19 @@ pub(crate) async fn http_read_handler(
     let limit = params.limit.clamp(1, 500);
     let agent = params.agent;
     let from = params.from;
+    let repo = params.repo;
+    let session = params.session;
+    let tag = params.tag;
+    let thread_id = params.thread_id;
     let broadcast = params.broadcast;
     let toon = params.encoding.as_deref() == Some("toon");
+    let filters = crate::commands::MessageFilters {
+        repo: repo.as_deref(),
+        session: session.as_deref(),
+        tags: &tag,
+        thread_id: thread_id.as_deref(),
+    };
+    let required_tags = scoped_required_tags(&filters);
 
     let msgs = tokio::task::spawn_blocking(move || {
         // Always read from Redis for the HTTP path: Redis is the authoritative
@@ -308,7 +329,8 @@ pub(crate) async fn http_read_handler(
         // This ensures read-after-write consistency without the synchronous PG
         // write that caused POST /messages to take ~230 ms.
         let mut conn = state.redis.get_connection()?;
-        bus_list_messages_from_redis(
+        let required_tag_refs: Vec<&str> = required_tags.iter().map(String::as_str).collect();
+        bus_list_messages_from_redis_with_filters(
             &mut conn,
             &state.settings,
             agent.as_deref(),
@@ -316,6 +338,8 @@ pub(crate) async fn http_read_handler(
             since,
             limit,
             broadcast,
+            thread_id.as_deref(),
+            &required_tag_refs,
         )
     })
     .await
@@ -1023,8 +1047,7 @@ pub(crate) async fn http_batch_send_handler(
             return Err(bad_request("body must not be empty"));
         }
         validate_priority(&m.priority).map_err(|e| bad_request(format!("{e:#}")))?;
-        let effective_schema =
-            enforce_schema_for_transport("http", m.schema.as_deref(), &topic);
+        let effective_schema = enforce_schema_for_transport("http", m.schema.as_deref(), &topic);
         let fitted_body = auto_fit_schema(&body_text, effective_schema);
         validate_message_schema(&fitted_body, effective_schema)
             .map_err(|e| bad_request(format!("schema validation failed: {e:#}")))?;
@@ -1633,7 +1656,13 @@ async fn http_compact_context_handler(
     let compacted = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
         crate::redis_bus::bus_list_messages_from_redis(
-            &mut conn, &settings, agent.as_deref(), None, since, 500, true,
+            &mut conn,
+            &settings,
+            agent.as_deref(),
+            None,
+            since,
+            500,
+            true,
         )
         .map(|msgs| crate::token::compact_context(&msgs, max_tokens))
     })
@@ -1754,8 +1783,7 @@ async fn http_pull_task_handler(
     .map_err(internal_error)?;
 
     Ok(Json(
-        serde_json::to_value(serde_json::json!({"agent": agent, "task": task}))
-            .unwrap_or_default(),
+        serde_json::to_value(serde_json::json!({"agent": agent, "task": task})).unwrap_or_default(),
     ))
 }
 
@@ -1772,9 +1800,7 @@ async fn http_pull_task_handler(
 /// # Errors
 ///
 /// Returns an internal-server error when the health spawn-blocking call fails.
-pub(crate) async fn http_dashboard_handler(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub(crate) async fn http_dashboard_handler(State(state): State<AppState>) -> impl IntoResponse {
     let pool = state.redis.clone();
     let settings = Arc::clone(&state.settings);
     let health = tokio::task::spawn_blocking(move || bus_health(&settings, Some(&pool)))
@@ -2102,9 +2128,15 @@ mod tests {
         let html = generate_dashboard_html(&health);
 
         // Both Redis and PG are down — the err CSS class must appear.
-        assert!(html.contains("class=\"stat-value err\""), "err class missing");
+        assert!(
+            html.contains("class=\"stat-value err\""),
+            "err class missing"
+        );
         assert!(html.contains("Error"), "Redis error status missing");
-        assert!(html.contains("Unavailable"), "PG unavailable status missing");
+        assert!(
+            html.contains("Unavailable"),
+            "PG unavailable status missing"
+        );
     }
 
     #[test]
@@ -2128,9 +2160,18 @@ mod tests {
         let health = make_health(true, true);
         let html = generate_dashboard_html(&health);
 
-        assert!(html.contains("fetch('/presence')"), "presence fetch missing");
-        assert!(html.contains("fetch('/messages?since=60&limit=20')"), "messages fetch missing");
-        assert!(html.contains("setInterval(refresh, 10000)"), "10 s interval missing");
+        assert!(
+            html.contains("fetch('/presence')"),
+            "presence fetch missing"
+        );
+        assert!(
+            html.contains("fetch('/messages?since=60&limit=20')"),
+            "messages fetch missing"
+        );
+        assert!(
+            html.contains("setInterval(refresh, 10000)"),
+            "10 s interval missing"
+        );
     }
 
     #[test]
@@ -2140,7 +2181,10 @@ mod tests {
 
         // Must not reference any external CDN/font/script URLs.
         assert!(!html.contains("cdn."), "unexpected CDN reference");
-        assert!(!html.contains("googleapis.com"), "unexpected Google reference");
+        assert!(
+            !html.contains("googleapis.com"),
+            "unexpected Google reference"
+        );
         assert!(!html.contains("unpkg.com"), "unexpected unpkg reference");
         assert!(!html.contains("<link"), "unexpected external link tag");
         assert!(!html.contains("src="), "unexpected external script src");
@@ -2151,14 +2195,26 @@ mod tests {
         // make_health has pg_write_errors = 1, so err_class resolves to "err".
         let html = generate_dashboard_html(&make_health(true, true));
         // The format! macro must substitute the placeholder — raw placeholder must not appear.
-        assert!(!html.contains("{err_class}"), "unformatted placeholder leaked into output");
+        assert!(
+            !html.contains("{err_class}"),
+            "unformatted placeholder leaked into output"
+        );
         // With write_errors = 1 the "err" class must be present somewhere.
-        assert!(html.contains("class=\"stat-value err\""), "err class absent when write_errors > 0");
+        assert!(
+            html.contains("class=\"stat-value err\""),
+            "err class absent when write_errors > 0"
+        );
         // Zero write errors should produce the "ok" class instead.
         let mut healthy = make_health(true, true);
         healthy.pg_write_errors = Some(0);
         let html_zero = generate_dashboard_html(&healthy);
-        assert!(!html_zero.contains("class=\"stat-value err\""), "err class should be absent when write_errors = 0");
-        assert!(html_zero.contains("class=\"stat-value ok\""), "ok class should be present when write_errors = 0");
+        assert!(
+            !html_zero.contains("class=\"stat-value err\""),
+            "err class should be absent when write_errors = 0"
+        );
+        assert!(
+            html_zero.contains("class=\"stat-value ok\""),
+            "ok class should be present when write_errors = 0"
+        );
     }
 }

@@ -398,6 +398,76 @@ async fn toon_format_matches_spec() {
 }
 
 #[tokio::test]
+async fn read_filters_apply_to_repo_session_tag_and_thread_id() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
+        return;
+    }
+
+    let ts = unique_suffix();
+    let sender = format!("filter-sender-{ts}");
+    let recipient = format!("filter-recipient-{ts}");
+    let repo = format!("repo-{ts}");
+    let session = format!("session-{ts}");
+    let thread_id = format!("thread-{ts}");
+
+    client
+        .post(format!("{BASE_URL}/messages"))
+        .json(&json!({
+            "sender": &sender,
+            "recipient": &recipient,
+            "topic": "filter-test",
+            "body": "filter test body",
+            "thread_id": &thread_id,
+            "tags": [
+                format!("repo:{repo}"),
+                format!("session:{session}"),
+                "kind:finding",
+            ],
+        }))
+        .send()
+        .await
+        .expect("send failed");
+
+    let resp = client
+        .get(format!("{BASE_URL}/messages"))
+        .query(&[
+            ("agent", recipient.as_str()),
+            ("repo", repo.as_str()),
+            ("session", session.as_str()),
+            ("tag", "kind:finding"),
+            ("thread_id", thread_id.as_str()),
+            ("since", "1"),
+            ("limit", "10"),
+        ])
+        .send()
+        .await
+        .expect("filtered read failed");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let msgs: serde_json::Value = resp.json().await.expect("response JSON");
+    let arr = msgs.as_array().expect("filtered read should return array");
+    assert_eq!(arr.len(), 1, "expected exactly one filtered message");
+    let msg = &arr[0];
+    assert_eq!(msg["from"], sender);
+    assert_eq!(msg["to"], recipient);
+    assert_eq!(msg["thread_id"], thread_id);
+    assert!(
+        msg["tags"]
+            .as_array()
+            .is_some_and(|tags| tags.iter().any(|t| t == &json!(format!("repo:{repo}")))),
+        "repo tag missing"
+    );
+    assert!(
+        msg["tags"].as_array().is_some_and(|tags| tags
+            .iter()
+            .any(|t| t == &json!(format!("session:{session}")))),
+        "session tag missing"
+    );
+}
+
+#[tokio::test]
 async fn toon_body_truncated_at_120_chars() {
     let client = reqwest::Client::new();
     if !service_available(&client).await {

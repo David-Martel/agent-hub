@@ -9,9 +9,11 @@ use rmcp::model::{
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
 };
 
+use crate::commands::{MessageFilters, scoped_required_tags};
 use crate::redis_bus::{
-    bus_health, bus_list_messages, bus_list_messages_since_id, bus_list_presence, bus_post_message,
-    bus_set_presence, connect, get_inbox_cursor, inbox_cursor_key, set_inbox_cursor,
+    bus_health, bus_list_messages_since_id_with_filters, bus_list_messages_with_filters,
+    bus_list_presence, bus_post_message, bus_set_presence, connect, get_inbox_cursor,
+    inbox_cursor_key, set_inbox_cursor,
 };
 use crate::settings::Settings;
 use crate::validation::{
@@ -66,6 +68,10 @@ mod schemas {
             serde_json::json!({
                 "agent":          {"type": "string"},
                 "sender":         {"type": "string"},
+                "repo":           {"type": "string"},
+                "session":        {"type": "string"},
+                "tag":            {"type": "array", "items": {"type": "string"}},
+                "thread_id":      {"type": "string"},
                 "since_minutes":  {"type": "integer", "minimum": 1, "maximum": 10080},
                 "limit":          {"type": "integer", "minimum": 1, "maximum": 500},
                 "include_broadcast": {"type": "boolean"}
@@ -188,6 +194,23 @@ mod schemas {
                     "type": "string",
                     "description": "Agent ID to check inbox for"
                 },
+                "repo": {
+                    "type": "string",
+                    "description": "Restrict to repo:<value> tagged messages"
+                },
+                "session": {
+                    "type": "string",
+                    "description": "Restrict to session:<value> tagged messages"
+                },
+                "tag": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Require all listed tags"
+                },
+                "thread_id": {
+                    "type": "string",
+                    "description": "Restrict to one thread"
+                },
                 "limit": {
                     "type": "integer",
                     "description": "Maximum messages to return (default 10, max 100)",
@@ -232,7 +255,7 @@ impl AgentBusMcpServer {
             ),
             Tool::new(
                 "list_messages",
-                "List recent messages from the bus, optionally filtered by recipient or sender.",
+                "List recent messages from the bus, optionally filtered by recipient, sender, repo, session, tag, or thread_id.",
                 schemas::list_messages(),
             ),
             Tool::new(
@@ -468,17 +491,31 @@ impl AgentBusMcpServer {
             "list_messages" => {
                 let agent = Self::get_str(args, "agent");
                 let sender = Self::get_str(args, "sender");
+                let repo = Self::get_str(args, "repo");
+                let session = Self::get_str(args, "session");
+                let tags = Self::get_string_array(args, "tag");
+                let thread_id = Self::get_str(args, "thread_id");
                 let since_minutes = Self::get_u64_or(args, "since_minutes", 1440);
                 let limit = Self::get_usize_or(args, "limit", 50);
                 let include_broadcast = Self::get_bool_or(args, "include_broadcast", true);
-
-                let msgs = bus_list_messages(
+                let filters = MessageFilters {
+                    repo,
+                    session,
+                    tags: &tags,
+                    thread_id,
+                };
+                let required_tags = scoped_required_tags(&filters);
+                let required_tag_refs: Vec<&str> =
+                    required_tags.iter().map(String::as_str).collect();
+                let msgs = bus_list_messages_with_filters(
                     settings,
                     agent,
                     sender,
                     since_minutes,
                     limit,
                     include_broadcast,
+                    thread_id,
+                    &required_tag_refs,
                 )?;
                 Ok(serde_json::to_value(&msgs)?)
             }
@@ -703,8 +740,19 @@ impl AgentBusMcpServer {
             "check_inbox" => {
                 let agent =
                     Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
+                let repo = Self::get_str(args, "repo");
+                let session = Self::get_str(args, "session");
+                let tags = Self::get_string_array(args, "tag");
+                let thread_id = Self::get_str(args, "thread_id");
                 let limit = Self::get_usize_or(args, "limit", 10).min(100);
                 let reset_cursor = Self::get_bool_or(args, "reset_cursor", false);
+                let filters = MessageFilters {
+                    repo,
+                    session,
+                    tags: &tags,
+                    thread_id,
+                };
+                let required_tags = scoped_required_tags(&filters);
 
                 let mut conn = connect(settings)?;
 
@@ -715,7 +763,16 @@ impl AgentBusMcpServer {
                 }
 
                 let cursor = get_inbox_cursor(&mut conn, agent)?;
-                let messages = bus_list_messages_since_id(settings, agent, &cursor, limit)?;
+                let required_tag_refs: Vec<&str> =
+                    required_tags.iter().map(String::as_str).collect();
+                let messages = bus_list_messages_since_id_with_filters(
+                    settings,
+                    agent,
+                    &cursor,
+                    limit,
+                    thread_id,
+                    &required_tag_refs,
+                )?;
 
                 // Advance cursor to the stream ID of the last delivered message
                 // so the next call does not re-deliver the same entries.
@@ -921,14 +978,8 @@ mod tests {
     fn all_tools_have_non_empty_description() {
         for tool in AgentBusMcpServer::tool_list() {
             let name = tool.name.as_ref();
-            let desc = tool
-                .description
-                .as_deref()
-                .unwrap_or("");
-            assert!(
-                !desc.is_empty(),
-                "tool '{name}' has an empty description"
-            );
+            let desc = tool.description.as_deref().unwrap_or("");
+            assert!(!desc.is_empty(), "tool '{name}' has an empty description");
         }
     }
 
@@ -938,10 +989,7 @@ mod tests {
     fn all_tool_schemas_declare_type_object() {
         for tool in AgentBusMcpServer::tool_list() {
             let name = tool.name.as_ref();
-            let schema_type = tool
-                .input_schema
-                .get("type")
-                .and_then(|v| v.as_str());
+            let schema_type = tool.input_schema.get("type").and_then(|v| v.as_str());
             assert_eq!(
                 schema_type,
                 Some("object"),
@@ -965,10 +1013,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("post_message schema must have a 'required' array");
 
-        let required_names: Vec<&str> = required
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
+        let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
 
         for field in &["sender", "recipient", "topic", "body"] {
             assert!(
@@ -1016,10 +1061,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("claim_resource schema must have a 'required' array");
 
-        let required_names: Vec<&str> = required
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
+        let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
 
         assert!(
             required_names.contains(&"resource"),
@@ -1046,10 +1088,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("ack_message schema must have a 'required' array");
 
-        let required_names: Vec<&str> = required
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
+        let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
 
         assert!(
             required_names.contains(&"agent"),
@@ -1086,6 +1125,32 @@ mod tests {
         );
     }
 
+    /// `list_messages` must expose the first-class filter fields.
+    #[test]
+    fn list_messages_schema_exposes_filters() {
+        let tool = AgentBusMcpServer::tool_list()
+            .into_iter()
+            .find(|t| t.name == "list_messages")
+            .expect("list_messages tool must exist");
+
+        let props = tool
+            .input_schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .expect("list_messages schema must have properties");
+
+        assert!(props.contains_key("repo"), "list_messages must expose repo");
+        assert!(
+            props.contains_key("session"),
+            "list_messages must expose session"
+        );
+        assert!(props.contains_key("tag"), "list_messages must expose tag");
+        assert!(
+            props.contains_key("thread_id"),
+            "list_messages must expose thread_id"
+        );
+    }
+
     /// `negotiate` tool must be in the list exactly once.
     #[test]
     fn negotiate_tool_appears_exactly_once() {
@@ -1111,10 +1176,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("set_presence schema must have a 'required' array");
 
-        let required_names: Vec<&str> = required
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
+        let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
 
         assert!(
             required_names.contains(&"agent"),
@@ -1137,10 +1199,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("resolve_claim schema must have a 'required' array");
 
-        let required_names: Vec<&str> = required
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
+        let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
 
         assert!(
             required_names.contains(&"resource"),
@@ -1156,8 +1215,7 @@ mod tests {
     // check_inbox tool — schema and dispatch tests (no Redis required)
     // ---------------------------------------------------------------------------
 
-    /// `check_inbox` schema must require `agent` and expose `limit` and
-    /// `reset_cursor` as optional properties.
+    /// `check_inbox` schema must require `agent` and keep all filters optional.
     #[test]
     fn check_inbox_schema_requires_agent() {
         let tools = AgentBusMcpServer::tool_list();
@@ -1172,8 +1230,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("check_inbox schema must have a 'required' array");
 
-        let required_names: Vec<&str> =
-            required.iter().filter_map(|v| v.as_str()).collect();
+        let required_names: Vec<&str> = required.iter().filter_map(|v| v.as_str()).collect();
         assert!(
             required_names.contains(&"agent"),
             "check_inbox 'required' must include 'agent', got: {required_names:?}"
@@ -1186,9 +1243,25 @@ mod tests {
             !required_names.contains(&"reset_cursor"),
             "check_inbox 'reset_cursor' must be optional"
         );
+        assert!(
+            !required_names.contains(&"repo"),
+            "check_inbox 'repo' must be optional"
+        );
+        assert!(
+            !required_names.contains(&"session"),
+            "check_inbox 'session' must be optional"
+        );
+        assert!(
+            !required_names.contains(&"tag"),
+            "check_inbox 'tag' must be optional"
+        );
+        assert!(
+            !required_names.contains(&"thread_id"),
+            "check_inbox 'thread_id' must be optional"
+        );
     }
 
-    /// `check_inbox` schema must declare `limit` and `reset_cursor` properties.
+    /// `check_inbox` schema must declare cursor and scope filter properties.
     #[test]
     fn check_inbox_schema_optional_properties_present() {
         let tools = AgentBusMcpServer::tool_list();
@@ -1203,10 +1276,29 @@ mod tests {
             .and_then(|v| v.as_object())
             .expect("check_inbox schema must have 'properties'");
 
-        assert!(props.contains_key("limit"), "check_inbox must have 'limit' property");
+        assert!(
+            props.contains_key("limit"),
+            "check_inbox must have 'limit' property"
+        );
         assert!(
             props.contains_key("reset_cursor"),
             "check_inbox must have 'reset_cursor' property"
+        );
+        assert!(
+            props.contains_key("repo"),
+            "check_inbox must have 'repo' property"
+        );
+        assert!(
+            props.contains_key("session"),
+            "check_inbox must have 'session' property"
+        );
+        assert!(
+            props.contains_key("tag"),
+            "check_inbox must have 'tag' property"
+        );
+        assert!(
+            props.contains_key("thread_id"),
+            "check_inbox must have 'thread_id' property"
         );
     }
 

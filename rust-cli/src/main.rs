@@ -48,7 +48,7 @@ use cli::{Cli, Cmd};
 use commands::{
     PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_batch_send, cmd_claim, cmd_claims,
     cmd_codex_sync, cmd_compact_context, cmd_dedup, cmd_export, cmd_health, cmd_journal,
-    cmd_monitor, cmd_pending_acks, cmd_peek_tasks, cmd_post_direct, cmd_post_group, cmd_presence,
+    cmd_monitor, cmd_peek_tasks, cmd_pending_acks, cmd_post_direct, cmd_post_group, cmd_presence,
     cmd_presence_history, cmd_presence_list, cmd_prune, cmd_pull_task, cmd_push_task, cmd_read,
     cmd_read_direct, cmd_read_group, cmd_resolve, cmd_send, cmd_session_summary, cmd_sync,
     cmd_token_count, cmd_watch,
@@ -203,6 +203,10 @@ async fn main() -> Result<()> {
         Cmd::Read {
             ref agent,
             ref from_agent,
+            ref repo,
+            ref session,
+            ref tag,
+            ref thread_id,
             since_minutes,
             limit,
             exclude_broadcast,
@@ -213,6 +217,10 @@ async fn main() -> Result<()> {
                 &ReadArgs {
                     agent,
                     from_agent,
+                    repo,
+                    session,
+                    tags: tag,
+                    thread_id,
                     since_minutes,
                     limit,
                     exclude_broadcast,
@@ -276,6 +284,10 @@ async fn main() -> Result<()> {
         Cmd::Export {
             ref agent,
             ref from_agent,
+            ref repo,
+            ref session,
+            ref tag,
+            ref thread_id,
             since_minutes,
             limit,
         } => {
@@ -283,6 +295,10 @@ async fn main() -> Result<()> {
                 &settings,
                 agent.as_deref(),
                 from_agent.as_deref(),
+                repo,
+                session,
+                tag,
+                thread_id,
                 since_minutes,
                 limit,
             )?;
@@ -298,7 +314,10 @@ async fn main() -> Result<()> {
         }
 
         Cmd::Journal {
+            ref repo,
+            ref session,
             ref tag,
+            ref thread_id,
             ref from_agent,
             since_minutes,
             limit,
@@ -306,7 +325,10 @@ async fn main() -> Result<()> {
         } => {
             cmd_journal(
                 &settings,
-                tag.as_deref(),
+                repo,
+                session,
+                tag,
+                thread_id,
                 from_agent.as_deref(),
                 since_minutes,
                 limit,
@@ -491,12 +513,26 @@ async fn main() -> Result<()> {
             )?;
         }
 
-        Cmd::TokenCount { ref text, ref encoding } => {
+        Cmd::TokenCount {
+            ref text,
+            ref encoding,
+        } => {
             cmd_token_count(text.as_deref(), encoding)?;
         }
 
-        Cmd::CompactContext { ref agent, since_minutes, max_tokens, ref encoding } => {
-            cmd_compact_context(&settings, agent.as_deref(), since_minutes, max_tokens, encoding)?;
+        Cmd::CompactContext {
+            ref agent,
+            since_minutes,
+            max_tokens,
+            ref encoding,
+        } => {
+            cmd_compact_context(
+                &settings,
+                agent.as_deref(),
+                since_minutes,
+                max_tokens,
+                encoding,
+            )?;
         }
 
         // --- Task queue commands -----------------------------------------
@@ -508,7 +544,10 @@ async fn main() -> Result<()> {
             cmd_push_task(&settings, agent, task, encoding)?;
         }
 
-        Cmd::PullTask { ref agent, ref encoding } => {
+        Cmd::PullTask {
+            ref agent,
+            ref encoding,
+        } => {
             cmd_pull_task(&settings, agent, encoding)?;
         }
 

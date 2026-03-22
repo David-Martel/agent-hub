@@ -20,6 +20,7 @@ use crate::settings::Settings;
 /// # Errors
 ///
 /// Returns an error if both the `PostgreSQL` and Redis queries fail.
+#[allow(dead_code)]
 pub(crate) fn query_messages_by_tag(
     settings: &Settings,
     tag: &str,
@@ -28,8 +29,7 @@ pub(crate) fn query_messages_by_tag(
 ) -> Result<Vec<Message>> {
     // Try PG first (has GIN index on tags).
     if settings.database_url.is_some()
-        && let Ok(msgs) =
-            postgres_store::list_messages_by_tag(settings, tag, since_minutes, limit)
+        && let Ok(msgs) = postgres_store::list_messages_by_tag(settings, tag, since_minutes, limit)
         && !msgs.is_empty()
     {
         return Ok(msgs);
@@ -141,10 +141,7 @@ fn maybe_deploy_protocol_doc(output_path: &Path) {
                     && src.exists()
                     && std::fs::copy(&src, &doc_path).is_ok()
                 {
-                    tracing::info!(
-                        "Deployed AGENT_COMMUNICATIONS.md to {}",
-                        doc_path.display()
-                    );
+                    tracing::info!("Deployed AGENT_COMMUNICATIONS.md to {}", doc_path.display());
                 }
             }
             break;

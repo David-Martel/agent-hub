@@ -2,13 +2,16 @@
 
 use anyhow::{Context as _, Result};
 
-use crate::models::{MAX_HISTORY_MINUTES, Message, Presence};
+use crate::models::{
+    MAX_HISTORY_MINUTES, Message, Presence, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR,
+};
 use crate::output::{
     Encoding, format_health_toon, output, output_message, output_messages, output_presence,
 };
+use crate::postgres_store::query_scope_tags;
 use crate::redis_bus::{
-    bus_health, bus_list_messages, bus_list_presence, bus_post_message, bus_set_presence,
-    clear_pending_ack, connect, list_pending_acks,
+    bus_health, bus_list_messages, bus_list_messages_with_filters, bus_list_presence,
+    bus_post_message, bus_set_presence, clear_pending_ack, connect, list_pending_acks,
 };
 use crate::settings::Settings;
 use crate::validation::{
@@ -113,10 +116,116 @@ pub(crate) struct SendArgs<'a> {
 pub(crate) struct ReadArgs<'a> {
     pub(crate) agent: &'a Option<String>,
     pub(crate) from_agent: &'a Option<String>,
+    pub(crate) repo: &'a Option<String>,
+    pub(crate) session: &'a Option<String>,
+    pub(crate) tags: &'a [String],
+    pub(crate) thread_id: &'a Option<String>,
     pub(crate) since_minutes: u64,
     pub(crate) limit: usize,
     pub(crate) exclude_broadcast: bool,
     pub(crate) encoding: &'a Encoding,
+}
+
+/// First-class filters applied on top of the backend's agent/sender/time window.
+pub(crate) struct MessageFilters<'a> {
+    pub(crate) repo: Option<&'a str>,
+    pub(crate) session: Option<&'a str>,
+    pub(crate) tags: &'a [String],
+    pub(crate) thread_id: Option<&'a str>,
+}
+
+impl MessageFilters<'_> {
+    #[allow(dead_code)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.repo.is_none()
+            && self.session.is_none()
+            && self.tags.is_empty()
+            && self.thread_id.is_none()
+    }
+}
+
+pub(crate) fn message_matches_filters(msg: &Message, filters: &MessageFilters<'_>) -> bool {
+    if let Some(repo) = filters.repo {
+        let expected = format!("repo:{repo}");
+        if !msg.tags.iter().any(|tag| tag == &expected) {
+            return false;
+        }
+    }
+
+    if let Some(session) = filters.session {
+        let expected = format!("session:{session}");
+        if !msg.tags.iter().any(|tag| tag == &expected) {
+            return false;
+        }
+    }
+
+    if !filters
+        .tags
+        .iter()
+        .all(|tag| msg.tags.iter().any(|msg_tag| msg_tag == tag))
+    {
+        return false;
+    }
+
+    if filters
+        .thread_id
+        .is_some_and(|thread_id| msg.thread_id.as_deref() != Some(thread_id))
+    {
+        return false;
+    }
+
+    true
+}
+
+#[allow(dead_code)]
+pub(crate) fn filter_messages(
+    messages: &[Message],
+    filters: &MessageFilters<'_>,
+    limit: usize,
+) -> Vec<Message> {
+    messages
+        .iter()
+        .filter(|msg| message_matches_filters(msg, filters))
+        .take(limit)
+        .cloned()
+        .collect()
+}
+
+#[allow(dead_code)]
+pub(crate) fn extra_filter_fetch_limit(limit: usize, filters: &MessageFilters<'_>) -> usize {
+    if filters.is_empty() {
+        limit
+    } else {
+        (limit * XREVRANGE_OVERFETCH_FACTOR).max(XREVRANGE_MIN_FETCH)
+    }
+}
+
+pub(crate) fn scoped_required_tags(filters: &MessageFilters<'_>) -> Vec<String> {
+    let tags: Vec<&str> = filters.tags.iter().map(String::as_str).collect();
+    query_scope_tags(filters.repo, filters.session, &tags)
+}
+
+fn list_filtered_messages(
+    settings: &Settings,
+    agent: Option<&str>,
+    from_agent: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+    include_broadcast: bool,
+    filters: &MessageFilters<'_>,
+) -> Result<Vec<Message>> {
+    let required_tags = scoped_required_tags(filters);
+    let required_tag_refs: Vec<&str> = required_tags.iter().map(String::as_str).collect();
+    bus_list_messages_with_filters(
+        settings,
+        agent,
+        from_agent,
+        since_minutes,
+        limit,
+        include_broadcast,
+        filters.thread_id,
+        &required_tag_refs,
+    )
 }
 
 pub(crate) struct PresenceArgs<'a> {
@@ -214,33 +323,57 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
 }
 
 pub(crate) fn cmd_read(settings: &Settings, args: &ReadArgs<'_>) -> Result<()> {
+    let filters = MessageFilters {
+        repo: args.repo.as_deref(),
+        session: args.session.as_deref(),
+        tags: args.tags,
+        thread_id: args.thread_id.as_deref(),
+    };
+
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        use std::fmt::Write as _;
         let base = settings.server_url.as_deref().unwrap_or("");
-        let mut query = format!("since={}&limit={}", args.since_minutes, args.limit);
-        if let Some(agent) = args.agent.as_deref() {
-            let _ = write!(query, "&agent={agent}");
+        let mut url = reqwest::Url::parse(&format!("{base}/messages"))
+            .context("invalid server URL for message read")?;
+        {
+            let mut query = url.query_pairs_mut();
+            query.append_pair("since", &args.since_minutes.to_string());
+            query.append_pair("limit", &args.limit.to_string());
+            if let Some(agent) = args.agent.as_deref() {
+                query.append_pair("agent", agent);
+            }
+            if let Some(from) = args.from_agent.as_deref() {
+                query.append_pair("from", from);
+            }
+            if let Some(repo) = args.repo.as_deref() {
+                query.append_pair("repo", repo);
+            }
+            if let Some(session) = args.session.as_deref() {
+                query.append_pair("session", session);
+            }
+            for tag in args.tags {
+                query.append_pair("tag", tag);
+            }
+            if let Some(thread_id) = args.thread_id.as_deref() {
+                query.append_pair("thread_id", thread_id);
+            }
+            if args.exclude_broadcast {
+                query.append_pair("broadcast", "false");
+            }
         }
-        if let Some(from) = args.from_agent.as_deref() {
-            let _ = write!(query, "&from={from}");
-        }
-        if args.exclude_broadcast {
-            query.push_str("&broadcast=false");
-        }
-        let url = format!("{base}/messages?{query}");
-        let val = http_get(&url)?;
+        let val = http_get(url.as_str())?;
         output(&val, args.encoding);
         return Ok(());
     }
 
-    let msgs = bus_list_messages(
+    let msgs = list_filtered_messages(
         settings,
         args.agent.as_deref(),
         args.from_agent.as_deref(),
         args.since_minutes,
         args.limit,
         !args.exclude_broadcast,
+        &filters,
     )?;
     output_messages(&msgs, args.encoding);
     Ok(())
@@ -441,14 +574,37 @@ pub(crate) fn cmd_prune(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    clippy::ref_option,
+    reason = "keeps CLI dispatch stable while filters are threaded through existing command shape"
+)]
 pub(crate) fn cmd_export(
     settings: &Settings,
     agent: Option<&str>,
     from_agent: Option<&str>,
+    repo: &Option<String>,
+    session: &Option<String>,
+    tags: &[String],
+    thread_id: &Option<String>,
     since_minutes: u64,
     limit: usize,
 ) -> Result<()> {
-    let msgs = bus_list_messages(settings, agent, from_agent, since_minutes, limit, true)?;
+    let filters = MessageFilters {
+        repo: repo.as_deref(),
+        session: session.as_deref(),
+        tags,
+        thread_id: thread_id.as_deref(),
+    };
+    let msgs = list_filtered_messages(
+        settings,
+        agent,
+        from_agent,
+        since_minutes,
+        limit,
+        true,
+        &filters,
+    )?;
     for msg in &msgs {
         println!("{}", serde_json::to_string(msg).unwrap_or_default());
     }
@@ -547,19 +703,37 @@ pub(crate) fn cmd_sync(settings: &Settings, limit: usize, encoding: &Encoding) -
 /// # Errors
 ///
 /// Returns an error if the query fails or the journal file cannot be written.
+#[expect(
+    clippy::too_many_arguments,
+    clippy::ref_option,
+    reason = "keeps CLI dispatch stable while filters are threaded through existing command shape"
+)]
 pub(crate) fn cmd_journal(
     settings: &Settings,
-    tag: Option<&str>,
+    repo: &Option<String>,
+    session: &Option<String>,
+    tags: &[String],
+    thread_id: &Option<String>,
     from_agent: Option<&str>,
     since_minutes: u64,
     limit: usize,
     output: &str,
 ) -> Result<()> {
-    let messages = if let Some(tag) = tag {
-        crate::journal::query_messages_by_tag(settings, tag, since_minutes, limit)?
-    } else {
-        bus_list_messages(settings, None, from_agent, since_minutes, limit, true)?
+    let filters = MessageFilters {
+        repo: repo.as_deref(),
+        session: session.as_deref(),
+        tags,
+        thread_id: thread_id.as_deref(),
     };
+    let messages = list_filtered_messages(
+        settings,
+        None,
+        from_agent,
+        since_minutes,
+        limit,
+        true,
+        &filters,
+    )?;
 
     let path = std::path::Path::new(output);
     let count = crate::journal::export_journal(&messages, path)?;
@@ -718,7 +892,10 @@ pub(crate) fn cmd_batch_send(settings: &Settings, file: &str, encoding: &Encodin
 /// # Errors
 ///
 /// Returns an error if the agents or body are empty, or if Redis write fails.
-#[expect(clippy::too_many_arguments, reason = "maps directly to CLI positional parameters")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "maps directly to CLI positional parameters"
+)]
 pub(crate) fn cmd_post_direct(
     settings: &Settings,
     from_agent: &str,
@@ -860,17 +1037,14 @@ pub(crate) fn cmd_session_summary(
 ) -> Result<()> {
     use std::collections::HashMap;
 
-    let tag_filter = format!("session:{session}");
-
-    // Read all messages from the last 7 days; the tag filter is applied below.
-    // We cannot push tag filtering into bus_list_messages without a dedicated
-    // index, so we over-fetch and filter client-side.
-    let all = bus_list_messages(settings, None, None, 10_080, 10_000, true)?;
-
-    let msgs: Vec<&crate::models::Message> = all
-        .iter()
-        .filter(|m| m.tags.iter().any(|t| t == &tag_filter))
-        .collect();
+    let session_filter = Some(session);
+    let filters = MessageFilters {
+        repo: None,
+        session: session_filter,
+        tags: &[],
+        thread_id: None,
+    };
+    let msgs = list_filtered_messages(settings, None, None, 10_080, 10_000, true, &filters)?;
 
     let mut agents: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut topics: HashMap<String, u64> = HashMap::new();
@@ -967,21 +1141,20 @@ pub(crate) fn cmd_dedup(
 ) -> Result<()> {
     use std::collections::HashMap;
 
-    let session_tag = session.map(|s| format!("session:{s}"));
-
-    let all = bus_list_messages(settings, None, agent, since_minutes, 10_000, true)?;
-
-    let msgs = all.iter().filter(|m| {
-        session_tag
-            .as_deref()
-            .is_none_or(|tag| m.tags.iter().any(|t| t == tag))
-    });
+    let filters = MessageFilters {
+        repo: None,
+        session,
+        tags: &[],
+        thread_id: None,
+    };
+    let msgs =
+        list_filtered_messages(settings, None, agent, since_minutes, 10_000, true, &filters)?;
 
     // path → (count, max_severity_str, BTreeSet<agent>)
     let mut by_path: HashMap<String, (u64, &'static str, std::collections::BTreeSet<String>)> =
         HashMap::new();
 
-    for msg in msgs {
+    for msg in &msgs {
         // Extract severity from body for this message.
         let mut msg_severity: &'static str = "LOW";
         for line in msg.body.lines() {
@@ -1017,9 +1190,11 @@ pub(crate) fn cmd_dedup(
             if path.is_empty() {
                 continue;
             }
-            let entry = by_path
-                .entry(path.to_owned())
-                .or_insert((0, "LOW", std::collections::BTreeSet::new()));
+            let entry = by_path.entry(path.to_owned()).or_insert((
+                0,
+                "LOW",
+                std::collections::BTreeSet::new(),
+            ));
             entry.0 += 1;
             if severity_rank(msg_severity) > severity_rank(entry.1) {
                 entry.1 = msg_severity;
@@ -1105,14 +1280,7 @@ pub(crate) fn cmd_compact_context(
     max_tokens: usize,
     encoding: &Encoding,
 ) -> Result<()> {
-    let msgs = bus_list_messages(
-        settings,
-        agent,
-        None,
-        since_minutes,
-        500,
-        true,
-    )?;
+    let msgs = bus_list_messages(settings, agent, None, since_minutes, 500, true)?;
 
     let compacted = crate::token::compact_context(&msgs, max_tokens);
     output(&compacted, encoding);
@@ -1183,4 +1351,84 @@ pub(crate) fn cmd_peek_tasks(
         encoding,
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_message() -> Message {
+        Message {
+            id: "msg-1".to_owned(),
+            timestamp_utc: "2026-03-22T00:00:00Z".to_owned(),
+            protocol_version: crate::models::PROTOCOL_VERSION.to_owned(),
+            from: "claude".to_owned(),
+            to: "codex".to_owned(),
+            topic: "status".to_owned(),
+            body: "hello".to_owned(),
+            thread_id: Some("thread-123".to_owned()),
+            tags: smallvec::smallvec![
+                "repo:agent-bus".to_owned(),
+                "session:sprint-42".to_owned(),
+                "kind:finding".to_owned(),
+            ],
+            priority: "normal".to_owned(),
+            request_ack: false,
+            reply_to: None,
+            metadata: serde_json::Value::Null,
+            stream_id: None,
+        }
+    }
+
+    #[test]
+    fn message_matches_repo_session_tag_and_thread_filters() {
+        let msg = make_message();
+        let repo = Some("agent-bus");
+        let session = Some("sprint-42");
+        let tags = vec!["kind:finding".to_owned()];
+        let thread_id = Some("thread-123");
+        let filters = MessageFilters {
+            repo,
+            session,
+            tags: &tags,
+            thread_id,
+        };
+
+        assert!(message_matches_filters(&msg, &filters));
+    }
+
+    #[test]
+    fn message_matches_filters_rejects_missing_tag() {
+        let msg = make_message();
+        let repo = Some("agent-bus");
+        let session = Some("sprint-42");
+        let tags = vec!["kind:other".to_owned()];
+        let thread_id = Some("thread-123");
+        let filters = MessageFilters {
+            repo,
+            session,
+            tags: &tags,
+            thread_id,
+        };
+
+        assert!(!message_matches_filters(&msg, &filters));
+    }
+
+    #[test]
+    fn extra_filter_fetch_limit_expands_only_for_message_filters() {
+        let repo = Some("agent-bus");
+        let session = None;
+        let tags: Vec<String> = Vec::new();
+        let thread_id = None;
+        let filters = MessageFilters {
+            repo,
+            session,
+            tags: &tags,
+            thread_id,
+        };
+
+        let expanded = extra_filter_fetch_limit(10, &filters);
+        assert!(expanded >= 10);
+        assert!(expanded >= XREVRANGE_MIN_FETCH);
+    }
 }
