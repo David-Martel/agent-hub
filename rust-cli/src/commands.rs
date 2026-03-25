@@ -6,8 +6,9 @@ use crate::models::{MAX_HISTORY_MINUTES, Message, Presence};
 pub(crate) use crate::ops::MessageFilters;
 use crate::ops::{
     AckMessageRequest, PostMessageRequest, PresenceRequest, ReadMessagesRequest, knock_metadata,
-    list_messages_history, list_messages_live, post_ack, post_message, set_presence,
+    list_messages_history, post_ack, post_message, set_presence,
 };
+use crate::ops::inbox::{CompactContextRequest, compact_context as compact_context_op};
 use crate::output::{
     Encoding, format_health_toon, output, output_message, output_messages, output_presence,
 };
@@ -1457,13 +1458,6 @@ pub(crate) fn cmd_compact_context(
     settings: &Settings,
     args: &CompactContextArgs<'_>,
 ) -> Result<()> {
-    let filters = MessageFilters {
-        repo: args.repo.as_deref(),
-        session: args.session.as_deref(),
-        tags: args.tags,
-        thread_id: args.thread_id.as_deref(),
-    };
-
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
         let base = settings.server_url.as_deref().unwrap_or("");
@@ -1494,21 +1488,22 @@ pub(crate) fn cmd_compact_context(
     // Pull directly from Redis with metadata filters so the output reflects the
     // current live stream without incurring PostgreSQL fallback chatter.
     let mut conn = connect(settings)?;
-    let msgs = list_messages_live(
+    let result = compact_context_op(
         &mut conn,
         settings,
-        &ReadMessagesRequest {
+        &CompactContextRequest {
             agent: args.agent,
-            from_agent: None,
+            filters: MessageFilters {
+                repo: args.repo.as_deref(),
+                session: args.session.as_deref(),
+                tags: args.tags,
+                thread_id: args.thread_id.as_deref(),
+            },
             since_minutes: args.since_minutes,
-            limit: 500,
-            include_broadcast: true,
-            filters,
+            max_tokens: args.max_tokens,
         },
     )?;
-
-    let compacted = crate::token::compact_context(&msgs, args.max_tokens);
-    output(&compacted, args.encoding);
+    output(&result.messages, args.encoding);
     Ok(())
 }
 
