@@ -1,5 +1,8 @@
 //! Shared bus operations reused across CLI, HTTP, and MCP transports.
 
+pub(crate) mod inbox;
+pub(crate) mod message;
+
 use anyhow::Result;
 
 use crate::models::{Message, Presence};
