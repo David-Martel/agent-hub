@@ -13,6 +13,17 @@ use crate::ops::{
     AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
     knock_metadata, list_messages_history, post_ack, post_message, set_presence,
 };
+use crate::ops::channel::{
+    CreateGroupRequest, EscalateRequest, PostDirectRequest, PostGroupRequest, ReadDirectRequest,
+    ReadGroupRequest, create_group as ops_create_group, post_direct as ops_post_direct,
+    post_escalation as ops_post_escalation, post_group as ops_post_group,
+    read_direct as ops_read_direct, read_group as ops_read_group,
+};
+use crate::ops::claim::{
+    ClaimResourceRequest, ReleaseClaimRequest, RenewClaimRequest, ResolveClaimRequest,
+    claim_resource as ops_claim_resource, release_claim as ops_release_claim,
+    renew_claim as ops_renew_claim, resolve_claim as ops_resolve_claim,
+};
 use crate::ops::inbox::{CheckInboxRequest, check_inbox};
 use crate::redis_bus::{bus_health, bus_list_presence, connect};
 use crate::settings::Settings;
@@ -680,8 +691,10 @@ impl AgentBusMcpServer {
                         let name = Self::get_str(args, "name")
                             .ok_or_else(|| anyhow!("name is required for group channels"))?;
                         let members = Self::get_string_array(args, "members");
-                        let info =
-                            crate::channels::create_group(settings, name, &members, created_by)?;
+                        let info = ops_create_group(
+                            settings,
+                            &CreateGroupRequest { name, members: &members, created_by },
+                        )?;
                         Ok(serde_json::to_value(&info)?)
                     }
                     other => Err(anyhow!(
@@ -705,8 +718,16 @@ impl AgentBusMcpServer {
                     "direct" => {
                         let recipient = Self::get_str(args, "recipient")
                             .ok_or_else(|| anyhow!("recipient is required for direct channels"))?;
-                        let msg = crate::channels::post_direct(
-                            settings, sender, recipient, topic, body, thread_id, &tags,
+                        let msg = ops_post_direct(
+                            settings,
+                            &PostDirectRequest {
+                                from_agent: sender,
+                                to_agent: recipient,
+                                topic,
+                                body,
+                                thread_id,
+                                tags: &tags,
+                            },
                         )?;
                         Ok(serde_json::to_value(&msg)?)
                     }
@@ -714,14 +735,22 @@ impl AgentBusMcpServer {
                         let group_name = Self::get_str(args, "recipient").ok_or_else(|| {
                             anyhow!("recipient (group name) is required for group channels")
                         })?;
-                        let msg = crate::channels::post_to_group(
-                            settings, group_name, sender, topic, body, thread_id,
+                        let msg = ops_post_group(
+                            settings,
+                            &PostGroupRequest {
+                                group: group_name,
+                                from_agent: sender,
+                                topic,
+                                body,
+                                thread_id,
+                            },
                         )?;
                         Ok(serde_json::to_value(&msg)?)
                     }
                     "escalate" => {
-                        let msg = crate::channels::post_escalation(
-                            settings, sender, body, thread_id, &tags,
+                        let msg = ops_post_escalation(
+                            settings,
+                            &EscalateRequest { from_agent: sender, body, thread_id, tags: &tags },
                         )?;
                         Ok(serde_json::to_value(&msg)?)
                     }
@@ -742,13 +771,17 @@ impl AgentBusMcpServer {
                             .ok_or_else(|| anyhow!("agent_a is required for direct channels"))?;
                         let agent_b = Self::get_str(args, "agent_b")
                             .ok_or_else(|| anyhow!("agent_b is required for direct channels"))?;
-                        let msgs = crate::channels::read_direct(settings, agent_a, agent_b, limit)?;
+                        let msgs = ops_read_direct(
+                            settings,
+                            &ReadDirectRequest { agent_a, agent_b, limit },
+                        )?;
                         Ok(serde_json::to_value(&msgs)?)
                     }
                     "group" => {
                         let group_name = Self::get_str(args, "group_name")
                             .ok_or_else(|| anyhow!("group_name is required for group channels"))?;
-                        let msgs = crate::channels::read_group(settings, group_name, limit)?;
+                        let msgs =
+                            ops_read_group(settings, &ReadGroupRequest { group: group_name, limit })?;
                         Ok(serde_json::to_value(&msgs)?)
                     }
                     other => Err(anyhow!(
@@ -764,26 +797,26 @@ impl AgentBusMcpServer {
                     Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
                 let reason = Self::get_str_or(args, "reason", "first-edit required");
                 let mode = Self::get_str_or(args, "mode", "exclusive");
-                let lease_mode = match mode {
-                    "shared" => crate::channels::ResourceLeaseMode::Shared,
-                    "shared_namespaced" => crate::channels::ResourceLeaseMode::SharedNamespaced,
-                    "exclusive" => crate::channels::ResourceLeaseMode::Exclusive,
-                    other => anyhow::bail!("invalid mode '{other}'"),
-                };
+                let namespace = Self::get_str(args, "namespace").map(str::to_owned);
+                let scope_kind = Self::get_str(args, "scope_kind").map(str::to_owned);
+                let scope_path = Self::get_str(args, "scope_path").map(str::to_owned);
+                let repo_scopes = Self::get_string_array(args, "repo_scopes");
+                let thread_id = Self::get_str(args, "thread_id").map(str::to_owned);
+                let lease_ttl_seconds = Self::get_u64_or(args, "lease_ttl_seconds", 3600);
 
-                let claim = crate::channels::claim_resource_with_options(
+                let claim = ops_claim_resource(
                     settings,
-                    resource,
-                    agent,
-                    reason,
-                    &crate::channels::ClaimOptions {
-                        mode: lease_mode,
-                        namespace: Self::get_str(args, "namespace").map(str::to_owned),
-                        scope_kind: Self::get_str(args, "scope_kind").map(str::to_owned),
-                        scope_path: Self::get_str(args, "scope_path").map(str::to_owned),
-                        repo_scopes: Self::get_string_array(args, "repo_scopes"),
-                        thread_id: Self::get_str(args, "thread_id").map(str::to_owned),
-                        lease_ttl_seconds: Self::get_u64_or(args, "lease_ttl_seconds", 3600),
+                    &ClaimResourceRequest {
+                        resource,
+                        agent,
+                        reason,
+                        mode,
+                        namespace: namespace.as_deref(),
+                        scope_kind: scope_kind.as_deref(),
+                        scope_path: scope_path.as_deref(),
+                        repo_scopes: &repo_scopes,
+                        thread_id: thread_id.as_deref(),
+                        lease_ttl_seconds,
                     },
                 )?;
                 Ok(serde_json::to_value(&claim)?)
@@ -794,11 +827,10 @@ impl AgentBusMcpServer {
                     .ok_or_else(|| anyhow!("resource is required"))?;
                 let agent =
                     Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
-                let claim = crate::channels::renew_claim(
+                let lease_ttl_seconds = Self::get_u64_or(args, "lease_ttl_seconds", 3600);
+                let claim = ops_renew_claim(
                     settings,
-                    resource,
-                    agent,
-                    Some(Self::get_u64_or(args, "lease_ttl_seconds", 3600)),
+                    &RenewClaimRequest { resource, agent, lease_ttl_seconds },
                 )?;
                 Ok(serde_json::to_value(&claim)?)
             }
@@ -808,7 +840,10 @@ impl AgentBusMcpServer {
                     .ok_or_else(|| anyhow!("resource is required"))?;
                 let agent =
                     Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
-                let state = crate::channels::release_claim(settings, resource, agent)?;
+                let state = ops_release_claim(
+                    settings,
+                    &ReleaseClaimRequest { resource, agent },
+                )?;
                 Ok(serde_json::to_value(&state)?)
             }
 
@@ -820,12 +855,9 @@ impl AgentBusMcpServer {
                 let reason = Self::get_str_or(args, "reason", "resolved by orchestrator");
                 let resolved_by = Self::get_str_or(args, "resolved_by", "orchestrator");
 
-                let state = crate::channels::resolve_claim(
+                let state = ops_resolve_claim(
                     settings,
-                    resource,
-                    winner,
-                    reason,
-                    resolved_by,
+                    &ResolveClaimRequest { resource, winner, reason, resolved_by },
                 )?;
                 Ok(serde_json::to_value(&state)?)
             }
