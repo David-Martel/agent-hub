@@ -83,10 +83,10 @@ Structural execution plan:
 - [x] Introduce a library-backed crate root with a thin `main.rs` wrapper so future CLI/HTTP/MCP surface splits can reuse one runtime entry implementation.
 - [x] Extend the checked-in cargo config to automate `sccache` defaults once that behavior is validated across clean Windows machines and non-operator shells.
 - [x] Add dedicated `agent-bus-http` and `agent-bus-mcp` bin targets on top of the shared library runtime so the deploy surface no longer depends on copying one CLI executable under multiple names.
-- [ ] Split the current single crate/bin into `agent-bus-core`, `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` so deploy surfaces stop paying each other's compile and dependency costs.
+- [x] Split the current single crate/bin into `agent-bus-core`, `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` so deploy surfaces stop paying each other's compile and dependency costs.
 - [x] Replace the CLI `reqwest::blocking` + thread-spawn server-mode bridge with a shared async transport client so `AGENT_BUS_SERVER_URL` no longer needs separate blocking behavior.
 - [x] Extract the first shared `ops` module for send/ack/knock/presence flows so CLI, HTTP, and MCP stop maintaining separate write-path behavior for those verbs.
-- [ ] Extract a typed operations/service layer so CLI, HTTP, and MCP stop duplicating dispatch, validation glue, and JSON shaping.
+- [x] Extract a typed operations/service layer so CLI, HTTP, and MCP stop duplicating dispatch, validation glue, and JSON shaping.
 - [x] Remove tracked binary artifacts and empty/stale top-level directories (`bin/agent-bus.exe`, top-level `rust/`, top-level `src/`, top-level `tests/`) before the public release.
 - [x] Record the structural refactor sequence in `docs/structural-refactor-plan-2026-03-25.md` so the repo has an explicit path from today’s library-backed package to a future multi-bin and multi-crate layout.
-- [ ] Execute the remaining structural steps captured in [`agents.TODO.md`](./agents.TODO.md) until the workspace split and shared service layer are complete.
+- [x] Execute the remaining structural steps captured in [`agents.TODO.md`](./agents.TODO.md) until the workspace split and shared service layer are complete.
