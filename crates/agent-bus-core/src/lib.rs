@@ -2,6 +2,7 @@
 
 pub mod models;
 pub mod output;
+pub mod postgres_store;
 pub mod settings;
 pub mod token;
 pub mod validation;
