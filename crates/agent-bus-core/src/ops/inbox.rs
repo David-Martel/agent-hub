@@ -17,18 +17,20 @@ use super::message::list_messages_live;
 // CheckInbox
 // ---------------------------------------------------------------------------
 
-pub(crate) struct CheckInboxRequest<'a> {
-    pub(crate) agent: &'a str,
-    pub(crate) limit: usize,
-    pub(crate) reset_cursor: bool,
-    pub(crate) filters: MessageFilters<'a>,
+#[derive(Debug)]
+pub struct CheckInboxRequest<'a> {
+    pub agent: &'a str,
+    pub limit: usize,
+    pub reset_cursor: bool,
+    pub filters: MessageFilters<'a>,
 }
 
-pub(crate) struct CheckInboxResult {
-    pub(crate) messages: Vec<Message>,
-    pub(crate) cursor_was: String,
-    pub(crate) cursor_now: String,
-    pub(crate) inbox_cursor_key: String,
+#[derive(Debug)]
+pub struct CheckInboxResult {
+    pub messages: Vec<Message>,
+    pub cursor_was: String,
+    pub cursor_now: String,
+    pub inbox_cursor_key: String,
 }
 
 /// Check an agent's inbox using cursor-based notification delivery.
@@ -43,7 +45,7 @@ pub(crate) struct CheckInboxResult {
 /// # Errors
 ///
 /// Returns an error if the Redis connection or stream commands fail.
-pub(crate) fn check_inbox(
+pub fn check_inbox(
     conn: &mut redis::Connection,
     request: &CheckInboxRequest<'_>,
 ) -> Result<CheckInboxResult> {
@@ -106,27 +108,25 @@ pub(crate) fn check_inbox(
 // CompactContext
 // ---------------------------------------------------------------------------
 
-pub(crate) struct CompactContextRequest<'a> {
-    pub(crate) agent: Option<&'a str>,
-    pub(crate) filters: MessageFilters<'a>,
-    pub(crate) since_minutes: u64,
-    pub(crate) max_tokens: usize,
+#[derive(Debug)]
+pub struct CompactContextRequest<'a> {
+    pub agent: Option<&'a str>,
+    pub filters: MessageFilters<'a>,
+    pub since_minutes: u64,
+    pub max_tokens: usize,
 }
 
-pub(crate) struct CompactContextResult {
-    pub(crate) messages: Vec<serde_json::Value>,
+#[derive(Debug)]
+pub struct CompactContextResult {
+    pub messages: Vec<serde_json::Value>,
     /// Estimated token count of the compacted output.
     ///
-    /// Not yet consumed by `cmd_compact_context` but available for callers
-    /// that need budget tracking (e.g. the HTTP handler).
-    #[expect(dead_code, reason = "reserved for future callers that expose token metadata")]
-    pub(crate) token_count: usize,
+    /// Available for callers that need budget tracking (e.g. the HTTP handler).
+    pub token_count: usize,
     /// True when the message list was trimmed to meet the token budget.
     ///
-    /// Not yet surfaced by `cmd_compact_context` but available for callers
-    /// that want to signal truncation to the consumer.
-    #[expect(dead_code, reason = "reserved for future callers that expose truncation metadata")]
-    pub(crate) truncated: bool,
+    /// Available for callers that want to signal truncation to the consumer.
+    pub truncated: bool,
 }
 
 /// Fetch recent messages from the live Redis stream and compact them to fit
@@ -140,7 +140,7 @@ pub(crate) struct CompactContextResult {
 /// # Errors
 ///
 /// Returns an error if the Redis connection or stream read fails.
-pub(crate) fn compact_context(
+pub fn compact_context(
     conn: &mut redis::Connection,
     settings: &Settings,
     request: &CompactContextRequest<'_>,

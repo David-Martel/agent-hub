@@ -15,11 +15,12 @@ use crate::settings::Settings;
 // ---------------------------------------------------------------------------
 
 /// Typed request for pushing a task onto an agent's queue.
-pub(crate) struct PushTaskRequest<'a> {
+#[derive(Debug)]
+pub struct PushTaskRequest<'a> {
     /// The target agent that will consume the task.
-    pub(crate) agent: &'a str,
+    pub agent: &'a str,
     /// The raw task payload string (JSON or plain text).
-    pub(crate) task: &'a str,
+    pub task: &'a str,
 }
 
 /// Push a task onto the tail of an agent's Redis queue.
@@ -29,7 +30,7 @@ pub(crate) struct PushTaskRequest<'a> {
 /// # Errors
 ///
 /// Returns an error if the Redis connection or `RPUSH` command fails.
-pub(crate) fn push_task(settings: &Settings, request: &PushTaskRequest<'_>) -> Result<u64> {
+pub fn push_task(settings: &Settings, request: &PushTaskRequest<'_>) -> Result<u64> {
     crate::redis_bus::push_task(settings, request.agent, request.task)
 }
 
@@ -44,7 +45,7 @@ pub(crate) fn push_task(settings: &Settings, request: &PushTaskRequest<'_>) -> R
 /// # Errors
 ///
 /// Returns an error if the Redis connection or `LPOP` command fails.
-pub(crate) fn pull_task(settings: &Settings, agent: &str) -> Result<Option<String>> {
+pub fn pull_task(settings: &Settings, agent: &str) -> Result<Option<String>> {
     crate::redis_bus::pull_task(settings, agent)
 }
 
@@ -60,7 +61,7 @@ pub(crate) fn pull_task(settings: &Settings, agent: &str) -> Result<Option<Strin
 /// # Errors
 ///
 /// Returns an error if the Redis connection or `LRANGE` command fails.
-pub(crate) fn peek_tasks(settings: &Settings, agent: &str, limit: usize) -> Result<Vec<String>> {
+pub fn peek_tasks(settings: &Settings, agent: &str, limit: usize) -> Result<Vec<String>> {
     crate::redis_bus::peek_tasks(settings, agent, limit)
 }
 
@@ -73,7 +74,7 @@ pub(crate) fn peek_tasks(settings: &Settings, agent: &str, limit: usize) -> Resu
 /// # Errors
 ///
 /// Returns an error if the Redis connection or `LLEN` command fails.
-pub(crate) fn task_queue_length(settings: &Settings, agent: &str) -> Result<u64> {
+pub fn task_queue_length(settings: &Settings, agent: &str) -> Result<u64> {
     crate::redis_bus::task_queue_length(settings, agent)
 }
 

@@ -35,7 +35,7 @@ use crate::settings::Settings;
 /// The operational mode of the HTTP server.
 #[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ServerMode {
+pub enum ServerMode {
     /// Normal operation — all endpoints active.
     Running,
     /// Write endpoints temporarily blocked; reads still allowed.
@@ -46,7 +46,8 @@ pub(crate) enum ServerMode {
 
 impl ServerMode {
     /// Return the mode as a static string slice.
-    pub(crate) fn as_str(self) -> &'static str {
+    #[must_use] 
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
             Self::Maintenance => "maintenance",
@@ -60,30 +61,31 @@ impl ServerMode {
 /// Stored behind an `Arc<RwLock<ServerControlStatus>>` in the HTTP
 /// `AppState` so all handlers can read or mutate it cheaply.
 #[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct ServerControlStatus {
+pub struct ServerControlStatus {
     /// Current operational mode.
-    pub(crate) mode: ServerMode,
+    pub mode: ServerMode,
     /// When `true`, mutating endpoints (send, push-task, etc.) are blocked.
-    pub(crate) write_blocked: bool,
+    pub write_blocked: bool,
     /// Human-readable reason for the current mode transition, if any.
-    pub(crate) reason: Option<String>,
+    pub reason: Option<String>,
     /// Agent or operator that triggered the transition, if provided.
-    pub(crate) requested_by: Option<String>,
+    pub requested_by: Option<String>,
     /// ISO-8601 UTC timestamp of the last mode transition.
-    pub(crate) changed_at_utc: String,
+    pub changed_at_utc: String,
     /// ISO-8601 UTC timestamp of the last PG flush, if any.
-    pub(crate) last_flush_at_utc: Option<String>,
+    pub last_flush_at_utc: Option<String>,
     /// OS process ID of the server process.
-    pub(crate) pid: u32,
+    pub pid: u32,
     /// Agent ID the service announces itself as on the bus.
-    pub(crate) service_agent_id: String,
+    pub service_agent_id: String,
     /// Human-readable service name used in presence announcements.
-    pub(crate) service_name: String,
+    pub service_name: String,
 }
 
 impl ServerControlStatus {
     /// Create a new `ServerControlStatus` in the [`ServerMode::Running`] state.
-    pub(crate) fn new(service_agent_id: &str, service_name: &str) -> Self {
+    #[must_use] 
+    pub fn new(service_agent_id: &str, service_name: &str) -> Self {
         Self {
             mode: ServerMode::Running,
             write_blocked: false,
@@ -100,7 +102,8 @@ impl ServerControlStatus {
 
 /// Return the current UTC time formatted as an ISO-8601 string with
 /// microsecond precision.
-pub(crate) fn current_timestamp() -> String {
+#[must_use] 
+pub fn current_timestamp() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }
 
@@ -121,7 +124,8 @@ pub(crate) fn current_timestamp() -> String {
 /// let h = ops::admin::health(&settings, None);
 /// assert!(h.ok);
 /// ```
-pub(crate) fn health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
+#[must_use] 
+pub fn health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
     bus_health(settings, pool)
 }
 
@@ -132,7 +136,7 @@ pub(crate) fn health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
 /// # Errors
 ///
 /// Returns an error if the Redis SCAN or GET commands fail.
-pub(crate) fn list_presence(
+pub fn list_presence(
     conn: &mut redis::Connection,
     settings: &Settings,
 ) -> Result<Vec<Presence>> {
@@ -148,7 +152,7 @@ pub(crate) fn list_presence(
 /// # Errors
 ///
 /// Returns an error if the Redis SCAN or GET commands fail.
-pub(crate) fn list_pending_acks(
+pub fn list_pending_acks(
     conn: &mut redis::Connection,
     agent: Option<&str>,
 ) -> Result<Vec<PendingAck>> {
