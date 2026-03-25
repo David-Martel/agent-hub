@@ -11,13 +11,10 @@ use rmcp::model::{
 
 use crate::ops::{
     AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
-    knock_metadata, list_messages_history, post_ack, post_message, scoped_required_tags,
-    set_presence,
+    knock_metadata, list_messages_history, post_ack, post_message, set_presence,
 };
-use crate::redis_bus::{
-    bus_health, bus_list_presence, connect, get_notification_cursor, list_notifications_since_id,
-    notification_cursor_key, set_notification_cursor,
-};
+use crate::ops::inbox::{CheckInboxRequest, check_inbox};
+use crate::redis_bus::{bus_health, bus_list_presence, connect};
 use crate::settings::Settings;
 use crate::validation::{
     auto_fit_schema, enforce_schema_for_transport, validate_message_schema, validate_priority,
@@ -874,65 +871,31 @@ impl AgentBusMcpServer {
                 let thread_id = Self::get_str(args, "thread_id");
                 let limit = Self::get_usize_or(args, "limit", 10).min(100);
                 let reset_cursor = Self::get_bool_or(args, "reset_cursor", false);
-                let filters = MessageFilters {
-                    repo,
-                    session,
-                    tags: &tags,
-                    thread_id,
-                };
-                let required_tags = scoped_required_tags(&filters);
 
                 let mut conn = connect(settings)?;
-
-                // Honour reset_cursor before reading: write "0-0" so the
-                // subsequent read starts from the beginning of the stream.
-                if reset_cursor {
-                    set_notification_cursor(&mut conn, agent, "0-0")?;
-                }
-
-                let cursor = get_notification_cursor(&mut conn, agent)?;
-                let notifications = list_notifications_since_id(&mut conn, agent, &cursor, limit)?;
-                let required_tag_refs: Vec<&str> =
-                    required_tags.iter().map(String::as_str).collect();
-                let filtered_notifications: Vec<_> = notifications
-                    .into_iter()
-                    .filter(|notification| {
-                        crate::redis_bus::message_matches_filters(
-                            &notification.message,
-                            Some(agent),
-                            None,
-                            true,
+                let result = check_inbox(
+                    &mut conn,
+                    &CheckInboxRequest {
+                        agent,
+                        limit,
+                        reset_cursor,
+                        filters: MessageFilters {
+                            repo,
+                            session,
+                            tags: &tags,
                             thread_id,
-                            &required_tag_refs,
-                        )
-                    })
-                    .take(limit)
-                    .collect();
-                let messages: Vec<crate::models::Message> = filtered_notifications
-                    .iter()
-                    .map(|notification| notification.message.clone())
-                    .collect();
-                let cursor_now = filtered_notifications
-                    .last()
-                    .and_then(|notification| notification.notification_stream_id.as_deref())
-                    .unwrap_or(&cursor)
-                    .to_owned();
+                        },
+                    },
+                )?;
 
-                // Advance cursor to the last delivered notification entry so
-                // replay remains aligned with the per-agent attention stream.
-                if cursor_now != cursor {
-                    set_notification_cursor(&mut conn, agent, &cursor_now)?;
-                }
-
-                let result = serde_json::json!({
+                Ok(serde_json::json!({
                     "agent": agent,
-                    "new_messages": messages.len(),
-                    "messages": messages,
-                    "cursor_was": cursor,
-                    "cursor_now": cursor_now,
-                    "inbox_cursor_key": notification_cursor_key(agent),
-                });
-                Ok(result)
+                    "new_messages": result.messages.len(),
+                    "messages": result.messages,
+                    "cursor_was": result.cursor_was,
+                    "cursor_now": result.cursor_now,
+                    "inbox_cursor_key": result.inbox_cursor_key,
+                }))
             }
 
             other => Err(anyhow!("unknown tool: {other}")),
@@ -994,6 +957,7 @@ impl ServerHandler for AgentBusMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::redis_bus::notification_cursor_key;
 
     #[test]
     fn tool_list_has_expected_count() {
