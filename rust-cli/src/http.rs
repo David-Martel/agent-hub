@@ -14,13 +14,17 @@ use axum::{
     response::sse::{Event, Sse},
     routing::{get, post, put},
 };
-use chrono::Utc;
 use serde::Deserialize;
 use tokio::sync::{Notify, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::mcp::AgentBusMcpServer;
 use crate::models::MAX_HISTORY_MINUTES;
+use crate::ops::admin::{ServerControlStatus, ServerMode, current_timestamp};
+use crate::ops::task::{
+    PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
+    push_task as ops_push_task, task_queue_length as ops_task_queue_length,
+};
 use crate::ops::{
     AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
     knock_metadata, list_messages_live, post_ack, post_message, set_presence,
@@ -88,56 +92,6 @@ pub(crate) struct AppState {
     pub(crate) shutdown_signal: Arc<Notify>,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ServerMode {
-    Running,
-    Maintenance,
-    Stopping,
-}
-
-impl ServerMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Maintenance => "maintenance",
-            Self::Stopping => "stopping",
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct ServerControlStatus {
-    pub(crate) mode: ServerMode,
-    pub(crate) write_blocked: bool,
-    pub(crate) reason: Option<String>,
-    pub(crate) requested_by: Option<String>,
-    pub(crate) changed_at_utc: String,
-    pub(crate) last_flush_at_utc: Option<String>,
-    pub(crate) pid: u32,
-    pub(crate) service_agent_id: String,
-    pub(crate) service_name: String,
-}
-
-impl ServerControlStatus {
-    fn new(service_agent_id: &str, service_name: &str) -> Self {
-        Self {
-            mode: ServerMode::Running,
-            write_blocked: false,
-            reason: None,
-            requested_by: None,
-            changed_at_utc: current_timestamp(),
-            last_flush_at_utc: None,
-            pid: std::process::id(),
-            service_agent_id: service_agent_id.to_owned(),
-            service_name: service_name.to_owned(),
-        }
-    }
-}
-
-fn current_timestamp() -> String {
-    Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
-}
 
 async fn ensure_writes_allowed(
     state: &AppState,
@@ -2308,7 +2262,7 @@ async fn http_push_task_handler(
     }
 
     let len = tokio::task::spawn_blocking(move || {
-        crate::redis_bus::push_task(&state.settings, &agent, &task)
+        ops_push_task(&state.settings, &PushTaskRequest { agent: &agent, task: &task })
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -2338,8 +2292,8 @@ async fn http_peek_tasks_handler(
     let agent_clone = agent.clone();
 
     let (tasks, queue_length) = tokio::task::spawn_blocking(move || {
-        let tasks = crate::redis_bus::peek_tasks(&state.settings, &agent_clone, limit)?;
-        let queue_length = crate::redis_bus::task_queue_length(&state.settings, &agent_clone)?;
+        let tasks = ops_peek_tasks(&state.settings, &agent_clone, limit)?;
+        let queue_length = ops_task_queue_length(&state.settings, &agent_clone)?;
         Ok::<_, anyhow::Error>((tasks, queue_length))
     })
     .await
@@ -2372,7 +2326,7 @@ async fn http_pull_task_handler(
     let agent_clone = agent.clone();
 
     let task = tokio::task::spawn_blocking(move || {
-        crate::redis_bus::pull_task(&state.settings, &agent_clone)
+        ops_pull_task(&state.settings, &agent_clone)
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
