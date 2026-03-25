@@ -1,7 +1,7 @@
 param(
     [int]$Port = 8400,
     [string]$DatabaseName = "redis_backend",
-    [string]$BinaryPath = "C:\Users\david\bin\agent-bus.exe",
+    [string]$BinaryPath = (Join-Path $HOME "bin/agent-bus-http.exe"),
     [string]$LogRoot = "C:\ProgramData\AgentHub\logs"
 )
 

@@ -5,7 +5,7 @@
 .DESCRIPTION
     1. Checks prerequisites (Rust, Redis, PostgreSQL, nssm)
     2. Builds the release binary
-    3. Installs to ~/bin/agent-bus.exe
+    3. Installs to ~/bin/agent-bus.exe, ~/bin/agent-bus-http.exe, and ~/bin/agent-bus-mcp.exe
     4. Creates config at ~/.config/agent-bus/config.json
     5. Installs Windows service via nssm
     6. Validates health endpoint
@@ -23,16 +23,33 @@
 param(
     [switch]$SkipBuild,
     [int]$RedisPort = 6380,
-    [int]$PgPort = 5300
+    [int]$PgPort = 5300,
+    [string]$TargetDir,
+    [string]$TargetNamespace,
+    [switch]$DisableSccache
 )
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$commonBuildScript = Join-Path $repoRoot "scripts\rust-build-common.ps1"
+
+if (-not (Test-Path $commonBuildScript)) {
+    throw "Common Rust build helper not found at $commonBuildScript"
+}
+. $commonBuildScript
 
 Write-Host "=== Agent Hub Bootstrap ===" -ForegroundColor Cyan
 Write-Host "  Repo:        $repoRoot"
 Write-Host "  Redis port:  $RedisPort"
 Write-Host "  PG port:     $PgPort"
+
+$resolvedTargetDir = Resolve-AgentBusTargetDir -RepoRoot $repoRoot -ExplicitTargetDir $TargetDir -ExplicitNamespace $TargetNamespace
+$buildEnvState = Use-AgentBusRustBuildEnv `
+    -RepoRoot $repoRoot `
+    -TargetDir $resolvedTargetDir `
+    -PreferSccache:(-not $DisableSccache) `
+    -PreferLldLink `
+    -ShowSummary
 
 # ---------------------------------------------------------------------------
 # Helper: run a command and return whether it succeeded
@@ -82,56 +99,79 @@ if ($missing.Count -gt 0) {
     }
 }
 
-# ---------------------------------------------------------------------------
-# Step 2: Build
-# ---------------------------------------------------------------------------
-if (-not $SkipBuild) {
-    Write-Host "`n[2/6] Building release binary..." -ForegroundColor Yellow
-    Push-Location "$repoRoot\rust-cli"
+try {
+    # ---------------------------------------------------------------------------
+    # Step 2: Build
+    # ---------------------------------------------------------------------------
+    if (-not $SkipBuild) {
+        Write-Host "`n[2/6] Building release binaries..." -ForegroundColor Yellow
+        Push-Location "$repoRoot\rust-cli"
+        try {
+            cargo build --release --bins
+            if ($LASTEXITCODE -ne 0) { throw "cargo build --release --bins failed (exit $LASTEXITCODE)" }
+            Write-Host "  [OK] Build complete" -ForegroundColor Green
+        }
+        finally {
+            Pop-Location
+        }
+    }
+    else {
+        Write-Host "`n[2/6] Skipping build (-SkipBuild specified)" -ForegroundColor Yellow
+    }
+
+    # ---------------------------------------------------------------------------
+    # Step 3: Install binary
+    # ---------------------------------------------------------------------------
+    Write-Host "`n[3/6] Installing binary..." -ForegroundColor Yellow
+
+    $binDir = "$env:USERPROFILE\bin"
+    if (-not (Test-Path $binDir)) {
+        New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+    }
+
+    # Probe candidate paths in preference order
+    $cliBin = Find-AgentBusBuiltBinary -RustCliDir "$repoRoot\rust-cli" -TargetDir $resolvedTargetDir -BinaryName "agent-bus"
+    $httpBin = Find-AgentBusBuiltBinary -RustCliDir "$repoRoot\rust-cli" -TargetDir $resolvedTargetDir -BinaryName "agent-bus-http"
+    $mcpBin = Find-AgentBusBuiltBinary -RustCliDir "$repoRoot\rust-cli" -TargetDir $resolvedTargetDir -BinaryName "agent-bus-mcp"
+
+    if (-not $cliBin) {
+        throw "agent-bus.exe was not found after the build. Run without -SkipBuild or build manually."
+    }
+    if (-not $httpBin) {
+        throw "agent-bus-http.exe was not found after the build. Run without -SkipBuild or build manually."
+    }
+    if (-not $mcpBin) {
+        throw "agent-bus-mcp.exe was not found after the build. Run without -SkipBuild or build manually."
+    }
+
     try {
-        $env:RUSTC_WRAPPER = ""
-        cargo build --release
-        if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed (exit $LASTEXITCODE)" }
-        Write-Host "  [OK] Build complete" -ForegroundColor Green
+        Copy-Item $cliBin "$binDir\agent-bus.exe" -Force
+        Write-Host "  [OK] Installed: $binDir\agent-bus.exe  (from $cliBin)" -ForegroundColor Green
     }
-    finally {
-        Pop-Location
+    catch {
+        Write-Host "  [WARN] Could not replace $binDir\agent-bus.exe (likely in use). Keeping the existing command binary." -ForegroundColor Yellow
     }
-}
-else {
-    Write-Host "`n[2/6] Skipping build (-SkipBuild specified)" -ForegroundColor Yellow
-}
+    try {
+        Copy-Item $httpBin "$binDir\agent-bus-http.exe" -Force
+        Write-Host "  [OK] Installed: $binDir\agent-bus-http.exe  (from $httpBin)" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  [WARN] Could not replace $binDir\agent-bus-http.exe (likely in use). Keeping the existing service binary." -ForegroundColor Yellow
+    }
+    try {
+        Copy-Item $mcpBin "$binDir\agent-bus-mcp.exe" -Force
+        Write-Host "  [OK] Installed: $binDir\agent-bus-mcp.exe  (from $mcpBin)" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "  [WARN] Could not replace $binDir\agent-bus-mcp.exe (likely in use). Keeping the existing MCP binary." -ForegroundColor Yellow
+    }
 
-# ---------------------------------------------------------------------------
-# Step 3: Install binary
-# ---------------------------------------------------------------------------
-Write-Host "`n[3/6] Installing binary..." -ForegroundColor Yellow
-
-$binDir = "$env:USERPROFILE\bin"
-if (-not (Test-Path $binDir)) {
-    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
-}
-
-# Probe candidate paths in preference order
-$candidates = @(
-    "T:\RustCache\cargo-target\release\agent-bus.exe"
-    "$repoRoot\rust-cli\target\release\agent-bus.exe"
-)
-$srcBin = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-if (-not $srcBin) {
-    throw "agent-bus.exe not found in any of: $($candidates -join ', '). Run without -SkipBuild or build manually."
-}
-
-Copy-Item $srcBin "$binDir\agent-bus.exe" -Force
-Write-Host "  [OK] Installed: $binDir\agent-bus.exe  (from $srcBin)" -ForegroundColor Green
-
-# Ensure ~/bin is in PATH for this session
-if ($env:PATH -notlike "*$binDir*") {
-    $env:PATH = "$binDir;$env:PATH"
-    Write-Host "  [INFO] Added $binDir to session PATH" -ForegroundColor Gray
-    Write-Host "  [INFO] To persist, add $binDir to your user PATH via System Properties." -ForegroundColor Gray
-}
+    # Ensure ~/bin is in PATH for this session
+    if ($env:PATH -notlike "*$binDir*") {
+        $env:PATH = "$binDir;$env:PATH"
+        Write-Host "  [INFO] Added $binDir to session PATH" -ForegroundColor Gray
+        Write-Host "  [INFO] To persist, add $binDir to your user PATH via System Properties." -ForegroundColor Gray
+    }
 
 # ---------------------------------------------------------------------------
 # Step 4: Config
@@ -180,7 +220,7 @@ else {
             New-Item -ItemType Directory -Path $logDir -Force | Out-Null
         }
 
-        nssm install $svcName "$binDir\agent-bus.exe" "serve --transport http --port 8400"
+        nssm install $svcName "$binDir\agent-bus-http.exe" "serve --transport http --port 8400"
         nssm set $svcName AppDirectory        $env:USERPROFILE
         nssm set $svcName AppStdout           "$logDir\agent-hub.log"
         nssm set $svcName AppStderr           "$logDir\agent-hub-error.log"
@@ -239,7 +279,9 @@ catch {
 # ---------------------------------------------------------------------------
 Write-Host ""
 Write-Host "=== Bootstrap Complete ===" -ForegroundColor Cyan
-Write-Host "  Binary:  $binDir\agent-bus.exe"
+Write-Host "  MCP binary:      $binDir\agent-bus.exe"
+Write-Host "  Service binary:  $binDir\agent-bus-http.exe"
+Write-Host "  MCP-only binary: $binDir\agent-bus-mcp.exe"
 Write-Host "  Config:  $configPath"
 Write-Host "  Logs:    C:\ProgramData\AgentHub\logs\"
 Write-Host ""
@@ -258,4 +300,9 @@ if (-not $healthPassed) {
     Write-Host "  1. Start Redis:   redis-server --port $RedisPort" -ForegroundColor Red
     Write-Host "  2. Re-run:        agent-bus health --encoding json" -ForegroundColor Red
     exit 1
+}
+}
+finally {
+    Write-AgentBusSccacheStats
+    Restore-AgentBusRustBuildEnv -State $buildEnvState
 }

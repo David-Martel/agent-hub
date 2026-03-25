@@ -3,13 +3,13 @@ param(
     [string]$DisplayName = "Agent Hub Coordination Service",
     [int]$Port = 8400,
     [string]$DatabaseName = "redis_backend",
+    [string]$BinaryPath = (Join-Path $HOME "bin/agent-bus-http.exe"),
     [switch]$ForceReinstall,
     [switch]$StartService = $true
 )
 
 $ErrorActionPreference = "Stop"
 
-$binaryPath = "C:\Users\david\bin\agent-bus.exe"
 $nssmPath = (Get-Command nssm -ErrorAction Stop).Source
 $logRoot = "C:\ProgramData\AgentHub\logs"
 $stdoutLog = Join-Path $logRoot "agent-hub-stdout.log"
@@ -51,6 +51,7 @@ Write-Host "Installing $ServiceName service..."
     "AGENT_BUS_REDIS_URL=redis://localhost:6380/0" `
     "AGENT_BUS_DATABASE_URL=postgresql://postgres@localhost:5300/$DatabaseName" `
     "AGENT_BUS_SERVER_HOST=localhost" `
+    "AGENT_BUS_SERVICE_NAME=$ServiceName" `
     "AGENT_BUS_STARTUP_ENABLED=true" `
     "AGENT_BUS_STREAM_MAXLEN=100000" `
     "RUST_LOG=warn"
