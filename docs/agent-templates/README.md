@@ -42,14 +42,27 @@ TEMPLATE=${TEMPLATE//\{\{ORCHESTRATOR\}\}/orchestrator}
 
 All templates use the HTTP REST API (`http://localhost:8400`) — faster than MCP
 for subagent subprocess calls. The MCP transport (`serve --transport stdio`) is
-for LLM tool integrations where the model calls tools directly.
+for LLM tool integrations where the model calls tools directly. The HTTP/SSE
+runtime is `agent-bus-http.exe`; use it for replay and smoke tests.
 
 | Operation | Endpoint |
 |-----------|----------|
 | Post message | `POST /messages` |
 | Read inbox | `GET /messages?agent=ID&since=N&limit=N` |
+| Replay notifications | `GET /notifications/{agent}?history=N&since_id=STREAM_ID` |
 | Claim resource | `POST /channels/arbitrate/RESOURCE` |
 | Check health | `GET /health` |
 | Batch send | `POST /messages/batch` |
 | Batch ack | `POST /ack/batch` |
-| SSE stream | `GET /events?agent=ID` |
+| SSE stream | `GET /events/{agent}?history=N&since_id=STREAM_ID` |
+
+## Operational Notes
+
+- If Redis is not available on a new machine, install the maintained
+  [redis-windows](https://github.com/redis-windows/redis-windows) build.
+- `GET /notifications/{agent}` is the reconnect path for durable direct-message
+  notifications, while `GET /events/{agent}` stays the live SSE stream with
+  backlog replay and `Last-Event-ID` support.
+- Real multi-agent runs work best when every message carries `repo:<name>` and
+  shared planning uses a stable `thread_id`; broad unfiltered reads create
+  avoidable inbox noise during multi-repo sessions.

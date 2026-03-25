@@ -4,24 +4,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Redis + PostgreSQL agent coordination bus for multi-agent systems (Claude, Codex, Gemini). The primary implementation is a **Rust standalone binary** (`rust-cli/`) providing CLI, MCP server (stdio), and HTTP REST server. Storage is dual: Redis (realtime streams + pub/sub) with PostgreSQL (durable history, tag-indexed queries).
+Redis + PostgreSQL agent coordination bus for multi-agent systems (Claude,
+Codex, Gemini). The primary implementation is a Rust package in `rust-cli/`
+with a shared library runtime and three current binary faces:
+
+- `agent-bus.exe`
+- `agent-bus-http.exe`
+- `agent-bus-mcp.exe`
+
+Storage is dual: Redis (realtime streams + pub/sub) with PostgreSQL (durable
+history, tag-indexed queries).
 
 **Config**: Settings load from `~/.config/agent-bus/config.json` → env vars → hardcoded defaults.
 
 ## Build & Development
 
+Canonical structural refactor plan:
+- [`agents.TODO.md`](./agents.TODO.md)
+
 ```bash
-# Build release (binary deploys to ~/bin/agent-bus.exe)
-cd rust-cli && RUSTC_WRAPPER="" cargo build --release
+# Preferred repo-root local build/test entrypoint
+pwsh -NoLogo -NoProfile -File build.ps1 -FastRelease
+
+# Release/profile builds for all current binary surfaces
+cd rust-cli && cargo build --release --bins
 
 # Clippy (required — pre-push hook enforces)
-cd rust-cli && RUSTC_WRAPPER="" cargo clippy --all-targets -- -D warnings
+cd rust-cli && cargo clippy --all-targets -- -D warnings
 
-# Tests (326 total: 282 unit + 40 integration + 4 channel)
-cd rust-cli && RUSTC_WRAPPER="" cargo test
+# Tests
+cd rust-cli && cargo test
 
 # Benchmarks (criterion: token estimation, TOON, MessagePack)
-cd rust-cli && RUSTC_WRAPPER="" cargo bench
+cd rust-cli && cargo bench
 
 # Format
 cd rust-cli && cargo fmt --all --check
@@ -31,30 +46,36 @@ pwsh -NoLogo -NoProfile -File scripts/build-deploy.ps1
 # Or skip build: scripts/build-deploy.ps1 -SkipBuild
 ```
 
-**sccache note**: If builds fail with `SCCACHE_SERVER_PORT` errors, set `RUSTC_WRAPPER=""`.
+**sccache note**: Repo-local cargo usage now goes through the checked-in
+`.cargo/config.toml` wrapper and uses `sccache` automatically when present. If
+you need to bypass that path for debugging, override `RUSTC_WRAPPER=""` in the
+current shell.
 
 ## Architecture
 
-The Rust implementation (`rust-cli/src/`, ~13800 LOC, 326 tests) is split into 18 modules:
+The Rust implementation (`rust-cli/src/`, ~20400 LOC, 403 tests) is split into 20 modules:
 
 | Module | Purpose |
 |--------|---------|
-| `main.rs` | Crate root, startup, `main()` dispatch, `OnceLock<PgWriter>` |
+| `lib.rs` | Crate root, `main_entry()` dispatch, `OnceLock<PgWriter>`, runtime setup |
+| `main.rs` | Thin binary stub — delegates to `agent_bus::main_entry()` |
 | `settings.rs` | Config file + env loading, `Settings::validate()`, `redact_url()` |
 | `models.rs` | `Message`, `Presence`, `Health` structs, protocol constants |
 | `redis_bus.rs` | Redis r2d2 pool, stream ops, pub/sub, presence, health, LZ4 compression |
 | `postgres_store.rs` | PG connect, persist with retry + circuit breaker, `PgWriter` async mpsc |
 | `output.rs` | `Encoding` enum (json/compact/human/toon), formatters, `minimize_value()` |
 | `validation.rs` | Priority/field validation, message schema validation (`finding`/`status`/`benchmark`) |
-| `cli.rs` | Clap parser with 16+ subcommands |
+| `ops.rs` | Shared bus operations (send/ack/knock/presence) reused across CLI, HTTP, MCP |
+| `cli.rs` | Clap parser with 35 subcommands |
 | `commands.rs` | CLI command implementations |
 | `mcp.rs` | `AgentBusMcpServer` with `schemas` submodule, MCP Streamable HTTP |
 | `http.rs` | Axum REST + SSE streaming + batch endpoints + channel routes |
 | `journal.rs` | Per-repo NDJSON export with idempotent cursor tracking |
 | `monitor.rs` | Real-time session monitoring dashboard with agent status |
-| `mcp_discovery.rs` | Auto-discover MCP tools from `.claude/mcp.json` for preambles |
+| `mcp_discovery.rs` | Auto-discover MCP tools from Claude MCP config files for preambles |
 | `channels.rs` | Structured comms: direct, group, escalate, arbitrate channels |
 | `codex_bridge.rs` | Codex CLI integration: config discovery, finding sync, formatting |
+| `server_mode.rs` | Shared HTTP client helpers for CLI server-mode routing |
 | `token.rs` | Token estimation, message minimization, LLM context compaction |
 
 ### Transport Modes
@@ -66,18 +87,11 @@ The Rust implementation (`rust-cli/src/`, ~13800 LOC, 326 tests) is split into 1
 
 ### CLI Subcommands
 
-`health`, `send`, `read`, `watch`, `ack`, `presence`, `presence-list`, `serve`, `prune`, `export`, `presence-history`, `journal`, `sync`, `monitor`, `batch-send`, `pending-acks`, `claim`, `claims`, `resolve`, `codex`, `session-summary`, `dedup`, `token-count`, `compact-context`
+`health`, `send`, `read`, `watch`, `ack`, `presence`, `presence-list`, `serve`, `prune`, `export`, `presence-history`, `journal`, `sync`, `monitor`, `batch-send`, `pending-acks`, `claim`, `renew-claim`, `release-claim`, `claims`, `resolve`, `knock`, `codex-sync`, `service`, `post-direct`, `read-direct`, `post-group`, `read-group`, `session-summary`, `dedup`, `token-count`, `compact-context`, `push-task`, `pull-task`, `peek-tasks`
 
-### MCP Tool Names (13 tools for stdio and mcp-http transports)
+### MCP Tool Names (17 tools for stdio and mcp-http transports)
 
-`bus_health`, `post_message`, `list_messages`, `ack_message`, `set_presence`, `list_presence`, `list_presence_history`, `negotiate`, `create_channel`, `post_to_channel`, `read_channel`, `claim_resource`, `resolve_claim`. See [`AGENT_COMMUNICATIONS.md`](AGENT_COMMUNICATIONS.md) for full parameter docs.
-
-### Build & Deploy
-
-```powershell
-# One-command build + deploy + restart:
-pwsh -NoLogo -NoProfile -File scripts/build-deploy.ps1
-```
+`bus_health`, `post_message`, `list_messages`, `ack_message`, `set_presence`, `list_presence`, `list_presence_history`, `negotiate`, `create_channel`, `post_to_channel`, `read_channel`, `claim_resource`, `renew_claim`, `release_claim`, `resolve_claim`, `knock_agent`, `check_inbox`. See [`AGENT_COMMUNICATIONS.md`](AGENT_COMMUNICATIONS.md) for full parameter docs.
 
 ### Channel System (v0.4)
 
@@ -120,7 +134,7 @@ Use `--schema finding|status|benchmark` on `send` to validate message structure:
 ## MCP Platform Configs
 
 All 3 platforms configured identically at:
-- Claude Code: `~/.claude/mcp.json` (key: `agent-bus`)
+- Claude Code: `~/.claude.json` top-level `mcpServers["agent-bus"]`
 - Codex: `~/.codex/config.toml` (key: `agent_bus`)
 - Gemini: `~/.gemini/settings.json` (key: `agent-bus`)
 

@@ -4,12 +4,16 @@
 
 The active implementation is the Rust CLI in `rust-cli/`, which contains the `agent-bus` binary, HTTP/MCP server, benches, and integration tests. Supporting material is split across `scripts/` for PowerShell automation, `examples/mcp/` for client configs, and `docs/` for design notes, assessments, and agent templates.
 
+Canonical structural refactor plan:
+- [`agents.TODO.md`](./agents.TODO.md)
+
 ## Build, Test, and Development Commands
 
 - `cargo build --release` in `rust-cli/`: build the shipping CLI binary.
 - `cargo test --bin agent-bus` in `rust-cli/`: run Rust unit tests.
 - `cargo test --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1` in `rust-cli/`: run integration tests against local Redis and PostgreSQL.
 - `cargo fmt --all --check` and `cargo clippy --all-targets -- -D warnings` in `rust-cli/`: match CI formatting and lint gates.
+- `pwsh -NoLogo -NoProfile -File build.ps1 -FastRelease`: repo-root fast iteration build using the shared target-dir, linker, and `sccache` setup.
 
 Set local services with `AGENT_BUS_REDIS_URL` and `AGENT_BUS_DATABASE_URL` when running integration flows.
 

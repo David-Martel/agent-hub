@@ -9,6 +9,12 @@
 
 ## Quick Start (Copy These 5 Steps Into Your First Actions)
 
+**Binary selection:**
+- Prefer `agent-bus-http.exe` for normal agent-to-agent coordination against the already-running HTTP service: frequent `send` / `read` loops, `read-direct`, `compact-context`, `session-summary`, claims, and low-latency TOON reads.
+- Prefer `agent-bus.exe` for backend administration, transport debugging, and direct health validation of the service/runtime.
+- Prefer `agent-bus-mcp.exe` or `agent-bus.exe serve --transport stdio` for MCP stdio sessions.
+- Keep machine-readable reads narrow. Real joint runs work best with `repo:<name>` tags, explicit `thread_id` values, and `RESOURCE_START` / `RESOURCE_DONE` handoffs instead of broad unfiltered inbox scans.
+
 **Step 1 — Announce yourself (HTTP POST or CLI):**
 ```bash
 # Via HTTP (fastest)
@@ -24,6 +30,7 @@ agent-bus send --from-agent <YOUR-AGENT-ID> --to-agent claude --topic status \
 ```bash
 # Via CLI (recommended for file ownership)
 agent-bus claim src/file.rs --agent <YOUR-AGENT-ID> --reason "Adding feature: <description>"
+agent-bus claim T:\RustCache\cargo-target --agent <YOUR-AGENT-ID> --mode shared_namespaced --namespace <YOUR-AGENT-ID>-build --scope-kind artifact_root --repo-scope <REPO-NAME>
 
 # OR via HTTP
 curl -s -X POST http://localhost:8400/messages -H "Content-Type: application/json" \
@@ -55,6 +62,20 @@ agent-bus read --agent <YOUR-AGENT-ID> --since-minutes 5 --limit 5 --encoding to
 ```
 If you see a task-assignment or coordination message, acknowledge it and incorporate.
 
+**Positive examples:**
+- Good: `agent-bus-http.exe read-direct --agent-a codex --agent-b claude --limit 20 --encoding toon`
+- Good: `agent-bus-http.exe compact-context --agent claude --repo wezterm --tag planning --thread-id wezterm-joint-plan-20260324 --max-tokens 2000 --since-minutes 120`
+- Good: `agent-bus-http.exe knock --from-agent codex --to-agent claude --body "check direct thread" --request-ack`
+- Good: `agent-bus-http.exe health --encoding compact`
+- Good: `agent-bus.exe serve --transport stdio`
+
+**Negative examples:**
+- Avoid `agent-bus-http.exe read --agent codex --since-minutes 1440` with no repo/session/thread narrowing during multi-repo work.
+- Avoid `agent-bus-http.exe compact-context --since-minutes 240 --max-tokens 4000` with no repo/session/thread filter during a busy multi-repo day.
+- Avoid assuming `session-summary` covers untagged direct-thread work; if there is no `session:<id>` tag, use direct reads or a future thread summary path instead.
+- Avoid documenting `agent-bus-http.exe` as the MCP stdio binary; prefer `agent-bus-mcp.exe` or `agent-bus.exe serve --transport stdio`.
+- Avoid treating `watch` as the durable source of truth. Use it to notice activity, then switch to scoped reads for recovery or synthesis.
+
 **Step 5 — Post completion:**
 ```bash
 agent-bus send --from-agent <YOUR-AGENT-ID> --to-agent claude --topic findings-complete \
@@ -68,7 +89,8 @@ Before modifying ANY file, you MUST:
 1. Use `agent-bus claim <path>` to register ownership or check for conflicts
 2. If another agent owns the file, **do not edit it**. Post a status message noting the conflict
 3. If conflicting claims exist, the orchestrator will resolve via `agent-bus resolve <path>`
-4. When done with a file, post: `"RELEASING: <file-path>"`
+4. Renew the claim if the work will outlive the original TTL: `agent-bus renew-claim <path> --agent <id> --lease-ttl-seconds 900`
+5. When done, release the lease-backed claim: `agent-bus release-claim <path> --agent <id>`
 
 ```bash
 # Check all claims
@@ -82,6 +104,9 @@ agent-bus claims --status contested
 
 # Resolve a conflict (orchestrator only)
 agent-bus resolve src/file.rs --winner claude --reason "claude owns this module"
+
+# Urgent attention handoff
+agent-bus knock --from-agent codex --to-agent claude --body "review findings ready" --request-ack
 ```
 
 Example (from finance-warehouse, where this pattern emerged naturally):
@@ -89,6 +114,32 @@ Example (from finance-warehouse, where this pattern emerged naturally):
 linter → all | ownership | CLAIMING: Task #11 — lint and format. Skipping files owned
   by active agents: tax_parser.py (tax-integrator), test_doc_type_detector.py (doctype-expander)
 ```
+
+## Recommended Tagging Contract
+
+Use these fields consistently so narrow reads and compaction stay useful:
+
+- `repo:<name>` on every message. This is the primary multi-repo fence.
+- `session:<id>` for one bounded wave, test run, or review pass.
+- `wave:<n>` when an orchestrator is dispatching staged parallel work.
+- `task:<id>` when a specific work item needs replies, acks, or ownership tracking.
+- `thread_id=<stable-id>` for planning threads, long-running pairwise coordination, and `RESOURCE_START` / `RESOURCE_DONE` sequences.
+
+Recommended example:
+
+```text
+tags = ["repo:wezterm", "session:gui-sync-20260324", "wave:2", "task:runtime-sync"]
+thread_id = "wezterm-joint-plan-20260324"
+```
+
+## Real-World Pattern
+
+The recent WezTerm Codex/Claude collaboration settled on a repeatable shape:
+
+- Start a shared planning thread with a stable `thread_id`.
+- Use `RESOURCE_START` and `RESOURCE_DONE` for shared repo paths, commits, PRs, or docs ownership.
+- Prefer `read-direct` for pairwise handoffs and `compact-context` with `repo` + `thread_id` when resuming a single line of work.
+- Health-check the HTTP service before a long wave, especially if `agent-bus-http.exe` is being used as the primary coordination surface.
 
 ## Channel System (v0.5)
 
@@ -568,9 +619,13 @@ New session on same repo:
 | `POST` | `/channels/escalate` | Send escalation (routes to orchestrator) |
 | `POST` | `/channels/arbitrate/:resource` | Claim ownership |
 | `GET` | `/channels/arbitrate/:resource` | List claims for resource |
+| `POST` | `/channels/arbitrate/:resource/renew` | Renew a lease-backed claim |
+| `POST` | `/channels/arbitrate/:resource/release` | Release a lease-backed claim |
 | `PUT` | `/channels/arbitrate/:resource/resolve` | Resolve ownership conflict |
+| `POST` | `/knock` | Send a durable direct attention signal |
 | **Streaming** | | |
-| `GET` | `/events?agent=X&broadcast=bool` | SSE live stream (text/event-stream) |
+| `GET` | `/events/:agent?history=N&since_id=STREAM_ID` | SSE live stream with backlog replay |
+| `GET` | `/notifications/:agent?history=N&since_id=STREAM_ID` | Durable notification replay without opening SSE |
 
 ## CLI Quick Reference
 
@@ -667,16 +722,18 @@ agent-bus health --encoding json  # Includes runtime_metadata
 
 Register agent-bus in your LLM agent's MCP config for instant message bus access.
 
-### Claude Code (~/.claude/mcp.json or .claude/mcp.json)
+### Claude Code (~/.claude.json)
 
 ```json
 {
   "agent-bus": {
-    "command": "C:\\Users\\david\\bin\\agent-bus.exe",
+    "command": "agent-bus.exe",
     "args": ["serve", "--transport", "stdio"],
     "env": {
       "AGENT_BUS_REDIS_URL": "redis://localhost:6380/0",
       "AGENT_BUS_DATABASE_URL": "postgresql://postgres@localhost:5300/redis_backend",
+      "AGENT_BUS_SERVER_HOST": "localhost",
+      "AGENT_BUS_STARTUP_ENABLED": "false",
       "RUST_LOG": "error"
     }
   }
@@ -686,12 +743,15 @@ Register agent-bus in your LLM agent's MCP config for instant message bus access
 ### Codex CLI (~/.codex/config.toml)
 
 ```toml
-[mcp]
-agent_bus = { command = "C:\\Users\\david\\bin\\agent-bus.exe", args = ["serve", "--transport", "stdio"] }
+[mcp_servers.agent_bus]
+command = "agent-bus.exe"
+args = ["serve", "--transport", "stdio"]
 
-[mcp.env.agent_bus]
+[mcp_servers.agent_bus.env]
 AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
 AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5300/redis_backend"
+AGENT_BUS_SERVER_HOST = "localhost"
+AGENT_BUS_STARTUP_ENABLED = "false"
 RUST_LOG = "error"
 ```
 
@@ -701,11 +761,13 @@ RUST_LOG = "error"
 {
   "mcp_servers": {
     "agent-bus": {
-      "command": "C:\\Users\\david\\bin\\agent-bus.exe",
+      "command": "agent-bus.exe",
       "args": ["serve", "--transport", "stdio"],
       "env": {
         "AGENT_BUS_REDIS_URL": "redis://localhost:6380/0",
         "AGENT_BUS_DATABASE_URL": "postgresql://postgres@localhost:5300/redis_backend",
+        "AGENT_BUS_SERVER_HOST": "localhost",
+        "AGENT_BUS_STARTUP_ENABLED": "false",
         "RUST_LOG": "error"
       }
     }
@@ -714,6 +776,13 @@ RUST_LOG = "error"
 ```
 
 **All platforms use identical Rust binary** (`~/bin/agent-bus.exe`) — no platform-specific code.
+
+For Windows machines managed from this repo, install or refresh Claude and
+Codex configs with:
+
+```powershell
+pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1
+```
 
 ## Stable Agent IDs
 
