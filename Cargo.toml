@@ -1,3 +1,32 @@
 [workspace]
-members = ["rust-cli"]
+members = ["rust-cli", "crates/agent-bus-core"]
 resolver = "2"
+
+[workspace.lints.rust]
+ambiguous_negative_literals = "warn"
+missing_debug_implementations = "warn"
+redundant_imports = "warn"
+redundant_lifetimes = "warn"
+trivial_numeric_casts = "warn"
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+
+[workspace.lints.clippy]
+cargo = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+correctness = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+style = { level = "warn", priority = -1 }
+suspicious = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+map_err_ignore = "warn"
+clone_on_ref_ptr = "warn"
+empty_drop = "warn"
+empty_enum_variants_with_brackets = "warn"
+empty_structs_with_brackets = "warn"
+if_then_some_else_none = "warn"
+semicolon_outside_block = "warn"
+unused_result_ok = "warn"
+# multiple_crate_versions: expected at crate level due to dependency diamonds
+multiple_crate_versions = "allow"
