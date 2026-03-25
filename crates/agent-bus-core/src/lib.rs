@@ -3,4 +3,5 @@
 pub mod models;
 pub mod output;
 pub mod settings;
+pub mod token;
 pub mod validation;
