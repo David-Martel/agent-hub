@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Bus Console</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">agent-bus</p>
+        <h1>Minimal console</h1>
+        <p class="lede">
+          Read recent messages and notifications, then send a message or a
+          knock without leaving the browser.
+        </p>
+      </section>
+
+      <section class="panel form-panel">
+        <div class="panel-head">
+          <h2>Connection</h2>
+          <button id="refreshBtn" type="button">Refresh</button>
+        </div>
+        <label>
+          HTTP base URL
+          <input id="baseUrl" type="url" value="http://localhost:8400" />
+        </label>
+        <div class="grid">
+          <label>
+            Agent
+            <input id="agent" type="text" placeholder="codex" />
+          </label>
+          <label>
+            Sender
+            <input id="sender" type="text" placeholder="codex" />
+          </label>
+          <label>
+            Recipient
+            <input id="recipient" type="text" placeholder="claude" />
+          </label>
+          <label>
+            Topic
+            <input id="topic" type="text" placeholder="status" />
+          </label>
+        </div>
+        <label>
+          Body
+          <textarea id="body" rows="4" placeholder="ready to go"></textarea>
+        </label>
+        <label class="inline">
+          <input id="requestAck" type="checkbox" checked />
+          Request acknowledgement
+        </label>
+        <div class="actions">
+          <button id="sendBtn" type="button">Send message</button>
+          <button id="knockBtn" type="button" class="secondary">Knock</button>
+        </div>
+        <p id="status" class="status">Idle.</p>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Recent messages</h2>
+          <span class="hint">GET /messages</span>
+        </div>
+        <div id="messages" class="list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Recent notifications</h2>
+          <span class="hint">GET /notifications/{agent}</span>
+        </div>
+        <div id="notifications" class="list"></div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
