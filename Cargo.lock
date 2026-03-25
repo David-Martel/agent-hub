@@ -35,6 +35,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-bus-cli"
+version = "0.5.0"
+dependencies = [
+ "agent-bus",
+ "anyhow",
+]
+
+[[package]]
 name = "agent-bus-core"
 version = "0.5.0"
 dependencies = [
@@ -42,6 +50,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "criterion",
  "lz4_flex",
  "postgres",
  "r2d2",
@@ -55,6 +64,22 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "agent-bus-http"
+version = "0.5.0"
+dependencies = [
+ "agent-bus",
+ "anyhow",
+]
+
+[[package]]
+name = "agent-bus-mcp"
+version = "0.5.0"
+dependencies = [
+ "agent-bus",
+ "anyhow",
 ]
 
 [[package]]

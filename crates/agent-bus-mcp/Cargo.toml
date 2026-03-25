@@ -1,0 +1,19 @@
+[package]
+name = "agent-bus-mcp"
+version = "0.5.0"
+edition = "2024"
+publish = false
+description = "MCP surface for agent-bus coordination bus"
+license = "MIT"
+repository = "https://github.com/David-Martel/agent-hub"
+
+[[bin]]
+name = "agent-bus-mcp"
+path = "src/main.rs"
+
+[dependencies]
+agent-bus = { path = "../../rust-cli", default-features = true }
+anyhow = "1"
+
+[lints]
+workspace = true

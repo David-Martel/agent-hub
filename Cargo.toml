@@ -1,5 +1,11 @@
 [workspace]
-members = ["rust-cli", "crates/agent-bus-core"]
+members = [
+    "rust-cli",
+    "crates/agent-bus-core",
+    "crates/agent-bus-cli",
+    "crates/agent-bus-http",
+    "crates/agent-bus-mcp",
+]
 resolver = "2"
 
 [workspace.lints.rust]
