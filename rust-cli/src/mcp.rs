@@ -9,11 +9,14 @@ use rmcp::model::{
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
 };
 
-use crate::commands::{MessageFilters, scoped_required_tags};
+use crate::ops::{
+    AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
+    knock_metadata, list_messages_history, post_ack, post_message, scoped_required_tags,
+    set_presence,
+};
 use crate::redis_bus::{
-    bus_health, bus_list_messages_since_id_with_filters, bus_list_messages_with_filters,
-    bus_list_presence, bus_post_message, bus_set_presence, connect, get_inbox_cursor,
-    inbox_cursor_key, set_inbox_cursor,
+    bus_health, bus_list_presence, connect, get_notification_cursor, list_notifications_since_id,
+    notification_cursor_key, set_notification_cursor,
 };
 use crate::settings::Settings;
 use crate::validation::{
@@ -169,7 +172,35 @@ mod schemas {
             serde_json::json!({
                 "resource": {"type": "string", "description": "File/directory path to claim"},
                 "agent":    {"type": "string", "description": "Claiming agent ID"},
-                "reason":   {"type": "string", "description": "Why this agent needs first-edit"}
+                "reason":   {"type": "string", "description": "Why this agent needs first-edit"},
+                "mode": {"type": "string", "enum": ["shared", "shared_namespaced", "exclusive"]},
+                "namespace": {"type": "string"},
+                "scope_kind": {"type": "string"},
+                "scope_path": {"type": "string"},
+                "repo_scopes": {"type": "array", "items": {"type": "string"}},
+                "thread_id": {"type": "string"},
+                "lease_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 86400}
+            }),
+            &["resource", "agent"],
+        )
+    }
+
+    pub(super) fn renew_claim() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "resource": {"type": "string"},
+                "agent": {"type": "string"},
+                "lease_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 86400}
+            }),
+            &["resource", "agent"],
+        )
+    }
+
+    pub(super) fn release_claim() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "resource": {"type": "string"},
+                "agent": {"type": "string"}
             }),
             &["resource", "agent"],
         )
@@ -223,6 +254,20 @@ mod schemas {
                 }
             }),
             &["agent"],
+        )
+    }
+
+    pub(super) fn knock_agent() -> Arc<serde_json::Map<String, serde_json::Value>> {
+        schema_for(
+            serde_json::json!({
+                "sender": {"type": "string"},
+                "recipient": {"type": "string"},
+                "body": {"type": "string"},
+                "thread_id": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}},
+                "request_ack": {"type": "boolean"}
+            }),
+            &["sender", "recipient"],
         )
     }
 }
@@ -306,10 +351,25 @@ impl AgentBusMcpServer {
                 schemas::claim_resource(),
             ),
             Tool::new(
+                "renew_claim",
+                "Renew an active resource claim/lease before it expires.",
+                schemas::renew_claim(),
+            ),
+            Tool::new(
+                "release_claim",
+                "Release an active resource claim/lease held by an agent.",
+                schemas::release_claim(),
+            ),
+            Tool::new(
                 "resolve_claim",
                 "Resolve a contested ownership claim by naming a winner and sending \
                  direct notifications to all claimants.",
                 schemas::resolve_claim(),
+            ),
+            Tool::new(
+                "knock_agent",
+                "Send a durable direct knock notification to make another agent check the bus now.",
+                schemas::knock_agent(),
             ),
             Tool::new(
                 "check_inbox",
@@ -469,21 +529,22 @@ impl AgentBusMcpServer {
                 let fitted_body = auto_fit_schema(body, effective_schema);
                 validate_message_schema(&fitted_body, effective_schema)?;
                 let mut conn = connect(settings)?;
-                let msg = bus_post_message(
+                let msg = post_message(
                     &mut conn,
                     settings,
-                    sender,
-                    recipient,
-                    topic,
-                    &fitted_body,
-                    thread_id,
-                    &tags,
-                    priority,
-                    request_ack,
-                    reply_to,
-                    &metadata,
-                    crate::pg_writer(),
-                    false, // MCP-stdio transport: no SSE subscribers
+                    &PostMessageRequest {
+                        sender,
+                        recipient,
+                        topic,
+                        body: &fitted_body,
+                        thread_id,
+                        tags: &tags,
+                        priority,
+                        request_ack,
+                        reply_to,
+                        metadata: &metadata,
+                        has_sse_subscribers: false,
+                    },
                 )?;
                 Ok(serde_json::to_value(&msg)?)
             }
@@ -504,18 +565,16 @@ impl AgentBusMcpServer {
                     tags: &tags,
                     thread_id,
                 };
-                let required_tags = scoped_required_tags(&filters);
-                let required_tag_refs: Vec<&str> =
-                    required_tags.iter().map(String::as_str).collect();
-                let msgs = bus_list_messages_with_filters(
+                let msgs = list_messages_history(
                     settings,
-                    agent,
-                    sender,
-                    since_minutes,
-                    limit,
-                    include_broadcast,
-                    thread_id,
-                    &required_tag_refs,
+                    &ReadMessagesRequest {
+                        agent,
+                        from_agent: sender,
+                        since_minutes,
+                        limit,
+                        include_broadcast,
+                        filters,
+                    },
                 )?;
                 Ok(serde_json::to_value(&msgs)?)
             }
@@ -527,30 +586,22 @@ impl AgentBusMcpServer {
                     .ok_or_else(|| anyhow!("message_id is required"))?;
                 let body = Self::get_str_or(args, "body", "ack");
 
-                let meta = serde_json::json!({"ack_for": message_id});
                 let mut conn = connect(settings)?;
-                let msg = bus_post_message(
+                let ack = post_ack(
                     &mut conn,
                     settings,
-                    agent,
-                    "all",
-                    "ack",
-                    body,
-                    None,
-                    &[],
-                    "normal",
-                    false,
-                    Some(message_id),
-                    &meta,
-                    crate::pg_writer(),
-                    false, // MCP-stdio transport: no SSE subscribers
+                    &AckMessageRequest {
+                        agent,
+                        message_id,
+                        body,
+                        has_sse_subscribers: false,
+                    },
                 )?;
-                // Include ack confirmation in response so the caller sees it on stdio.
                 let response = serde_json::json!({
                     "ack_sent": true,
-                    "ack_message_id": msg.id,
-                    "acked_message_id": message_id,
-                    "timestamp": msg.timestamp_utc,
+                    "ack_message_id": ack.message.id,
+                    "acked_message_id": ack.acked_message_id,
+                    "timestamp": ack.message.timestamp_utc,
                 });
                 Ok(response)
             }
@@ -565,16 +616,17 @@ impl AgentBusMcpServer {
                 let metadata = Self::get_object_or_empty(args, "metadata");
 
                 let mut conn = connect(settings)?;
-                let presence = bus_set_presence(
+                let presence = set_presence(
                     &mut conn,
                     settings,
-                    agent,
-                    status,
-                    session_id,
-                    &capabilities,
-                    ttl_seconds,
-                    &metadata,
-                    crate::pg_writer(),
+                    &PresenceRequest {
+                        agent,
+                        status,
+                        session_id,
+                        capabilities: &capabilities,
+                        ttl_seconds,
+                        metadata: &metadata,
+                    },
                 )?;
                 Ok(serde_json::to_value(&presence)?)
             }
@@ -714,9 +766,53 @@ impl AgentBusMcpServer {
                 let agent =
                     Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
                 let reason = Self::get_str_or(args, "reason", "first-edit required");
+                let mode = Self::get_str_or(args, "mode", "exclusive");
+                let lease_mode = match mode {
+                    "shared" => crate::channels::ResourceLeaseMode::Shared,
+                    "shared_namespaced" => crate::channels::ResourceLeaseMode::SharedNamespaced,
+                    "exclusive" => crate::channels::ResourceLeaseMode::Exclusive,
+                    other => anyhow::bail!("invalid mode '{other}'"),
+                };
 
-                let claim = crate::channels::claim_resource(settings, resource, agent, reason)?;
+                let claim = crate::channels::claim_resource_with_options(
+                    settings,
+                    resource,
+                    agent,
+                    reason,
+                    &crate::channels::ClaimOptions {
+                        mode: lease_mode,
+                        namespace: Self::get_str(args, "namespace").map(str::to_owned),
+                        scope_kind: Self::get_str(args, "scope_kind").map(str::to_owned),
+                        scope_path: Self::get_str(args, "scope_path").map(str::to_owned),
+                        repo_scopes: Self::get_string_array(args, "repo_scopes"),
+                        thread_id: Self::get_str(args, "thread_id").map(str::to_owned),
+                        lease_ttl_seconds: Self::get_u64_or(args, "lease_ttl_seconds", 3600),
+                    },
+                )?;
                 Ok(serde_json::to_value(&claim)?)
+            }
+
+            "renew_claim" => {
+                let resource = Self::get_str(args, "resource")
+                    .ok_or_else(|| anyhow!("resource is required"))?;
+                let agent =
+                    Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
+                let claim = crate::channels::renew_claim(
+                    settings,
+                    resource,
+                    agent,
+                    Some(Self::get_u64_or(args, "lease_ttl_seconds", 3600)),
+                )?;
+                Ok(serde_json::to_value(&claim)?)
+            }
+
+            "release_claim" => {
+                let resource = Self::get_str(args, "resource")
+                    .ok_or_else(|| anyhow!("resource is required"))?;
+                let agent =
+                    Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
+                let state = crate::channels::release_claim(settings, resource, agent)?;
+                Ok(serde_json::to_value(&state)?)
             }
 
             "resolve_claim" => {
@@ -735,6 +831,38 @@ impl AgentBusMcpServer {
                     resolved_by,
                 )?;
                 Ok(serde_json::to_value(&state)?)
+            }
+
+            "knock_agent" => {
+                let sender =
+                    Self::get_str(args, "sender").ok_or_else(|| anyhow!("sender is required"))?;
+                let recipient = Self::get_str(args, "recipient")
+                    .ok_or_else(|| anyhow!("recipient is required"))?;
+                let body = Self::get_str_or(args, "body", "check the bus");
+                let thread_id = Self::get_str(args, "thread_id");
+                let tags = Self::get_string_array(args, "tags");
+                let request_ack = Self::get_bool_or(args, "request_ack", true);
+                let metadata = knock_metadata(request_ack);
+
+                let mut conn = connect(settings)?;
+                let msg = post_message(
+                    &mut conn,
+                    settings,
+                    &PostMessageRequest {
+                        sender,
+                        recipient,
+                        topic: "knock",
+                        body,
+                        thread_id,
+                        tags: &tags,
+                        priority: "urgent",
+                        request_ack,
+                        reply_to: None,
+                        metadata: &metadata,
+                        has_sse_subscribers: true,
+                    },
+                )?;
+                Ok(serde_json::to_value(&msg)?)
             }
 
             "check_inbox" => {
@@ -759,25 +887,41 @@ impl AgentBusMcpServer {
                 // Honour reset_cursor before reading: write "0-0" so the
                 // subsequent read starts from the beginning of the stream.
                 if reset_cursor {
-                    set_inbox_cursor(&mut conn, agent, "0-0")?;
+                    set_notification_cursor(&mut conn, agent, "0-0")?;
                 }
 
-                let cursor = get_inbox_cursor(&mut conn, agent)?;
+                let cursor = get_notification_cursor(&mut conn, agent)?;
+                let notifications = list_notifications_since_id(&mut conn, agent, &cursor, limit)?;
                 let required_tag_refs: Vec<&str> =
                     required_tags.iter().map(String::as_str).collect();
-                let messages = bus_list_messages_since_id_with_filters(
-                    settings,
-                    agent,
-                    &cursor,
-                    limit,
-                    thread_id,
-                    &required_tag_refs,
-                )?;
+                let filtered_notifications: Vec<_> = notifications
+                    .into_iter()
+                    .filter(|notification| {
+                        crate::redis_bus::message_matches_filters(
+                            &notification.message,
+                            Some(agent),
+                            None,
+                            true,
+                            thread_id,
+                            &required_tag_refs,
+                        )
+                    })
+                    .take(limit)
+                    .collect();
+                let messages: Vec<crate::models::Message> = filtered_notifications
+                    .iter()
+                    .map(|notification| notification.message.clone())
+                    .collect();
+                let cursor_now = filtered_notifications
+                    .last()
+                    .and_then(|notification| notification.notification_stream_id.as_deref())
+                    .unwrap_or(&cursor)
+                    .to_owned();
 
-                // Advance cursor to the stream ID of the last delivered message
-                // so the next call does not re-deliver the same entries.
-                if let Some(last_sid) = messages.last().and_then(|m| m.stream_id.as_deref()) {
-                    set_inbox_cursor(&mut conn, agent, last_sid)?;
+                // Advance cursor to the last delivered notification entry so
+                // replay remains aligned with the per-agent attention stream.
+                if cursor_now != cursor {
+                    set_notification_cursor(&mut conn, agent, &cursor_now)?;
                 }
 
                 let result = serde_json::json!({
@@ -785,11 +929,8 @@ impl AgentBusMcpServer {
                     "new_messages": messages.len(),
                     "messages": messages,
                     "cursor_was": cursor,
-                    "cursor_now": messages
-                        .last()
-                        .and_then(|m| m.stream_id.as_deref())
-                        .unwrap_or(&cursor),
-                    "inbox_cursor_key": inbox_cursor_key(agent),
+                    "cursor_now": cursor_now,
+                    "inbox_cursor_key": notification_cursor_key(agent),
                 });
                 Ok(result)
             }
@@ -813,7 +954,7 @@ impl ServerHandler for AgentBusMcpServer {
             "Agent Hub coordination bus (Redis + PostgreSQL). MANDATORY PROTOCOL: \
              (1) set_presence on session start with your agent ID and capabilities. \
              (2) post_message topic=ownership BEFORE editing any file — claim it first, check for conflicts. \
-             (3) use check_inbox every 2-3 tool calls — poll only new inbox messages, avoid duplicate work. \
+             (3) use check_inbox every 2-3 tool calls — it now reads durable per-agent notifications rather than replaying the raw bus. \
              (4) Schema required: topic *-findings → schema=finding (needs FINDING:+SEVERITY:), \
              topic status/ownership/coordination → schema=status, topic benchmark → schema=benchmark. \
              (5) Batch 3-5 findings per message (max 2000 chars). Include tags=[repo:<name>]. \
@@ -859,8 +1000,8 @@ mod tests {
         let tools = AgentBusMcpServer::tool_list();
         assert_eq!(
             tools.len(),
-            14,
-            "expected 14 MCP tools (8 bus + 5 channel + 1 inbox)"
+            17,
+            "expected 17 MCP tools after lease renewal/release and knock support"
         );
     }
 
@@ -1320,10 +1461,14 @@ mod tests {
         );
     }
 
-    /// `check_inbox` cursor key format matches the expected `bus:cursor:<agent>` pattern.
+    /// `check_inbox` cursor key format matches the expected
+    /// `bus:notify_cursor:<agent>` pattern.
     #[test]
     fn check_inbox_cursor_key_format() {
-        assert_eq!(inbox_cursor_key("claude"), "bus:cursor:claude");
-        assert_eq!(inbox_cursor_key("codex"), "bus:cursor:codex");
+        assert_eq!(
+            notification_cursor_key("claude"),
+            "bus:notify_cursor:claude"
+        );
+        assert_eq!(notification_cursor_key("codex"), "bus:notify_cursor:codex");
     }
 }

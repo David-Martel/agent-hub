@@ -53,7 +53,11 @@ pub(crate) fn estimate_tokens(text: &str) -> usize {
     //
     // Integer ceiling division avoids float-cast lints.  Both ratios are scaled
     // by 10 to represent them as exact integers: 4.0 → 40, 2.5 → 25.
-    let denominator: usize = if json_chars * 100 > total * 15 { 25 } else { 40 };
+    let denominator: usize = if json_chars * 100 > total * 15 {
+        25
+    } else {
+        40
+    };
     (total * 10).div_ceil(denominator)
 }
 
@@ -96,19 +100,13 @@ pub(crate) fn minimize_message(msg: &Message) -> serde_json::Value {
         "ts".to_owned(),
         serde_json::Value::String(msg.timestamp_utc.clone()),
     );
-    map.insert(
-        "f".to_owned(),
-        serde_json::Value::String(msg.from.clone()),
-    );
+    map.insert("f".to_owned(), serde_json::Value::String(msg.from.clone()));
     map.insert("t".to_owned(), serde_json::Value::String(msg.to.clone()));
     map.insert(
         "tp".to_owned(),
         serde_json::Value::String(msg.topic.clone()),
     );
-    map.insert(
-        "b".to_owned(),
-        serde_json::Value::String(msg.body.clone()),
-    );
+    map.insert("b".to_owned(), serde_json::Value::String(msg.body.clone()));
 
     // Priority: only include when non-default.
     if msg.priority != "normal" {
@@ -357,7 +355,10 @@ mod tests {
         let msg = make_message("a", "b", "t", "body"); // request_ack = false
         let min = minimize_message(&msg);
         let obj = min.as_object().unwrap();
-        assert!(!obj.contains_key("ack"), "false request_ack should be stripped");
+        assert!(
+            !obj.contains_key("ack"),
+            "false request_ack should be stripped"
+        );
     }
 
     #[test]
@@ -383,10 +384,7 @@ mod tests {
         msg.tags = smallvec!["repo:agent-bus".to_owned(), "sprint".to_owned()];
         let min = minimize_message(&msg);
         let obj = min.as_object().unwrap();
-        assert_eq!(
-            obj["tg"],
-            serde_json::json!(["repo:agent-bus", "sprint"])
-        );
+        assert_eq!(obj["tg"], serde_json::json!(["repo:agent-bus", "sprint"]));
     }
 
     #[test]

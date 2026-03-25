@@ -243,9 +243,7 @@ pub(crate) fn encode_msgpack(
 /// Decode `MessagePack` bytes into a [`serde_json::Value`].
 // allow: pub(crate) API for future HTTP/MCP binary wire protocol; currently used in tests only.
 #[allow(dead_code)]
-pub(crate) fn decode_msgpack(
-    data: &[u8],
-) -> Result<serde_json::Value, rmp_serde::decode::Error> {
+pub(crate) fn decode_msgpack(data: &[u8]) -> Result<serde_json::Value, rmp_serde::decode::Error> {
     rmp_serde::from_slice(data)
 }
 
