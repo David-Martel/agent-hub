@@ -1,9 +1,11 @@
 //! Shared bus operations reused across CLI, HTTP, and MCP transports.
 
+pub(crate) mod admin;
 pub(crate) mod channel;
 pub(crate) mod claim;
 pub(crate) mod inbox;
 pub(crate) mod message;
+pub(crate) mod task;
 
 #[cfg(test)]
 use crate::models::{Message, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR};
