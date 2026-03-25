@@ -30,3 +30,26 @@ semicolon_outside_block = "warn"
 unused_result_ok = "warn"
 # multiple_crate_versions: expected at crate level due to dependency diamonds
 multiple_crate_versions = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+debug = 1
+incremental = true
+codegen-units = 256
+
+[profile.test]
+debug = 1
+incremental = true
+codegen-units = 256
+
+[profile.fast-release]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+debug = 1
+strip = "debuginfo"

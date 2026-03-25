@@ -3,6 +3,8 @@
 use std::sync::OnceLock;
 
 pub mod channels;
+pub mod codex_bridge;
+pub mod journal;
 pub mod models;
 pub mod ops;
 pub mod output;
