@@ -25,9 +25,9 @@ use crate::ops::task::{PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task 
 use crate::output::{
     Encoding, format_health_toon, output, output_message, output_messages, output_presence,
 };
-use crate::redis_bus::{
-    bus_health, bus_list_messages, bus_list_presence, connect, list_pending_acks,
-};
+use crate::ops::admin::{health as ops_health, list_pending_acks as ops_list_pending_acks,
+    list_presence as ops_list_presence};
+use crate::redis_bus::{bus_list_messages, connect};
 use crate::server_mode::{
     http_get, http_post, http_put, post_service_action, query_windows_service_state,
     resolved_service_base_url, sc_action, service_status_payload, use_server_mode, wait_for_health,
@@ -158,7 +158,7 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding) {
         }
     }
 
-    let health = bus_health(settings, None);
+    let health = ops_health(settings, None);
     if matches!(encoding, Encoding::Toon) {
         println!("{}", format_health_toon(&health));
     } else {
@@ -511,7 +511,7 @@ pub(crate) fn cmd_pending_acks(
     encoding: &Encoding,
 ) -> Result<()> {
     let mut conn = connect(settings)?;
-    let pending = list_pending_acks(&mut conn, agent)?;
+    let pending = ops_list_pending_acks(&mut conn, agent)?;
     if matches!(encoding, Encoding::Human) {
         if pending.is_empty() {
             println!("No pending acknowledgements.");
@@ -662,7 +662,7 @@ pub(crate) fn cmd_presence_list(settings: &Settings, encoding: &Encoding) -> Res
     }
 
     let mut conn = connect(settings)?;
-    let results = bus_list_presence(&mut conn, settings)?;
+    let results = ops_list_presence(&mut conn, settings)?;
     if matches!(encoding, Encoding::Human) {
         for p in &results {
             output_presence(p, encoding);

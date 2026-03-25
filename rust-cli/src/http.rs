@@ -44,9 +44,11 @@ use crate::ops::claim::{
     resolve_claim as ops_resolve_claim,
 };
 use crate::output::{format_health_toon, format_message_toon, format_presence_toon};
+use crate::ops::admin::{health as ops_health, list_pending_acks as ops_list_pending_acks,
+    list_presence as ops_list_presence};
 use crate::redis_bus::{
-    BatchSendPayload, RedisPool, SseSubscriberCount, bus_health, bus_list_messages_from_redis,
-    bus_list_presence, bus_post_message_with_notifications,
+    BatchSendPayload, RedisPool, SseSubscriberCount, bus_list_messages_from_redis,
+    bus_post_message_with_notifications,
     bus_post_messages_batch_with_notifications, list_notifications, list_notifications_since_id,
 };
 use crate::settings::Settings;
@@ -186,7 +188,7 @@ pub(crate) async fn http_health_handler(
     let pool_for_health = pool.clone();
     let control = state.control_status.read().await.clone();
     let result =
-        tokio::task::spawn_blocking(move || bus_health(&state.settings, Some(&pool_for_health)))
+        tokio::task::spawn_blocking(move || ops_health(&state.settings, Some(&pool_for_health)))
             .await
             .expect("spawn_blocking panicked");
 
@@ -662,7 +664,7 @@ pub(crate) async fn http_presence_list_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let results = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        bus_list_presence(&mut conn, &state.settings)
+        ops_list_presence(&mut conn, &state.settings)
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1261,7 +1263,7 @@ async fn http_pending_acks_handler(
     let agent = params.agent;
     let pending = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        crate::redis_bus::list_pending_acks(&mut conn, agent.as_deref())
+        ops_list_pending_acks(&mut conn, agent.as_deref())
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -2353,7 +2355,7 @@ async fn http_pull_task_handler(
 pub(crate) async fn http_dashboard_handler(State(state): State<AppState>) -> impl IntoResponse {
     let pool = state.redis.clone();
     let settings = Arc::clone(&state.settings);
-    let health = tokio::task::spawn_blocking(move || bus_health(&settings, Some(&pool)))
+    let health = tokio::task::spawn_blocking(move || ops_health(&settings, Some(&pool)))
         .await
         .unwrap_or_else(|_| crate::redis_bus::health_error_fallback());
 

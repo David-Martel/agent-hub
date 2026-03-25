@@ -25,7 +25,8 @@ use crate::ops::claim::{
     renew_claim as ops_renew_claim, resolve_claim as ops_resolve_claim,
 };
 use crate::ops::inbox::{CheckInboxRequest, check_inbox};
-use crate::redis_bus::{bus_health, bus_list_presence, connect};
+use crate::ops::admin::{health as ops_health, list_presence as ops_list_presence};
+use crate::redis_bus::connect;
 use crate::settings::Settings;
 use crate::validation::{
     auto_fit_schema, enforce_schema_for_transport, validate_message_schema, validate_priority,
@@ -509,9 +510,9 @@ impl AgentBusMcpServer {
 
         match name {
             "bus_health" => {
-                // MCP stdio transport has no r2d2 pool; pass None so bus_health
-                // falls back to a single fresh connection.
-                let h = bus_health(settings, None);
+                // MCP stdio transport has no r2d2 pool; pass None so the health
+                // check falls back to a single fresh connection.
+                let h = ops_health(settings, None);
                 Ok(serde_json::to_value(&h)?)
             }
 
@@ -641,7 +642,7 @@ impl AgentBusMcpServer {
 
             "list_presence" => {
                 let mut conn = connect(settings)?;
-                let results = bus_list_presence(&mut conn, settings)?;
+                let results = ops_list_presence(&mut conn, settings)?;
                 Ok(serde_json::to_value(&results)?)
             }
 

@@ -4,8 +4,29 @@
 //! health check results.  HTTP handler logic that produces specific response
 //! codes or serialises these types into Axum responses lives in
 //! [`crate::http`] — only the data types are here.
+//!
+//! # Operations
+//!
+//! In addition to the data types, this module exposes thin transport-agnostic
+//! wrappers around the three most-commonly delegated `redis_bus` calls:
+//!
+//! - [`health`] — check Redis + `PostgreSQL` liveness
+//! - [`list_presence`] — read all agent presence records
+//! - [`list_pending_acks`] — list messages awaiting acknowledgement
+//!
+//! Transport modules call these wrappers instead of importing from
+//! `redis_bus` directly, so that the import surface of CLI/HTTP/MCP remains
+//! bounded to transport-specific concerns.
 
+use anyhow::Result;
 use chrono::Utc;
+
+use crate::models::{Health, Presence};
+use crate::redis_bus::{
+    PendingAck, RedisPool, bus_health, bus_list_presence,
+    list_pending_acks as redis_list_pending_acks,
+};
+use crate::settings::Settings;
 
 // ---------------------------------------------------------------------------
 // Server lifecycle types
@@ -81,6 +102,57 @@ impl ServerControlStatus {
 /// microsecond precision.
 pub(crate) fn current_timestamp() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+}
+
+// ---------------------------------------------------------------------------
+// Transport-agnostic operation wrappers
+// ---------------------------------------------------------------------------
+
+/// Check Redis and `PostgreSQL` liveness.
+///
+/// Pass `Some(pool)` when an r2d2 [`RedisPool`] is already held by the caller
+/// (HTTP server mode) to reuse a pooled connection.  Pass `None` in CLI and
+/// MCP stdio mode where no pool exists — the function opens a short-lived
+/// connection internally.
+///
+/// # Example
+///
+/// ```ignore
+/// let h = ops::admin::health(&settings, None);
+/// assert!(h.ok);
+/// ```
+pub(crate) fn health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
+    bus_health(settings, pool)
+}
+
+/// List all agents that currently have a presence record in Redis.
+///
+/// Results are sorted by agent name.
+///
+/// # Errors
+///
+/// Returns an error if the Redis SCAN or GET commands fail.
+pub(crate) fn list_presence(
+    conn: &mut redis::Connection,
+    settings: &Settings,
+) -> Result<Vec<Presence>> {
+    bus_list_presence(conn, settings)
+}
+
+/// List all messages that are waiting for an acknowledgement.
+///
+/// When `agent` is `Some`, only pending acks whose recipient matches are
+/// returned.  Entries older than the stale threshold are flagged with
+/// `stale = true` on the returned [`PendingAck`] records.
+///
+/// # Errors
+///
+/// Returns an error if the Redis SCAN or GET commands fail.
+pub(crate) fn list_pending_acks(
+    conn: &mut redis::Connection,
+    agent: Option<&str>,
+) -> Result<Vec<PendingAck>> {
+    redis_list_pending_acks(conn, agent)
 }
 
 #[cfg(test)]
