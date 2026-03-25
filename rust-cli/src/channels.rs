@@ -29,7 +29,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::{Context as _, Result, bail};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use redis::Commands as _;
 use regex_lite::Regex;
 use serde::{Deserialize, Serialize};
@@ -123,6 +123,51 @@ pub(crate) enum ClaimStatus {
     ReviewAssigned,
 }
 
+/// Coordination mode for a resource lease/claim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ResourceLeaseMode {
+    /// Many agents may use the resource concurrently.
+    Shared,
+    /// Agents may share only when each uses a unique namespace.
+    SharedNamespaced,
+    /// Exactly one agent may hold the resource at a time.
+    Exclusive,
+}
+
+fn default_lease_mode() -> ResourceLeaseMode {
+    ResourceLeaseMode::Exclusive
+}
+
+impl Default for ResourceLeaseMode {
+    fn default() -> Self {
+        default_lease_mode()
+    }
+}
+
+fn default_claim_ttl_secs() -> u64 {
+    CLAIM_TTL_SECS
+}
+
+/// Optional lease/coordination metadata carried alongside a claim.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct ClaimOptions {
+    #[serde(default = "default_lease_mode")]
+    pub(crate) mode: ResourceLeaseMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) namespace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scope_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scope_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) repo_scopes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) thread_id: Option<String>,
+    #[serde(default = "default_claim_ttl_secs")]
+    pub(crate) lease_ttl_seconds: u64,
+}
+
 /// An ownership claim for a resource (file, directory, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct OwnershipClaim {
@@ -135,7 +180,36 @@ pub(crate) struct OwnershipClaim {
     /// ISO-8601 timestamp when the claim was made.
     pub(crate) timestamp: String,
     /// Current arbitration status.
+    #[serde(default = "default_claim_status_pending")]
     pub(crate) status: ClaimStatus,
+    /// Coordination mode for this claim.
+    #[serde(default = "default_lease_mode")]
+    pub(crate) mode: ResourceLeaseMode,
+    /// Optional namespace used by `shared_namespaced` claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) namespace: Option<String>,
+    /// Optional scope classification such as `repo_path` or `service`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scope_kind: Option<String>,
+    /// Optional canonical path behind the claimed resource.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scope_path: Option<String>,
+    /// One or more affected repository scopes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) repo_scopes: Vec<String>,
+    /// Optional coordination thread that owns this claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) thread_id: Option<String>,
+    /// Requested lease TTL in seconds.
+    #[serde(default = "default_claim_ttl_secs")]
+    pub(crate) lease_ttl_seconds: u64,
+    /// ISO-8601 expiry timestamp for stale-claim pruning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) expires_at: Option<String>,
+}
+
+fn default_claim_status_pending() -> ClaimStatus {
+    ClaimStatus::Pending
 }
 
 /// Full arbitration state for a resource — all competing claims.
@@ -183,6 +257,183 @@ fn claims_key(resource: &str) -> String {
     // Normalise path separators to avoid Redis key confusion on Windows.
     let normalised = resource.replace('\\', "/");
     format!("{CLAIMS_PREFIX}{normalised}")
+}
+
+fn claim_resolution_key(resource_key: &str) -> String {
+    format!("{resource_key}:resolution")
+}
+
+fn format_timestamp(ts: DateTime<Utc>) -> String {
+    ts.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+}
+
+fn parse_timestamp(ts: &str) -> Option<DateTime<Utc>> {
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn compute_expiry(now: DateTime<Utc>, ttl_seconds: u64) -> String {
+    let ttl = ttl_seconds.max(1);
+    format_timestamp(now + chrono::TimeDelta::seconds(i64::try_from(ttl).unwrap_or(i64::MAX)))
+}
+
+fn claim_expired(claim: &OwnershipClaim, now: DateTime<Utc>) -> bool {
+    claim
+        .expires_at
+        .as_deref()
+        .and_then(parse_timestamp)
+        .is_some_and(|expiry| expiry <= now)
+}
+
+fn claim_conflicts(left: &OwnershipClaim, right: &OwnershipClaim) -> bool {
+    use ResourceLeaseMode::{Exclusive, Shared, SharedNamespaced};
+
+    match (&left.mode, &right.mode) {
+        (Exclusive, _) | (_, Exclusive) => true,
+        (Shared | SharedNamespaced, Shared) | (Shared, SharedNamespaced) => false,
+        (SharedNamespaced, SharedNamespaced) => {
+            let left_ns = left
+                .namespace
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty());
+            let right_ns = right
+                .namespace
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty());
+            match (left_ns, right_ns) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            }
+        }
+    }
+}
+
+fn recompute_claim_statuses(claims: &mut [OwnershipClaim]) {
+    if claims.is_empty() {
+        return;
+    }
+
+    for idx in 0..claims.len() {
+        let conflicted = claims
+            .iter()
+            .enumerate()
+            .any(|(other_idx, other)| idx != other_idx && claim_conflicts(&claims[idx], other));
+        claims[idx].status = if conflicted {
+            ClaimStatus::Contested
+        } else {
+            ClaimStatus::Granted
+        };
+    }
+}
+
+fn claims_hash_ttl_seconds(claims: &[OwnershipClaim], now: DateTime<Utc>) -> u64 {
+    claims
+        .iter()
+        .filter_map(|claim| claim.expires_at.as_deref().and_then(parse_timestamp))
+        .filter(|expiry| *expiry > now)
+        .filter_map(|expiry| u64::try_from((expiry - now).num_seconds()).ok())
+        .max()
+        .unwrap_or(1)
+}
+
+fn persist_claims(
+    conn: &mut redis::Connection,
+    key: &str,
+    claims: &[OwnershipClaim],
+    now: DateTime<Utc>,
+) -> Result<()> {
+    if claims.is_empty() {
+        let _: () = redis::cmd("DEL")
+            .arg(key)
+            .query(conn)
+            .context("DEL empty claims key failed")?;
+        let _: () = redis::cmd("DEL")
+            .arg(claim_resolution_key(key))
+            .query(conn)
+            .context("DEL empty resolution key failed")?;
+        return Ok(());
+    }
+
+    let _: () = redis::cmd("DEL")
+        .arg(key)
+        .query(conn)
+        .context("DEL existing claims key failed")?;
+    for claim in claims {
+        let claim_json = serde_json::to_string(claim).context("serialize claim")?;
+        let _: () = redis::cmd("HSET")
+            .arg(key)
+            .arg(claim.agent.as_str())
+            .arg(&claim_json)
+            .query(conn)
+            .context("HSET claim failed")?;
+    }
+
+    let _: () = redis::cmd("EXPIRE")
+        .arg(key)
+        .arg(claims_hash_ttl_seconds(claims, now))
+        .query(conn)
+        .context("EXPIRE claims key failed")?;
+
+    Ok(())
+}
+
+fn load_active_claims(conn: &mut redis::Connection, key: &str) -> Result<Vec<OwnershipClaim>> {
+    let now = Utc::now();
+    let all: Vec<(String, String)> = redis::cmd("HGETALL")
+        .arg(key)
+        .query(conn)
+        .context("HGETALL claims failed")?;
+
+    if all.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut claims = Vec::new();
+    let mut expired_agents = Vec::new();
+
+    for (agent_id, claim_json) in &all {
+        let Ok(claim) = serde_json::from_str::<OwnershipClaim>(claim_json) else {
+            continue;
+        };
+        if claim_expired(&claim, now) {
+            expired_agents.push(agent_id.clone());
+            continue;
+        }
+        claims.push(claim);
+    }
+
+    if !expired_agents.is_empty() {
+        let mut cmd = redis::cmd("HDEL");
+        cmd.arg(key);
+        for agent in &expired_agents {
+            cmd.arg(agent);
+        }
+        let _: usize = cmd.query(conn).context("HDEL expired claims failed")?;
+    }
+
+    if claims.is_empty() {
+        let _: () = redis::cmd("DEL")
+            .arg(key)
+            .query(conn)
+            .context("DEL empty claims key after prune failed")?;
+        let _: () = redis::cmd("DEL")
+            .arg(claim_resolution_key(key))
+            .query(conn)
+            .context("DEL empty resolution key after prune failed")?;
+        return Ok(Vec::new());
+    }
+
+    claims.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    let ttl = claims_hash_ttl_seconds(&claims, now);
+    let _: () = redis::cmd("EXPIRE")
+        .arg(key)
+        .arg(ttl)
+        .query(conn)
+        .context("EXPIRE refreshed claims key failed")?;
+    Ok(claims)
 }
 
 // ---------------------------------------------------------------------------
@@ -714,11 +965,29 @@ fn find_orchestrator(settings: &Settings) -> Result<String> {
 /// # Errors
 ///
 /// Returns an error if Redis commands fail.
+#[allow(dead_code)]
 pub(crate) fn claim_resource(
     settings: &Settings,
     resource: &str,
     agent: &str,
     priority_argument: &str,
+) -> Result<OwnershipClaim> {
+    claim_resource_with_options(
+        settings,
+        resource,
+        agent,
+        priority_argument,
+        &ClaimOptions::default(),
+    )
+}
+
+/// Claim a resource with structured lease options.
+pub(crate) fn claim_resource_with_options(
+    settings: &Settings,
+    resource: &str,
+    agent: &str,
+    priority_argument: &str,
+    options: &ClaimOptions,
 ) -> Result<OwnershipClaim> {
     if resource.is_empty() {
         bail!("resource must not be empty");
@@ -726,60 +995,67 @@ pub(crate) fn claim_resource(
     if agent.is_empty() {
         bail!("agent must not be empty");
     }
+    if matches!(options.mode, ResourceLeaseMode::SharedNamespaced)
+        && options
+            .namespace
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+    {
+        bail!("shared_namespaced claims require --namespace");
+    }
 
     let key = claims_key(resource);
     let mut conn = connect(settings)?;
+    let now = Utc::now();
+    let ts = format_timestamp(now);
+    let expires_at = Some(compute_expiry(now, options.lease_ttl_seconds));
 
-    let ts = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
+    let mut claims = load_active_claims(&mut conn, &key)?;
+    claims.retain(|claim| claim.agent != agent);
 
-    // Determine whether there are existing claims from other agents.
-    let existing_agents: Vec<String> = redis::cmd("HKEYS")
-        .arg(&key)
-        .query(&mut conn)
-        .context("HKEYS claims failed")?;
-
-    let other_claimants: Vec<String> = existing_agents.into_iter().filter(|a| a != agent).collect();
-
-    let status = if other_claimants.is_empty() {
-        ClaimStatus::Granted
-    } else {
-        ClaimStatus::Contested
-    };
-
-    let claim = OwnershipClaim {
+    claims.push(OwnershipClaim {
         resource: resource.to_owned(),
         agent: agent.to_owned(),
         priority_argument: priority_argument.to_owned(),
         timestamp: ts,
-        status: status.clone(),
-    };
+        status: ClaimStatus::Pending,
+        mode: options.mode.clone(),
+        namespace: options.namespace.clone(),
+        scope_kind: options.scope_kind.clone(),
+        scope_path: options.scope_path.clone(),
+        repo_scopes: options.repo_scopes.clone(),
+        thread_id: options.thread_id.clone(),
+        lease_ttl_seconds: options.lease_ttl_seconds.max(1),
+        expires_at,
+    });
 
-    // Store the claim.
-    let claim_json = serde_json::to_string(&claim).context("serialize claim")?;
-    let _: () = redis::cmd("HSET")
-        .arg(&key)
-        .arg(agent)
-        .arg(&claim_json)
-        .query(&mut conn)
-        .context("HSET claim failed")?;
+    recompute_claim_statuses(&mut claims);
+    persist_claims(&mut conn, &key, &claims, now)?;
 
-    // Refresh the hash TTL on every write.
-    let _: () = redis::cmd("EXPIRE")
-        .arg(&key)
-        .arg(CLAIM_TTL_SECS)
-        .query(&mut conn)
-        .context("EXPIRE claims key failed")?;
+    let claim = claims
+        .iter()
+        .find(|claim| claim.agent == agent)
+        .cloned()
+        .context("claimed resource not found after persist")?;
 
-    // When contested, upgrade all existing claims and notify.
-    if status == ClaimStatus::Contested {
-        mark_all_contested(&mut conn, &key, resource)?;
+    let other_claimants: Vec<String> = claims
+        .iter()
+        .filter(|claimant| claimant.agent != agent)
+        .map(|claimant| claimant.agent.clone())
+        .collect();
+
+    if claim.status == ClaimStatus::Contested && !other_claimants.is_empty() {
         // Best-effort escalation notification — failure is non-fatal.
         let notif_body = format!(
             "CLAIM CONTESTED: {resource}\n\
              Claimant: {agent}\n\
              Argument: {priority_argument}\n\
+             Mode: {:?}\n\
              Other claimants: {}\n\
              Use 'agent-bus resolve {resource} --winner <agent>' to resolve.",
+            claim.mode,
             other_claimants.join(", ")
         );
         if let Err(e) = post_escalation(
@@ -794,32 +1070,6 @@ pub(crate) fn claim_resource(
     }
 
     Ok(claim)
-}
-
-/// Update all existing claims for a resource to `contested` status.
-fn mark_all_contested(conn: &mut redis::Connection, key: &str, resource: &str) -> Result<()> {
-    let all: Vec<(String, String)> = redis::cmd("HGETALL")
-        .arg(key)
-        .query(conn)
-        .context("HGETALL claims for contest failed")?;
-
-    for (agent_id, existing_json) in &all {
-        if let Ok(mut existing_claim) = serde_json::from_str::<OwnershipClaim>(existing_json)
-            && existing_claim.status != ClaimStatus::Contested
-        {
-            existing_claim.status = ClaimStatus::Contested;
-            resource.clone_into(&mut existing_claim.resource);
-            if let Ok(updated_json) = serde_json::to_string(&existing_claim) {
-                let _: () = redis::cmd("HSET")
-                    .arg(key)
-                    .arg(agent_id.as_str())
-                    .arg(&updated_json)
-                    .query(conn)
-                    .context("HSET update contested claim")?;
-            }
-        }
-    }
-    Ok(())
 }
 
 /// List all ownership claims, optionally filtered by resource or status.
@@ -854,16 +1104,7 @@ pub(crate) fn list_claims(
 
     let mut claims: Vec<OwnershipClaim> = Vec::new();
     for key in &keys {
-        let all: Vec<(String, String)> = redis::cmd("HGETALL")
-            .arg(key)
-            .query(&mut conn)
-            .context("HGETALL claims failed")?;
-
-        for (_agent_id, claim_json) in &all {
-            let Ok(claim) = serde_json::from_str::<OwnershipClaim>(claim_json) else {
-                continue;
-            };
-
+        for claim in load_active_claims(&mut conn, key)? {
             if resource_filter.is_some_and(|rf| claim.resource != rf) {
                 continue;
             }
@@ -889,21 +1130,10 @@ pub(crate) fn get_arbitration_state(
     let key = claims_key(resource);
     let mut conn = connect(settings)?;
 
-    let all: Vec<(String, String)> = redis::cmd("HGETALL")
-        .arg(&key)
-        .query(&mut conn)
-        .context("HGETALL arbitration state failed")?;
-
-    let mut claims: Vec<OwnershipClaim> = all
-        .iter()
-        .filter_map(|(_agent_id, claim_json)| {
-            serde_json::from_str::<OwnershipClaim>(claim_json).ok()
-        })
-        .collect();
-    claims.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+    let claims = load_active_claims(&mut conn, &key)?;
 
     // Read optional resolution metadata from a separate key.
-    let resolution_key = format!("{key}:resolution");
+    let resolution_key = claim_resolution_key(&key);
     let winner: Option<String> = redis::cmd("HGET")
         .arg(&resolution_key)
         .arg("winner")
@@ -942,40 +1172,24 @@ pub(crate) fn resolve_claim(
 ) -> Result<ArbitrationState> {
     let key = claims_key(resource);
     let mut conn = connect(settings)?;
+    let mut claims = load_active_claims(&mut conn, &key)?;
 
-    let all: Vec<(String, String)> = redis::cmd("HGETALL")
-        .arg(&key)
-        .query(&mut conn)
-        .context("HGETALL for resolve failed")?;
-
-    if all.is_empty() {
+    if claims.is_empty() {
         bail!("no claims found for resource '{resource}'");
     }
 
     // Update each claim according to its outcome.
-    for (agent_id, claim_json) in &all {
-        let Ok(mut claim) = serde_json::from_str::<OwnershipClaim>(claim_json) else {
-            continue;
-        };
-
-        claim.status = if agent_id == winner_agent {
+    for claim in &mut claims {
+        claim.status = if claim.agent == winner_agent {
             ClaimStatus::Granted
         } else {
             ClaimStatus::ReviewAssigned
         };
-
-        if let Ok(updated) = serde_json::to_string(&claim) {
-            let _: () = redis::cmd("HSET")
-                .arg(&key)
-                .arg(agent_id.as_str())
-                .arg(&updated)
-                .query(&mut conn)
-                .context("HSET resolved claim")?;
-        }
     }
+    persist_claims(&mut conn, &key, &claims, Utc::now())?;
 
     // Persist resolution metadata.
-    let resolution_key = format!("{key}:resolution");
+    let resolution_key = claim_resolution_key(&key);
     let _: () = redis::cmd("HSET")
         .arg(&resolution_key)
         .arg("winner")
@@ -1027,6 +1241,60 @@ pub(crate) fn resolve_claim(
     }
 
     Ok(state)
+}
+
+/// Renew an active claim, extending its expiry.
+pub(crate) fn renew_claim(
+    settings: &Settings,
+    resource: &str,
+    agent: &str,
+    lease_ttl_seconds: Option<u64>,
+) -> Result<OwnershipClaim> {
+    let key = claims_key(resource);
+    let mut conn = connect(settings)?;
+    let mut claims = load_active_claims(&mut conn, &key)?;
+    let now = Utc::now();
+    let ttl = lease_ttl_seconds.unwrap_or(CLAIM_TTL_SECS).max(1);
+
+    let mut renewed = None;
+    for claim in &mut claims {
+        if claim.agent == agent {
+            claim.lease_ttl_seconds = ttl;
+            claim.timestamp = format_timestamp(now);
+            claim.expires_at = Some(compute_expiry(now, ttl));
+            renewed = Some(claim.clone());
+            break;
+        }
+    }
+
+    let renewed = renewed.context("no active claim found for agent on resource")?;
+    recompute_claim_statuses(&mut claims);
+    persist_claims(&mut conn, &key, &claims, now)?;
+    claims
+        .into_iter()
+        .find(|claim| claim.agent == agent)
+        .context("renewed claim missing after persist")
+        .or(Ok(renewed))
+}
+
+/// Release a claim held by `agent`.
+pub(crate) fn release_claim(
+    settings: &Settings,
+    resource: &str,
+    agent: &str,
+) -> Result<ArbitrationState> {
+    let key = claims_key(resource);
+    let mut conn = connect(settings)?;
+    let mut claims = load_active_claims(&mut conn, &key)?;
+    let initial_len = claims.len();
+    claims.retain(|claim| claim.agent != agent);
+    if claims.len() == initial_len {
+        bail!("no active claim found for agent on resource");
+    }
+
+    recompute_claim_statuses(&mut claims);
+    persist_claims(&mut conn, &key, &claims, Utc::now())?;
+    get_arbitration_state(settings, resource)
 }
 
 // ---------------------------------------------------------------------------
@@ -1251,7 +1519,10 @@ mod tests {
     fn extract_claimed_files_parses_multiple_paths() {
         let body = "I am editing src/main.rs and also tests/integration_test.rs today";
         let files = extract_claimed_files(body);
-        assert!(files.contains(&"src/main.rs".to_owned()), "expected src/main.rs");
+        assert!(
+            files.contains(&"src/main.rs".to_owned()),
+            "expected src/main.rs"
+        );
         assert!(
             files.contains(&"tests/integration_test.rs".to_owned()),
             "expected tests/integration_test.rs"
@@ -1298,7 +1569,10 @@ mod tests {
         tracker.record_claim("alice", &["src/foo.rs"]);
 
         let conflicts = tracker.check_conflicts("alice", &["src/foo.rs"]);
-        assert!(conflicts.is_empty(), "same agent re-claiming should not conflict");
+        assert!(
+            conflicts.is_empty(),
+            "same agent re-claiming should not conflict"
+        );
     }
 
     #[test]
@@ -1307,7 +1581,10 @@ mod tests {
         tracker.record_claim("alice", &["src/foo.rs"]);
 
         let conflicts = tracker.check_conflicts("bob", &["src/bar.rs"]);
-        assert!(conflicts.is_empty(), "non-overlapping files should not conflict");
+        assert!(
+            conflicts.is_empty(),
+            "non-overlapping files should not conflict"
+        );
     }
 
     #[test]
@@ -1335,6 +1612,14 @@ mod tests {
             priority_argument: format!("{agent} needs first-edit"),
             timestamp: "2026-01-01T00:00:00.000000Z".to_owned(),
             status,
+            mode: ResourceLeaseMode::Exclusive,
+            namespace: None,
+            scope_kind: None,
+            scope_path: None,
+            repo_scopes: Vec::new(),
+            thread_id: None,
+            lease_ttl_seconds: CLAIM_TTL_SECS,
+            expires_at: Some("2026-01-01T01:00:00.000000Z".to_owned()),
         }
     }
 
@@ -1668,6 +1953,14 @@ mod tests {
             priority_argument: "I own the startup flow".to_owned(),
             timestamp: "2026-01-01T00:00:00.000000Z".to_owned(),
             status: ClaimStatus::Granted,
+            mode: ResourceLeaseMode::Exclusive,
+            namespace: None,
+            scope_kind: None,
+            scope_path: None,
+            repo_scopes: Vec::new(),
+            thread_id: None,
+            lease_ttl_seconds: CLAIM_TTL_SECS,
+            expires_at: Some("2026-01-01T01:00:00.000000Z".to_owned()),
         };
         let json = serde_json::to_string(&claim).unwrap();
         let decoded: OwnershipClaim = serde_json::from_str(&json).unwrap();
@@ -1693,6 +1986,14 @@ mod tests {
             priority_argument: "perf analysis".to_owned(),
             timestamp: ts.to_owned(),
             status: ClaimStatus::Pending,
+            mode: ResourceLeaseMode::Exclusive,
+            namespace: None,
+            scope_kind: None,
+            scope_path: None,
+            repo_scopes: Vec::new(),
+            thread_id: None,
+            lease_ttl_seconds: CLAIM_TTL_SECS,
+            expires_at: Some("2026-03-15T13:34:56.000000Z".to_owned()),
         };
         let json = serde_json::to_string(&claim).unwrap();
         let decoded: OwnershipClaim = serde_json::from_str(&json).unwrap();

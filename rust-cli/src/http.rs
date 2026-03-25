@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use axum::{
@@ -13,18 +14,22 @@ use axum::{
     response::sse::{Event, Sse},
     routing::{get, post, put},
 };
+use chrono::Utc;
 use serde::Deserialize;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::commands::scoped_required_tags;
 use crate::mcp::AgentBusMcpServer;
 use crate::models::MAX_HISTORY_MINUTES;
+use crate::ops::{
+    AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
+    knock_metadata, list_messages_live, post_ack, post_message, set_presence,
+};
 use crate::output::{format_health_toon, format_message_toon, format_presence_toon};
 use crate::redis_bus::{
     BatchSendPayload, RedisPool, SseSubscriberCount, bus_health, bus_list_messages_from_redis,
-    bus_list_messages_from_redis_with_filters, bus_list_presence, bus_post_message,
-    bus_post_messages_batch, bus_set_presence,
+    bus_list_presence, bus_post_message_with_notifications,
+    bus_post_messages_batch_with_notifications, list_notifications, list_notifications_since_id,
 };
 use crate::settings::Settings;
 use crate::validation::{
@@ -41,6 +46,7 @@ type AgentConnections = Arc<
         HashMap<String, Vec<tokio::sync::mpsc::Sender<Result<Event, std::convert::Infallible>>>>,
     >,
 >;
+type ControlStatusState = Arc<RwLock<ServerControlStatus>>;
 
 /// Shared state injected into every axum handler.
 ///
@@ -62,6 +68,89 @@ pub(crate) struct AppState {
     pub(crate) agent_connections: AgentConnections,
     /// Count of active `GET /events` (Redis pub/sub SSE) clients.
     pub(crate) sse_subscriber_count: Arc<SseSubscriberCount>,
+    /// Live server maintenance / shutdown state.
+    pub(crate) control_status: ControlStatusState,
+    /// Cooperative graceful-shutdown trigger for HTTP service maintenance.
+    pub(crate) shutdown_signal: Arc<Notify>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ServerMode {
+    Running,
+    Maintenance,
+    Stopping,
+}
+
+impl ServerMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Maintenance => "maintenance",
+            Self::Stopping => "stopping",
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct ServerControlStatus {
+    pub(crate) mode: ServerMode,
+    pub(crate) write_blocked: bool,
+    pub(crate) reason: Option<String>,
+    pub(crate) requested_by: Option<String>,
+    pub(crate) changed_at_utc: String,
+    pub(crate) last_flush_at_utc: Option<String>,
+    pub(crate) pid: u32,
+    pub(crate) service_agent_id: String,
+    pub(crate) service_name: String,
+}
+
+impl ServerControlStatus {
+    fn new(service_agent_id: &str, service_name: &str) -> Self {
+        Self {
+            mode: ServerMode::Running,
+            write_blocked: false,
+            reason: None,
+            requested_by: None,
+            changed_at_utc: current_timestamp(),
+            last_flush_at_utc: None,
+            pid: std::process::id(),
+            service_agent_id: service_agent_id.to_owned(),
+            service_name: service_name.to_owned(),
+        }
+    }
+}
+
+fn current_timestamp() -> String {
+    Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+}
+
+async fn ensure_writes_allowed(
+    state: &AppState,
+    operation: &str,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let control = state.control_status.read().await.clone();
+    if let Some(response) = write_guard_response(&control, operation) {
+        return Err(response);
+    }
+    Ok(())
+}
+
+fn write_guard_response(
+    control: &ServerControlStatus,
+    operation: &str,
+) -> Option<(StatusCode, Json<serde_json::Value>)> {
+    if !control.write_blocked {
+        return None;
+    }
+
+    Some((
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(serde_json::json!({
+            "error": format!("server is in {} mode; {operation} is temporarily unavailable", control.mode.as_str()),
+            "maintenance": control,
+        })),
+    ))
 }
 
 /// Map an `anyhow::Error` to an HTTP 500 response with a JSON body.
@@ -127,6 +216,7 @@ pub(crate) async fn http_health_handler(
 ) -> impl IntoResponse {
     let pool = state.redis.clone();
     let pool_for_health = pool.clone();
+    let control = state.control_status.read().await.clone();
     let result =
         tokio::task::spawn_blocking(move || bus_health(&state.settings, Some(&pool_for_health)))
             .await
@@ -146,6 +236,10 @@ pub(crate) async fn http_health_handler(
                 "max_size": pool_state.connections,
             }),
         );
+        map.insert(
+            "maintenance".to_owned(),
+            serde_json::to_value(&control).unwrap_or_default(),
+        );
     }
 
     if enc.is_toon() {
@@ -160,6 +254,118 @@ pub(crate) async fn http_health_handler(
                 serde_json::to_string(&val).unwrap_or_default(),
             ))
             .unwrap_or_default()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct HttpControlRequest {
+    action: String,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    requested_by: Option<String>,
+    #[serde(default = "default_true")]
+    flush: bool,
+}
+
+async fn flush_pg_writer() -> Result<()> {
+    if let Some(writer) = crate::pg_writer()
+        && !writer.flush_and_wait_async(Duration::from_secs(2)).await
+    {
+        anyhow::bail!("pg flush did not complete before timeout");
+    }
+    Ok(())
+}
+
+async fn http_control_status_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let control = state.control_status.read().await.clone();
+    Ok(Json(serde_json::to_value(&control).unwrap_or_default()))
+}
+
+async fn http_control_action_handler(
+    State(state): State<AppState>,
+    payload: Result<Json<HttpControlRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
+    let action = req.action.trim().to_owned();
+    if action.is_empty() {
+        return Err(bad_request("action must not be empty"));
+    }
+
+    match action.as_str() {
+        "pause" => {
+            if req.flush {
+                flush_pg_writer().await.map_err(internal_error)?;
+            }
+            let mut control = state.control_status.write().await;
+            control.mode = ServerMode::Maintenance;
+            control.write_blocked = true;
+            control.reason = req.reason.filter(|reason| !reason.trim().is_empty());
+            control.requested_by = req.requested_by.filter(|agent| !agent.trim().is_empty());
+            control.changed_at_utc = current_timestamp();
+            if req.flush {
+                control.last_flush_at_utc = Some(control.changed_at_utc.clone());
+            }
+            let snapshot = control.clone();
+            Ok(Json(serde_json::json!({
+                "ok": true,
+                "action": "pause",
+                "maintenance": snapshot,
+            })))
+        }
+        "resume" => {
+            let mut control = state.control_status.write().await;
+            control.mode = ServerMode::Running;
+            control.write_blocked = false;
+            control.reason = None;
+            control.requested_by = req.requested_by.filter(|agent| !agent.trim().is_empty());
+            control.changed_at_utc = current_timestamp();
+            let snapshot = control.clone();
+            Ok(Json(serde_json::json!({
+                "ok": true,
+                "action": "resume",
+                "maintenance": snapshot,
+            })))
+        }
+        "flush" => {
+            flush_pg_writer().await.map_err(internal_error)?;
+            let mut control = state.control_status.write().await;
+            control.last_flush_at_utc = Some(current_timestamp());
+            let snapshot = control.clone();
+            Ok(Json(serde_json::json!({
+                "ok": true,
+                "action": "flush",
+                "maintenance": snapshot,
+            })))
+        }
+        "stop" => {
+            if req.flush {
+                flush_pg_writer().await.map_err(internal_error)?;
+            }
+            let mut control = state.control_status.write().await;
+            control.mode = ServerMode::Stopping;
+            control.write_blocked = true;
+            control.reason = req.reason.filter(|reason| !reason.trim().is_empty());
+            control.requested_by = req.requested_by.filter(|agent| !agent.trim().is_empty());
+            control.changed_at_utc = current_timestamp();
+            if req.flush {
+                control.last_flush_at_utc = Some(control.changed_at_utc.clone());
+            }
+            let snapshot = control.clone();
+            let shutdown_signal = Arc::clone(&state.shutdown_signal);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                shutdown_signal.notify_waiters();
+            });
+            Ok(Json(serde_json::json!({
+                "ok": true,
+                "action": "stop",
+                "maintenance": snapshot,
+            })))
+        }
+        _ => Err(bad_request("action must be pause|resume|flush|stop")),
     }
 }
 
@@ -193,6 +399,7 @@ pub(crate) async fn http_send_handler(
     payload: Result<Json<HttpSendRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "send").await?;
     // Validate required fields (cheap — stays on the async task).
     let sender = req.sender.trim().to_owned();
     let recipient = req.recipient.trim().to_owned();
@@ -226,40 +433,36 @@ pub(crate) async fn http_send_handler(
     let request_ack = req.request_ack;
     let reply_to = req.reply_to;
 
-    // Capture SSE subscriber state and connections map before `state` is moved.
+    // Capture SSE subscriber state before `state` is moved.
     let has_sse_subscribers = state.sse_subscriber_count.any();
-    let agent_connections = Arc::clone(&state.agent_connections);
 
-    let msg = tokio::task::spawn_blocking(move || {
+    let posted = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        bus_post_message(
+        post_message(
             &mut conn,
             &state.settings,
-            &sender,
-            &recipient,
-            &topic,
-            &fitted_body,
-            thread_id.as_deref(),
-            &tags,
-            &priority,
-            request_ack,
-            reply_to.as_deref(),
-            &metadata,
-            crate::pg_writer(),
-            has_sse_subscribers,
+            &PostMessageRequest {
+                sender: &sender,
+                recipient: &recipient,
+                topic: &topic,
+                body: &fitted_body,
+                thread_id: thread_id.as_deref(),
+                tags: &tags,
+                priority: &priority,
+                request_ack,
+                reply_to: reply_to.as_deref(),
+                metadata: &metadata,
+                has_sse_subscribers,
+            },
         )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
-    // Push the message directly to any agent-specific SSE connections.
-    // Best-effort: a failure here never affects the HTTP response.
-    push_to_agent_connections(&agent_connections, &msg).await;
-
     Ok((
         StatusCode::OK,
-        Json(serde_json::to_value(&msg).unwrap_or_default()),
+        Json(serde_json::to_value(&posted).unwrap_or_default()),
     ))
 }
 
@@ -315,31 +518,29 @@ pub(crate) async fn http_read_handler(
     let thread_id = params.thread_id;
     let broadcast = params.broadcast;
     let toon = params.encoding.as_deref() == Some("toon");
-    let filters = crate::commands::MessageFilters {
-        repo: repo.as_deref(),
-        session: session.as_deref(),
-        tags: &tag,
-        thread_id: thread_id.as_deref(),
-    };
-    let required_tags = scoped_required_tags(&filters);
-
     let msgs = tokio::task::spawn_blocking(move || {
         // Always read from Redis for the HTTP path: Redis is the authoritative
         // source-of-truth (the PgWriter flushes async so PG may lag ~100 ms).
         // This ensures read-after-write consistency without the synchronous PG
         // write that caused POST /messages to take ~230 ms.
         let mut conn = state.redis.get_connection()?;
-        let required_tag_refs: Vec<&str> = required_tags.iter().map(String::as_str).collect();
-        bus_list_messages_from_redis_with_filters(
+        let filters = MessageFilters {
+            repo: repo.as_deref(),
+            session: session.as_deref(),
+            tags: &tag,
+            thread_id: thread_id.as_deref(),
+        };
+        list_messages_live(
             &mut conn,
             &state.settings,
-            agent.as_deref(),
-            from.as_deref(),
-            since,
-            limit,
-            broadcast,
-            thread_id.as_deref(),
-            &required_tag_refs,
+            &ReadMessagesRequest {
+                agent: agent.as_deref(),
+                from_agent: from.as_deref(),
+                since_minutes: since,
+                limit,
+                include_broadcast: broadcast,
+                filters,
+            },
         )
     })
     .await
@@ -378,6 +579,7 @@ pub(crate) async fn http_ack_handler(
     payload: Result<Json<HttpAckRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "ack").await?;
     // Validation stays on the async task (cheap).
     let agent = req.agent.trim().to_owned();
     if agent.is_empty() {
@@ -391,35 +593,27 @@ pub(crate) async fn http_ack_handler(
 
     let has_sse_subscribers = state.sse_subscriber_count.any();
     let acked_id = message_id.clone();
-    let msg = tokio::task::spawn_blocking(move || {
-        let meta = serde_json::json!({"ack_for": &message_id});
+    let posted = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        bus_post_message(
+        post_ack(
             &mut conn,
             &state.settings,
-            &agent,
-            "all",
-            "ack",
-            &ack_body,
-            None,
-            &[],
-            "normal",
-            false,
-            Some(&message_id),
-            &meta,
-            crate::pg_writer(),
-            has_sse_subscribers,
+            &AckMessageRequest {
+                agent: &agent,
+                message_id: &message_id,
+                body: &ack_body,
+                has_sse_subscribers,
+            },
         )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
-
     let response = serde_json::json!({
         "ack_sent": true,
-        "ack_message_id": msg.id,
+        "ack_message_id": posted.message.id,
         "acked_message_id": acked_id,
-        "timestamp": msg.timestamp_utc,
+        "timestamp": posted.message.timestamp_utc,
     });
     Ok(Json(response))
 }
@@ -455,6 +649,7 @@ pub(crate) async fn http_presence_set_handler(
     payload: Result<Json<HttpPresenceRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "presence update").await?;
     // Validation stays on the async task (cheap).
     let agent = agent.trim().to_owned();
     if agent.is_empty() {
@@ -471,16 +666,17 @@ pub(crate) async fn http_presence_set_handler(
 
     let presence = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        bus_set_presence(
+        set_presence(
             &mut conn,
             &state.settings,
-            &agent,
-            &status,
-            session_id.as_deref(),
-            &capabilities,
-            ttl,
-            &metadata,
-            crate::pg_writer(),
+            &PresenceRequest {
+                agent: &agent,
+                status: &status,
+                session_id: session_id.as_deref(),
+                capabilities: &capabilities,
+                ttl_seconds: ttl,
+                metadata: &metadata,
+            },
         )
     })
     .await
@@ -524,6 +720,18 @@ struct SseQuery {
     agent: Option<String>,
     #[serde(default = "default_true")]
     broadcast: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct NotificationQuery {
+    #[serde(default)]
+    since_id: Option<String>,
+    #[serde(default = "default_notification_history")]
+    history: usize,
+}
+
+fn default_notification_history() -> usize {
+    20
 }
 
 /// Stream Redis Pub/Sub events to the client as Server-Sent Events.
@@ -844,49 +1052,131 @@ pub(crate) async fn handle_mcp_sse(State(state): State<AppState>) -> impl IntoRe
 
 // --- GET /events/:agent_id -------------------------------------------------
 
-/// Push a message to all live SSE connections for a specific agent (and for
-/// `"all"` broadcast connections).
-///
-/// Stale channels whose receiver has dropped are removed in the same write
-/// lock pass, keeping the map clean without a separate GC task.
-async fn push_to_agent_connections(
-    agent_connections: &AgentConnections,
-    msg: &crate::models::Message,
-) {
-    let event_json =
-        serde_json::to_string(&serde_json::json!({"event": "message", "message": msg}))
-            .unwrap_or_default();
+fn notification_event(notification: &crate::redis_bus::Notification) -> Event {
+    let payload = serde_json::json!({
+        "event": "notification",
+        "notification": notification,
+        "message": notification.message,
+    });
+    let event_json = serde_json::to_string(&payload).unwrap_or_default();
+    let mut event = Event::default().event("notification").data(event_json);
+    if let Some(stream_id) = notification.notification_stream_id.as_deref() {
+        event = event.id(stream_id);
+    }
+    event
+}
 
-    // Collect the agents that should receive this event.
-    let targets: Vec<String> = {
-        let guard = agent_connections.read().await;
-        let mut t = Vec::new();
-        if guard.contains_key(&msg.to) {
-            t.push(msg.to.clone());
-        }
-        // Always push to "all" subscribers.
-        if msg.to != "all" && guard.contains_key("all") {
-            t.push("all".to_owned());
-        }
-        t
+fn notification_from_message(
+    message: crate::models::Message,
+) -> Option<crate::redis_bus::Notification> {
+    if message.to.is_empty() || message.to == "all" {
+        return None;
+    }
+
+    let reason = if message.topic == "knock" {
+        "knock"
+    } else if message.request_ack {
+        "direct_request_ack"
+    } else {
+        "direct_message"
     };
 
-    if targets.is_empty() {
-        return;
-    }
+    Some(crate::redis_bus::Notification {
+        id: message.id.clone(),
+        agent: message.to.clone(),
+        created_at: message.timestamp_utc.clone(),
+        reason: reason.to_owned(),
+        requires_ack: message.request_ack,
+        message,
+        notification_stream_id: None,
+    })
+}
 
-    let mut guard = agent_connections.write().await;
-    for target in &targets {
-        let Some(senders) = guard.get_mut(target) else {
-            continue;
+/// Push notification events to all live SSE connections for a specific agent
+/// (and for `"all"` broadcast connections).
+async fn push_notifications_to_agent_connections(
+    agent_connections: &AgentConnections,
+    notifications: &[crate::redis_bus::Notification],
+) {
+    for notification in notifications {
+        let targets: Vec<String> = {
+            let guard = agent_connections.read().await;
+            let mut t = Vec::new();
+            if guard.contains_key(&notification.agent) {
+                t.push(notification.agent.clone());
+            }
+            if notification.agent != "all" && guard.contains_key("all") {
+                t.push("all".to_owned());
+            }
+            t
         };
-        let event = Event::default().data(event_json.clone());
-        senders.retain(|tx| tx.try_send(Ok(event.clone())).is_ok());
-        if senders.is_empty() {
-            // Remove the entry entirely when all subscribers disconnected.
-            guard.remove(target);
+
+        if targets.is_empty() {
+            continue;
+        }
+
+        let mut guard = agent_connections.write().await;
+        for target in &targets {
+            let Some(senders) = guard.get_mut(target) else {
+                continue;
+            };
+            let event = notification_event(notification);
+            senders.retain(|tx| tx.try_send(Ok(event.clone())).is_ok());
+            if senders.is_empty() {
+                guard.remove(target);
+            }
         }
     }
+}
+
+fn spawn_agent_notification_bridge(state: &AppState) {
+    let settings = Arc::clone(&state.settings);
+    let agent_connections = Arc::clone(&state.agent_connections);
+    let runtime = tokio::runtime::Handle::current();
+
+    tokio::task::spawn_blocking(move || {
+        loop {
+            let Ok(client) = redis::Client::open(settings.redis_url.as_str()) else {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                continue;
+            };
+            let Ok(mut conn) = client.get_connection() else {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                continue;
+            };
+            let mut pubsub = conn.as_pubsub();
+            if pubsub.subscribe(&settings.channel_key).is_err() {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                continue;
+            }
+
+            while let Ok(msg) = pubsub.get_message() {
+                let Ok(payload): Result<String, _> = msg.get_payload() else {
+                    continue;
+                };
+                let Ok(event_val) = serde_json::from_str::<serde_json::Value>(&payload) else {
+                    continue;
+                };
+                if event_val.get("event").and_then(|value| value.as_str()) != Some("message") {
+                    continue;
+                }
+                let Some(message_val) = event_val.get("message").cloned() else {
+                    continue;
+                };
+                let Ok(message) = serde_json::from_value::<crate::models::Message>(message_val)
+                else {
+                    continue;
+                };
+                let Some(notification) = notification_from_message(message) else {
+                    continue;
+                };
+                runtime.block_on(async {
+                    push_notifications_to_agent_connections(&agent_connections, &[notification])
+                        .await;
+                });
+            }
+        }
+    });
 }
 
 /// Agent-specific SSE stream: `GET /events/:agent_id`.
@@ -900,9 +1190,38 @@ async fn push_to_agent_connections(
 async fn http_sse_agent_handler(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
+    Query(params): Query<NotificationQuery>,
+    headers: HeaderMap,
 ) -> Sse<ReceiverStream<Result<Event, std::convert::Infallible>>> {
     // Channel capacity 128: enough for burst delivery without unbounded memory.
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(128);
+
+    let since_id = params.since_id.or_else(|| {
+        headers
+            .get("Last-Event-ID")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from)
+    });
+    let history = params.history.min(500);
+
+    if let Ok(mut conn) = state.redis.get_connection() {
+        let replay = if let Some(ref since_id) = since_id {
+            list_notifications_since_id(&mut conn, &agent_id, since_id, history)
+        } else {
+            list_notifications(&mut conn, &agent_id, history)
+        };
+        if let Ok(notifications) = replay {
+            for notification in notifications {
+                if tx
+                    .send(Ok(notification_event(&notification)))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }
+    }
 
     state
         .agent_connections
@@ -924,11 +1243,35 @@ async fn http_sse_agent_handler(
         drop(tx);
         // Yield once to let the connection establish before cleanup runs.
         tokio::task::yield_now().await;
-        // Note: actual cleanup happens lazily in push_to_agent_connections.
+        // Note: actual cleanup happens lazily in push_notifications_to_agent_connections.
         let _ = &connections; // keep alive
     });
 
     Sse::new(ReceiverStream::new(rx))
+}
+
+async fn http_notifications_handler(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(params): Query<NotificationQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let history = params.history.min(500);
+    let since_id = params.since_id;
+    let notifications = tokio::task::spawn_blocking(move || {
+        let mut conn = state.redis.get_connection()?;
+        if let Some(since_id) = since_id.as_deref() {
+            list_notifications_since_id(&mut conn, &agent_id, since_id, history)
+        } else {
+            list_notifications(&mut conn, &agent_id, history)
+        }
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(
+        serde_json::to_value(&notifications).unwrap_or_default(),
+    ))
 }
 
 // --- GET /pending-acks -----------------------------------------------------
@@ -969,11 +1312,17 @@ async fn http_pending_acks_handler(
 pub(crate) async fn start_mcp_http_server(settings: Settings, port: u16) -> Result<()> {
     let bind_host = settings.server_host.clone();
     let redis = RedisPool::new(&settings).context("Redis pool creation failed")?;
+    let control_status = Arc::new(RwLock::new(ServerControlStatus::new(
+        &settings.service_agent_id,
+        &settings.service_name,
+    )));
     let state = AppState {
         settings: Arc::new(settings),
         redis,
         agent_connections: Arc::new(RwLock::new(HashMap::new())),
         sse_subscriber_count: Arc::new(SseSubscriberCount::default()),
+        control_status,
+        shutdown_signal: Arc::new(Notify::new()),
     };
     let app = Router::new()
         .route("/mcp", post(handle_mcp_http).get(handle_mcp_sse))
@@ -987,6 +1336,9 @@ pub(crate) async fn start_mcp_http_server(settings: Settings, port: u16) -> Resu
         .await
         .context("failed to bind MCP HTTP server")?;
     axum::serve(listener, app)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
         .await
         .context("MCP HTTP server error")?;
     Ok(())
@@ -1018,6 +1370,7 @@ pub(crate) async fn http_batch_send_handler(
     payload: Result<Json<HttpBatchSendRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "batch send").await?;
     if req.messages.is_empty() {
         return Err(bad_request("messages array must not be empty"));
     }
@@ -1073,22 +1426,22 @@ pub(crate) async fn http_batch_send_handler(
     // task to avoid a cross-thread Arc dance inside spawn_blocking.
     let has_sse = state.sse_subscriber_count.any();
 
-    let ids = tokio::task::spawn_blocking(move || {
+    let posted = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
         // Single Redis pipeline round-trip for all XADD + PUBLISH + pending-ack.
-        let messages = bus_post_messages_batch(
+        bus_post_messages_batch_with_notifications(
             &mut conn,
             &state.settings,
             payloads,
             crate::pg_writer(),
             has_sse,
-        )?;
-        Ok::<Vec<String>, anyhow::Error>(messages.into_iter().map(|m| m.id).collect())
+        )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
+    let ids: Vec<String> = posted.iter().map(|m| m.message.id.clone()).collect();
     let count = ids.len();
     Ok(Json(
         serde_json::to_value(HttpBatchSendResponse { ids, count }).unwrap_or_default(),
@@ -1178,6 +1531,7 @@ pub(crate) async fn http_batch_ack_handler(
     payload: Result<Json<HttpBatchAckRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "batch ack").await?;
     let agent = req.agent.trim().to_owned();
     if agent.is_empty() {
         return Err(bad_request("agent must not be empty"));
@@ -1192,12 +1546,12 @@ pub(crate) async fn http_batch_ack_handler(
     let ack_body = req.body;
     let has_sse_subscribers = state.sse_subscriber_count.any();
 
-    let acked_ids = tokio::task::spawn_blocking(move || {
+    let posted = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        let mut acked = Vec::with_capacity(ids.len());
+        let mut posted = Vec::with_capacity(ids.len());
         for message_id in &ids {
             let meta = serde_json::json!({"ack_for": message_id});
-            bus_post_message(
+            posted.push(bus_post_message_with_notifications(
                 &mut conn,
                 &state.settings,
                 &agent,
@@ -1212,14 +1566,18 @@ pub(crate) async fn http_batch_ack_handler(
                 &meta,
                 crate::pg_writer(),
                 has_sse_subscribers,
-            )?;
-            acked.push(message_id.clone());
+            )?);
         }
-        Ok::<Vec<String>, anyhow::Error>(acked)
+        Ok::<Vec<crate::redis_bus::PostedMessage>, anyhow::Error>(posted)
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
+
+    let acked_ids: Vec<String> = posted
+        .into_iter()
+        .map(|posted| posted.message.reply_to.unwrap_or_default())
+        .collect();
 
     Ok(Json(serde_json::json!({
         "acked": acked_ids.len(),
@@ -1258,6 +1616,7 @@ async fn http_direct_send_handler(
     payload: Result<Json<HttpDirectSendRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "direct send").await?;
     let sender = req.sender.trim().to_owned();
     let recipient = recipient.trim().to_owned();
     let body = req.body.trim().to_owned();
@@ -1336,6 +1695,7 @@ async fn http_create_group_handler(
     payload: Result<Json<HttpCreateGroupRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "group creation").await?;
     let name = req.name.trim().to_owned();
     if name.is_empty() {
         return Err(bad_request("name must not be empty"));
@@ -1390,6 +1750,7 @@ async fn http_group_send_handler(
     payload: Result<Json<HttpGroupSendRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "group send").await?;
     let sender = req.sender.trim().to_owned();
     let body = req.body.trim().to_owned();
     if sender.is_empty() {
@@ -1462,6 +1823,7 @@ async fn http_escalate_handler(
     payload: Result<Json<HttpEscalateRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "escalation").await?;
     let sender = req.sender.trim().to_owned();
     let body = req.body.trim().to_owned();
     if sender.is_empty() {
@@ -1500,10 +1862,32 @@ pub(crate) struct HttpClaimRequest {
     pub(crate) agent: String,
     #[serde(default = "default_priority_argument")]
     pub(crate) priority_argument: String,
+    #[serde(default = "default_claim_mode")]
+    pub(crate) mode: String,
+    #[serde(default)]
+    pub(crate) namespace: Option<String>,
+    #[serde(default)]
+    pub(crate) scope_kind: Option<String>,
+    #[serde(default)]
+    pub(crate) scope_path: Option<String>,
+    #[serde(default)]
+    pub(crate) repo_scopes: Vec<String>,
+    #[serde(default)]
+    pub(crate) thread_id: Option<String>,
+    #[serde(default = "default_claim_ttl_seconds")]
+    pub(crate) lease_ttl_seconds: u64,
 }
 
 fn default_priority_argument() -> String {
     "first-edit required".to_owned()
+}
+
+fn default_claim_mode() -> String {
+    "exclusive".to_owned()
+}
+
+fn default_claim_ttl_seconds() -> u64 {
+    3600
 }
 
 async fn http_claim_handler(
@@ -1512,14 +1896,39 @@ async fn http_claim_handler(
     payload: Result<Json<HttpClaimRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "claim").await?;
     let agent = req.agent.trim().to_owned();
     if agent.is_empty() {
         return Err(bad_request("agent must not be empty"));
     }
     let priority_argument = req.priority_argument;
+    let options = crate::channels::ClaimOptions {
+        mode: match req.mode.as_str() {
+            "shared" => crate::channels::ResourceLeaseMode::Shared,
+            "shared_namespaced" => crate::channels::ResourceLeaseMode::SharedNamespaced,
+            "exclusive" => crate::channels::ResourceLeaseMode::Exclusive,
+            _ => {
+                return Err(bad_request(
+                    "mode must be shared|shared_namespaced|exclusive",
+                ));
+            }
+        },
+        namespace: req.namespace,
+        scope_kind: req.scope_kind,
+        scope_path: req.scope_path,
+        repo_scopes: req.repo_scopes,
+        thread_id: req.thread_id,
+        lease_ttl_seconds: req.lease_ttl_seconds.max(1),
+    };
 
     let claim = tokio::task::spawn_blocking(move || {
-        crate::channels::claim_resource(&state.settings, &resource, &agent, &priority_argument)
+        crate::channels::claim_resource_with_options(
+            &state.settings,
+            &resource,
+            &agent,
+            &priority_argument,
+            &options,
+        )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1529,6 +1938,67 @@ async fn http_claim_handler(
         StatusCode::OK,
         Json(serde_json::to_value(&claim).unwrap_or_default()),
     ))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct HttpRenewClaimRequest {
+    pub(crate) agent: String,
+    #[serde(default = "default_claim_ttl_seconds")]
+    pub(crate) lease_ttl_seconds: u64,
+}
+
+async fn http_renew_claim_handler(
+    State(state): State<AppState>,
+    Path(resource): Path<String>,
+    payload: Result<Json<HttpRenewClaimRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "claim renewal").await?;
+    let agent = req.agent.trim().to_owned();
+    if agent.is_empty() {
+        return Err(bad_request("agent must not be empty"));
+    }
+
+    let claim = tokio::task::spawn_blocking(move || {
+        crate::channels::renew_claim(
+            &state.settings,
+            &resource,
+            &agent,
+            Some(req.lease_ttl_seconds.max(1)),
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(&claim).unwrap_or_default()))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct HttpReleaseClaimRequest {
+    pub(crate) agent: String,
+}
+
+async fn http_release_claim_handler(
+    State(state): State<AppState>,
+    Path(resource): Path<String>,
+    payload: Result<Json<HttpReleaseClaimRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "claim release").await?;
+    let agent = req.agent.trim().to_owned();
+    if agent.is_empty() {
+        return Err(bad_request("agent must not be empty"));
+    }
+
+    let arbitration = tokio::task::spawn_blocking(move || {
+        crate::channels::release_claim(&state.settings, &resource, &agent)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(&arbitration).unwrap_or_default()))
 }
 
 async fn http_arbitration_state_handler(
@@ -1557,6 +2027,77 @@ pub(crate) struct HttpResolveRequest {
     pub(crate) resolved_by: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct HttpKnockRequest {
+    pub(crate) sender: String,
+    pub(crate) recipient: String,
+    #[serde(default = "default_knock_body")]
+    pub(crate) body: String,
+    #[serde(default)]
+    pub(crate) thread_id: Option<String>,
+    #[serde(default)]
+    pub(crate) tags: Vec<String>,
+    #[serde(default = "default_knock_request_ack")]
+    pub(crate) request_ack: bool,
+}
+
+fn default_knock_body() -> String {
+    "check the bus".to_owned()
+}
+
+fn default_knock_request_ack() -> bool {
+    true
+}
+
+async fn http_knock_handler(
+    State(state): State<AppState>,
+    payload: Result<Json<HttpKnockRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "knock").await?;
+    let sender = req.sender.trim().to_owned();
+    let recipient = req.recipient.trim().to_owned();
+    if sender.is_empty() {
+        return Err(bad_request("sender must not be empty"));
+    }
+    if recipient.is_empty() {
+        return Err(bad_request("recipient must not be empty"));
+    }
+    if req.body.trim().is_empty() {
+        return Err(bad_request("body must not be empty"));
+    }
+
+    let metadata = knock_metadata(req.request_ack);
+    let posted = tokio::task::spawn_blocking(move || {
+        let mut conn = state.redis.get_connection()?;
+        post_message(
+            &mut conn,
+            &state.settings,
+            &PostMessageRequest {
+                sender: &sender,
+                recipient: &recipient,
+                topic: "knock",
+                body: &req.body,
+                thread_id: req.thread_id.as_deref(),
+                tags: &req.tags,
+                priority: "urgent",
+                request_ack: req.request_ack,
+                reply_to: None,
+                metadata: &metadata,
+                has_sse_subscribers: state.sse_subscriber_count.any(),
+            },
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok((
+        StatusCode::OK,
+        Json(serde_json::to_value(&posted).unwrap_or_default()),
+    ))
+}
+
 fn default_resolve_reason() -> String {
     "resolved by orchestrator".to_owned()
 }
@@ -1571,6 +2112,7 @@ async fn http_resolve_handler(
     payload: Result<Json<HttpResolveRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "claim resolution").await?;
     let winner = req.winner.trim().to_owned();
     if winner.is_empty() {
         return Err(bad_request("winner must not be empty"));
@@ -1633,6 +2175,14 @@ async fn http_token_count_handler(
 struct HttpCompactContextRequest {
     #[serde(default)]
     agent: Option<String>,
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    session: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    thread_id: Option<String>,
     #[serde(default = "default_since_minutes")]
     since_minutes: u64,
     #[serde(default = "default_max_tokens")]
@@ -1651,18 +2201,31 @@ async fn http_compact_context_handler(
     let since = req.since_minutes.min(MAX_HISTORY_MINUTES);
     let max_tokens = req.max_tokens;
     let agent = req.agent;
+    let repo = req.repo;
+    let session = req.session;
+    let tags = req.tags;
+    let thread_id = req.thread_id;
     let settings = Arc::clone(&state.settings);
 
     let compacted = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        crate::redis_bus::bus_list_messages_from_redis(
+        let filters = MessageFilters {
+            repo: repo.as_deref(),
+            session: session.as_deref(),
+            tags: &tags,
+            thread_id: thread_id.as_deref(),
+        };
+        list_messages_live(
             &mut conn,
             &settings,
-            agent.as_deref(),
-            None,
-            since,
-            500,
-            true,
+            &ReadMessagesRequest {
+                agent: agent.as_deref(),
+                from_agent: None,
+                since_minutes: since,
+                limit: 500,
+                include_broadcast: true,
+                filters,
+            },
         )
         .map(|msgs| crate::token::compact_context(&msgs, max_tokens))
     })
@@ -1704,6 +2267,7 @@ async fn http_push_task_handler(
     payload: Result<Json<HttpPushTaskRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
+    ensure_writes_allowed(&state, "task push").await?;
     let task = req.task.trim().to_owned();
     if task.is_empty() {
         return Err(bad_request("task must not be empty"));
@@ -1770,6 +2334,7 @@ async fn http_pull_task_handler(
     State(state): State<AppState>,
     Path(agent): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    ensure_writes_allowed(&state, "task pull").await?;
     if agent.trim().is_empty() {
         return Err(bad_request("agent must not be empty"));
     }
@@ -2012,17 +2577,32 @@ setInterval(refresh, 10000);
 pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<()> {
     let bind_host = settings.server_host.clone();
     let redis = RedisPool::new(&settings).context("Redis client creation failed")?;
+    let control_status = Arc::new(RwLock::new(ServerControlStatus::new(
+        &settings.service_agent_id,
+        &settings.service_name,
+    )));
+    let shutdown_signal = Arc::new(Notify::new());
     let state = AppState {
         settings: Arc::new(settings),
         redis,
         agent_connections: Arc::new(RwLock::new(HashMap::new())),
         sse_subscriber_count: Arc::new(SseSubscriberCount::default()),
+        control_status,
+        shutdown_signal: Arc::clone(&shutdown_signal),
     };
+    spawn_agent_notification_bridge(&state);
     let app = Router::new()
         .route("/health", get(http_health_handler))
+        .route(
+            "/admin/control",
+            get(http_control_status_handler).post(http_control_action_handler),
+        )
+        .route("/admin/service", get(http_control_status_handler))
+        .route("/admin/service/control", post(http_control_action_handler))
         .route("/messages", post(http_send_handler).get(http_read_handler))
         .route("/messages/batch", post(http_batch_send_handler))
         .route("/messages/{id}/ack", post(http_ack_handler))
+        .route("/knock", post(http_knock_handler))
         .route("/read/batch", post(http_batch_read_handler))
         .route("/ack/batch", post(http_batch_ack_handler))
         .route("/presence/{agent}", put(http_presence_set_handler))
@@ -2030,6 +2610,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         .route("/presence/history", get(http_presence_history_handler))
         .route("/events", get(http_sse_handler))
         .route("/events/{agent_id}", get(http_sse_agent_handler))
+        .route("/notifications/{agent_id}", get(http_notifications_handler))
         .route("/pending-acks", get(http_pending_acks_handler))
         // Channel routes
         .route(
@@ -2053,6 +2634,14 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
             "/channels/arbitrate/{resource}/resolve",
             put(http_resolve_handler),
         )
+        .route(
+            "/channels/arbitrate/{resource}/renew",
+            post(http_renew_claim_handler),
+        )
+        .route(
+            "/channels/arbitrate/{resource}/release",
+            post(http_release_claim_handler),
+        )
         .route("/channels/summary", get(http_channel_summary_handler))
         .route("/token-count", post(http_token_count_handler))
         .route("/compact-context", post(http_compact_context_handler))
@@ -2074,6 +2663,12 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         .await
         .context("failed to bind HTTP server")?;
     axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            tokio::select! {
+                () = shutdown_signal.notified() => {},
+                _ = tokio::signal::ctrl_c() => {},
+            }
+        })
         .await
         .context("HTTP server error")?;
     Ok(())
@@ -2216,5 +2811,39 @@ mod tests {
             html_zero.contains("class=\"stat-value ok\""),
             "ok class should be present when write_errors = 0"
         );
+    }
+
+    #[test]
+    fn server_control_status_defaults_to_running() {
+        let status = ServerControlStatus::new("agent-bus", "AgentHub");
+        assert_eq!(status.mode, ServerMode::Running);
+        assert!(!status.write_blocked);
+        assert_eq!(status.service_agent_id, "agent-bus");
+        assert_eq!(status.service_name, "AgentHub");
+        assert!(status.reason.is_none());
+    }
+
+    #[test]
+    fn write_guard_response_blocks_mutations_during_maintenance() {
+        let mut status = ServerControlStatus::new("agent-bus", "AgentHub");
+        status.mode = ServerMode::Maintenance;
+        status.write_blocked = true;
+        status.reason = Some("deploy".to_owned());
+
+        let (code, body) = write_guard_response(&status, "send").expect("guard should trigger");
+        assert_eq!(code, StatusCode::SERVICE_UNAVAILABLE);
+        let body = serde_json::to_value(body.0).expect("body should serialize");
+        assert_eq!(body["maintenance"]["mode"], "maintenance");
+        assert_eq!(body["maintenance"]["reason"], "deploy");
+        assert!(
+            body["error"].as_str().unwrap_or_default().contains("send"),
+            "error should mention blocked operation"
+        );
+    }
+
+    #[test]
+    fn write_guard_response_allows_mutations_while_running() {
+        let status = ServerControlStatus::new("agent-bus", "AgentHub");
+        assert!(write_guard_response(&status, "send").is_none());
     }
 }
