@@ -20,6 +20,8 @@ use crate::ops::claim::{
     resolve_claim as ops_resolve_claim,
 };
 use crate::ops::inbox::{CompactContextRequest, compact_context as compact_context_op};
+use crate::ops::task::{PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
+    push_task as ops_push_task};
 use crate::output::{
     Encoding, format_health_toon, output, output_message, output_messages, output_presence,
 };
@@ -1556,7 +1558,7 @@ pub(crate) fn cmd_push_task(
 ) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
     let task = non_empty(task, "--task")?;
-    let len = crate::redis_bus::push_task(settings, agent, task)?;
+    let len = ops_push_task(settings, &PushTaskRequest { agent, task })?;
     output(
         &serde_json::json!({"agent": agent, "queue_length": len}),
         encoding,
@@ -1574,7 +1576,7 @@ pub(crate) fn cmd_push_task(
 /// Returns an error if the Redis connection or `LPOP` fails.
 pub(crate) fn cmd_pull_task(settings: &Settings, agent: &str, encoding: &Encoding) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
-    let task = crate::redis_bus::pull_task(settings, agent)?;
+    let task = ops_pull_task(settings, agent)?;
     output(&serde_json::json!({"agent": agent, "task": task}), encoding);
     Ok(())
 }
@@ -1593,7 +1595,7 @@ pub(crate) fn cmd_peek_tasks(
     encoding: &Encoding,
 ) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
-    let tasks = crate::redis_bus::peek_tasks(settings, agent, limit)?;
+    let tasks = ops_peek_tasks(settings, agent, limit)?;
     let count = tasks.len();
     output(
         &serde_json::json!({"agent": agent, "tasks": tasks, "count": count}),
