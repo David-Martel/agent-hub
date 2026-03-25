@@ -22,7 +22,7 @@ use crate::settings::Settings;
 /// # Errors
 ///
 /// Returns an error if the string is not one of the recognised values.
-pub(crate) fn parse_lease_mode(mode: &str) -> Result<ResourceLeaseMode> {
+pub fn parse_lease_mode(mode: &str) -> Result<ResourceLeaseMode> {
     match mode {
         "shared" => Ok(ResourceLeaseMode::Shared),
         "shared_namespaced" => Ok(ResourceLeaseMode::SharedNamespaced),
@@ -36,18 +36,19 @@ pub(crate) fn parse_lease_mode(mode: &str) -> Result<ResourceLeaseMode> {
 // ---------------------------------------------------------------------------
 
 /// Typed request for claiming a resource.
-pub(crate) struct ClaimResourceRequest<'a> {
-    pub(crate) resource: &'a str,
-    pub(crate) agent: &'a str,
-    pub(crate) reason: &'a str,
+#[derive(Debug)]
+pub struct ClaimResourceRequest<'a> {
+    pub resource: &'a str,
+    pub agent: &'a str,
+    pub reason: &'a str,
     /// One of `"shared"`, `"shared_namespaced"`, or `"exclusive"`.
-    pub(crate) mode: &'a str,
-    pub(crate) namespace: Option<&'a str>,
-    pub(crate) scope_kind: Option<&'a str>,
-    pub(crate) scope_path: Option<&'a str>,
-    pub(crate) repo_scopes: &'a [String],
-    pub(crate) thread_id: Option<&'a str>,
-    pub(crate) lease_ttl_seconds: u64,
+    pub mode: &'a str,
+    pub namespace: Option<&'a str>,
+    pub scope_kind: Option<&'a str>,
+    pub scope_path: Option<&'a str>,
+    pub repo_scopes: &'a [String],
+    pub thread_id: Option<&'a str>,
+    pub lease_ttl_seconds: u64,
 }
 
 /// Claim ownership of a resource with structured lease options.
@@ -59,7 +60,7 @@ pub(crate) struct ClaimResourceRequest<'a> {
 ///
 /// Returns an error if the mode string is invalid, if required fields are
 /// empty, or if Redis commands fail.
-pub(crate) fn claim_resource(
+pub fn claim_resource(
     settings: &Settings,
     request: &ClaimResourceRequest<'_>,
 ) -> Result<OwnershipClaim> {
@@ -86,10 +87,11 @@ pub(crate) fn claim_resource(
 // ---------------------------------------------------------------------------
 
 /// Typed request for renewing an active claim.
-pub(crate) struct RenewClaimRequest<'a> {
-    pub(crate) resource: &'a str,
-    pub(crate) agent: &'a str,
-    pub(crate) lease_ttl_seconds: u64,
+#[derive(Debug)]
+pub struct RenewClaimRequest<'a> {
+    pub resource: &'a str,
+    pub agent: &'a str,
+    pub lease_ttl_seconds: u64,
 }
 
 /// Renew an active claim, extending its expiry.
@@ -100,7 +102,7 @@ pub(crate) struct RenewClaimRequest<'a> {
 ///
 /// Returns an error if no active claim exists for the agent, or if Redis
 /// commands fail.
-pub(crate) fn renew_claim(
+pub fn renew_claim(
     settings: &Settings,
     request: &RenewClaimRequest<'_>,
 ) -> Result<OwnershipClaim> {
@@ -117,9 +119,10 @@ pub(crate) fn renew_claim(
 // ---------------------------------------------------------------------------
 
 /// Typed request for releasing a claim.
-pub(crate) struct ReleaseClaimRequest<'a> {
-    pub(crate) resource: &'a str,
-    pub(crate) agent: &'a str,
+#[derive(Debug)]
+pub struct ReleaseClaimRequest<'a> {
+    pub resource: &'a str,
+    pub agent: &'a str,
 }
 
 /// Release a claim held by `request.agent`.
@@ -130,7 +133,7 @@ pub(crate) struct ReleaseClaimRequest<'a> {
 ///
 /// Returns an error if no active claim exists for the agent, or if Redis
 /// commands fail.
-pub(crate) fn release_claim(
+pub fn release_claim(
     settings: &Settings,
     request: &ReleaseClaimRequest<'_>,
 ) -> Result<ArbitrationState> {
@@ -142,11 +145,12 @@ pub(crate) fn release_claim(
 // ---------------------------------------------------------------------------
 
 /// Typed request for resolving a contested claim.
-pub(crate) struct ResolveClaimRequest<'a> {
-    pub(crate) resource: &'a str,
-    pub(crate) winner: &'a str,
-    pub(crate) reason: &'a str,
-    pub(crate) resolved_by: &'a str,
+#[derive(Debug)]
+pub struct ResolveClaimRequest<'a> {
+    pub resource: &'a str,
+    pub winner: &'a str,
+    pub reason: &'a str,
+    pub resolved_by: &'a str,
 }
 
 /// Resolve a contested ownership claim by naming a winner.
@@ -157,7 +161,7 @@ pub(crate) struct ResolveClaimRequest<'a> {
 ///
 /// Returns an error if no claims exist for the resource, or if Redis commands
 /// fail.
-pub(crate) fn resolve_claim(
+pub fn resolve_claim(
     settings: &Settings,
     request: &ResolveClaimRequest<'_>,
 ) -> Result<ArbitrationState> {
@@ -175,11 +179,12 @@ pub(crate) fn resolve_claim(
 // ---------------------------------------------------------------------------
 
 /// Typed request for listing ownership claims.
-pub(crate) struct ListClaimsRequest<'a> {
-    pub(crate) resource: Option<&'a str>,
+#[derive(Debug)]
+pub struct ListClaimsRequest<'a> {
+    pub resource: Option<&'a str>,
     /// One of `"pending"`, `"granted"`, `"contested"`, `"review_assigned"`,
     /// or `None` for no status filter.
-    pub(crate) status: Option<&'a str>,
+    pub status: Option<&'a str>,
 }
 
 /// List ownership claims with optional resource and status filters.
@@ -190,7 +195,7 @@ pub(crate) struct ListClaimsRequest<'a> {
 /// # Errors
 ///
 /// Returns an error if the Redis `SCAN` or `HGETALL` commands fail.
-pub(crate) fn list_claims(
+pub fn list_claims(
     settings: &Settings,
     request: &ListClaimsRequest<'_>,
 ) -> Result<Vec<OwnershipClaim>> {
@@ -215,7 +220,7 @@ pub(crate) fn list_claims(
 /// # Errors
 ///
 /// Returns an error if the Redis `HGETALL` fails.
-pub(crate) fn get_arbitration_state(
+pub fn get_arbitration_state(
     settings: &Settings,
     resource: &str,
 ) -> Result<ArbitrationState> {

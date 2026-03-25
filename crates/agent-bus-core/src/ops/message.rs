@@ -11,51 +11,57 @@ use crate::settings::Settings;
 
 use super::{MessageFilters, scoped_required_tags};
 
-pub(crate) struct PostMessageRequest<'a> {
-    pub(crate) sender: &'a str,
-    pub(crate) recipient: &'a str,
-    pub(crate) topic: &'a str,
-    pub(crate) body: &'a str,
-    pub(crate) thread_id: Option<&'a str>,
-    pub(crate) tags: &'a [String],
-    pub(crate) priority: &'a str,
-    pub(crate) request_ack: bool,
-    pub(crate) reply_to: Option<&'a str>,
-    pub(crate) metadata: &'a serde_json::Value,
-    pub(crate) has_sse_subscribers: bool,
+#[derive(Debug)]
+pub struct PostMessageRequest<'a> {
+    pub sender: &'a str,
+    pub recipient: &'a str,
+    pub topic: &'a str,
+    pub body: &'a str,
+    pub thread_id: Option<&'a str>,
+    pub tags: &'a [String],
+    pub priority: &'a str,
+    pub request_ack: bool,
+    pub reply_to: Option<&'a str>,
+    pub metadata: &'a serde_json::Value,
+    pub has_sse_subscribers: bool,
 }
 
-pub(crate) struct AckMessageRequest<'a> {
-    pub(crate) agent: &'a str,
-    pub(crate) message_id: &'a str,
-    pub(crate) body: &'a str,
-    pub(crate) has_sse_subscribers: bool,
+#[derive(Debug)]
+pub struct AckMessageRequest<'a> {
+    pub agent: &'a str,
+    pub message_id: &'a str,
+    pub body: &'a str,
+    pub has_sse_subscribers: bool,
 }
 
-pub(crate) struct AckMessageResult {
-    pub(crate) message: Message,
-    pub(crate) acked_message_id: String,
+#[derive(Debug)]
+pub struct AckMessageResult {
+    pub message: Message,
+    pub acked_message_id: String,
 }
 
-pub(crate) struct PresenceRequest<'a> {
-    pub(crate) agent: &'a str,
-    pub(crate) status: &'a str,
-    pub(crate) session_id: Option<&'a str>,
-    pub(crate) capabilities: &'a [String],
-    pub(crate) ttl_seconds: u64,
-    pub(crate) metadata: &'a serde_json::Value,
+#[derive(Debug)]
+pub struct PresenceRequest<'a> {
+    pub agent: &'a str,
+    pub status: &'a str,
+    pub session_id: Option<&'a str>,
+    pub capabilities: &'a [String],
+    pub ttl_seconds: u64,
+    pub metadata: &'a serde_json::Value,
 }
 
-pub(crate) struct ReadMessagesRequest<'a> {
-    pub(crate) agent: Option<&'a str>,
-    pub(crate) from_agent: Option<&'a str>,
-    pub(crate) since_minutes: u64,
-    pub(crate) limit: usize,
-    pub(crate) include_broadcast: bool,
-    pub(crate) filters: MessageFilters<'a>,
+#[derive(Debug)]
+pub struct ReadMessagesRequest<'a> {
+    pub agent: Option<&'a str>,
+    pub from_agent: Option<&'a str>,
+    pub since_minutes: u64,
+    pub limit: usize,
+    pub include_broadcast: bool,
+    pub filters: MessageFilters<'a>,
 }
 
-pub(crate) fn knock_metadata(request_ack: bool) -> serde_json::Value {
+#[must_use] 
+pub fn knock_metadata(request_ack: bool) -> serde_json::Value {
     serde_json::json!({
         "knock": true,
         "delivery_hint": "sse",
@@ -63,7 +69,13 @@ pub(crate) fn knock_metadata(request_ack: bool) -> serde_json::Value {
     })
 }
 
-pub(crate) fn post_message(
+/// Post a message to the bus stream.
+///
+/// # Errors
+///
+/// Returns an error if the Redis `XADD` command fails or if body compression
+/// encounters an unexpected error.
+pub fn post_message(
     conn: &mut redis::Connection,
     settings: &Settings,
     request: &PostMessageRequest<'_>,
@@ -86,7 +98,12 @@ pub(crate) fn post_message(
     )
 }
 
-pub(crate) fn post_ack(
+/// Post an acknowledgement message for `request.message_id`.
+///
+/// # Errors
+///
+/// Returns an error if posting the ack message to Redis fails.
+pub fn post_ack(
     conn: &mut redis::Connection,
     settings: &Settings,
     request: &AckMessageRequest<'_>,
@@ -123,7 +140,12 @@ pub(crate) fn post_ack(
     })
 }
 
-pub(crate) fn set_presence(
+/// Set an agent's presence record.
+///
+/// # Errors
+///
+/// Returns an error if the Redis `SET EX` or `PUBLISH` commands fail.
+pub fn set_presence(
     conn: &mut redis::Connection,
     settings: &Settings,
     request: &PresenceRequest<'_>,
@@ -141,7 +163,12 @@ pub(crate) fn set_presence(
     )
 }
 
-pub(crate) fn list_messages_history(
+/// List messages from durable history (`PostgreSQL` with Redis fallback).
+///
+/// # Errors
+///
+/// Returns an error if both the `PostgreSQL` query and the Redis fallback fail.
+pub fn list_messages_history(
     settings: &Settings,
     request: &ReadMessagesRequest<'_>,
 ) -> Result<Vec<Message>> {
@@ -159,7 +186,12 @@ pub(crate) fn list_messages_history(
     )
 }
 
-pub(crate) fn list_messages_live(
+/// List messages directly from the live Redis stream.
+///
+/// # Errors
+///
+/// Returns an error if the Redis `XREVRANGE` command fails.
+pub fn list_messages_live(
     conn: &mut redis::Connection,
     settings: &Settings,
     request: &ReadMessagesRequest<'_>,

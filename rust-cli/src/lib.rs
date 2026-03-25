@@ -26,7 +26,6 @@ mod settings;
 mod token;
 mod validation;
 
-use std::sync::OnceLock;
 use std::{ffi::OsString, iter};
 
 use anyhow::{Context as _, Result};
@@ -48,15 +47,10 @@ use http::{start_http_server, start_mcp_http_server};
 use mcp::AgentBusMcpServer;
 use models::STARTUP_PRESENCE_TTL;
 use ops::{PostMessageRequest, PresenceRequest, post_message, set_presence};
+use agent_bus_core::{init_pg_writer, pg_writer};
 use postgres_store::{PgWriter, probe_postgres};
 use redis_bus::connect;
 use settings::Settings;
-
-static PG_WRITER: OnceLock<PgWriter> = OnceLock::new();
-
-pub(crate) fn pg_writer() -> Option<&'static PgWriter> {
-    PG_WRITER.get()
-}
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -203,7 +197,7 @@ async fn run(args: Vec<OsString>) -> Result<()> {
     settings.validate()?;
 
     let (writer, pg_handle) = PgWriter::spawn(settings.clone());
-    let _ = PG_WRITER.set(writer);
+    let _ = init_pg_writer(writer);
 
     if settings.database_url.is_some() {
         crate::postgres_store::spawn_pg_health_monitor(settings.clone(), 30);
