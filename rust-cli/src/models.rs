@@ -75,10 +75,7 @@ mod tests {
             topic: "status".to_owned(),
             body: "hello from tests".to_owned(),
             thread_id: Some("thread-42".to_owned()),
-            tags: smallvec::smallvec![
-                "repo:agent-bus".to_owned(),
-                "session:s1".to_owned(),
-            ],
+            tags: smallvec::smallvec!["repo:agent-bus".to_owned(), "session:s1".to_owned(),],
             priority: "high".to_owned(),
             request_ack: true,
             reply_to: Some("msg-000".to_owned()),
@@ -310,13 +307,31 @@ mod tests {
         let obj = v.as_object().unwrap();
 
         // These are skip_serializing_if = Option::is_none — must be absent when None.
-        assert!(!obj.contains_key("stream_length"), "stream_length must be absent");
-        assert!(!obj.contains_key("pg_message_count"), "pg_message_count must be absent");
-        assert!(!obj.contains_key("pg_presence_count"), "pg_presence_count must be absent");
-        assert!(!obj.contains_key("pg_writes_queued"), "pg_writes_queued must be absent");
-        assert!(!obj.contains_key("pg_writes_completed"), "pg_writes_completed must be absent");
+        assert!(
+            !obj.contains_key("stream_length"),
+            "stream_length must be absent"
+        );
+        assert!(
+            !obj.contains_key("pg_message_count"),
+            "pg_message_count must be absent"
+        );
+        assert!(
+            !obj.contains_key("pg_presence_count"),
+            "pg_presence_count must be absent"
+        );
+        assert!(
+            !obj.contains_key("pg_writes_queued"),
+            "pg_writes_queued must be absent"
+        );
+        assert!(
+            !obj.contains_key("pg_writes_completed"),
+            "pg_writes_completed must be absent"
+        );
         assert!(!obj.contains_key("pg_batches"), "pg_batches must be absent");
-        assert!(!obj.contains_key("pg_write_errors"), "pg_write_errors must be absent");
+        assert!(
+            !obj.contains_key("pg_write_errors"),
+            "pg_write_errors must be absent"
+        );
 
         // Mandatory fields must be present.
         assert_eq!(v["ok"], true);

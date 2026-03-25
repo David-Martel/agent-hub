@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use postgres::{Client as PgClient, NoTls};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::models::{Message, Presence};
@@ -626,10 +626,10 @@ pub(crate) fn list_messages_postgres_with_filters(
         let agent_filter = agent.map(str::to_owned);
         let sender_filter = from_agent.map(str::to_owned);
         let thread_filter = thread_id.map(str::to_owned);
-        let tag_filter = if required_tags.is_empty() {
+        let tag_filter: Option<serde_json::Value> = if required_tags.is_empty() {
             None
         } else {
-            Some(serde_json::json!(required_tags).to_string())
+            Some(serde_json::json!(required_tags))
         };
 
         let rows = client.query(
@@ -973,11 +973,11 @@ pub(crate) enum PgWriteRequest {
     /// Flush any queued writes immediately.
     ///
     /// Reserved for future use (e.g. graceful-shutdown sequences).
-    #[expect(
-        dead_code,
-        reason = "reserved control signal for graceful-shutdown callers"
-    )]
-    Flush,
+    Flush {
+        /// Optional completion signal for callers that need to block until the
+        /// current batch has been persisted.
+        completion: Option<oneshot::Sender<()>>,
+    },
     /// Drain remaining writes and shut down the background task.
     ///
     /// Sent by [`PgWriter::shutdown_and_wait`] before process exit in CLI mode
@@ -1039,6 +1039,16 @@ impl PgWriter {
         let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(handle));
     }
 
+    /// Request an immediate flush of queued writes.
+    ///
+    /// The flush happens asynchronously on the background task. Callers may
+    /// optionally wait a short interval if they need a best-effort drain before
+    /// continuing with maintenance work.
+    #[expect(dead_code, reason = "kept for fire-and-forget maintenance hooks")]
+    pub(crate) fn flush(&self) {
+        let _ = self.tx.send(PgWriteRequest::Flush { completion: None });
+    }
+
     /// Enqueue a message for asynchronous `PostgreSQL` persistence.
     ///
     /// Drops the write silently if the background task has already exited.
@@ -1055,6 +1065,30 @@ impl PgWriter {
             .tx
             .send(PgWriteRequest::Presence(Box::new(presence.clone())));
         pg_metrics().messages_queued.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Request an immediate flush and block until the current queue has been
+    /// drained or the timeout elapses.
+    pub(crate) async fn flush_and_wait_async(&self, timeout: Duration) -> bool {
+        let (tx, rx) = oneshot::channel();
+        if self
+            .tx
+            .send(PgWriteRequest::Flush {
+                completion: Some(tx),
+            })
+            .is_err()
+        {
+            return false;
+        }
+        tokio::time::timeout(timeout, rx).await.is_ok()
+    }
+
+    /// Blocking wrapper for command handlers that need to wait for a flush.
+    #[expect(dead_code, reason = "reserved for future blocking maintenance callers")]
+    pub(crate) fn flush_and_wait_blocking(&self, timeout: Duration) -> bool {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(self.flush_and_wait_async(timeout))
+        })
     }
 }
 
@@ -1085,16 +1119,30 @@ async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWr
                         // Drain remaining writes then stop.
                         // Collect any remaining messages still in the channel.
                         while let Ok(req) = rx.try_recv() {
-                            batch.push(req);
+                            match req {
+                                PgWriteRequest::Message(_) | PgWriteRequest::Presence(_) => batch.push(req),
+                                PgWriteRequest::Flush { completion } => {
+                                    if !batch.is_empty() {
+                                        flush_pg_batch(&settings, &mut batch);
+                                    }
+                                    if let Some(completion) = completion {
+                                        let _ = completion.send(());
+                                    }
+                                }
+                                PgWriteRequest::Shutdown => {}
+                            }
                         }
                         if !batch.is_empty() {
                             flush_pg_batch(&settings, &mut batch);
                         }
                         return;
                     }
-                    Some(PgWriteRequest::Flush) => {
+                    Some(PgWriteRequest::Flush { completion }) => {
                         if !batch.is_empty() {
                             flush_pg_batch(&settings, &mut batch);
+                        }
+                        if let Some(completion) = completion {
+                            let _ = completion.send(());
                         }
                     }
                     Some(req) => {
@@ -1137,7 +1185,7 @@ fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>) {
                 }
             }
             // Flush/Shutdown are control signals, not data — nothing to persist.
-            PgWriteRequest::Flush | PgWriteRequest::Shutdown => {}
+            PgWriteRequest::Flush { .. } | PgWriteRequest::Shutdown => {}
         }
     }
     metrics.batches_flushed.fetch_add(1, Ordering::Relaxed);

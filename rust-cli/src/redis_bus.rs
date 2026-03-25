@@ -178,6 +178,252 @@ impl RedisPool {
     }
 }
 
+/// Durable notification derived from a canonical bus [`Message`].
+///
+/// Notification streams are per-agent attention queues. They intentionally keep
+/// the full message snapshot so transports such as SSE and MCP can replay
+/// missed notifications without a second round-trip back to the canonical
+/// stream.
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the serialized notification API"
+)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Notification {
+    /// Notification UUID.
+    pub(crate) id: String,
+    /// Agent that should receive this notification.
+    pub(crate) agent: String,
+    /// ISO-8601 creation timestamp (matches the source message timestamp).
+    pub(crate) created_at: String,
+    /// Why this notification was created.
+    pub(crate) reason: String,
+    /// Whether the source message requires acknowledgement.
+    pub(crate) requires_ack: bool,
+    /// Full snapshot of the source message.
+    pub(crate) message: Message,
+    /// Redis stream ID for the notification stream entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) notification_stream_id: Option<String>,
+}
+
+/// Message plus any derived notifications created on the hot path.
+#[derive(Debug, Clone)]
+pub(crate) struct PostedMessage {
+    pub(crate) message: Message,
+    #[allow(dead_code)]
+    pub(crate) notifications: Vec<Notification>,
+}
+
+/// Approximate MAXLEN for per-agent notification streams.
+const NOTIFICATION_STREAM_MAXLEN: u64 = 10_000;
+
+/// Redis key prefix for per-agent notification streams.
+const NOTIFICATION_STREAM_PREFIX: &str = "agent_bus:notify:";
+
+/// Redis key prefix for durable notification cursors.
+const NOTIFICATION_CURSOR_PREFIX: &str = "bus:notify_cursor:";
+
+fn notification_reason(msg: &Message) -> &'static str {
+    if msg.topic == "knock" {
+        "knock"
+    } else if msg.request_ack {
+        "direct_request_ack"
+    } else {
+        "direct_message"
+    }
+}
+
+fn should_publish_message_event(msg: &Message, has_sse_subscribers: bool) -> bool {
+    has_sse_subscribers || (!msg.to.is_empty() && msg.to != "all")
+}
+
+pub(crate) fn notification_stream_key(agent: &str) -> String {
+    format!("{NOTIFICATION_STREAM_PREFIX}{agent}")
+}
+
+pub(crate) fn notification_cursor_key(agent: &str) -> String {
+    format!("{NOTIFICATION_CURSOR_PREFIX}{agent}")
+}
+
+fn decode_notification_entry(
+    stream_id: &str,
+    fields: &HashMap<String, redis::Value>,
+) -> Notification {
+    let get = |k: &str| -> String {
+        match fields.get(k) {
+            Some(redis::Value::BulkString(b)) => match std::str::from_utf8(b) {
+                Ok(s) => s.to_owned(),
+                Err(_) => String::from_utf8_lossy(b).into_owned(),
+            },
+            Some(redis::Value::SimpleString(s)) => s.clone(),
+            _ => String::new(),
+        }
+    };
+    let get_bool = |k: &str| -> bool {
+        let v = get(k);
+        v == "true" || v == "True"
+    };
+
+    let message = serde_json::from_str::<Message>(&get("message")).unwrap_or(Message {
+        id: String::new(),
+        timestamp_utc: String::new(),
+        protocol_version: PROTOCOL_VERSION.to_owned(),
+        from: String::new(),
+        to: String::new(),
+        topic: String::new(),
+        body: String::new(),
+        thread_id: None,
+        tags: smallvec::SmallVec::new(),
+        priority: crate::models::default_priority(),
+        request_ack: false,
+        reply_to: None,
+        metadata: serde_json::Value::Object(serde_json::Map::new()),
+        stream_id: None,
+    });
+
+    Notification {
+        id: get("id"),
+        agent: get("agent"),
+        created_at: get("created_at"),
+        reason: get("reason"),
+        requires_ack: get_bool("requires_ack"),
+        message,
+        notification_stream_id: Some(stream_id.to_owned()),
+    }
+}
+
+fn append_notifications_for_message(
+    conn: &mut redis::Connection,
+    msg: &Message,
+) -> Result<Vec<Notification>> {
+    if msg.to.is_empty() || msg.to == "all" {
+        return Ok(Vec::new());
+    }
+
+    let agent = msg.to.clone();
+    let id = Uuid::new_v4().to_string();
+    let message_json = serde_json::to_string(msg).context("serialize message for notification")?;
+    let created_at = msg.timestamp_utc.clone();
+    let reason = notification_reason(msg).to_owned();
+    let requires_ack = if msg.request_ack { "true" } else { "false" };
+    let key = notification_stream_key(&agent);
+
+    let stream_id: String = redis::cmd("XADD")
+        .arg(&key)
+        .arg("MAXLEN")
+        .arg("~")
+        .arg(NOTIFICATION_STREAM_MAXLEN)
+        .arg("*")
+        .arg(&[
+            ("id", id.as_str()),
+            ("agent", agent.as_str()),
+            ("created_at", created_at.as_str()),
+            ("reason", reason.as_str()),
+            ("requires_ack", requires_ack),
+            ("message", message_json.as_str()),
+        ])
+        .query(conn)
+        .context("XADD notification failed")?;
+
+    Ok(vec![Notification {
+        id,
+        agent,
+        created_at,
+        reason,
+        requires_ack: msg.request_ack,
+        message: msg.clone(),
+        notification_stream_id: Some(stream_id),
+    }])
+}
+
+fn prepare_notification_fields(msg: &Message) -> Option<[String; 5]> {
+    if msg.to.is_empty() || msg.to == "all" {
+        return None;
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let created_at = msg.timestamp_utc.clone();
+    let reason = notification_reason(msg).to_owned();
+    let requires_ack = if msg.request_ack {
+        "true".to_owned()
+    } else {
+        "false".to_owned()
+    };
+    let message_json = serde_json::to_string(msg).ok()?;
+    Some([id, created_at, reason, requires_ack, message_json])
+}
+
+pub(crate) fn list_notifications(
+    conn: &mut redis::Connection,
+    agent: &str,
+    limit: usize,
+) -> Result<Vec<Notification>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let raw: Vec<redis::Value> = redis::cmd("XREVRANGE")
+        .arg(notification_stream_key(agent))
+        .arg("+")
+        .arg("-")
+        .arg("COUNT")
+        .arg(limit)
+        .query(conn)
+        .context("XREVRANGE notifications failed")?;
+
+    let mut notifications = Vec::new();
+    for (stream_id, fields) in parse_xrange_result(&raw) {
+        notifications.push(decode_notification_entry(&stream_id, &fields));
+    }
+    notifications.reverse();
+    Ok(notifications)
+}
+
+pub(crate) fn list_notifications_since_id(
+    conn: &mut redis::Connection,
+    agent: &str,
+    since_id: &str,
+    limit: usize,
+) -> Result<Vec<Notification>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let exclusive_start = format!("({since_id}");
+    let raw: Vec<redis::Value> = redis::cmd("XRANGE")
+        .arg(notification_stream_key(agent))
+        .arg(&exclusive_start)
+        .arg("+")
+        .arg("COUNT")
+        .arg(limit.max(1))
+        .query(conn)
+        .context("XRANGE notifications since_id failed")?;
+
+    let mut notifications = Vec::new();
+    for (stream_id, fields) in parse_xrange_result(&raw) {
+        notifications.push(decode_notification_entry(&stream_id, &fields));
+    }
+    Ok(notifications)
+}
+
+pub(crate) fn get_notification_cursor(conn: &mut redis::Connection, agent: &str) -> Result<String> {
+    let key = notification_cursor_key(agent);
+    let val: Option<String> =
+        redis::Commands::get(conn, &key).context("GET notification cursor")?;
+    Ok(val.unwrap_or_else(|| "0-0".to_owned()))
+}
+
+pub(crate) fn set_notification_cursor(
+    conn: &mut redis::Connection,
+    agent: &str,
+    stream_id: &str,
+) -> Result<()> {
+    let key = notification_cursor_key(agent);
+    let _: () = redis::Commands::set(conn, &key, stream_id).context("SET notification cursor")?;
+    Ok(())
+}
+
 pub(crate) fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Message {
     // Extract a field as an owned String. For BulkString we attempt zero-copy
     // UTF-8 conversion; only lossy-converts on invalid bytes (rare in practice).
@@ -264,7 +510,7 @@ pub(crate) fn decode_stream_entry(fields: &HashMap<String, redis::Value>) -> Mes
     }
 }
 
-fn message_matches_filters(
+pub(crate) fn message_matches_filters(
     msg: &Message,
     agent: Option<&str>,
     from_agent: Option<&str>,
@@ -560,13 +806,13 @@ pub(crate) struct BatchSendPayload {
     clippy::too_many_lines,
     reason = "XADD pipeline + PUBLISH pipeline + PG enqueue + pending-ack pipeline in one fn"
 )]
-pub(crate) fn bus_post_messages_batch(
+pub(crate) fn bus_post_messages_batch_with_notifications(
     conn: &mut redis::Connection,
     settings: &Settings,
     payloads: Vec<BatchSendPayload>,
     pg_writer: Option<&PgWriter>,
     has_sse_subscribers: bool,
-) -> Result<Vec<Message>> {
+) -> Result<Vec<PostedMessage>> {
     let session_id = settings.session_id.as_deref();
     if payloads.is_empty() {
         return Ok(Vec::new());
@@ -643,12 +889,18 @@ pub(crate) fn bus_post_messages_batch(
         messages.push(pm.message);
     }
 
-    // Pipeline all PUBLISH commands (second round-trip) only when active SSE
-    // clients need them.  Skipping the pipeline entirely when no `/events`
-    // clients are connected avoids JSON serialisation + a network round-trip.
-    if has_sse_subscribers {
+    // Publish when legacy `/events` subscribers are connected or when a direct
+    // recipient-specific message should wake active `/events/:agent` clients
+    // through the HTTP bridge subscriber.
+    if messages
+        .iter()
+        .any(|msg| should_publish_message_event(msg, has_sse_subscribers))
+    {
         let mut pub_pipe = redis::pipe();
         for msg in &messages {
+            if !should_publish_message_event(msg, has_sse_subscribers) {
+                continue;
+            }
             let event = serde_json::json!({"event": "message", "message": msg});
             let event_json = serde_json::to_string(&event).unwrap_or_default();
             pub_pipe
@@ -693,7 +945,90 @@ pub(crate) fn bus_post_messages_batch(
         }
     }
 
-    Ok(messages)
+    let mut notifications_by_message: Vec<Vec<Notification>> =
+        (0..messages.len()).map(|_| Vec::new()).collect();
+    let prepared_notifications: Vec<Option<[String; 5]>> =
+        messages.iter().map(prepare_notification_fields).collect();
+    if prepared_notifications.iter().any(Option::is_some) {
+        let mut notify_pipe = redis::pipe();
+        let mut message_indexes: Vec<usize> = Vec::new();
+        for (idx, prepared) in prepared_notifications.iter().enumerate() {
+            let Some(fields) = prepared else {
+                continue;
+            };
+            message_indexes.push(idx);
+            notify_pipe
+                .cmd("XADD")
+                .arg(notification_stream_key(messages[idx].to.as_str()))
+                .arg("MAXLEN")
+                .arg("~")
+                .arg(NOTIFICATION_STREAM_MAXLEN)
+                .arg("*")
+                .arg(&[
+                    ("id", fields[0].as_str()),
+                    ("agent", messages[idx].to.as_str()),
+                    ("created_at", fields[1].as_str()),
+                    ("reason", fields[2].as_str()),
+                    ("requires_ack", fields[3].as_str()),
+                    ("message", fields[4].as_str()),
+                ]);
+        }
+
+        if !message_indexes.is_empty() {
+            match notify_pipe.query::<Vec<String>>(conn) {
+                Ok(notification_stream_ids) => {
+                    for (stream_id, msg_idx) in
+                        notification_stream_ids.into_iter().zip(message_indexes)
+                    {
+                        let fields = prepared_notifications[msg_idx]
+                            .as_ref()
+                            .expect("notification fields must exist for indexed message");
+                        notifications_by_message[msg_idx].push(Notification {
+                            id: fields[0].clone(),
+                            agent: messages[msg_idx].to.clone(),
+                            created_at: fields[1].clone(),
+                            reason: fields[2].clone(),
+                            requires_ack: messages[msg_idx].request_ack,
+                            message: messages[msg_idx].clone(),
+                            notification_stream_id: Some(stream_id),
+                        });
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("batch notification pipeline failed (non-fatal): {e:#}");
+                }
+            }
+        }
+    }
+
+    Ok(messages
+        .into_iter()
+        .zip(notifications_by_message)
+        .map(|(message, notifications)| PostedMessage {
+            message,
+            notifications,
+        })
+        .collect())
+}
+
+#[allow(dead_code, reason = "legacy batch API kept while HTTP/MCP migrate")]
+pub(crate) fn bus_post_messages_batch(
+    conn: &mut redis::Connection,
+    settings: &Settings,
+    payloads: Vec<BatchSendPayload>,
+    pg_writer: Option<&PgWriter>,
+    has_sse_subscribers: bool,
+) -> Result<Vec<Message>> {
+    Ok(bus_post_messages_batch_with_notifications(
+        conn,
+        settings,
+        payloads,
+        pg_writer,
+        has_sse_subscribers,
+    )?
+    .into_iter()
+    .map(|posted| posted.message)
+    .collect())
 }
 
 /// Post a message to the stream and optionally publish to the Redis pub/sub channel.
@@ -723,7 +1058,7 @@ pub(crate) fn bus_post_messages_batch(
     clippy::too_many_lines,
     reason = "compression + schema inference + PG persistence in one atomic unit"
 )]
-pub(crate) fn bus_post_message(
+pub(crate) fn bus_post_message_with_notifications(
     conn: &mut redis::Connection,
     settings: &Settings,
     from: &str,
@@ -738,7 +1073,7 @@ pub(crate) fn bus_post_message(
     metadata: &serde_json::Value,
     pg_writer: Option<&PgWriter>,
     has_sse_subscribers: bool,
-) -> Result<Message> {
+) -> Result<PostedMessage> {
     let id = Uuid::new_v4().to_string();
     // Fix 3: pre-allocate a 32-byte buffer and write directly into it, avoiding
     // the intermediate `DelayedFormat` heap allocation from `.to_string()`.
@@ -892,11 +1227,10 @@ pub(crate) fn bus_post_message(
         stream_id: Some(stream_id.clone()),
     };
 
-    // Only serialize + PUBLISH when at least one legacy `/events` SSE client
-    // is connected.  The in-process `agent_connections` map (used by
-    // `GET /events/:agent_id`) is populated directly by the HTTP handler after
-    // this function returns, so it never needs the Redis pub/sub path.
-    if has_sse_subscribers {
+    // Publish when legacy `/events` subscribers are connected or when a direct
+    // recipient-specific message should wake active `/events/:agent` clients
+    // through the HTTP bridge subscriber.
+    if should_publish_message_event(&msg, has_sse_subscribers) {
         let event = serde_json::json!({"event": "message", "message": &msg});
         let event_json = serde_json::to_string(&event).unwrap_or_default();
         let _: () = conn
@@ -923,6 +1257,14 @@ pub(crate) fn bus_post_message(
         tracing::warn!("failed to track pending ack for {id}: {error:#}");
     }
     // -------------------------------------------------------------------------
+
+    let notifications = match append_notifications_for_message(conn, &msg) {
+        Ok(notifications) => notifications,
+        Err(error) => {
+            tracing::warn!("failed to append notification for {id}: {error:#}");
+            Vec::new()
+        }
+    };
 
     // --- Ownership conflict detection ----------------------------------------
     // When an agent posts with topic="ownership", extract file paths from the
@@ -974,7 +1316,53 @@ pub(crate) fn bus_post_message(
     }
     // -------------------------------------------------------------------------
 
-    Ok(msg)
+    Ok(PostedMessage {
+        message: msg,
+        notifications,
+    })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "legacy wrapper preserves the pre-notification call signature"
+)]
+#[allow(
+    dead_code,
+    reason = "compatibility wrapper retained while transports migrate"
+)]
+pub(crate) fn bus_post_message(
+    conn: &mut redis::Connection,
+    settings: &Settings,
+    from: &str,
+    to: &str,
+    topic: &str,
+    body: &str,
+    thread_id: Option<&str>,
+    tags: &[String],
+    priority: &str,
+    request_ack: bool,
+    reply_to: Option<&str>,
+    metadata: &serde_json::Value,
+    pg_writer: Option<&PgWriter>,
+    has_sse_subscribers: bool,
+) -> Result<Message> {
+    Ok(bus_post_message_with_notifications(
+        conn,
+        settings,
+        from,
+        to,
+        topic,
+        body,
+        thread_id,
+        tags,
+        priority,
+        request_ack,
+        reply_to,
+        metadata,
+        pg_writer,
+        has_sse_subscribers,
+    )?
+    .message)
 }
 
 // ---------------------------------------------------------------------------
@@ -1247,7 +1635,11 @@ pub(crate) fn bus_list_messages(
         ) {
             Ok(messages) => return Ok(messages),
             Err(error) => {
-                tracing::warn!("Postgres message query failed, falling back to Redis: {error:#}");
+                if settings.log_non_fatal_warnings() {
+                    tracing::warn!(
+                        "Postgres message query failed, falling back to Redis: {error:#}"
+                    );
+                }
             }
         }
     }
@@ -1292,7 +1684,11 @@ pub(crate) fn bus_list_messages_with_filters(
         ) {
             Ok(messages) => return Ok(messages),
             Err(error) => {
-                tracing::warn!("Postgres message query failed, falling back to Redis: {error:#}");
+                if settings.log_non_fatal_warnings() {
+                    tracing::warn!(
+                        "Postgres message query failed, falling back to Redis: {error:#}"
+                    );
+                }
             }
         }
     }
@@ -1395,6 +1791,10 @@ pub(crate) fn bus_list_messages_since_id_with_filters(
 /// # Errors
 ///
 /// Returns an error if the Redis `GET` command fails.
+#[allow(
+    dead_code,
+    reason = "legacy cursor retained for compatibility during notification migration"
+)]
 pub(crate) fn get_inbox_cursor(conn: &mut redis::Connection, agent: &str) -> Result<String> {
     let key = inbox_cursor_key(agent);
     let val: Option<String> = redis::Commands::get(conn, &key).context("GET inbox cursor")?;
@@ -1409,6 +1809,10 @@ pub(crate) fn get_inbox_cursor(conn: &mut redis::Connection, agent: &str) -> Res
 /// # Errors
 ///
 /// Returns an error if the Redis `SET` command fails.
+#[allow(
+    dead_code,
+    reason = "legacy cursor retained for compatibility during notification migration"
+)]
 pub(crate) fn set_inbox_cursor(
     conn: &mut redis::Connection,
     agent: &str,
@@ -1422,6 +1826,10 @@ pub(crate) fn set_inbox_cursor(
 /// Redis key for the inbox cursor of `agent`.
 ///
 /// Format: `bus:cursor:<agent_id>`
+#[allow(
+    dead_code,
+    reason = "legacy cursor retained for compatibility during notification migration"
+)]
 pub(crate) fn inbox_cursor_key(agent: &str) -> String {
     format!("bus:cursor:{agent}")
 }

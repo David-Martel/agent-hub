@@ -27,6 +27,7 @@ pub(crate) struct ConfigFile {
     pub(crate) stream_maxlen: Option<u64>,
     pub(crate) server_host: Option<String>,
     pub(crate) service_agent_id: Option<String>,
+    pub(crate) service_name: Option<String>,
     pub(crate) startup_enabled: Option<bool>,
     pub(crate) startup_recipient: Option<String>,
     pub(crate) startup_topic: Option<String>,
@@ -40,6 +41,9 @@ pub(crate) struct ConfigFile {
     ///
     /// Example: `"http://192.168.1.100:8400"`
     pub(crate) server_url: Option<String>,
+    /// Suppress non-fatal degraded-mode warnings that would otherwise mix into
+    /// machine-readable stdout/stderr captures.
+    pub(crate) machine_safe: Option<bool>,
 }
 
 /// Resolve the path for the config file.
@@ -112,10 +116,12 @@ fn maybe_write_default_config(path: &std::path::Path) {
   "stream_maxlen": 100000,
   "server_host": "localhost",
   "service_agent_id": "agent-bus",
+  "service_name": "AgentHub",
   "startup_enabled": true,
   "startup_recipient": "all",
   "startup_topic": "status",
-  "startup_body": "agent-bus is up and running"
+  "startup_body": "agent-bus is up and running",
+  "machine_safe": false
 }
 "#;
     if std::fs::write(path, default_json).is_ok() {
@@ -184,6 +190,7 @@ pub(crate) struct Settings {
     pub(crate) presence_event_table: String,
     pub(crate) stream_maxlen: u64,
     pub(crate) service_agent_id: String,
+    pub(crate) service_name: String,
     pub(crate) startup_enabled: bool,
     pub(crate) startup_recipient: String,
     pub(crate) startup_topic: String,
@@ -203,6 +210,9 @@ pub(crate) struct Settings {
     ///
     /// Example values: `"http://localhost:8400"`, `"http://192.168.1.100:8400"`
     pub(crate) server_url: Option<String>,
+    /// Suppress non-fatal warnings that otherwise pollute machine-readable
+    /// output captures during degraded-mode fallbacks.
+    pub(crate) machine_safe: bool,
 }
 
 impl Settings {
@@ -266,6 +276,11 @@ impl Settings {
                 cfg.service_agent_id.as_deref(),
                 "agent-bus",
             ),
+            service_name: resolve(
+                "AGENT_BUS_SERVICE_NAME",
+                cfg.service_name.as_deref(),
+                "AgentHub",
+            ),
             startup_enabled: startup_enabled_str != "false",
             startup_recipient: resolve(
                 "AGENT_BUS_STARTUP_RECIPIENT",
@@ -299,6 +314,7 @@ impl Settings {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .or_else(|| cfg.server_url.filter(|s| !s.is_empty())),
+            machine_safe: resolve_parse("AGENT_BUS_MACHINE_SAFE", cfg.machine_safe, false),
         }
     }
 
@@ -335,7 +351,12 @@ impl Settings {
         validate_identifier(&self.presence_prefix, "AGENT_BUS_PRESENCE_PREFIX")?;
         validate_identifier(&self.message_table, "AGENT_BUS_MESSAGE_TABLE")?;
         validate_identifier(&self.presence_event_table, "AGENT_BUS_PRESENCE_EVENT_TABLE")?;
+        validate_identifier(&self.service_name, "AGENT_BUS_SERVICE_NAME")?;
         Ok(())
+    }
+
+    pub(crate) fn log_non_fatal_warnings(&self) -> bool {
+        !self.machine_safe
     }
 }
 
@@ -418,10 +439,12 @@ mod tests {
         assert!(cfg.stream_maxlen.is_none());
         assert!(cfg.server_host.is_none());
         assert!(cfg.service_agent_id.is_none());
+        assert!(cfg.service_name.is_none());
         assert!(cfg.startup_enabled.is_none());
         assert!(cfg.startup_recipient.is_none());
         assert!(cfg.startup_topic.is_none());
         assert!(cfg.startup_body.is_none());
+        assert!(cfg.machine_safe.is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -712,10 +735,7 @@ mod tests {
 
     #[test]
     fn server_url_env_overrides_config() {
-        let url = resolve_server_url(
-            Some("http://localhost:8400"),
-            Some("http://remote:8400"),
-        );
+        let url = resolve_server_url(Some("http://localhost:8400"), Some("http://remote:8400"));
         assert_eq!(url.as_deref(), Some("http://localhost:8400"));
     }
 
@@ -754,5 +774,19 @@ mod tests {
         if let Some(ref url) = s.server_url {
             assert!(!url.is_empty(), "server_url must not be an empty string");
         }
+    }
+
+    #[test]
+    fn config_file_deserializes_machine_safe() {
+        let json = r#"{"machine_safe": true}"#;
+        let cfg: ConfigFile = serde_json::from_str(json).expect("valid JSON");
+        assert_eq!(cfg.machine_safe, Some(true));
+    }
+
+    #[test]
+    fn log_non_fatal_warnings_disabled_when_machine_safe_enabled() {
+        let mut s = Settings::from_env();
+        s.machine_safe = true;
+        assert!(!s.log_non_fatal_warnings());
     }
 }
