@@ -51,6 +51,46 @@ async fn service_available(client: &reqwest::Client) -> bool {
         .is_ok()
 }
 
+async fn admin_control_available(client: &reqwest::Client) -> bool {
+    match client.get(format!("{BASE_URL}/admin/service")).send().await {
+        Ok(resp) => resp.status() != StatusCode::NOT_FOUND,
+        Err(_) => false,
+    }
+}
+
+struct MaintenanceResumeGuard {
+    active: bool,
+}
+
+impl MaintenanceResumeGuard {
+    fn inactive() -> Self {
+        Self { active: false }
+    }
+
+    fn arm(&mut self) {
+        self.active = true;
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for MaintenanceResumeGuard {
+    fn drop(&mut self) {
+        if !self.active {
+            return;
+        }
+        let _ = reqwest::blocking::Client::new()
+            .post(format!("{BASE_URL}/admin/service/control"))
+            .json(&json!({
+                "action": "resume",
+                "requested_by": "http-integration-test-cleanup",
+            }))
+            .send();
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 1. Health endpoint
 // ---------------------------------------------------------------------------
@@ -135,6 +175,79 @@ async fn health_json_contains_pool_metrics() {
     );
 }
 
+#[tokio::test]
+async fn service_control_pause_blocks_writes_until_resume() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
+        return;
+    }
+    if !admin_control_available(&client).await {
+        eprintln!("SKIP: running HTTP service at {BASE_URL} does not expose /admin/service yet");
+        return;
+    }
+
+    let mut resume_guard = MaintenanceResumeGuard::inactive();
+    let pause_resp = client
+        .post(format!("{BASE_URL}/admin/service/control"))
+        .json(&json!({
+            "action": "pause",
+            "flush": false,
+            "requested_by": "http-integration-test",
+            "reason": "maintenance-gate-test",
+        }))
+        .send()
+        .await
+        .expect("POST /admin/service/control pause failed");
+    assert_eq!(pause_resp.status(), StatusCode::OK);
+    resume_guard.arm();
+
+    let blocked = client
+        .post(format!("{BASE_URL}/messages"))
+        .json(&json!({
+            "sender": "maintenance-test",
+            "recipient": "maintenance-test",
+            "topic": "should-block",
+            "body": "write should be blocked while paused",
+        }))
+        .send()
+        .await
+        .expect("POST /messages during maintenance failed");
+    assert_eq!(blocked.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let blocked_body: Value = blocked.json().await.expect("blocked response not JSON");
+    assert_eq!(
+        blocked_body["maintenance"]["mode"].as_str(),
+        Some("maintenance"),
+        "maintenance status should be reflected in the error body"
+    );
+
+    let resume_resp = client
+        .post(format!("{BASE_URL}/admin/service/control"))
+        .json(&json!({
+            "action": "resume",
+            "requested_by": "http-integration-test",
+        }))
+        .send()
+        .await
+        .expect("POST /admin/service/control resume failed");
+    assert_eq!(resume_resp.status(), StatusCode::OK);
+    resume_guard.disarm();
+
+    let ts = unique_suffix();
+    let unblocked = client
+        .post(format!("{BASE_URL}/messages"))
+        .json(&json!({
+            "sender": format!("maintenance-after-{ts}"),
+            "recipient": format!("maintenance-after-{ts}"),
+            "topic": "write-restored",
+            "body": format!("maintenance restored {ts}"),
+        }))
+        .send()
+        .await
+        .expect("POST /messages after resume failed");
+    assert_eq!(unblocked.status(), StatusCode::OK);
+}
+
 // ---------------------------------------------------------------------------
 // 2. Message send/read round-trip
 // ---------------------------------------------------------------------------
@@ -165,6 +278,275 @@ async fn post_message_returns_id() {
     assert!(
         body.get("id").and_then(|v| v.as_str()).is_some(),
         "response missing id field: {body}"
+    );
+}
+
+#[tokio::test]
+async fn direct_message_creates_replayable_notification() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
+        return;
+    }
+
+    let ts = unique_suffix();
+    let sender = format!("http-tester-{ts}");
+    let recipient = format!("http-recv-{ts}");
+    let topic = "http-notify";
+    let body_text = format!("notify-test-{ts}");
+
+    let send_resp = client
+        .post(format!("{BASE_URL}/messages"))
+        .json(&json!({
+            "sender": sender,
+            "recipient": recipient,
+            "topic": topic,
+            "body": body_text,
+            "request_ack": true,
+        }))
+        .send()
+        .await
+        .expect("POST /messages failed");
+
+    assert_eq!(
+        send_resp.status(),
+        StatusCode::OK,
+        "expected 200 on valid send"
+    );
+    let sent: Value = send_resp.json().await.expect("response not JSON");
+    let message_id = sent["id"]
+        .as_str()
+        .expect("message id must be present")
+        .to_owned();
+
+    let notifications_resp = client
+        .get(format!("{BASE_URL}/notifications/{recipient}?history=20"))
+        .send()
+        .await
+        .expect("GET /notifications/{recipient} failed");
+
+    assert_eq!(
+        notifications_resp.status(),
+        StatusCode::OK,
+        "expected 200 when reading notifications"
+    );
+    let notifications: Value = notifications_resp.json().await.expect("response not JSON");
+    let notification = notifications
+        .as_array()
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item["message"]["id"].as_str() == Some(message_id.as_str())
+                    && item["agent"].as_str() == Some(recipient.as_str())
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!("notification for message {message_id} missing: {notifications}")
+        });
+
+    assert_eq!(
+        notification["message"]["body"].as_str(),
+        Some(body_text.as_str()),
+        "notification should preserve the original message body"
+    );
+    assert_eq!(
+        notification["requires_ack"].as_bool(),
+        Some(true),
+        "request_ack messages should mark the notification as requiring ack"
+    );
+    assert!(
+        notification["notification_stream_id"].as_str().is_some(),
+        "notification should include a replay cursor id"
+    );
+}
+
+#[tokio::test]
+async fn knock_endpoint_creates_knock_notification() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
+        return;
+    }
+
+    let ts = unique_suffix();
+    let sender = format!("knock-sender-{ts}");
+    let recipient = format!("knock-recipient-{ts}");
+    let body_text = format!("knock-now-{ts}");
+
+    let knock_resp = client
+        .post(format!("{BASE_URL}/knock"))
+        .json(&json!({
+            "sender": sender,
+            "recipient": recipient,
+            "body": body_text,
+            "request_ack": true,
+        }))
+        .send()
+        .await
+        .expect("POST /knock failed");
+
+    assert_eq!(knock_resp.status(), StatusCode::OK);
+    let sent: Value = knock_resp.json().await.expect("response not JSON");
+    let message_id = sent["id"]
+        .as_str()
+        .expect("knock message id must be present")
+        .to_owned();
+
+    let notifications_resp = client
+        .get(format!("{BASE_URL}/notifications/{recipient}?history=20"))
+        .send()
+        .await
+        .expect("GET /notifications/{recipient} failed");
+
+    assert_eq!(notifications_resp.status(), StatusCode::OK);
+    let notifications: Value = notifications_resp.json().await.expect("response not JSON");
+    let notification = notifications
+        .as_array()
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item["message"]["id"].as_str() == Some(message_id.as_str())
+                    && item["reason"].as_str() == Some("knock")
+            })
+        })
+        .unwrap_or_else(|| panic!("knock notification missing: {notifications}"));
+
+    assert_eq!(notification["message"]["topic"].as_str(), Some("knock"));
+    assert_eq!(
+        notification["message"]["body"].as_str(),
+        Some(body_text.as_str())
+    );
+}
+
+#[tokio::test]
+async fn claim_renew_release_round_trip_via_http() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
+        return;
+    }
+
+    let ts = unique_suffix();
+    let resource = format!("http-lease-{ts}");
+    let agent = format!("http-lease-agent-{ts}");
+
+    let claim_resp = client
+        .post(format!("{BASE_URL}/channels/arbitrate/{resource}"))
+        .json(&json!({
+            "agent": agent,
+            "priority_argument": "lease lifecycle test",
+            "mode": "shared_namespaced",
+            "namespace": format!("ns-{ts}"),
+            "repo_scopes": ["agent-bus"],
+            "thread_id": format!("lease-thread-{ts}"),
+            "lease_ttl_seconds": 300,
+        }))
+        .send()
+        .await
+        .expect("POST claim failed");
+    assert_eq!(claim_resp.status(), StatusCode::OK);
+    let claim: Value = claim_resp.json().await.expect("response not JSON");
+    assert_eq!(claim["agent"].as_str(), Some(agent.as_str()));
+    assert_eq!(claim["mode"].as_str(), Some("shared_namespaced"));
+
+    let renew_resp = client
+        .post(format!("{BASE_URL}/channels/arbitrate/{resource}/renew"))
+        .json(&json!({
+            "agent": agent,
+            "lease_ttl_seconds": 600,
+        }))
+        .send()
+        .await
+        .expect("POST renew failed");
+    assert_eq!(renew_resp.status(), StatusCode::OK);
+    let renewed: Value = renew_resp.json().await.expect("response not JSON");
+    assert_eq!(renewed["lease_ttl_seconds"].as_u64(), Some(600));
+
+    let release_resp = client
+        .post(format!("{BASE_URL}/channels/arbitrate/{resource}/release"))
+        .json(&json!({ "agent": agent }))
+        .send()
+        .await
+        .expect("POST release failed");
+    assert_eq!(release_resp.status(), StatusCode::OK);
+    let released: Value = release_resp.json().await.expect("response not JSON");
+    assert_eq!(
+        released["claims"]
+            .as_array()
+            .map(std::vec::Vec::len)
+            .unwrap_or_default(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn compact_context_respects_repo_tag_and_thread_filters() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
+        return;
+    }
+
+    let ts = unique_suffix();
+    let agent = format!("compact-recv-{ts}");
+    let thread_id = format!("wezterm-joint-plan-{ts}");
+    let keep_body = format!("keep-thread-{ts}");
+    let drop_body = format!("drop-thread-{ts}");
+
+    for (body, repo, topic, tid) in [
+        (
+            keep_body.as_str(),
+            "wezterm",
+            "planning",
+            thread_id.as_str(),
+        ),
+        (drop_body.as_str(), "other-repo", "planning", "other-thread"),
+    ] {
+        let resp = client
+            .post(format!("{BASE_URL}/messages"))
+            .json(&json!({
+                "sender": format!("http-tester-{ts}"),
+                "recipient": agent,
+                "topic": topic,
+                "body": body,
+                "thread_id": tid,
+                "tags": [format!("repo:{repo}"), "planning"],
+            }))
+            .send()
+            .await
+            .expect("POST /messages failed");
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    let resp = client
+        .post(format!("{BASE_URL}/compact-context"))
+        .json(&json!({
+            "agent": agent,
+            "repo": "wezterm",
+            "tags": ["planning"],
+            "thread_id": thread_id,
+            "since_minutes": 10,
+            "max_tokens": 4000,
+        }))
+        .send()
+        .await
+        .expect("POST /compact-context failed");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("response not JSON");
+    let items = body
+        .as_array()
+        .unwrap_or_else(|| panic!("compact-context must return an array: {body}"));
+
+    assert!(
+        items
+            .iter()
+            .any(|item| item["b"].as_str() == Some(keep_body.as_str())),
+        "filtered compact-context should include the matching thread message: {body}"
+    );
+    assert!(
+        items
+            .iter()
+            .all(|item| item["b"].as_str() != Some(drop_body.as_str())),
+        "filtered compact-context should exclude non-matching repo/thread messages: {body}"
     );
 }
 

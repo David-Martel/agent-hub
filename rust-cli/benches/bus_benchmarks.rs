@@ -7,7 +7,6 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use serde::{Deserialize, Serialize};
 
-
 // ---------------------------------------------------------------------------
 // Types (mirror models.rs)
 // ---------------------------------------------------------------------------
@@ -733,7 +732,10 @@ fn xadd_one(conn: &mut redis::Connection, s: &BenchSettings, from: &str, to: &st
             ("from", from),
             ("to", to),
             ("topic", "bench"),
-            ("body", "benchmark payload — measuring real Redis round-trip"),
+            (
+                "body",
+                "benchmark payload — measuring real Redis round-trip",
+            ),
             ("tags", tags_json),
             ("priority", "normal"),
             ("request_ack", "false"),
@@ -752,13 +754,11 @@ fn xadd_one(conn: &mut redis::Connection, s: &BenchSettings, from: &str, to: &st
 
 /// Post `count` messages using a single Redis pipeline (mirrors
 /// `bus_post_messages_batch`).  Returns all stream IDs.
-fn xadd_batch(
-    conn: &mut redis::Connection,
-    s: &BenchSettings,
-    count: usize,
-) -> Vec<String> {
+fn xadd_batch(conn: &mut redis::Connection, s: &BenchSettings, count: usize) -> Vec<String> {
     // Pure-computation pass: build all owned strings before the pipeline.
-    let ids: Vec<String> = (0..count).map(|_| uuid::Uuid::new_v4().to_string()).collect();
+    let ids: Vec<String> = (0..count)
+        .map(|_| uuid::Uuid::new_v4().to_string())
+        .collect();
     let ts = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.6fZ")
         .to_string();
@@ -888,13 +888,9 @@ fn bench_redis_list_messages(c: &mut Criterion) {
 
     for count in [10usize, 100, 1_000] {
         group.throughput(Throughput::Elements(count as u64));
-        group.bench_with_input(
-            BenchmarkId::new("xrevrange", count),
-            &count,
-            |b, &count| {
-                b.iter(|| xrevrange(&mut conn, &s, count));
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("xrevrange", count), &count, |b, &count| {
+            b.iter(|| xrevrange(&mut conn, &s, count));
+        });
     }
 
     group.finish();

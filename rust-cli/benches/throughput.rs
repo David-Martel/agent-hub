@@ -59,7 +59,11 @@ fn estimate_tokens(text: &str) -> usize {
         .chars()
         .filter(|c| matches!(c, '{' | '}' | '[' | ']' | '"' | ':'))
         .count();
-    let denominator: usize = if json_chars * 100 > total * 15 { 25 } else { 40 };
+    let denominator: usize = if json_chars * 100 > total * 15 {
+        25
+    } else {
+        40
+    };
     (total * 10).div_ceil(denominator)
 }
 
@@ -156,10 +160,7 @@ fn make_message(body_size: usize) -> Message {
         topic: "rust-findings".to_owned(),
         body: "x".repeat(body_size),
         thread_id: Some("thread-abc-123".to_owned()),
-        tags: vec![
-            "repo:agent-hub".to_owned(),
-            "severity:high".to_owned(),
-        ],
+        tags: vec!["repo:agent-hub".to_owned(), "severity:high".to_owned()],
         priority: "high".to_owned(),
         request_ack: true,
         reply_to: Some("claude".to_owned()),
@@ -384,12 +385,7 @@ fn bench_format_message_toon(c: &mut Criterion) {
         })
         .collect();
     group.bench_function("batch_10_messages", |b| {
-        b.iter(|| {
-            batch
-                .iter()
-                .map(format_message_toon)
-                .collect::<Vec<_>>()
-        });
+        b.iter(|| batch.iter().map(format_message_toon).collect::<Vec<_>>());
     });
 
     // Varied body sizes to show throughput scaling.

@@ -267,13 +267,7 @@ fn claim_and_resolve() {
 
     // List claims and verify the resource appears.
     let list = agent_bus_binary()
-        .args([
-            "claims",
-            "--resource",
-            &resource,
-            "--encoding",
-            "compact",
-        ])
+        .args(["claims", "--resource", &resource, "--encoding", "compact"])
         .output()
         .expect("claims failed to run");
 
@@ -317,6 +311,140 @@ fn claim_and_resolve() {
         resolve_stdout.contains(&agent),
         "resolve output missing winner '{agent}':\n{resolve_stdout}"
     );
+}
+
+#[test]
+fn renew_and_release_claim_round_trip() {
+    if !redis_available() {
+        eprintln!("SKIP: Redis not available");
+        return;
+    }
+
+    let suffix = unique_id();
+    let resource = format!("src/test-lease-{suffix}.rs");
+    let agent = format!("test-lease-{suffix}");
+
+    let claim = agent_bus_binary()
+        .args([
+            "claim",
+            &resource,
+            "--agent",
+            &agent,
+            "--mode",
+            "shared_namespaced",
+            "--namespace",
+            "cli-test",
+            "--lease-ttl-seconds",
+            "300",
+            "--encoding",
+            "compact",
+        ])
+        .output()
+        .expect("claim failed to run");
+    assert!(
+        claim.status.success(),
+        "claim failed: {}",
+        String::from_utf8_lossy(&claim.stderr)
+    );
+
+    let renew = agent_bus_binary()
+        .args([
+            "renew-claim",
+            &resource,
+            "--agent",
+            &agent,
+            "--lease-ttl-seconds",
+            "600",
+            "--encoding",
+            "compact",
+        ])
+        .output()
+        .expect("renew-claim failed to run");
+    assert!(
+        renew.status.success(),
+        "renew-claim failed: {}",
+        String::from_utf8_lossy(&renew.stderr)
+    );
+    let renew_stdout = String::from_utf8_lossy(&renew.stdout);
+    assert!(
+        renew_stdout.contains("\"lease_ttl_seconds\":600")
+            || renew_stdout.contains("\"lease_ttl_seconds\": 600")
+    );
+
+    let release = agent_bus_binary()
+        .args([
+            "release-claim",
+            &resource,
+            "--agent",
+            &agent,
+            "--encoding",
+            "compact",
+        ])
+        .output()
+        .expect("release-claim failed to run");
+    assert!(
+        release.status.success(),
+        "release-claim failed: {}",
+        String::from_utf8_lossy(&release.stderr)
+    );
+    let release_stdout = String::from_utf8_lossy(&release.stdout);
+    assert!(release_stdout.contains("\"claims\":[]") || release_stdout.contains("\"claims\": []"));
+}
+
+#[test]
+fn knock_command_posts_message() {
+    if !redis_available() {
+        eprintln!("SKIP: Redis not available");
+        return;
+    }
+
+    let suffix = unique_id();
+    let sender = format!("knock-sender-{suffix}");
+    let recipient = format!("knock-recipient-{suffix}");
+    let body = format!("knock-body-{suffix}");
+
+    let knock = agent_bus_binary()
+        .args([
+            "knock",
+            "--from-agent",
+            &sender,
+            "--to-agent",
+            &recipient,
+            "--body",
+            &body,
+            "--encoding",
+            "compact",
+        ])
+        .output()
+        .expect("knock failed to run");
+    assert!(
+        knock.status.success(),
+        "knock failed: {}",
+        String::from_utf8_lossy(&knock.stderr)
+    );
+
+    let read = agent_bus_binary()
+        .args([
+            "read",
+            "--agent",
+            &recipient,
+            "--since-minutes",
+            "10",
+            "--limit",
+            "20",
+            "--encoding",
+            "compact",
+        ])
+        .output()
+        .expect("read failed to run");
+    assert!(
+        read.status.success(),
+        "read failed: {}",
+        String::from_utf8_lossy(&read.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&read.stdout);
+    assert!(stdout.contains("\"topic\":\"knock\"") || stdout.contains("\"topic\": \"knock\""));
+    assert!(stdout.contains(&body));
 }
 
 // ---------------------------------------------------------------------------
