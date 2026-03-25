@@ -1,5 +1,7 @@
 //! Shared bus operations reused across CLI, HTTP, and MCP transports.
 
+pub(crate) mod channel;
+pub(crate) mod claim;
 pub(crate) mod inbox;
 pub(crate) mod message;
 
@@ -7,6 +9,10 @@ pub(crate) mod message;
 use crate::models::{Message, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR};
 use crate::postgres_store::query_scope_tags;
 
+// Channel and claim items are imported directly from their submodules by
+// callers that need them.  Re-export only what multiple transport modules
+// consume from the `crate::ops` namespace to avoid dead-code noise during
+// the incremental migration (Task 2 → Task 4).
 pub(crate) use message::{
     AckMessageRequest, PostMessageRequest, PresenceRequest, ReadMessagesRequest, knock_metadata,
     list_messages_history, list_messages_live, post_ack, post_message, set_presence,
