@@ -1,4 +1,33 @@
 //! Output formatting and encoding modes.
+//!
+//! # Section guide
+//!
+//! This module is intentionally divided into two usage tiers that map to the
+//! planned workspace split (Task 9):
+//!
+//! ## Shared formatters — used by CLI *and* HTTP/MCP transports
+//!
+//! These items have no dependency on CLI-only infrastructure (`clap`,
+//! `println!`) and can be factored into a `agent-bus-output` library crate
+//! without breaking any transport module:
+//!
+//! - [`Encoding`] enum
+//! - [`format_health_toon`]
+//! - [`format_message_toon`]
+//! - [`format_presence_toon`]
+//! - [`minimize_value`]
+//! - [`encode_msgpack`] / [`decode_msgpack`] (codec helpers)
+//!
+//! ## CLI-only formatters — depend on terminal output or `clap`
+//!
+//! These call `println!` directly and are consumed exclusively by
+//! `commands.rs`.  They should remain in the CLI binary crate when the
+//! workspace is split:
+//!
+//! - [`output`]
+//! - [`output_message`]
+//! - [`output_messages`]
+//! - [`output_presence`]
 
 use std::fmt::Write as _;
 
@@ -6,6 +35,10 @@ use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::models::{Health, Message, Presence};
+
+// ---------------------------------------------------------------------------
+// Shared — encoding enum (used by CLI, HTTP, and MCP)
+// ---------------------------------------------------------------------------
 
 /// Output encoding mode for CLI and HTTP responses.
 ///
@@ -25,6 +58,10 @@ pub(crate) enum Encoding {
     /// Token-Optimized Object Notation: `@from→to #topic [tags] body`
     Toon,
 }
+
+// ---------------------------------------------------------------------------
+// CLI-only — these functions call println! and are consumed by commands.rs
+// ---------------------------------------------------------------------------
 
 pub(crate) fn output<T: Serialize + ?Sized>(data: &T, encoding: &Encoding) {
     match encoding {
@@ -89,6 +126,10 @@ pub(crate) fn output_presence(p: &Presence, encoding: &Encoding) {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Shared TOON formatters — used by CLI, HTTP handlers, and MCP responses
+// ---------------------------------------------------------------------------
 
 /// Format a [`Health`] value as a single TOON line.
 ///
@@ -185,6 +226,10 @@ pub(crate) fn format_presence_toon(p: &Presence) -> String {
     let _ = write!(out, " ttl={}s", p.ttl_seconds);
     out
 }
+
+// Shared — minimize_value is used by the CLI Minimal encoding path and is
+// a pure data transformation with no I/O, making it safe to share across
+// transport boundaries.
 
 pub(crate) fn minimize_value(value: &serde_json::Value) -> serde_json::Value {
     match value {

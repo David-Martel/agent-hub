@@ -6,14 +6,28 @@ use crate::models::{MAX_HISTORY_MINUTES, Message, Presence};
 pub(crate) use crate::ops::MessageFilters;
 use crate::ops::{
     AckMessageRequest, PostMessageRequest, PresenceRequest, ReadMessagesRequest, knock_metadata,
-    list_messages_history, list_messages_live, post_ack, post_message, set_presence,
+    list_messages_history, post_ack, post_message, set_presence,
 };
+use crate::ops::channel::{
+    PostDirectRequest, PostGroupRequest, ReadDirectRequest, ReadGroupRequest,
+    post_direct as ops_post_direct, post_group as ops_post_group, read_direct as ops_read_direct,
+    read_group as ops_read_group,
+};
+use crate::ops::claim::{
+    ClaimResourceRequest, ListClaimsRequest, ReleaseClaimRequest, RenewClaimRequest,
+    ResolveClaimRequest, claim_resource as ops_claim_resource, list_claims as ops_list_claims,
+    release_claim as ops_release_claim, renew_claim as ops_renew_claim,
+    resolve_claim as ops_resolve_claim,
+};
+use crate::ops::inbox::{CompactContextRequest, compact_context as compact_context_op};
+use crate::ops::task::{PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
+    push_task as ops_push_task};
 use crate::output::{
     Encoding, format_health_toon, output, output_message, output_messages, output_presence,
 };
-use crate::redis_bus::{
-    bus_health, bus_list_messages, bus_list_presence, connect, list_pending_acks,
-};
+use crate::ops::admin::{health as ops_health, list_pending_acks as ops_list_pending_acks,
+    list_presence as ops_list_presence};
+use crate::redis_bus::{bus_list_messages, connect};
 use crate::server_mode::{
     http_get, http_post, http_put, post_service_action, query_windows_service_state,
     resolved_service_base_url, sc_action, service_status_payload, use_server_mode, wait_for_health,
@@ -28,14 +42,6 @@ use crate::validation::{
 #[cfg(test)]
 use crate::ops::{extra_filter_fetch_limit, message_matches_filters};
 
-fn parse_lease_mode(mode: &str) -> Result<crate::channels::ResourceLeaseMode> {
-    match mode {
-        "shared" => Ok(crate::channels::ResourceLeaseMode::Shared),
-        "shared_namespaced" => Ok(crate::channels::ResourceLeaseMode::SharedNamespaced),
-        "exclusive" => Ok(crate::channels::ResourceLeaseMode::Exclusive),
-        other => anyhow::bail!("invalid lease mode '{other}'"),
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Argument structs (avoid cloning in Cmd match)
@@ -152,7 +158,7 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding) {
         }
     }
 
-    let health = bus_health(settings, None);
+    let health = ops_health(settings, None);
     if matches!(encoding, Encoding::Toon) {
         println!("{}", format_health_toon(&health));
     } else {
@@ -505,7 +511,7 @@ pub(crate) fn cmd_pending_acks(
     encoding: &Encoding,
 ) -> Result<()> {
     let mut conn = connect(settings)?;
-    let pending = list_pending_acks(&mut conn, agent)?;
+    let pending = ops_list_pending_acks(&mut conn, agent)?;
     if matches!(encoding, Encoding::Human) {
         if pending.is_empty() {
             println!("No pending acknowledgements.");
@@ -656,7 +662,7 @@ pub(crate) fn cmd_presence_list(settings: &Settings, encoding: &Encoding) -> Res
     }
 
     let mut conn = connect(settings)?;
-    let results = bus_list_presence(&mut conn, settings)?;
+    let results = ops_list_presence(&mut conn, settings)?;
     if matches!(encoding, Encoding::Human) {
         for p in &results {
             output_presence(p, encoding);
@@ -921,7 +927,17 @@ pub(crate) fn cmd_post_direct(
     let from = non_empty(from_agent, "--from-agent")?;
     let to = non_empty(to_agent, "--to-agent")?;
     let body = non_empty(body, "--body")?;
-    let msg = crate::channels::post_direct(settings, from, to, topic, body, thread_id, tags)?;
+    let msg = ops_post_direct(
+        settings,
+        &PostDirectRequest {
+            from_agent: from,
+            to_agent: to,
+            topic,
+            body,
+            thread_id,
+            tags,
+        },
+    )?;
     output(&msg, encoding);
     Ok(())
 }
@@ -938,7 +954,10 @@ pub(crate) fn cmd_read_direct(
     limit: usize,
     encoding: &Encoding,
 ) -> Result<()> {
-    let msgs = crate::channels::read_direct(settings, agent_a, agent_b, limit)?;
+    let msgs = ops_read_direct(
+        settings,
+        &ReadDirectRequest { agent_a, agent_b, limit },
+    )?;
     output_messages(&msgs, encoding);
     Ok(())
 }
@@ -960,7 +979,16 @@ pub(crate) fn cmd_post_group(
     let group = non_empty(group, "--group")?;
     let from = non_empty(from_agent, "--from-agent")?;
     let body = non_empty(body, "--body")?;
-    let msg = crate::channels::post_to_group(settings, group, from, topic, body, thread_id)?;
+    let msg = ops_post_group(
+        settings,
+        &PostGroupRequest {
+            group,
+            from_agent: from,
+            topic,
+            body,
+            thread_id,
+        },
+    )?;
     output(&msg, encoding);
     Ok(())
 }
@@ -976,7 +1004,7 @@ pub(crate) fn cmd_read_group(
     limit: usize,
     encoding: &Encoding,
 ) -> Result<()> {
-    let msgs = crate::channels::read_group(settings, group, limit)?;
+    let msgs = ops_read_group(settings, &ReadGroupRequest { group, limit })?;
     output_messages(&msgs, encoding);
     Ok(())
 }
@@ -1004,16 +1032,6 @@ pub(crate) fn cmd_claim(
     lease_ttl_seconds: u64,
     encoding: &Encoding,
 ) -> Result<()> {
-    let options = crate::channels::ClaimOptions {
-        mode: parse_lease_mode(mode)?,
-        namespace: namespace.map(str::to_owned),
-        scope_kind: scope_kind.map(str::to_owned),
-        scope_path: scope_path.map(str::to_owned),
-        repo_scopes: repo_scopes.to_vec(),
-        thread_id: thread_id.map(str::to_owned),
-        lease_ttl_seconds: lease_ttl_seconds.max(1),
-    };
-
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
         let base = settings.server_url.as_deref().unwrap_or("");
@@ -1036,8 +1054,21 @@ pub(crate) fn cmd_claim(
         return Ok(());
     }
 
-    let claim =
-        crate::channels::claim_resource_with_options(settings, resource, agent, reason, &options)?;
+    let claim = ops_claim_resource(
+        settings,
+        &ClaimResourceRequest {
+            resource,
+            agent,
+            reason,
+            mode,
+            namespace,
+            scope_kind,
+            scope_path,
+            repo_scopes,
+            thread_id,
+            lease_ttl_seconds,
+        },
+    )?;
     output(&claim, encoding);
     Ok(())
 }
@@ -1064,8 +1095,10 @@ pub(crate) fn cmd_renew_claim(
         return Ok(());
     }
 
-    let claim =
-        crate::channels::renew_claim(settings, resource, agent, Some(lease_ttl_seconds.max(1)))?;
+    let claim = ops_renew_claim(
+        settings,
+        &RenewClaimRequest { resource, agent, lease_ttl_seconds },
+    )?;
     output(&claim, encoding);
     Ok(())
 }
@@ -1085,7 +1118,7 @@ pub(crate) fn cmd_release_claim(
         return Ok(());
     }
 
-    let state = crate::channels::release_claim(settings, resource, agent)?;
+    let state = ops_release_claim(settings, &ReleaseClaimRequest { resource, agent })?;
     output(&state, encoding);
     Ok(())
 }
@@ -1101,14 +1134,10 @@ pub(crate) fn cmd_claims(
     status_str: Option<&str>,
     encoding: &Encoding,
 ) -> Result<()> {
-    use crate::channels::ClaimStatus;
-    let status_filter: Option<ClaimStatus> = status_str.map(|s| match s {
-        "granted" => ClaimStatus::Granted,
-        "contested" => ClaimStatus::Contested,
-        "review_assigned" => ClaimStatus::ReviewAssigned,
-        _ => ClaimStatus::Pending, // "pending" and unrecognised values
-    });
-    let claims = crate::channels::list_claims(settings, resource, status_filter.as_ref())?;
+    let claims = ops_list_claims(
+        settings,
+        &ListClaimsRequest { resource, status: status_str },
+    )?;
     output(
         &serde_json::json!({"claims": claims, "count": claims.len()}),
         encoding,
@@ -1365,7 +1394,10 @@ pub(crate) fn cmd_resolve(
         return Ok(());
     }
 
-    let state = crate::channels::resolve_claim(settings, resource, winner, reason, resolved_by)?;
+    let state = ops_resolve_claim(
+        settings,
+        &ResolveClaimRequest { resource, winner, reason, resolved_by },
+    )?;
     output(&state, encoding);
     Ok(())
 }
@@ -1457,13 +1489,6 @@ pub(crate) fn cmd_compact_context(
     settings: &Settings,
     args: &CompactContextArgs<'_>,
 ) -> Result<()> {
-    let filters = MessageFilters {
-        repo: args.repo.as_deref(),
-        session: args.session.as_deref(),
-        tags: args.tags,
-        thread_id: args.thread_id.as_deref(),
-    };
-
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
         let base = settings.server_url.as_deref().unwrap_or("");
@@ -1494,21 +1519,22 @@ pub(crate) fn cmd_compact_context(
     // Pull directly from Redis with metadata filters so the output reflects the
     // current live stream without incurring PostgreSQL fallback chatter.
     let mut conn = connect(settings)?;
-    let msgs = list_messages_live(
+    let result = compact_context_op(
         &mut conn,
         settings,
-        &ReadMessagesRequest {
+        &CompactContextRequest {
             agent: args.agent,
-            from_agent: None,
+            filters: MessageFilters {
+                repo: args.repo.as_deref(),
+                session: args.session.as_deref(),
+                tags: args.tags,
+                thread_id: args.thread_id.as_deref(),
+            },
             since_minutes: args.since_minutes,
-            limit: 500,
-            include_broadcast: true,
-            filters,
+            max_tokens: args.max_tokens,
         },
     )?;
-
-    let compacted = crate::token::compact_context(&msgs, args.max_tokens);
-    output(&compacted, args.encoding);
+    output(&result.messages, args.encoding);
     Ok(())
 }
 
@@ -1532,7 +1558,7 @@ pub(crate) fn cmd_push_task(
 ) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
     let task = non_empty(task, "--task")?;
-    let len = crate::redis_bus::push_task(settings, agent, task)?;
+    let len = ops_push_task(settings, &PushTaskRequest { agent, task })?;
     output(
         &serde_json::json!({"agent": agent, "queue_length": len}),
         encoding,
@@ -1550,7 +1576,7 @@ pub(crate) fn cmd_push_task(
 /// Returns an error if the Redis connection or `LPOP` fails.
 pub(crate) fn cmd_pull_task(settings: &Settings, agent: &str, encoding: &Encoding) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
-    let task = crate::redis_bus::pull_task(settings, agent)?;
+    let task = ops_pull_task(settings, agent)?;
     output(&serde_json::json!({"agent": agent, "task": task}), encoding);
     Ok(())
 }
@@ -1569,7 +1595,7 @@ pub(crate) fn cmd_peek_tasks(
     encoding: &Encoding,
 ) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
-    let tasks = crate::redis_bus::peek_tasks(settings, agent, limit)?;
+    let tasks = ops_peek_tasks(settings, agent, limit)?;
     let count = tasks.len();
     output(
         &serde_json::json!({"agent": agent, "tasks": tasks, "count": count}),

@@ -14,21 +14,41 @@ use axum::{
     response::sse::{Event, Sse},
     routing::{get, post, put},
 };
-use chrono::Utc;
 use serde::Deserialize;
 use tokio::sync::{Notify, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::mcp::AgentBusMcpServer;
 use crate::models::MAX_HISTORY_MINUTES;
+use crate::ops::admin::{ServerControlStatus, ServerMode, current_timestamp};
+use crate::ops::task::{
+    PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
+    push_task as ops_push_task, task_queue_length as ops_task_queue_length,
+};
 use crate::ops::{
     AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
     knock_metadata, list_messages_live, post_ack, post_message, set_presence,
 };
+use crate::ops::channel::{
+    CreateGroupRequest, EscalateRequest, PostDirectRequest, PostGroupRequest, ReadDirectRequest,
+    ReadGroupRequest, channel_summary as ops_channel_summary, create_group as ops_create_group,
+    list_groups as ops_list_groups, post_direct as ops_post_direct,
+    post_escalation as ops_post_escalation, post_group as ops_post_group,
+    read_direct as ops_read_direct, read_group as ops_read_group,
+};
+use crate::ops::claim::{
+    ClaimResourceRequest, ReleaseClaimRequest, RenewClaimRequest, ResolveClaimRequest,
+    claim_resource as ops_claim_resource,
+    get_arbitration_state as ops_get_arbitration_state,
+    release_claim as ops_release_claim, renew_claim as ops_renew_claim,
+    resolve_claim as ops_resolve_claim,
+};
 use crate::output::{format_health_toon, format_message_toon, format_presence_toon};
+use crate::ops::admin::{health as ops_health, list_pending_acks as ops_list_pending_acks,
+    list_presence as ops_list_presence};
 use crate::redis_bus::{
-    BatchSendPayload, RedisPool, SseSubscriberCount, bus_health, bus_list_messages_from_redis,
-    bus_list_presence, bus_post_message_with_notifications,
+    BatchSendPayload, RedisPool, SseSubscriberCount, bus_list_messages_from_redis,
+    bus_post_message_with_notifications,
     bus_post_messages_batch_with_notifications, list_notifications, list_notifications_since_id,
 };
 use crate::settings::Settings;
@@ -74,56 +94,6 @@ pub(crate) struct AppState {
     pub(crate) shutdown_signal: Arc<Notify>,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ServerMode {
-    Running,
-    Maintenance,
-    Stopping,
-}
-
-impl ServerMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Maintenance => "maintenance",
-            Self::Stopping => "stopping",
-        }
-    }
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct ServerControlStatus {
-    pub(crate) mode: ServerMode,
-    pub(crate) write_blocked: bool,
-    pub(crate) reason: Option<String>,
-    pub(crate) requested_by: Option<String>,
-    pub(crate) changed_at_utc: String,
-    pub(crate) last_flush_at_utc: Option<String>,
-    pub(crate) pid: u32,
-    pub(crate) service_agent_id: String,
-    pub(crate) service_name: String,
-}
-
-impl ServerControlStatus {
-    fn new(service_agent_id: &str, service_name: &str) -> Self {
-        Self {
-            mode: ServerMode::Running,
-            write_blocked: false,
-            reason: None,
-            requested_by: None,
-            changed_at_utc: current_timestamp(),
-            last_flush_at_utc: None,
-            pid: std::process::id(),
-            service_agent_id: service_agent_id.to_owned(),
-            service_name: service_name.to_owned(),
-        }
-    }
-}
-
-fn current_timestamp() -> String {
-    Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
-}
 
 async fn ensure_writes_allowed(
     state: &AppState,
@@ -218,7 +188,7 @@ pub(crate) async fn http_health_handler(
     let pool_for_health = pool.clone();
     let control = state.control_status.read().await.clone();
     let result =
-        tokio::task::spawn_blocking(move || bus_health(&state.settings, Some(&pool_for_health)))
+        tokio::task::spawn_blocking(move || ops_health(&state.settings, Some(&pool_for_health)))
             .await
             .expect("spawn_blocking panicked");
 
@@ -694,7 +664,7 @@ pub(crate) async fn http_presence_list_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let results = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        bus_list_presence(&mut conn, &state.settings)
+        ops_list_presence(&mut conn, &state.settings)
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1293,7 +1263,7 @@ async fn http_pending_acks_handler(
     let agent = params.agent;
     let pending = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        crate::redis_bus::list_pending_acks(&mut conn, agent.as_deref())
+        ops_list_pending_acks(&mut conn, agent.as_deref())
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1634,14 +1604,16 @@ async fn http_direct_send_handler(
     let tags = req.tags;
 
     let msg = tokio::task::spawn_blocking(move || {
-        crate::channels::post_direct(
+        ops_post_direct(
             &state.settings,
-            &sender,
-            &recipient,
-            &topic,
-            &body,
-            thread_id.as_deref(),
-            &tags,
+            &PostDirectRequest {
+                from_agent: &sender,
+                to_agent: &recipient,
+                topic: &topic,
+                body: &body,
+                thread_id: thread_id.as_deref(),
+                tags: &tags,
+            },
         )
     })
     .await
@@ -1670,7 +1642,10 @@ async fn http_direct_read_handler(
     let limit = params.limit.clamp(1, 500);
 
     let msgs = tokio::task::spawn_blocking(move || {
-        crate::channels::read_direct(&state.settings, &agent_a, &other, limit)
+        ops_read_direct(
+            &state.settings,
+            &ReadDirectRequest { agent_a: &agent_a, agent_b: &other, limit },
+        )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1704,7 +1679,10 @@ async fn http_create_group_handler(
     let created_by = req.created_by;
 
     let info = tokio::task::spawn_blocking(move || {
-        crate::channels::create_group(&state.settings, &name, &members, &created_by)
+        ops_create_group(
+            &state.settings,
+            &CreateGroupRequest { name: &name, members: &members, created_by: &created_by },
+        )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1719,10 +1697,11 @@ async fn http_create_group_handler(
 async fn http_list_groups_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let groups = tokio::task::spawn_blocking(move || crate::channels::list_groups(&state.settings))
-        .await
-        .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-        .map_err(internal_error)?;
+    let groups =
+        tokio::task::spawn_blocking(move || ops_list_groups(&state.settings))
+            .await
+            .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+            .map_err(internal_error)?;
 
     Ok(Json(serde_json::to_value(&groups).unwrap_or_default()))
 }
@@ -1763,13 +1742,15 @@ async fn http_group_send_handler(
     let thread_id = req.thread_id;
 
     let msg = tokio::task::spawn_blocking(move || {
-        crate::channels::post_to_group(
+        ops_post_group(
             &state.settings,
-            &group_name,
-            &sender,
-            &topic,
-            &body,
-            thread_id.as_deref(),
+            &PostGroupRequest {
+                group: &group_name,
+                from_agent: &sender,
+                topic: &topic,
+                body: &body,
+                thread_id: thread_id.as_deref(),
+            },
         )
     })
     .await
@@ -1796,7 +1777,7 @@ async fn http_group_read_handler(
     let limit = params.limit.clamp(1, 500);
 
     let msgs = tokio::task::spawn_blocking(move || {
-        crate::channels::read_group(&state.settings, &group_name, limit)
+        ops_read_group(&state.settings, &ReadGroupRequest { group: &group_name, limit })
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1836,12 +1817,14 @@ async fn http_escalate_handler(
     let tags = req.tags;
 
     let msg = tokio::task::spawn_blocking(move || {
-        crate::channels::post_escalation(
+        ops_post_escalation(
             &state.settings,
-            &sender,
-            &body,
-            thread_id.as_deref(),
-            &tags,
+            &EscalateRequest {
+                from_agent: &sender,
+                body: &body,
+                thread_id: thread_id.as_deref(),
+                tags: &tags,
+            },
         )
     })
     .await
@@ -1902,32 +1885,29 @@ async fn http_claim_handler(
         return Err(bad_request("agent must not be empty"));
     }
     let priority_argument = req.priority_argument;
-    let options = crate::channels::ClaimOptions {
-        mode: match req.mode.as_str() {
-            "shared" => crate::channels::ResourceLeaseMode::Shared,
-            "shared_namespaced" => crate::channels::ResourceLeaseMode::SharedNamespaced,
-            "exclusive" => crate::channels::ResourceLeaseMode::Exclusive,
-            _ => {
-                return Err(bad_request(
-                    "mode must be shared|shared_namespaced|exclusive",
-                ));
-            }
-        },
-        namespace: req.namespace,
-        scope_kind: req.scope_kind,
-        scope_path: req.scope_path,
-        repo_scopes: req.repo_scopes,
-        thread_id: req.thread_id,
-        lease_ttl_seconds: req.lease_ttl_seconds.max(1),
-    };
+    let mode = req.mode;
+    let namespace = req.namespace;
+    let scope_kind = req.scope_kind;
+    let scope_path = req.scope_path;
+    let repo_scopes = req.repo_scopes;
+    let thread_id = req.thread_id;
+    let lease_ttl_seconds = req.lease_ttl_seconds;
 
     let claim = tokio::task::spawn_blocking(move || {
-        crate::channels::claim_resource_with_options(
+        ops_claim_resource(
             &state.settings,
-            &resource,
-            &agent,
-            &priority_argument,
-            &options,
+            &ClaimResourceRequest {
+                resource: &resource,
+                agent: &agent,
+                reason: &priority_argument,
+                mode: &mode,
+                namespace: namespace.as_deref(),
+                scope_kind: scope_kind.as_deref(),
+                scope_path: scope_path.as_deref(),
+                repo_scopes: &repo_scopes,
+                thread_id: thread_id.as_deref(),
+                lease_ttl_seconds,
+            },
         )
     })
     .await
@@ -1959,12 +1939,11 @@ async fn http_renew_claim_handler(
         return Err(bad_request("agent must not be empty"));
     }
 
+    let lease_ttl_seconds = req.lease_ttl_seconds;
     let claim = tokio::task::spawn_blocking(move || {
-        crate::channels::renew_claim(
+        ops_renew_claim(
             &state.settings,
-            &resource,
-            &agent,
-            Some(req.lease_ttl_seconds.max(1)),
+            &RenewClaimRequest { resource: &resource, agent: &agent, lease_ttl_seconds },
         )
     })
     .await
@@ -1992,7 +1971,7 @@ async fn http_release_claim_handler(
     }
 
     let arbitration = tokio::task::spawn_blocking(move || {
-        crate::channels::release_claim(&state.settings, &resource, &agent)
+        ops_release_claim(&state.settings, &ReleaseClaimRequest { resource: &resource, agent: &agent })
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -2006,7 +1985,7 @@ async fn http_arbitration_state_handler(
     Path(resource): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let state_data = tokio::task::spawn_blocking(move || {
-        crate::channels::get_arbitration_state(&state.settings, &resource)
+        ops_get_arbitration_state(&state.settings, &resource)
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -2121,7 +2100,15 @@ async fn http_resolve_handler(
     let resolved_by = req.resolved_by;
 
     let arbitration = tokio::task::spawn_blocking(move || {
-        crate::channels::resolve_claim(&state.settings, &resource, &winner, &reason, &resolved_by)
+        ops_resolve_claim(
+            &state.settings,
+            &ResolveClaimRequest {
+                resource: &resource,
+                winner: &winner,
+                reason: &reason,
+                resolved_by: &resolved_by,
+            },
+        )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -2136,7 +2123,7 @@ async fn http_channel_summary_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let summary =
-        tokio::task::spawn_blocking(move || crate::channels::channel_summary(&state.settings))
+        tokio::task::spawn_blocking(move || ops_channel_summary(&state.settings))
             .await
             .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
             .map_err(internal_error)?;
@@ -2277,7 +2264,7 @@ async fn http_push_task_handler(
     }
 
     let len = tokio::task::spawn_blocking(move || {
-        crate::redis_bus::push_task(&state.settings, &agent, &task)
+        ops_push_task(&state.settings, &PushTaskRequest { agent: &agent, task: &task })
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -2307,8 +2294,8 @@ async fn http_peek_tasks_handler(
     let agent_clone = agent.clone();
 
     let (tasks, queue_length) = tokio::task::spawn_blocking(move || {
-        let tasks = crate::redis_bus::peek_tasks(&state.settings, &agent_clone, limit)?;
-        let queue_length = crate::redis_bus::task_queue_length(&state.settings, &agent_clone)?;
+        let tasks = ops_peek_tasks(&state.settings, &agent_clone, limit)?;
+        let queue_length = ops_task_queue_length(&state.settings, &agent_clone)?;
         Ok::<_, anyhow::Error>((tasks, queue_length))
     })
     .await
@@ -2341,7 +2328,7 @@ async fn http_pull_task_handler(
     let agent_clone = agent.clone();
 
     let task = tokio::task::spawn_blocking(move || {
-        crate::redis_bus::pull_task(&state.settings, &agent_clone)
+        ops_pull_task(&state.settings, &agent_clone)
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -2368,7 +2355,7 @@ async fn http_pull_task_handler(
 pub(crate) async fn http_dashboard_handler(State(state): State<AppState>) -> impl IntoResponse {
     let pool = state.redis.clone();
     let settings = Arc::clone(&state.settings);
-    let health = tokio::task::spawn_blocking(move || bus_health(&settings, Some(&pool)))
+    let health = tokio::task::spawn_blocking(move || ops_health(&settings, Some(&pool)))
         .await
         .unwrap_or_else(|_| crate::redis_bus::health_error_fallback());
 
