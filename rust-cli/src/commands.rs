@@ -2,16 +2,22 @@
 
 use anyhow::{Context as _, Result};
 
-use crate::models::{
-    MAX_HISTORY_MINUTES, Message, Presence, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR,
+use crate::models::{MAX_HISTORY_MINUTES, Message, Presence};
+pub(crate) use crate::ops::MessageFilters;
+use crate::ops::{
+    AckMessageRequest, PostMessageRequest, PresenceRequest, ReadMessagesRequest, knock_metadata,
+    list_messages_history, list_messages_live, post_ack, post_message, set_presence,
 };
 use crate::output::{
     Encoding, format_health_toon, output, output_message, output_messages, output_presence,
 };
-use crate::postgres_store::query_scope_tags;
 use crate::redis_bus::{
-    bus_health, bus_list_messages, bus_list_messages_with_filters, bus_list_presence,
-    bus_post_message, bus_set_presence, clear_pending_ack, connect, list_pending_acks,
+    bus_health, bus_list_messages, bus_list_presence, connect, list_pending_acks,
+};
+use crate::server_mode::{
+    http_get, http_post, http_put, post_service_action, query_windows_service_state,
+    resolved_service_base_url, sc_action, service_status_payload, use_server_mode, wait_for_health,
+    wait_for_windows_service_state,
 };
 use crate::settings::Settings;
 use crate::validation::{
@@ -19,79 +25,16 @@ use crate::validation::{
     validate_message_schema, validate_priority,
 };
 
-// ---------------------------------------------------------------------------
-// HTTP client helper — used when AGENT_BUS_SERVER_URL is set
-// ---------------------------------------------------------------------------
+#[cfg(test)]
+use crate::ops::{extra_filter_fetch_limit, message_matches_filters};
 
-/// Returns `true` when the caller should route through the HTTP server instead
-/// of connecting to Redis directly.
-#[cfg(feature = "server-mode")]
-fn use_server_mode(settings: &Settings) -> bool {
-    settings.server_url.is_some()
-}
-
-/// Shared HTTP client helper for server-mode commands.
-///
-/// Performs a `GET` request and returns the parsed JSON body.
-///
-/// # Errors
-///
-/// Returns an error if the URL is unreachable, the response is not 2xx,
-/// or JSON deserialisation fails.
-#[cfg(feature = "server-mode")]
-fn http_get(url: &str) -> Result<serde_json::Value> {
-    let resp = reqwest::blocking::get(url).with_context(|| format!("GET {url} failed"))?;
-    let status = resp.status();
-    let body: serde_json::Value = resp.json().context("HTTP response JSON decode failed")?;
-    if !status.is_success() {
-        anyhow::bail!("HTTP {status}: {body}");
+fn parse_lease_mode(mode: &str) -> Result<crate::channels::ResourceLeaseMode> {
+    match mode {
+        "shared" => Ok(crate::channels::ResourceLeaseMode::Shared),
+        "shared_namespaced" => Ok(crate::channels::ResourceLeaseMode::SharedNamespaced),
+        "exclusive" => Ok(crate::channels::ResourceLeaseMode::Exclusive),
+        other => anyhow::bail!("invalid lease mode '{other}'"),
     }
-    Ok(body)
-}
-
-/// Performs a `POST` request with a JSON body and returns the parsed JSON
-/// response.
-///
-/// # Errors
-///
-/// Returns an error if the request fails, the server returns a non-2xx status,
-/// or JSON deserialisation fails.
-#[cfg(feature = "server-mode")]
-fn http_post(url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .post(url)
-        .json(body)
-        .send()
-        .with_context(|| format!("POST {url} failed"))?;
-    let status = resp.status();
-    let resp_body: serde_json::Value = resp.json().context("HTTP response JSON decode failed")?;
-    if !status.is_success() {
-        anyhow::bail!("HTTP {status}: {resp_body}");
-    }
-    Ok(resp_body)
-}
-
-/// Performs a `PUT` request with a JSON body and returns the parsed JSON
-/// response.
-///
-/// # Errors
-///
-/// Returns an error on network failure, non-2xx response, or JSON error.
-#[cfg(feature = "server-mode")]
-fn http_put(url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
-    let client = reqwest::blocking::Client::new();
-    let resp = client
-        .put(url)
-        .json(body)
-        .send()
-        .with_context(|| format!("PUT {url} failed"))?;
-    let status = resp.status();
-    let resp_body: serde_json::Value = resp.json().context("HTTP response JSON decode failed")?;
-    if !status.is_success() {
-        anyhow::bail!("HTTP {status}: {resp_body}");
-    }
-    Ok(resp_body)
 }
 
 // ---------------------------------------------------------------------------
@@ -126,83 +69,19 @@ pub(crate) struct ReadArgs<'a> {
     pub(crate) encoding: &'a Encoding,
 }
 
-/// First-class filters applied on top of the backend's agent/sender/time window.
-pub(crate) struct MessageFilters<'a> {
-    pub(crate) repo: Option<&'a str>,
-    pub(crate) session: Option<&'a str>,
-    pub(crate) tags: &'a [String],
-    pub(crate) thread_id: Option<&'a str>,
-}
-
-impl MessageFilters<'_> {
-    #[allow(dead_code)]
-    pub(crate) fn is_empty(&self) -> bool {
-        self.repo.is_none()
-            && self.session.is_none()
-            && self.tags.is_empty()
-            && self.thread_id.is_none()
-    }
-}
-
-pub(crate) fn message_matches_filters(msg: &Message, filters: &MessageFilters<'_>) -> bool {
-    if let Some(repo) = filters.repo {
-        let expected = format!("repo:{repo}");
-        if !msg.tags.iter().any(|tag| tag == &expected) {
-            return false;
+#[cfg(feature = "server-mode")]
+fn build_server_resource_url(base: &str, resource: &str, action: Option<&str>) -> Result<String> {
+    let mut url = reqwest::Url::parse(base).context("invalid server URL")?;
+    {
+        let mut segments = url
+            .path_segments_mut()
+            .map_err(|()| anyhow::anyhow!("server URL does not support path segments"))?;
+        segments.extend(["channels", "arbitrate", resource]);
+        if let Some(action) = action {
+            segments.push(action);
         }
     }
-
-    if let Some(session) = filters.session {
-        let expected = format!("session:{session}");
-        if !msg.tags.iter().any(|tag| tag == &expected) {
-            return false;
-        }
-    }
-
-    if !filters
-        .tags
-        .iter()
-        .all(|tag| msg.tags.iter().any(|msg_tag| msg_tag == tag))
-    {
-        return false;
-    }
-
-    if filters
-        .thread_id
-        .is_some_and(|thread_id| msg.thread_id.as_deref() != Some(thread_id))
-    {
-        return false;
-    }
-
-    true
-}
-
-#[allow(dead_code)]
-pub(crate) fn filter_messages(
-    messages: &[Message],
-    filters: &MessageFilters<'_>,
-    limit: usize,
-) -> Vec<Message> {
-    messages
-        .iter()
-        .filter(|msg| message_matches_filters(msg, filters))
-        .take(limit)
-        .cloned()
-        .collect()
-}
-
-#[allow(dead_code)]
-pub(crate) fn extra_filter_fetch_limit(limit: usize, filters: &MessageFilters<'_>) -> usize {
-    if filters.is_empty() {
-        limit
-    } else {
-        (limit * XREVRANGE_OVERFETCH_FACTOR).max(XREVRANGE_MIN_FETCH)
-    }
-}
-
-pub(crate) fn scoped_required_tags(filters: &MessageFilters<'_>) -> Vec<String> {
-    let tags: Vec<&str> = filters.tags.iter().map(String::as_str).collect();
-    query_scope_tags(filters.repo, filters.session, &tags)
+    Ok(url.to_string())
 }
 
 fn list_filtered_messages(
@@ -214,17 +93,21 @@ fn list_filtered_messages(
     include_broadcast: bool,
     filters: &MessageFilters<'_>,
 ) -> Result<Vec<Message>> {
-    let required_tags = scoped_required_tags(filters);
-    let required_tag_refs: Vec<&str> = required_tags.iter().map(String::as_str).collect();
-    bus_list_messages_with_filters(
+    list_messages_history(
         settings,
-        agent,
-        from_agent,
-        since_minutes,
-        limit,
-        include_broadcast,
-        filters.thread_id,
-        &required_tag_refs,
+        &ReadMessagesRequest {
+            agent,
+            from_agent,
+            since_minutes,
+            limit,
+            include_broadcast,
+            filters: MessageFilters {
+                repo: filters.repo,
+                session: filters.session,
+                tags: filters.tags,
+                thread_id: filters.thread_id,
+            },
+        },
     )
 }
 
@@ -235,6 +118,17 @@ pub(crate) struct PresenceArgs<'a> {
     pub(crate) capabilities: &'a [String],
     pub(crate) ttl_seconds: u64,
     pub(crate) metadata: Option<&'a str>,
+    pub(crate) encoding: &'a Encoding,
+}
+
+pub(crate) struct CompactContextArgs<'a> {
+    pub(crate) agent: Option<&'a str>,
+    pub(crate) repo: &'a Option<String>,
+    pub(crate) session: &'a Option<String>,
+    pub(crate) tags: &'a [String],
+    pub(crate) thread_id: &'a Option<String>,
+    pub(crate) since_minutes: u64,
+    pub(crate) max_tokens: usize,
     pub(crate) encoding: &'a Encoding,
 }
 
@@ -263,6 +157,133 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding) {
         println!("{}", format_health_toon(&health));
     } else {
         output(&health, encoding);
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "service lifecycle command handles all maintenance actions in one place"
+)]
+pub(crate) fn cmd_service(
+    settings: &Settings,
+    action: &str,
+    reason: Option<&str>,
+    base_url: Option<&str>,
+    service_name_override: Option<&str>,
+    timeout_seconds: u64,
+    encoding: &Encoding,
+) -> Result<()> {
+    let action = action.trim().to_lowercase();
+    let base_url = resolved_service_base_url(settings, base_url);
+    let service_name = service_name_override
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(&settings.service_name);
+
+    match action.as_str() {
+        "status" => {
+            #[cfg(feature = "server-mode")]
+            let admin_status = http_get(&format!("{base_url}/admin/service")).ok();
+            #[cfg(not(feature = "server-mode"))]
+            let admin_status = None;
+
+            let windows_service_state = query_windows_service_state(service_name)?;
+            output(
+                &service_status_payload(
+                    &base_url,
+                    service_name,
+                    windows_service_state.as_deref(),
+                    admin_status.as_ref(),
+                ),
+                encoding,
+            );
+            Ok(())
+        }
+        "pause" | "resume" | "flush" => {
+            let result = post_service_action(&base_url, &action, reason)?;
+            output(&result, encoding);
+            Ok(())
+        }
+        "stop" => {
+            if query_windows_service_state(service_name)?.is_some() {
+                let _ = post_service_action(&base_url, "pause", reason);
+                let _ = post_service_action(&base_url, "flush", reason);
+                sc_action(service_name, "stop")?;
+                let state =
+                    wait_for_windows_service_state(service_name, "STOPPED", timeout_seconds)?;
+                output(
+                    &serde_json::json!({
+                        "ok": true,
+                        "action": "stop",
+                        "service_name": service_name,
+                        "windows_service_state": state,
+                    }),
+                    encoding,
+                );
+            } else {
+                let result = post_service_action(&base_url, "stop", reason)?;
+                output(&result, encoding);
+            }
+            Ok(())
+        }
+        "start" => {
+            sc_action(service_name, "start")?;
+            let state = wait_for_windows_service_state(service_name, "RUNNING", timeout_seconds)?;
+            let health = wait_for_health(&base_url, timeout_seconds)?;
+            output(
+                &serde_json::json!({
+                    "ok": true,
+                    "action": "start",
+                    "service_name": service_name,
+                    "windows_service_state": state,
+                    "health": health,
+                }),
+                encoding,
+            );
+            Ok(())
+        }
+        "restart" => {
+            let _ = post_service_action(&base_url, "pause", reason);
+            let _ = post_service_action(&base_url, "flush", reason);
+            if query_windows_service_state(service_name)?.is_some() {
+                if let Some(state) = query_windows_service_state(service_name)?
+                    && !state.eq_ignore_ascii_case("STOPPED")
+                {
+                    sc_action(service_name, "stop")?;
+                    let _ =
+                        wait_for_windows_service_state(service_name, "STOPPED", timeout_seconds)?;
+                }
+                sc_action(service_name, "start")?;
+                let state =
+                    wait_for_windows_service_state(service_name, "RUNNING", timeout_seconds)?;
+                let health = wait_for_health(&base_url, timeout_seconds)?;
+                output(
+                    &serde_json::json!({
+                        "ok": true,
+                        "action": "restart",
+                        "service_name": service_name,
+                        "windows_service_state": state,
+                        "health": health,
+                    }),
+                    encoding,
+                );
+            } else {
+                let result = post_service_action(&base_url, "stop", reason)?;
+                output(
+                    &serde_json::json!({
+                        "ok": true,
+                        "action": "restart",
+                        "service_name": service_name,
+                        "note": "graceful stop requested for a non-service HTTP server; restart must be performed by the caller",
+                        "result": result,
+                    }),
+                    encoding,
+                );
+            }
+            Ok(())
+        }
+        _ => anyhow::bail!(
+            "invalid service action '{action}'; expected status|pause|resume|flush|stop|start|restart"
+        ),
     }
 }
 
@@ -302,21 +323,22 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
     }
 
     let mut conn = connect(settings)?;
-    let msg = bus_post_message(
+    let msg = post_message(
         &mut conn,
         settings,
-        from,
-        to,
-        topic,
-        &fitted_body,
-        args.thread_id.as_deref(),
-        args.tags,
-        args.priority,
-        args.request_ack,
-        args.reply_to.as_deref(),
-        &meta,
-        crate::pg_writer(),
-        false, // CLI transport: no SSE subscribers
+        &PostMessageRequest {
+            sender: from,
+            recipient: to,
+            topic,
+            body: &fitted_body,
+            thread_id: args.thread_id.as_deref(),
+            tags: args.tags,
+            priority: args.priority,
+            request_ack: args.request_ack,
+            reply_to: args.reply_to.as_deref(),
+            metadata: &meta,
+            has_sse_subscribers: false,
+        },
     )?;
     output(&msg, args.encoding);
     Ok(())
@@ -454,30 +476,18 @@ pub(crate) fn cmd_ack(
     body: &str,
     encoding: &Encoding,
 ) -> Result<()> {
-    let meta = serde_json::json!({"ack_for": message_id});
     let mut conn = connect(settings)?;
-    let msg = bus_post_message(
+    let ack = post_ack(
         &mut conn,
         settings,
-        agent,
-        "all",
-        "ack",
-        body,
-        None,
-        &[],
-        "normal",
-        false,
-        Some(message_id), // reply_to = the message being acked
-        &meta,
-        crate::pg_writer(),
-        false, // CLI transport: no SSE subscribers
+        &AckMessageRequest {
+            agent,
+            message_id,
+            body,
+            has_sse_subscribers: false,
+        },
     )?;
-    // Clear the pending-ack entry now that the acknowledgement has been sent.
-    // Non-fatal: the entry will expire automatically after 300 seconds anyway.
-    if let Err(error) = clear_pending_ack(&mut conn, message_id) {
-        tracing::warn!("failed to clear pending ack for {message_id}: {error:#}");
-    }
-    output(&msg, encoding);
+    output(&ack.message, encoding);
     Ok(())
 }
 
@@ -543,16 +553,17 @@ pub(crate) fn cmd_presence(settings: &Settings, args: &PresenceArgs<'_>) -> Resu
     }
 
     let mut conn = connect(settings)?;
-    let presence = bus_set_presence(
+    let presence = set_presence(
         &mut conn,
         settings,
-        agent,
-        args.status,
-        args.session_id.as_deref(),
-        args.capabilities,
-        args.ttl_seconds,
-        &meta,
-        crate::pg_writer(),
+        &PresenceRequest {
+            agent,
+            status: args.status,
+            session_id: args.session_id.as_deref(),
+            capabilities: args.capabilities,
+            ttl_seconds: args.ttl_seconds,
+            metadata: &meta,
+        },
     )?;
     output_presence(&presence, args.encoding);
     Ok(())
@@ -855,21 +866,22 @@ pub(crate) fn cmd_batch_send(settings: &Settings, file: &str, encoding: &Encodin
             .metadata
             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
 
-        let msg = bus_post_message(
+        let msg = post_message(
             &mut conn,
             settings,
-            from,
-            to,
-            topic,
-            &fitted_body,
-            entry.thread_id.as_deref(),
-            &entry.tags,
-            &entry.priority,
-            entry.request_ack,
-            entry.reply_to.as_deref(),
-            &meta,
-            crate::pg_writer(),
-            false, // CLI transport: no SSE subscribers
+            &PostMessageRequest {
+                sender: from,
+                recipient: to,
+                topic,
+                body: &fitted_body,
+                thread_id: entry.thread_id.as_deref(),
+                tags: &entry.tags,
+                priority: &entry.priority,
+                request_ack: entry.request_ack,
+                reply_to: entry.reply_to.as_deref(),
+                metadata: &meta,
+                has_sse_subscribers: false,
+            },
         )
         .with_context(|| format!("line {}: Redis write failed", line_no + 1))?;
         ids.push(msg.id);
@@ -974,15 +986,107 @@ pub(crate) fn cmd_read_group(
 /// # Errors
 ///
 /// Returns an error if the resource or agent are empty, or if Redis write fails.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CLI surface maps directly to claim flags"
+)]
 pub(crate) fn cmd_claim(
     settings: &Settings,
     resource: &str,
     agent: &str,
     reason: &str,
+    mode: &str,
+    namespace: Option<&str>,
+    scope_kind: Option<&str>,
+    scope_path: Option<&str>,
+    repo_scopes: &[String],
+    thread_id: Option<&str>,
+    lease_ttl_seconds: u64,
     encoding: &Encoding,
 ) -> Result<()> {
-    let claim = crate::channels::claim_resource(settings, resource, agent, reason)?;
+    let options = crate::channels::ClaimOptions {
+        mode: parse_lease_mode(mode)?,
+        namespace: namespace.map(str::to_owned),
+        scope_kind: scope_kind.map(str::to_owned),
+        scope_path: scope_path.map(str::to_owned),
+        repo_scopes: repo_scopes.to_vec(),
+        thread_id: thread_id.map(str::to_owned),
+        lease_ttl_seconds: lease_ttl_seconds.max(1),
+    };
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = settings.server_url.as_deref().unwrap_or("");
+        let url = build_server_resource_url(base, resource, None)?;
+        let val = http_post(
+            &url,
+            &serde_json::json!({
+                "agent": agent,
+                "priority_argument": reason,
+                "mode": mode,
+                "namespace": namespace,
+                "scope_kind": scope_kind,
+                "scope_path": scope_path,
+                "repo_scopes": repo_scopes,
+                "thread_id": thread_id,
+                "lease_ttl_seconds": lease_ttl_seconds.max(1),
+            }),
+        )?;
+        output(&val, encoding);
+        return Ok(());
+    }
+
+    let claim =
+        crate::channels::claim_resource_with_options(settings, resource, agent, reason, &options)?;
     output(&claim, encoding);
+    Ok(())
+}
+
+pub(crate) fn cmd_renew_claim(
+    settings: &Settings,
+    resource: &str,
+    agent: &str,
+    lease_ttl_seconds: u64,
+    encoding: &Encoding,
+) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = settings.server_url.as_deref().unwrap_or("");
+        let url = build_server_resource_url(base, resource, Some("renew"))?;
+        let val = http_post(
+            &url,
+            &serde_json::json!({
+                "agent": agent,
+                "lease_ttl_seconds": lease_ttl_seconds.max(1),
+            }),
+        )?;
+        output(&val, encoding);
+        return Ok(());
+    }
+
+    let claim =
+        crate::channels::renew_claim(settings, resource, agent, Some(lease_ttl_seconds.max(1)))?;
+    output(&claim, encoding);
+    Ok(())
+}
+
+pub(crate) fn cmd_release_claim(
+    settings: &Settings,
+    resource: &str,
+    agent: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = settings.server_url.as_deref().unwrap_or("");
+        let url = build_server_resource_url(base, resource, Some("release"))?;
+        let val = http_post(&url, &serde_json::json!({ "agent": agent }))?;
+        output(&val, encoding);
+        return Ok(());
+    }
+
+    let state = crate::channels::release_claim(settings, resource, agent)?;
+    output(&state, encoding);
     Ok(())
 }
 
@@ -1245,8 +1349,84 @@ pub(crate) fn cmd_resolve(
     resolved_by: &str,
     encoding: &Encoding,
 ) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = settings.server_url.as_deref().unwrap_or("");
+        let url = build_server_resource_url(base, resource, Some("resolve"))?;
+        let val = http_put(
+            &url,
+            &serde_json::json!({
+                "winner": winner,
+                "reason": reason,
+                "resolved_by": resolved_by,
+            }),
+        )?;
+        output(&val, encoding);
+        return Ok(());
+    }
+
     let state = crate::channels::resolve_claim(settings, resource, winner, reason, resolved_by)?;
     output(&state, encoding);
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "CLI surface maps directly to knock flags"
+)]
+pub(crate) fn cmd_knock(
+    settings: &Settings,
+    from_agent: &str,
+    to_agent: &str,
+    body: &str,
+    thread_id: Option<&str>,
+    tags: &[String],
+    request_ack: bool,
+    encoding: &Encoding,
+) -> Result<()> {
+    let body = non_empty(body, "--body")?;
+    let from = non_empty(from_agent, "--from-agent")?;
+    let to = non_empty(to_agent, "--to-agent")?;
+    let metadata = knock_metadata(request_ack);
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = settings.server_url.as_deref().unwrap_or("");
+        let url = format!("{base}/knock");
+        let val = http_post(
+            &url,
+            &serde_json::json!({
+                "sender": from,
+                "recipient": to,
+                "body": body,
+                "thread_id": thread_id,
+                "tags": tags,
+                "request_ack": request_ack,
+            }),
+        )?;
+        output(&val, encoding);
+        return Ok(());
+    }
+
+    let mut conn = connect(settings)?;
+    let msg = post_message(
+        &mut conn,
+        settings,
+        &PostMessageRequest {
+            sender: from,
+            recipient: to,
+            topic: "knock",
+            body,
+            thread_id,
+            tags,
+            priority: "urgent",
+            request_ack,
+            reply_to: None,
+            metadata: &metadata,
+            has_sse_subscribers: true,
+        },
+    )?;
+    output(&msg, encoding);
     Ok(())
 }
 
@@ -1275,15 +1455,60 @@ pub(crate) fn cmd_token_count(text: Option<&str>, encoding: &Encoding) -> Result
 
 pub(crate) fn cmd_compact_context(
     settings: &Settings,
-    agent: Option<&str>,
-    since_minutes: u64,
-    max_tokens: usize,
-    encoding: &Encoding,
+    args: &CompactContextArgs<'_>,
 ) -> Result<()> {
-    let msgs = bus_list_messages(settings, agent, None, since_minutes, 500, true)?;
+    let filters = MessageFilters {
+        repo: args.repo.as_deref(),
+        session: args.session.as_deref(),
+        tags: args.tags,
+        thread_id: args.thread_id.as_deref(),
+    };
 
-    let compacted = crate::token::compact_context(&msgs, max_tokens);
-    output(&compacted, encoding);
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = settings.server_url.as_deref().unwrap_or("");
+        let mut payload = serde_json::json!({
+            "since_minutes": args.since_minutes,
+            "max_tokens": args.max_tokens,
+            "tags": args.tags,
+        });
+        if let Some(agent) = args.agent {
+            payload["agent"] = serde_json::Value::String(agent.to_owned());
+        }
+        if let Some(repo) = args.repo.as_deref() {
+            payload["repo"] = serde_json::Value::String(repo.to_owned());
+        }
+        if let Some(session) = args.session.as_deref() {
+            payload["session"] = serde_json::Value::String(session.to_owned());
+        }
+        if let Some(thread_id) = args.thread_id.as_deref() {
+            payload["thread_id"] = serde_json::Value::String(thread_id.to_owned());
+        }
+        let url = format!("{base}/compact-context");
+        let val = http_post(&url, &payload)?;
+        output(&val, args.encoding);
+        return Ok(());
+    }
+
+    // Compact recent context is a latency-sensitive, token-oriented read path.
+    // Pull directly from Redis with metadata filters so the output reflects the
+    // current live stream without incurring PostgreSQL fallback chatter.
+    let mut conn = connect(settings)?;
+    let msgs = list_messages_live(
+        &mut conn,
+        settings,
+        &ReadMessagesRequest {
+            agent: args.agent,
+            from_agent: None,
+            since_minutes: args.since_minutes,
+            limit: 500,
+            include_broadcast: true,
+            filters,
+        },
+    )?;
+
+    let compacted = crate::token::compact_context(&msgs, args.max_tokens);
+    output(&compacted, args.encoding);
     Ok(())
 }
 
@@ -1429,6 +1654,6 @@ mod tests {
 
         let expanded = extra_filter_fetch_limit(10, &filters);
         assert!(expanded >= 10);
-        assert!(expanded >= XREVRANGE_MIN_FETCH);
+        assert!(expanded >= crate::models::XREVRANGE_MIN_FETCH);
     }
 }

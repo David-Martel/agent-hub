@@ -17,19 +17,21 @@ use crate::output::Encoding;
         Stable agent IDs: claude, codex, gemini, copilot, euler, pasteur, all",
     after_help = "ENVIRONMENT VARIABLES:\n  \
         AGENT_BUS_REDIS_URL          Redis connection URL [default: redis://localhost:6380/0]\n  \
-        AGENT_BUS_DATABASE_URL       PostgreSQL connection URL [default: postgresql://postgres@localhost:5432/redis_backend]\n  \
+        AGENT_BUS_DATABASE_URL       PostgreSQL connection URL [default: postgresql://postgres@localhost:5300/redis_backend]\n  \
         AGENT_BUS_STREAM_KEY         Redis Stream key [default: agent_bus:messages]\n  \
         AGENT_BUS_CHANNEL            Redis Pub/Sub channel [default: agent_bus:events]\n  \
         AGENT_BUS_PRESENCE_PREFIX    Redis key prefix for presence [default: agent_bus:presence:]\n  \
         AGENT_BUS_STREAM_MAXLEN      Max stream entries [default: 100000]\n  \
         AGENT_BUS_SERVER_HOST        HTTP bind host [default: localhost]\n  \
         AGENT_BUS_SERVICE_AGENT_ID   Agent ID for this service [default: agent-bus]\n  \
+        AGENT_BUS_SERVICE_NAME       Windows service name for maintenance control [default: AgentHub]\n  \
         AGENT_BUS_STARTUP_ENABLED    Announce on MCP startup [default: true]\n  \
         AGENT_BUS_STARTUP_RECIPIENT  Startup message recipient [default: all]\n  \
         AGENT_BUS_STARTUP_TOPIC      Startup message topic [default: status]\n  \
         AGENT_BUS_STARTUP_BODY       Startup message body\n  \
         AGENT_BUS_SESSION_ID         Auto-tag all messages with session:<id>\n  \
         AGENT_BUS_SERVER_URL         Route CLI commands through this HTTP server (e.g. http://localhost:8400)\n  \
+        AGENT_BUS_MACHINE_SAFE      Suppress non-fatal degraded fallback warnings in machine-readable output [default: false]\n  \
         AGENT_BUS_CONFIG             Config file path [default: ~/.config/agent-bus/config.json]\n  \
         RUST_LOG                     Log level filter [default: error]\n\n\
         ENCODING MODES:\n  \
@@ -51,6 +53,8 @@ use crate::output::Encoding;
         agent-bus ack --agent claude --message-id <UUID>\n  \
         agent-bus presence --agent claude --capability mcp --capability rust\n  \
         agent-bus claim --agent claude --resource src/main.rs --reason \"refactoring\"\n  \
+        agent-bus service --action status\n  \
+        agent-bus service --action restart --reason \"deploy new binary\"\n  \
         agent-bus session-summary --session my-session-id\n  \
         agent-bus dedup --session my-session-id --encoding json\n  \
         agent-bus token-count --text \"estimate this text\"\n  \
@@ -424,6 +428,47 @@ pub(crate) enum Cmd {
         port: u16,
     },
 
+    /// Control maintenance state and Windows service lifecycle.
+    #[command(
+        long_about = "Control the running HTTP service for maintenance workflows.\n\n\
+        Actions:\n\
+        - status: read service/maintenance state from the HTTP admin endpoint.\n\
+        - pause: reject mutating HTTP requests while allowing reads/SSE/health.\n\
+        - resume: leave maintenance mode.\n\
+        - flush: request an immediate PostgreSQL writer flush.\n\
+        - stop: gracefully stop the running HTTP server.\n\
+        - start: start the configured Windows service.\n\
+        - restart: pause + flush + restart the configured Windows service.\n\n\
+        The command uses AGENT_BUS_SERVER_URL when set; otherwise it defaults to\n\
+        http://localhost:8400 for admin requests. Windows service actions use\n\
+        AGENT_BUS_SERVICE_NAME (default: AgentHub)."
+    )]
+    Service {
+        #[arg(
+            long,
+            default_value = "status",
+            help = "Action: status|pause|resume|flush|stop|start|restart"
+        )]
+        action: String,
+        #[arg(long, help = "Maintenance reason or operator note")]
+        reason: Option<String>,
+        #[arg(
+            long,
+            help = "Override HTTP base URL (default: AGENT_BUS_SERVER_URL or http://localhost:8400)"
+        )]
+        base_url: Option<String>,
+        #[arg(long, help = "Override Windows service name")]
+        service_name: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 20,
+            help = "Timeout for service state transitions / health wait"
+        )]
+        timeout_seconds: u64,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
     /// Send multiple messages from a NDJSON file (one JSON object per line).
     #[command(
         long_about = "Read a newline-delimited JSON file where each line is a message object\n\
@@ -536,6 +581,62 @@ pub(crate) enum Cmd {
             help = "Why you need first-edit"
         )]
         reason: String,
+        #[arg(
+            long,
+            default_value = "exclusive",
+            help = "Lease mode: shared|shared_namespaced|exclusive"
+        )]
+        mode: String,
+        #[arg(
+            long,
+            help = "Namespace for shared_namespaced claims (e.g. cargo target dir)"
+        )]
+        namespace: Option<String>,
+        #[arg(
+            long,
+            help = "Scope kind: repo_path|cross_repo_path|service|install_target|artifact_root|user_config|external"
+        )]
+        scope_kind: Option<String>,
+        #[arg(long, help = "Canonical path or backing path for the resource")]
+        scope_path: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append, help = "Affected repo scope (repeatable)")]
+        repo_scope: Vec<String>,
+        #[arg(long, help = "Coordination thread ID")]
+        thread_id: Option<String>,
+        #[arg(long, default_value_t = 3600, help = "Lease TTL in seconds [1-86400]")]
+        lease_ttl_seconds: u64,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Renew an existing resource claim/lease before it expires.
+    #[command(
+        long_about = "Extend the TTL of an existing claim/lease held by an agent.\n\n\
+        Useful for long-running work so stale claims expire automatically when an agent disappears."
+    )]
+    RenewClaim {
+        #[arg(help = "Resource path to renew")]
+        resource: String,
+        #[arg(long, help = "Agent holding the claim")]
+        agent: String,
+        #[arg(
+            long,
+            default_value_t = 3600,
+            help = "New lease TTL in seconds [1-86400]"
+        )]
+        lease_ttl_seconds: u64,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Release an existing resource claim/lease.
+    #[command(long_about = "Release a claim/lease held by an agent.\n\n\
+        Remaining compatible claimants are automatically downgraded/upgraded based on the lease mode rules.")]
+    ReleaseClaim {
+        #[arg(help = "Resource path to release")]
+        resource: String,
+        #[arg(long, help = "Agent releasing the claim")]
+        agent: String,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
@@ -582,6 +683,30 @@ pub(crate) enum Cmd {
             help = "Who is making this decision"
         )]
         resolved_by: String,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Send a high-priority attention signal to another agent.
+    #[command(long_about = "Post a targeted high-priority knock message.\n\n\
+        Knocks are durable direct notifications intended to make an active agent check its inbox or SSE stream immediately.")]
+    Knock {
+        #[arg(long, help = "Sender agent ID")]
+        from_agent: String,
+        #[arg(long, help = "Recipient agent ID")]
+        to_agent: String,
+        #[arg(long, default_value = "check the bus", help = "Knock body text")]
+        body: String,
+        #[arg(long, help = "Optional coordination thread ID")]
+        thread_id: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append, help = "Tag (repeatable)")]
+        tag: Vec<String>,
+        #[arg(
+            long,
+            default_value_t = true,
+            help = "Request acknowledgement from recipient"
+        )]
+        request_ack: bool,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
@@ -642,6 +767,14 @@ pub(crate) enum Cmd {
     CompactContext {
         #[arg(long, help = "Agent ID to read messages for")]
         agent: Option<String>,
+        #[arg(long, help = "Filter by repository tag value (matches repo:<value>)")]
+        repo: Option<String>,
+        #[arg(long, help = "Filter by session tag value (matches session:<value>)")]
+        session: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append, help = "Filter by tag value (repeatable)")]
+        tag: Vec<String>,
+        #[arg(long, help = "Filter by exact thread ID")]
+        thread_id: Option<String>,
         #[arg(long, default_value_t = 60)]
         since_minutes: u64,
         #[arg(long, default_value_t = 4000)]
@@ -1100,6 +1233,67 @@ mod tests {
         assert!(matches!(cli.command, Cmd::Serve { .. }));
     }
 
+    #[test]
+    fn parse_service_pause_action() {
+        let cli = parse(&[
+            "agent-bus",
+            "service",
+            "--action",
+            "pause",
+            "--reason",
+            "deploy maintenance",
+            "--base-url",
+            "http://localhost:8400",
+            "--service-name",
+            "AgentHub",
+            "--timeout-seconds",
+            "45",
+        ])
+        .expect("service pause must parse");
+
+        if let Cmd::Service {
+            action,
+            reason,
+            base_url,
+            service_name,
+            timeout_seconds,
+            ..
+        } = cli.command
+        {
+            assert_eq!(action, "pause");
+            assert_eq!(reason, Some("deploy maintenance".to_owned()));
+            assert_eq!(base_url, Some("http://localhost:8400".to_owned()));
+            assert_eq!(service_name, Some("AgentHub".to_owned()));
+            assert_eq!(timeout_seconds, 45);
+        } else {
+            panic!("expected Cmd::Service");
+        }
+    }
+
+    #[test]
+    fn parse_service_restart_defaults() {
+        let cli = parse(&["agent-bus", "service", "--action", "restart"])
+            .expect("service restart must parse");
+
+        if let Cmd::Service {
+            action,
+            reason,
+            base_url,
+            service_name,
+            timeout_seconds,
+            ..
+        } = cli.command
+        {
+            assert_eq!(action, "restart");
+            assert!(reason.is_none());
+            assert!(base_url.is_none());
+            assert!(service_name.is_none());
+            assert_eq!(timeout_seconds, 20);
+        } else {
+            panic!("expected Cmd::Service");
+        }
+    }
+
     // ------------------------------------------------------------------
     // claim (positional resource arg)
     // ------------------------------------------------------------------
@@ -1119,12 +1313,18 @@ mod tests {
             resource,
             agent,
             reason,
+            mode,
+            namespace,
+            lease_ttl_seconds,
             ..
         } = cli.command
         {
             assert_eq!(resource, "src/redis_bus.rs");
             assert_eq!(agent, "claude");
             assert_eq!(reason, "first-edit required"); // default
+            assert_eq!(mode, "exclusive");
+            assert!(namespace.is_none());
+            assert_eq!(lease_ttl_seconds, 3600);
         } else {
             panic!("expected Cmd::Claim");
         }
@@ -1140,6 +1340,16 @@ mod tests {
             "codex",
             "--reason",
             "full module refactor",
+            "--mode",
+            "shared_namespaced",
+            "--namespace",
+            "codex-target",
+            "--repo-scope",
+            "wezterm",
+            "--thread-id",
+            "wezterm-thread-1",
+            "--lease-ttl-seconds",
+            "900",
         ])
         .expect("claim with reason must parse");
 
@@ -1147,12 +1357,22 @@ mod tests {
             resource,
             agent,
             reason,
+            mode,
+            namespace,
+            repo_scope,
+            thread_id,
+            lease_ttl_seconds,
             ..
         } = cli.command
         {
             assert_eq!(resource, "src/");
             assert_eq!(agent, "codex");
             assert_eq!(reason, "full module refactor");
+            assert_eq!(mode, "shared_namespaced");
+            assert_eq!(namespace, Some("codex-target".to_owned()));
+            assert_eq!(repo_scope, vec!["wezterm".to_owned()]);
+            assert_eq!(thread_id, Some("wezterm-thread-1".to_owned()));
+            assert_eq!(lease_ttl_seconds, 900);
         } else {
             panic!("expected Cmd::Claim");
         }
@@ -1163,6 +1383,56 @@ mod tests {
         // --agent is required (no default)
         let result = parse(&["agent-bus", "claim", "src/main.rs"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_renew_claim() {
+        let cli = parse(&[
+            "agent-bus",
+            "renew-claim",
+            "src/main.rs",
+            "--agent",
+            "claude",
+            "--lease-ttl-seconds",
+            "600",
+        ])
+        .expect("renew-claim must parse");
+
+        if let Cmd::RenewClaim {
+            resource,
+            agent,
+            lease_ttl_seconds,
+            ..
+        } = cli.command
+        {
+            assert_eq!(resource, "src/main.rs");
+            assert_eq!(agent, "claude");
+            assert_eq!(lease_ttl_seconds, 600);
+        } else {
+            panic!("expected Cmd::RenewClaim");
+        }
+    }
+
+    #[test]
+    fn parse_release_claim() {
+        let cli = parse(&[
+            "agent-bus",
+            "release-claim",
+            "src/main.rs",
+            "--agent",
+            "claude",
+        ])
+        .expect("release-claim must parse");
+
+        if let Cmd::ReleaseClaim {
+            resource, agent, ..
+        } = cli.command
+        {
+            assert_eq!(resource, "src/main.rs");
+            assert_eq!(agent, "claude");
+        } else {
+            panic!("expected Cmd::ReleaseClaim");
+        }
     }
 
     // ------------------------------------------------------------------
@@ -1226,6 +1496,14 @@ mod tests {
             "compact-context",
             "--agent",
             "claude",
+            "--repo",
+            "wezterm",
+            "--session",
+            "wave-2",
+            "--tag",
+            "planning",
+            "--thread-id",
+            "wezterm-joint-plan-20260324",
             "--since-minutes",
             "120",
             "--max-tokens",
@@ -1237,12 +1515,20 @@ mod tests {
 
         if let Cmd::CompactContext {
             agent,
+            repo,
+            session,
+            tag,
+            thread_id,
             since_minutes,
             max_tokens,
             ..
         } = cli.command
         {
             assert_eq!(agent, Some("claude".to_owned()));
+            assert_eq!(repo, Some("wezterm".to_owned()));
+            assert_eq!(session, Some("wave-2".to_owned()));
+            assert_eq!(tag, vec!["planning".to_owned()]);
+            assert_eq!(thread_id, Some("wezterm-joint-plan-20260324".to_owned()));
             assert_eq!(since_minutes, 120);
             assert_eq!(max_tokens, 8000);
         } else {
@@ -1256,12 +1542,20 @@ mod tests {
             .expect("compact-context with no args must parse");
         if let Cmd::CompactContext {
             agent,
+            repo,
+            session,
+            tag,
+            thread_id,
             since_minutes,
             max_tokens,
             ..
         } = cli.command
         {
             assert!(agent.is_none());
+            assert!(repo.is_none());
+            assert!(session.is_none());
+            assert!(tag.is_empty());
+            assert!(thread_id.is_none());
             assert_eq!(since_minutes, 60);
             assert_eq!(max_tokens, 4000);
         } else {
@@ -1406,6 +1700,35 @@ mod tests {
             assert_eq!(winner, "claude");
         } else {
             panic!("expected Cmd::Resolve");
+        }
+    }
+
+    #[test]
+    fn parse_knock_defaults() {
+        let cli = parse(&[
+            "agent-bus",
+            "knock",
+            "--from-agent",
+            "codex",
+            "--to-agent",
+            "claude",
+        ])
+        .expect("knock must parse");
+
+        if let Cmd::Knock {
+            from_agent,
+            to_agent,
+            body,
+            request_ack,
+            ..
+        } = cli.command
+        {
+            assert_eq!(from_agent, "codex");
+            assert_eq!(to_agent, "claude");
+            assert_eq!(body, "check the bus");
+            assert!(request_ack);
+        } else {
+            panic!("expected Cmd::Knock");
         }
     }
 
