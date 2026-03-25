@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 dist/
 build/
+bin/
 *.pyd
 
 # Rust
@@ -21,11 +22,26 @@ T:/RustCache/
 .coverage
 .pytest_cache/
 htmlcov/
+logs/
+*.log
 
 # OS
 Thumbs.db
 .DS_Store
 
+# Local agent state / publish hygiene
+.claude/
+.codex/
+.serena/
+build/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+*.tmp
+*.temp
+.env
+.env.*
+
 # Lock files managed externally
 uv.lock
-logs/

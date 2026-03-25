@@ -1,0 +1,16 @@
+[alias]
+ab-build = "build --manifest-path rust-cli/Cargo.toml"
+ab-fast = "build --manifest-path rust-cli/Cargo.toml --profile fast-release"
+ab-test = "test --manifest-path rust-cli/Cargo.toml --bin agent-bus"
+ab-itest = "test --manifest-path rust-cli/Cargo.toml --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1"
+ab-clippy = "clippy --manifest-path rust-cli/Cargo.toml --all-targets"
+ab-nextest = "nextest run --manifest-path rust-cli/Cargo.toml"
+
+[future-incompat-report]
+frequency = "never"
+
+[build]
+rustc-wrapper = "scripts/rustc-wrapper.cmd"
+
+[target.x86_64-pc-windows-msvc]
+linker = "lld-link"

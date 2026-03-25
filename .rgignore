@@ -1,0 +1,17 @@
+# Build and cache noise
+rust/target/
+rust-cli/target/
+T:/RustCache/
+build/
+.venv/
+dist/
+
+# Local agent state normally not useful for repo search
+.claude/
+.codex/
+.serena/
+
+# Re-include operator logs for agent diagnostics even though git ignores them
+!logs/
+!logs/**
+!*.log
