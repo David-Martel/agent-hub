@@ -7,7 +7,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTC_WRAPPER: ""
   CARGO_HOME: T:\RustCache\cargo-home
   CARGO_TARGET_DIR: T:\RustCache\cargo-target
 
@@ -57,6 +56,29 @@ jobs:
           AGENT_BUS_REDIS_URL: redis://localhost:6380/0
           AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
 
+      - name: Probe Redis and PostgreSQL
+        shell: pwsh
+        run: |
+          $redisAvailable = $false
+          try {
+            & redis-cli -u "redis://localhost:6380/0" ping *> $null
+            if ($LASTEXITCODE -eq 0) { $redisAvailable = $true }
+          }
+          catch {
+          }
+
+          $postgresAvailable = $false
+          try {
+            & psql "postgresql://postgres@localhost:5300/redis_backend" -Atqc "SELECT 1;" *> $null
+            if ($LASTEXITCODE -eq 0) { $postgresAvailable = $true }
+          }
+          catch {
+          }
+
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Release Preflight"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Redis available: $redisAvailable"
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- PostgreSQL available: $postgresAvailable"
+
       - name: Build release binary
         working-directory: rust-cli
         run: cargo build --release
@@ -71,6 +93,26 @@ jobs:
             Write-Error "Binary failed to execute"
             exit 1
           }
+
+      - name: Stage HTTP variant
+        shell: pwsh
+        run: |
+          $src = "T:\RustCache\cargo-target\release\agent-bus-http.exe"
+          $dst = "${{ github.workspace }}\dist\agent-bus-http.exe"
+          New-Item -ItemType Directory -Path "${{ github.workspace }}\dist" -Force | Out-Null
+          Copy-Item $src $dst -Force
+
+      - name: Run functional smoke harness
+        shell: pwsh
+        run: |
+          pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-functional.ps1 `
+            -CliPath "T:\RustCache\cargo-target\release\agent-bus.exe" `
+            -HttpBinaryPath "${{ github.workspace }}\dist\agent-bus-http.exe" `
+            -HttpPort 8410
+        env:
+          AGENT_BUS_REDIS_URL: redis://localhost:6380/0
+          AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
+          AGENT_BUS_SERVER_HOST: localhost
 
       - name: Stage release artifact
         shell: pwsh
