@@ -1,5 +1,7 @@
 # Agent Bus Assessment (2026-03-22)
 
+> Historical assessment. For the current code-grounded status, see [`docs/current-status-2026-04-03.md`](./current-status-2026-04-03.md).
+
 ## What Is Already Validated
 
 - `cargo test --bin agent-bus` passed locally: 375 Rust unit tests.

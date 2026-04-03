@@ -1,5 +1,7 @@
 # Agent Bus Structural Refactor & Roadmap Completion Plan
 
+> Historical execution plan. For the current code-grounded checkpoint, see [`docs/current-status-2026-04-03.md`](../../current-status-2026-04-03.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Complete the structural refactor (expand shared ops, normalize transports, split into workspace crates) and implement remaining roadmap items from TODO.md (P0-P6).

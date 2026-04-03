@@ -7,6 +7,14 @@
 > Protocol Version: v0.5 | Implementation: Rust native (zero Python)
 > Storage: Redis (realtime) + PostgreSQL (durable history)
 
+## Code-Grounded Status (2026-04-03)
+
+- The repository is now a Cargo workspace, but the runtime is still operationally centered on `rust-cli/`.
+- Shared storage and orchestration logic has been extracted into `crates/agent-bus-core/`, while major transport entrypoints still live in `rust-cli/src/commands.rs`, `rust-cli/src/http.rs`, and `rust-cli/src/mcp.rs`.
+- `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` currently remain thin wrapper crates over `rust-cli`, not fully independent runtimes.
+- Build and deployment scripts still compile and discover binaries from `rust-cli/`.
+- Canonical architecture checkpoint: [`docs/current-status-2026-04-03.md`](./docs/current-status-2026-04-03.md)
+
 ## Quick Start (Copy These 5 Steps Into Your First Actions)
 
 **Binary selection:**

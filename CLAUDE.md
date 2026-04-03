@@ -5,8 +5,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project Overview
 
 Redis + PostgreSQL agent coordination bus for multi-agent systems (Claude,
-Codex, Gemini). The primary implementation is a Rust package in `rust-cli/`
-with a shared library runtime and three current binary faces:
+Codex, Gemini). The repo now has a Cargo workspace, but the primary runtime is
+still the Rust package in `rust-cli/`.
+
+Current code-grounded split status:
+
+- `agent-bus-core` owns extracted shared logic for storage adapters, channels,
+  settings, models, token helpers, validation, and typed ops.
+- `rust-cli` still owns runtime startup plus the main CLI/HTTP/MCP transport
+  surfaces.
+- `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` currently wrap
+  `rust-cli` rather than replacing it as fully independent crates.
+- The build/deploy scripts still target `rust-cli` as the authoritative build
+  root.
+
+Current binary faces:
 
 - `agent-bus.exe`
 - `agent-bus-http.exe`
@@ -22,9 +35,15 @@ history, tag-indexed queries).
 Canonical structural refactor plan:
 - [`agents.TODO.md`](./agents.TODO.md)
 
+Code-grounded status snapshot:
+- [`docs/current-status-2026-04-03.md`](./docs/current-status-2026-04-03.md)
+
 ```bash
 # Preferred repo-root local build/test entrypoint
 pwsh -NoLogo -NoProfile -File build.ps1 -FastRelease
+
+# Fast repo-root workspace sanity check
+cargo test --workspace --lib --bins
 
 # Release/profile builds for all current binary surfaces
 cd rust-cli && cargo build --release --bins
@@ -53,30 +72,26 @@ current shell.
 
 ## Architecture
 
-The Rust implementation (`rust-cli/src/`, ~20400 LOC, 403 tests) is split into 20 modules:
+Current workspace layout:
 
-| Module | Purpose |
-|--------|---------|
-| `lib.rs` | Crate root, `main_entry()` dispatch, `OnceLock<PgWriter>`, runtime setup |
-| `main.rs` | Thin binary stub — delegates to `agent_bus::main_entry()` |
-| `settings.rs` | Config file + env loading, `Settings::validate()`, `redact_url()` |
-| `models.rs` | `Message`, `Presence`, `Health` structs, protocol constants |
-| `redis_bus.rs` | Redis r2d2 pool, stream ops, pub/sub, presence, health, LZ4 compression |
-| `postgres_store.rs` | PG connect, persist with retry + circuit breaker, `PgWriter` async mpsc |
-| `output.rs` | `Encoding` enum (json/compact/human/toon), formatters, `minimize_value()` |
-| `validation.rs` | Priority/field validation, message schema validation (`finding`/`status`/`benchmark`) |
-| `ops.rs` | Shared bus operations (send/ack/knock/presence) reused across CLI, HTTP, MCP |
-| `cli.rs` | Clap parser with 35 subcommands |
-| `commands.rs` | CLI command implementations |
-| `mcp.rs` | `AgentBusMcpServer` with `schemas` submodule, MCP Streamable HTTP |
-| `http.rs` | Axum REST + SSE streaming + batch endpoints + channel routes |
-| `journal.rs` | Per-repo NDJSON export with idempotent cursor tracking |
-| `monitor.rs` | Real-time session monitoring dashboard with agent status |
-| `mcp_discovery.rs` | Auto-discover MCP tools from Claude MCP config files for preambles |
-| `channels.rs` | Structured comms: direct, group, escalate, arbitrate channels |
-| `codex_bridge.rs` | Codex CLI integration: config discovery, finding sync, formatting |
-| `server_mode.rs` | Shared HTTP client helpers for CLI server-mode routing |
-| `token.rs` | Token estimation, message minimization, LLM context compaction |
+- `rust-cli`
+  - primary runtime crate
+  - owns `lib.rs`, `cli.rs`, `commands.rs`, `http.rs`, `mcp.rs`,
+    `server_mode.rs`, `monitor.rs`, and integration tests
+- `crates/agent-bus-core`
+  - shared storage adapters (`redis_bus`, `postgres_store`)
+  - channels, settings, models, token helpers, validation, and typed ops
+- `crates/agent-bus-cli`
+  - thin wrapper binary calling `agent_bus::main_entry()`
+- `crates/agent-bus-http`
+  - thin wrapper binary calling `agent_bus::http_entry()`
+- `crates/agent-bus-mcp`
+  - thin wrapper binary calling `agent_bus::mcp_entry()`
+
+Compatibility shims remain in `rust-cli/src/` for several extracted modules,
+including `channels.rs`, `redis_bus.rs`, `postgres_store.rs`, and `ops/mod.rs`.
+That means the repo is in a partial migration state rather than a fully split
+runtime.
 
 ### Transport Modes
 

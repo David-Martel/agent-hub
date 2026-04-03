@@ -2,10 +2,12 @@
 
 Structural execution plan:
 - See [`agents.TODO.md`](./agents.TODO.md) for the canonical completion plan for the remaining package/crate refactor work.
+- Code-grounded status snapshot: [`docs/current-status-2026-04-03.md`](./docs/current-status-2026-04-03.md).
 
 ## Current Baseline
 
 - Rust-only runtime: deprecated Python package, pytest suite, and PyO3 codec crate removed from the repo.
+- Cargo workspace exists and `agent-bus-core` now owns shared storage, validation, token, and typed ops logic, but the runtime split is still incomplete.
 - Current transport surface: CLI, HTTP, MCP stdio, MCP Streamable HTTP, channels, ownership claims, task queue, session summary, dedup, dashboard, TOON/minimal encodings.
 - Validation now includes local deploy health checks plus an SSE notification smoke test.
 - Durable notification streams now back direct HTTP replay and the MCP `check_inbox` cursor path.
@@ -55,9 +57,10 @@ Structural execution plan:
 - [x] Add deploy-time SSE notification smoke validation after local deploy.
 - [x] Add HTTP integration coverage for direct-notification replay via `/notifications/{agent}`.
 - [x] Add reusable PowerShell smoke harnesses for CLI, HTTP, and forced degraded PostgreSQL mode so CI can separate Redis failures from PostgreSQL fallback behavior.
-- [ ] Add runtime tests for CLI server-mode via `AGENT_BUS_SERVER_URL` once the async/blocking bridge is fixed.
+- [ ] Add runtime tests for CLI server-mode via `AGENT_BUS_SERVER_URL` now that the async transport client path is in place.
 - [ ] Add end-to-end MCP tool tests for `check_inbox`, channels, claims, and negotiation.
-- [ ] Add HTTP integration coverage for `/dashboard`, `/tasks/:agent`, `/token-count`, and `/compact-context`.
+- [ ] Add HTTP integration coverage for `/dashboard`, `/tasks/:agent`, and `/token-count`.
+- [x] Add HTTP integration coverage for `/compact-context`.
 - [x] Add HTTP/operator coverage for maintenance controls so pause/resume gating is exercised locally before deploys.
 - [ ] Add mixed multi-repo session tests that prove repo/session scoping prevents inbox bleed-through.
 - [ ] Add regression coverage for PostgreSQL-backed reads/compaction where optional metadata fields are serialized through `jsonb`; the direct read bug was fixed, but remaining query paths still need regression coverage so future `jsonb` bind mismatches do not silently fall back to Redis.
@@ -83,10 +86,10 @@ Structural execution plan:
 - [x] Introduce a library-backed crate root with a thin `main.rs` wrapper so future CLI/HTTP/MCP surface splits can reuse one runtime entry implementation.
 - [x] Extend the checked-in cargo config to automate `sccache` defaults once that behavior is validated across clean Windows machines and non-operator shells.
 - [x] Add dedicated `agent-bus-http` and `agent-bus-mcp` bin targets on top of the shared library runtime so the deploy surface no longer depends on copying one CLI executable under multiple names.
-- [x] Split the current single crate/bin into `agent-bus-core`, `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` so deploy surfaces stop paying each other's compile and dependency costs.
+- [ ] Finish the current partial workspace split into `agent-bus-core`, `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` so the surface crates stop depending on `rust-cli` and the deploy/build scripts stop targeting `rust-cli` as the authoritative crate.
 - [x] Replace the CLI `reqwest::blocking` + thread-spawn server-mode bridge with a shared async transport client so `AGENT_BUS_SERVER_URL` no longer needs separate blocking behavior.
 - [x] Extract the first shared `ops` module for send/ack/knock/presence flows so CLI, HTTP, and MCP stop maintaining separate write-path behavior for those verbs.
 - [x] Extract a typed operations/service layer so CLI, HTTP, and MCP stop duplicating dispatch, validation glue, and JSON shaping.
 - [x] Remove tracked binary artifacts and empty/stale top-level directories (`bin/agent-bus.exe`, top-level `rust/`, top-level `src/`, top-level `tests/`) before the public release.
 - [x] Record the structural refactor sequence in `docs/structural-refactor-plan-2026-03-25.md` so the repo has an explicit path from today’s library-backed package to a future multi-bin and multi-crate layout.
-- [x] Execute the remaining structural steps captured in [`agents.TODO.md`](./agents.TODO.md) until the workspace split and shared service layer are complete.
+- [ ] Execute the remaining structural steps captured in [`agents.TODO.md`](./agents.TODO.md) until the workspace split is operationally complete and the shared service layer leaves CLI, HTTP, and MCP as thin surfaces.

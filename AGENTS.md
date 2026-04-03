@@ -2,14 +2,34 @@
 
 ## Project Structure & Module Organization
 
-The active implementation is the Rust CLI in `rust-cli/`, which contains the `agent-bus` binary, HTTP/MCP server, benches, and integration tests. Supporting material is split across `scripts/` for PowerShell automation, `examples/mcp/` for client configs, and `docs/` for design notes, assessments, and agent templates.
+The repo now has a top-level Cargo workspace with `rust-cli/` plus
+`crates/agent-bus-core`, `crates/agent-bus-cli`, `crates/agent-bus-http`, and
+`crates/agent-bus-mcp`.
+
+Current code-grounded split status:
+- `agent-bus-core` owns extracted shared logic such as storage adapters,
+  validation, token helpers, channels, and typed ops.
+- `rust-cli/` remains the primary runtime crate and still owns `lib.rs`,
+  `cli.rs`, `commands.rs`, `http.rs`, `mcp.rs`, `server_mode.rs`, benches, and
+  integration tests.
+- The surface crates currently wrap `rust-cli`; they are not yet fully
+  independent implementations.
+- `scripts/` still builds and deploys through `rust-cli/`.
+
+Supporting material remains split across `scripts/` for PowerShell automation,
+`examples/mcp/` for client configs, and `docs/` for design notes, assessments,
+status snapshots, and agent templates.
 
 Canonical structural refactor plan:
 - [`agents.TODO.md`](./agents.TODO.md)
 
+Code-grounded status snapshot:
+- [`docs/current-status-2026-04-03.md`](./docs/current-status-2026-04-03.md)
+
 ## Build, Test, and Development Commands
 
 - `cargo build --release` in `rust-cli/`: build the shipping CLI binary.
+- `cargo test --workspace --lib --bins` at repo root: fast code-grounded check across the workspace without requiring live Redis/HTTP services.
 - `cargo test --bin agent-bus` in `rust-cli/`: run Rust unit tests.
 - `cargo test --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1` in `rust-cli/`: run integration tests against local Redis and PostgreSQL.
 - `cargo fmt --all --check` and `cargo clippy --all-targets -- -D warnings` in `rust-cli/`: match CI formatting and lint gates.
@@ -23,7 +43,12 @@ Use Rust 2024 edition defaults with `rustfmt` width 100 and field init shorthand
 
 ## Testing Guidelines
 
-Place integration coverage in `rust-cli/tests/*_test.rs`. No fixed coverage percentage is enforced, but every feature change should add or update tests in the affected runtime. Prefer focused unit tests first, then integration coverage for Redis/PostgreSQL behavior, HTTP endpoints, and MCP behavior when transport semantics change.
+Place integration coverage in `rust-cli/tests/*_test.rs`. Shared unit coverage
+for extracted logic now primarily lives under `crates/agent-bus-core/src/*`.
+No fixed coverage percentage is enforced, but every feature change should add
+or update tests in the affected runtime. Prefer focused unit tests first, then
+integration coverage for Redis/PostgreSQL behavior, HTTP endpoints, and MCP
+behavior when transport semantics change.
 
 ## Commit & Pull Request Guidelines
 

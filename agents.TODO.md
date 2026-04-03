@@ -20,13 +20,42 @@ Already complete:
 - The local build pipeline is centralized and now uses checked-in cargo
   configuration, `sccache` auto-detection, and stable Windows linker defaults.
 
+Code-grounded checkpoint (2026-04-03):
+
+- A top-level Cargo workspace now exists with:
+  - `rust-cli`
+  - `crates/agent-bus-core`
+  - `crates/agent-bus-cli`
+  - `crates/agent-bus-http`
+  - `crates/agent-bus-mcp`
+- `agent-bus-core` already owns the extracted shared modules for:
+  - storage adapters (`redis_bus`, `postgres_store`)
+  - shared models/settings/token/validation helpers
+  - channel logic
+  - typed `ops`
+- `rust-cli/src/channels.rs`, `rust-cli/src/redis_bus.rs`,
+  `rust-cli/src/postgres_store.rs`, and `rust-cli/src/ops/mod.rs` are now
+  compatibility shims into `agent-bus-core`.
+- `rust-cli` still owns the main runtime and transport-heavy files:
+  - `lib.rs`
+  - `cli.rs`
+  - `commands.rs`
+  - `http.rs`
+  - `mcp.rs`
+  - `server_mode.rs`
+- `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` are currently wrapper
+  crates whose binaries call into `rust-cli`.
+- Build, validate, and deploy scripts still target `rust-cli` as the
+  authoritative crate root.
+
 Still structurally incomplete:
 
 - The shared service layer is still too small. Large parts of `commands.rs`,
   `http.rs`, and `mcp.rs` still duplicate orchestration, validation glue, and
   output shaping.
-- The codebase is still one crate/package, so all transport surfaces pay for
-  each other's compile graph and dependency set.
+- The repo is now a workspace, but the runtime is not yet operationally split:
+  the surface crates still depend on `rust-cli`, so the transport surfaces
+  still pay for the `rust-cli` compile graph and dependency set.
 - Some transport-facing logic is stranded in the wrong layer, especially inbox
   cursor handling, channel orchestration, claim flows, and maintenance/admin
   behavior.
@@ -90,13 +119,15 @@ Objective:
 
 Target shape:
 
-- `rust-cli/src/ops/message.rs`
-- `rust-cli/src/ops/channel.rs`
-- `rust-cli/src/ops/claim.rs`
-- `rust-cli/src/ops/task.rs`
-- `rust-cli/src/ops/inbox.rs`
-- `rust-cli/src/ops/admin.rs`
-- `rust-cli/src/ops/mod.rs`
+- `crates/agent-bus-core/src/ops/message.rs`
+- `crates/agent-bus-core/src/ops/channel.rs`
+- `crates/agent-bus-core/src/ops/claim.rs`
+- `crates/agent-bus-core/src/ops/task.rs`
+- `crates/agent-bus-core/src/ops/inbox.rs`
+- `crates/agent-bus-core/src/ops/admin.rs`
+- `crates/agent-bus-core/src/ops/mod.rs`
+- `rust-cli/src/ops/mod.rs` retained only as a temporary re-export shim while
+  transport modules continue to migrate
 
 ### Phase 1A: Message and inbox completion
 
@@ -209,6 +240,12 @@ Exit criteria:
 - HTTP/MCP-specific dependencies are not dragged into pure CLI-only builds.
 - Local scripts know where to find the new artifact paths without guessing.
 
+Current status:
+
+- Partially complete. The workspace and core crate exist, but the surface
+  crates still call into `rust-cli` and the scripts still build from
+  `rust-cli`.
+
 ## Phase 4: Build, Script, And Packaging Cleanup
 
 Objective:
@@ -231,6 +268,12 @@ Exit criteria:
 - New-machine bootstrap still works from the repo root.
 - Local operator workflows do not need to know internal crate names.
 - Service deploy/update flows keep working during and after the split.
+
+Current status:
+
+- Not yet complete. `build.ps1`, `scripts/build-deploy.ps1`, and
+  `scripts/validate-agent-bus.ps1` still set `rust-cli` as the build root and
+  discover binaries under its target tree.
 
 ## Phase 5: Validation Matrix
 

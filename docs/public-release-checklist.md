@@ -2,6 +2,14 @@
 
 Use this before opening the repository beyond the current machine.
 
+Current status reference:
+- [`current-status-2026-04-03.md`](./current-status-2026-04-03.md)
+
+If the repo is made public before the structural refactor is fully complete,
+make sure the public docs explicitly say so. The current code still routes the
+surface crates and build scripts through `rust-cli`, and that should be
+described rather than implied away.
+
 ## Keep In Repo
 
 - Source code in `rust-cli/`, `scripts/`, `examples/`, and `docs/`
@@ -25,9 +33,10 @@ Use this before opening the repository beyond the current machine.
 1. Run `rg -n "password|secret|token|api[_-]?key|C:\\\\Users\\\\|postgresql://|redis://" . -g '!rust-cli/target'`.
 1. Confirm `.gitignore` excludes local state, logs, and scratch build output.
 1. Confirm `.rgignore` only re-exposes the specific generated logs you want LLM agents to inspect without reintroducing them to git.
-1. Confirm README and MCP docs mention the `agent-bus.exe` / `agent-bus-http.exe` split and a Redis fallback install path.
+1. Confirm README, MCP docs, and the current-status note describe the real current architecture, including any remaining wrapper crates or `rust-cli`-anchored build steps.
 1. Run `pwsh -NoLogo -NoProfile -File scripts\validate-agent-bus.ps1 -SkipBuild -SkipTests`.
 1. Verify examples under `examples/mcp/` use generic commands and localhost-only defaults.
+1. Confirm repository visibility is intentional (`gh repo view --json visibility,isPrivate`) and consistent with the release state you are documenting.
 
 ## Client Install Flow
 

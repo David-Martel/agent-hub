@@ -1,5 +1,21 @@
 # Structural Refactor Plan
 
+> Historical plan with a current checkpoint. For the source-grounded status
+> snapshot, read [`current-status-2026-04-03.md`](./current-status-2026-04-03.md)
+> first.
+
+## Checkpoint (2026-04-03)
+
+- The workspace now exists and `agent-bus-core` has absorbed shared storage,
+  validation, token, channel, and typed ops logic.
+- `rust-cli` still owns the runtime entry plus the large transport surfaces in
+  `commands.rs`, `http.rs`, and `mcp.rs`.
+- The `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` crates are still
+  wrapper crates over `rust-cli`.
+- Build/deploy scripts still target `rust-cli` as the primary crate root.
+- Treat the phase plan below as the architectural intent, not as a statement
+  that the split is already complete.
+
 ## Completed Baseline
 
 - Rust runtime only; Python transport/codecs removed.

@@ -2,6 +2,16 @@
 
 ## Local runtime
 
+Current code-grounded status:
+
+- The repo has a workspace and dedicated wrapper crates, but the MCP surface is
+  still operationally rooted in `rust-cli`.
+- `agent-bus-mcp.exe` is a thin wrapper over the shared `rust-cli` runtime.
+- The build, validate, and deploy scripts still compile and discover binaries
+  from the `rust-cli` build tree.
+- See [`docs/current-status-2026-04-03.md`](./docs/current-status-2026-04-03.md)
+  for the broader architecture/status checkpoint.
+
 Use the Rust-native MCP server through stdio:
 
 `agent-bus.exe serve --transport stdio`
@@ -23,7 +33,8 @@ checkout under `T:\projects\redis-windows`.
 Use `agent-bus-mcp.exe` or `agent-bus.exe serve --transport stdio` for stdio
 MCP clients. Use `agent-bus.exe` for backend health checks and local transport
 debugging. Use `agent-bus-http.exe` for the long-running local HTTP/SSE
-service on `http://localhost:8400`.
+service on `http://localhost:8400`. Use `agent-bus.exe serve --transport mcp-http`
+for the local Streamable HTTP MCP surface when the client supports it.
 
 If a scripted workflow is capturing `compact`, `json`, `minimal`, or `toon`
 output for another tool, set `AGENT_BUS_MACHINE_SAFE=true` to suppress
@@ -35,9 +46,11 @@ cargo artifact namespaces:
 - `pwsh -NoLogo -NoProfile -File build.ps1 -Release -TargetNamespace codex-local`
 - `pwsh -NoLogo -NoProfile -File scripts\build-deploy.ps1 -TargetDir T:\RustCache\cargo-target\codex-http-deploy`
 
-It does not currently expose remote MCP over streaming HTTP or SSE. Remote-only
-clients such as ChatGPT developer mode need a future remote MCP wrapper rather
-than the current local HTTP service.
+It does expose local MCP Streamable HTTP via `serve --transport mcp-http`, but
+it is still packaged as a localhost/self-hosted surface. If you want to expose
+it beyond the local machine, add your own auth, proxying, and process
+management rather than treating the current local HTTP service as a public MCP
+endpoint.
 
 ## Sample files
 

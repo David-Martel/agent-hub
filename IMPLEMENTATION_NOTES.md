@@ -24,12 +24,31 @@ Date: 2026-03-14
 - Compact/minimal/TOON encodings remain the primary token-efficiency surfaces for agent consumers.
 - MessagePack and LZ4 remain optional transport/storage optimizations, not the default protocol contract.
 
+## Architecture checkpoint (2026-04-03)
+
+- The repo now has a workspace with `rust-cli`, `agent-bus-core`,
+  `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp`.
+- `agent-bus-core` owns the extracted shared layers for storage adapters,
+  channels, settings/models, token helpers, validation, and typed ops.
+- `rust-cli` still owns runtime startup and the large transport surfaces in
+  `commands.rs`, `http.rs`, and `mcp.rs`.
+- The surface crates are wrapper crates over `rust-cli`, so the runtime split
+  is still incomplete.
+- Build and deploy scripts still treat `rust-cli` as the authoritative crate
+  root.
+- `thread_id` is implemented as message metadata plus filtering/indexing, but
+  there is not yet a first-class thread membership or thread-summary model.
+- Task queue payloads are still raw strings rather than validated task cards.
+- Pending acknowledgements exist with TTL/stale tracking, but not with
+  first-class deadlines/reminders/escalation workflows.
+
 ## Current optimization opportunities
 
-1. **Indexed repo/session reads** so summaries and dedup flows stop over-fetching.
-2. **Server-side summarization** for inbox/session rollups instead of replaying raw message history.
-3. **Structured task cards** so multi-agent work carries repo/path/priority metadata without parsing free text.
-4. **protobuf or A2A adapters** only after repo/session/ownership semantics are stable.
+1. **Finish the operational crate split** so the CLI/HTTP/MCP surface crates stop depending on `rust-cli` and the scripts stop targeting `rust-cli` directly.
+2. **Indexed repo/session reads** so summaries and dedup flows stop over-fetching.
+3. **Server-side summarization** for inbox/session rollups instead of replaying raw message history.
+4. **Structured task cards** so multi-agent work carries repo/path/priority metadata without parsing free text.
+5. **protobuf or A2A adapters** only after repo/session/ownership semantics are stable.
 
 ### Guidelines compliance
 

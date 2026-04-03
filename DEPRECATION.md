@@ -5,8 +5,9 @@
 ## Outcome
 
 - The deprecated Python package and pytest suite have been removed from this repo.
-- The supported runtime is the Rust `agent-bus` CLI and server in `rust-cli/`.
+- The supported runtime is the Rust `agent-bus` workspace, with the primary runtime surfaces still centered in `rust-cli/` as of 2026-04-03.
 - PowerShell wrappers remain supported because they call the Rust binary directly.
+- Current architecture checkpoint: [`docs/current-status-2026-04-03.md`](./docs/current-status-2026-04-03.md)
 
 ## Migration
 
@@ -25,7 +26,9 @@ All flags remain aligned with the Rust CLI surface.
 
 ## Supported Code Paths
 
-- `rust-cli/`: primary implementation, CLI, HTTP server, MCP server, benches, and tests
+- `rust-cli/`: primary runtime implementation, CLI, HTTP server, MCP server, benches, and integration tests
+- `crates/agent-bus-core/`: shared storage and orchestration logic extracted from the original monolith
+- `crates/agent-bus-cli/`, `crates/agent-bus-http/`, `crates/agent-bus-mcp/`: wrapper crates that currently delegate into `rust-cli/`
 - `scripts/`: PowerShell wrappers and deployment helpers
 - `docs/`: protocol, assessment, and operational guidance
 
