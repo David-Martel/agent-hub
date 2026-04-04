@@ -39,10 +39,11 @@ use crate::server_mode::{
     wait_for_windows_service_state,
 };
 use crate::settings::Settings;
+#[cfg(feature = "server-mode")]
 use crate::validation::{
-    auto_fit_schema, infer_schema_from_topic, non_empty, parse_metadata_arg,
-    validate_message_schema, validate_priority,
+    auto_fit_schema, infer_schema_from_topic, validate_message_schema, validate_priority,
 };
+use crate::validation::{non_empty, parse_metadata_arg};
 
 #[cfg(test)]
 use crate::ops::{extra_filter_fetch_limit, message_matches_filters};

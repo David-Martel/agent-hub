@@ -264,7 +264,10 @@ async fn http_control_action_handler(
     let action = parse_service_action(&req.action).map_err(|e| bad_request(e.to_string()))?;
 
     // Pre-action async flush (transport-specific, cannot live in core).
-    let needs_flush = req.flush && action != ServiceAction::Resume;
+    // The "flush" action always flushes; for other actions the `flush` boolean
+    // field opts in (defaults true via serde).  Resume never flushes.
+    let needs_flush =
+        action == ServiceAction::Flush || (req.flush && action != ServiceAction::Resume);
     if needs_flush {
         flush_pg_writer().await.map_err(internal_error)?;
     }

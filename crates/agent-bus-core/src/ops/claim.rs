@@ -206,18 +206,25 @@ pub struct ListClaimsRequest<'a> {
 ///
 /// # Errors
 ///
-/// Returns an error if the Redis `SCAN` or `HGETALL` commands fail.
+/// Returns an error if `request.status` is an unrecognised value or if the
+/// Redis `SCAN` or `HGETALL` commands fail.
 pub fn list_claims(
     settings: &Settings,
     request: &ListClaimsRequest<'_>,
 ) -> Result<Vec<OwnershipClaim>> {
     use crate::channels::ClaimStatus;
-    let status_filter: Option<ClaimStatus> = request.status.map(|s| match s {
-        "granted" => ClaimStatus::Granted,
-        "contested" => ClaimStatus::Contested,
-        "review_assigned" => ClaimStatus::ReviewAssigned,
-        _ => ClaimStatus::Pending,
-    });
+    let status_filter: Option<ClaimStatus> = request
+        .status
+        .map(|s| match s {
+            "pending" => Ok(ClaimStatus::Pending),
+            "granted" => Ok(ClaimStatus::Granted),
+            "contested" => Ok(ClaimStatus::Contested),
+            "review_assigned" => Ok(ClaimStatus::ReviewAssigned),
+            other => anyhow::bail!(
+                "unknown claim status '{other}'; expected pending|granted|contested|review_assigned"
+            ),
+        })
+        .transpose()?;
     crate::channels::list_claims(settings, request.resource, status_filter.as_ref())
 }
 
@@ -234,4 +241,316 @@ pub fn list_claims(
 /// Returns an error if the Redis `HGETALL` fails.
 pub fn get_arbitration_state(settings: &Settings, resource: &str) -> Result<ArbitrationState> {
     crate::channels::get_arbitration_state(settings, resource)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Construct a [`Settings`] from the environment/config file.  This never
+    /// connects to Redis — it only reads env vars and the optional config JSON.
+    fn test_settings() -> Settings {
+        Settings::from_env()
+    }
+
+    // -- parse_lease_mode -----------------------------------------------------
+
+    #[test]
+    fn parse_lease_mode_accepts_shared() {
+        assert!(matches!(
+            parse_lease_mode("shared").unwrap(),
+            ResourceLeaseMode::Shared
+        ));
+    }
+
+    #[test]
+    fn parse_lease_mode_accepts_shared_namespaced() {
+        assert!(matches!(
+            parse_lease_mode("shared_namespaced").unwrap(),
+            ResourceLeaseMode::SharedNamespaced
+        ));
+    }
+
+    #[test]
+    fn parse_lease_mode_accepts_exclusive() {
+        assert!(matches!(
+            parse_lease_mode("exclusive").unwrap(),
+            ResourceLeaseMode::Exclusive
+        ));
+    }
+
+    #[test]
+    fn parse_lease_mode_rejects_unknown() {
+        let err = parse_lease_mode("bogus").unwrap_err();
+        assert!(
+            err.to_string().contains("invalid lease mode"),
+            "error should mention 'invalid lease mode': {err}"
+        );
+    }
+
+    // -- claim_resource validation -------------------------------------------
+
+    #[test]
+    fn claim_resource_rejects_empty_agent() {
+        let settings = test_settings();
+        let result = claim_resource(
+            &settings,
+            &ClaimResourceRequest {
+                resource: "test-resource",
+                agent: "",
+                reason: "testing",
+                mode: "exclusive",
+                namespace: None,
+                scope_kind: None,
+                scope_path: None,
+                repo_scopes: &[],
+                thread_id: None,
+                lease_ttl_seconds: 300,
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("agent"), "error should mention 'agent': {msg}");
+    }
+
+    #[test]
+    fn claim_resource_rejects_whitespace_only_agent() {
+        let settings = test_settings();
+        let result = claim_resource(
+            &settings,
+            &ClaimResourceRequest {
+                resource: "test-resource",
+                agent: "   ",
+                reason: "testing",
+                mode: "exclusive",
+                namespace: None,
+                scope_kind: None,
+                scope_path: None,
+                repo_scopes: &[],
+                thread_id: None,
+                lease_ttl_seconds: 300,
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("agent"), "error should mention 'agent': {msg}");
+    }
+
+    #[test]
+    fn claim_resource_rejects_empty_resource() {
+        let settings = test_settings();
+        let result = claim_resource(
+            &settings,
+            &ClaimResourceRequest {
+                resource: "",
+                agent: "test-agent",
+                reason: "testing",
+                mode: "exclusive",
+                namespace: None,
+                scope_kind: None,
+                scope_path: None,
+                repo_scopes: &[],
+                thread_id: None,
+                lease_ttl_seconds: 300,
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("resource"),
+            "error should mention 'resource': {msg}"
+        );
+    }
+
+    #[test]
+    fn claim_resource_rejects_invalid_mode() {
+        let settings = test_settings();
+        let result = claim_resource(
+            &settings,
+            &ClaimResourceRequest {
+                resource: "test-resource",
+                agent: "test-agent",
+                reason: "testing",
+                mode: "bogus",
+                namespace: None,
+                scope_kind: None,
+                scope_path: None,
+                repo_scopes: &[],
+                thread_id: None,
+                lease_ttl_seconds: 300,
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid lease mode"),
+            "error should mention 'invalid lease mode': {msg}"
+        );
+    }
+
+    // -- renew_claim validation -----------------------------------------------
+
+    #[test]
+    fn renew_claim_rejects_empty_agent() {
+        let settings = test_settings();
+        let result = renew_claim(
+            &settings,
+            &RenewClaimRequest {
+                resource: "test-resource",
+                agent: "",
+                lease_ttl_seconds: 300,
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("agent"), "error should mention 'agent': {msg}");
+    }
+
+    #[test]
+    fn renew_claim_rejects_empty_resource() {
+        let settings = test_settings();
+        let result = renew_claim(
+            &settings,
+            &RenewClaimRequest {
+                resource: "",
+                agent: "test-agent",
+                lease_ttl_seconds: 300,
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("resource"),
+            "error should mention 'resource': {msg}"
+        );
+    }
+
+    // -- release_claim validation ---------------------------------------------
+
+    #[test]
+    fn release_claim_rejects_empty_agent() {
+        let settings = test_settings();
+        let result = release_claim(
+            &settings,
+            &ReleaseClaimRequest {
+                resource: "test-resource",
+                agent: "",
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("agent"), "error should mention 'agent': {msg}");
+    }
+
+    #[test]
+    fn release_claim_rejects_empty_resource() {
+        let settings = test_settings();
+        let result = release_claim(
+            &settings,
+            &ReleaseClaimRequest {
+                resource: "",
+                agent: "test-agent",
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("resource"),
+            "error should mention 'resource': {msg}"
+        );
+    }
+
+    // -- resolve_claim validation ---------------------------------------------
+
+    #[test]
+    fn resolve_claim_rejects_empty_winner() {
+        let settings = test_settings();
+        let result = resolve_claim(
+            &settings,
+            &ResolveClaimRequest {
+                resource: "test-resource",
+                winner: "",
+                reason: "testing",
+                resolved_by: "orchestrator",
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("winner"),
+            "error should mention 'winner': {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_claim_rejects_empty_resource() {
+        let settings = test_settings();
+        let result = resolve_claim(
+            &settings,
+            &ResolveClaimRequest {
+                resource: "",
+                winner: "test-agent",
+                reason: "testing",
+                resolved_by: "orchestrator",
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("resource"),
+            "error should mention 'resource': {msg}"
+        );
+    }
+
+    // -- list_claims status parsing -------------------------------------------
+
+    #[test]
+    fn list_claims_rejects_unknown_status() {
+        let settings = test_settings();
+        let result = list_claims(
+            &settings,
+            &ListClaimsRequest {
+                resource: None,
+                status: Some("bogus"),
+            },
+        );
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("unknown claim status"),
+            "error should mention 'unknown claim status': {msg}"
+        );
+    }
+
+    #[test]
+    fn list_claims_accepts_all_valid_statuses() {
+        // These calls will parse the status successfully but then fail when
+        // trying to connect to Redis.  We verify the status parsing itself
+        // does not reject valid values by checking the error does NOT mention
+        // "unknown claim status".
+        let settings = test_settings();
+        for status in &["pending", "granted", "contested", "review_assigned"] {
+            let result = list_claims(
+                &settings,
+                &ListClaimsRequest {
+                    resource: None,
+                    status: Some(status),
+                },
+            );
+            // The call will likely fail with a Redis connection error, but it
+            // should NOT fail with a status-parsing error.
+            if let Err(ref err) = result {
+                let msg = err.to_string();
+                assert!(
+                    !msg.contains("unknown claim status"),
+                    "status '{status}' should be accepted but got: {msg}"
+                );
+            }
+            // If it somehow succeeds (unlikely without Redis), that is also fine.
+        }
+    }
 }

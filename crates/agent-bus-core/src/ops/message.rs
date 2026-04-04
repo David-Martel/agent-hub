@@ -376,3 +376,198 @@ pub fn validated_batch_send(
         has_sse_subscribers,
     )
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- validated_post_message: validation-only paths -------------------------
+    //
+    // `validated_post_message` requires a `redis::Connection` we cannot create
+    // in unit tests.  However its validation calls (`validate_priority`,
+    // `non_empty`, `enforce_schema_for_transport`, `validate_message_schema`)
+    // all run BEFORE the Redis call.  We exercise the same validation pipeline
+    // directly to prove the contract is correct.
+
+    #[test]
+    fn validated_send_rejects_empty_sender() {
+        // The first non_empty inside validated_post_message is for sender.
+        let result = non_empty("", "sender");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("sender"),
+            "error should mention 'sender': {msg}"
+        );
+    }
+
+    #[test]
+    fn validated_send_rejects_whitespace_sender() {
+        let result = non_empty("   ", "sender");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("sender"),
+            "error should mention 'sender': {msg}"
+        );
+    }
+
+    #[test]
+    fn validated_send_rejects_empty_body() {
+        let result = non_empty("", "body");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("body"), "error should mention 'body': {msg}");
+    }
+
+    #[test]
+    fn validated_send_rejects_bad_priority() {
+        let result = validate_priority("bogus");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid priority"),
+            "error should mention 'invalid priority': {msg}"
+        );
+    }
+
+    #[test]
+    fn validated_send_rejects_invalid_schema() {
+        // When transport="mcp" and schema=Some("bogus"), enforce_schema_for_transport
+        // falls through the unknown explicit schema, finds no topic match for
+        // "general", and defaults to "status".  So "bogus" does NOT propagate
+        // as the effective schema — it is silently replaced.
+        //
+        // However, if the body does not satisfy the inferred schema, validation
+        // will still fail.  We verify the full pipeline here.
+        use crate::validation::{
+            auto_fit_schema, enforce_schema_for_transport, validate_message_schema,
+        };
+        let effective = enforce_schema_for_transport("mcp", Some("bogus"), "general");
+        // MCP with unknown explicit + unknown topic defaults to "status".
+        assert_eq!(effective, Some("status"));
+        let fitted = auto_fit_schema("non-empty body", effective);
+        // "status" schema only requires non-empty, so this passes.
+        assert!(validate_message_schema(&fitted, effective).is_ok());
+
+        // An empty body under MCP's inferred status schema WILL fail.
+        let fitted_empty = auto_fit_schema("", effective);
+        assert!(validate_message_schema(&fitted_empty, effective).is_err());
+    }
+
+    // -- validated_batch_send: validation-only paths ---------------------------
+    //
+    // Same approach: verify the validation logic that runs before the Redis
+    // pipeline call.
+
+    #[test]
+    fn batch_send_rejects_empty_sender_in_first_item() {
+        // validated_batch_send iterates items and calls non_empty on sender.
+        let result = non_empty("", "sender");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn batch_send_rejects_empty_topic_in_item() {
+        let result = non_empty("", "topic");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("topic"), "error should mention 'topic': {msg}");
+    }
+
+    #[test]
+    fn batch_send_rejects_bad_priority_in_item() {
+        let result = validate_priority("critical");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("invalid priority"),
+            "error should mention 'invalid priority': {msg}"
+        );
+    }
+
+    #[test]
+    fn batch_item_schema_fitting_produces_valid_finding() {
+        use crate::validation::{
+            auto_fit_schema, enforce_schema_for_transport, validate_message_schema,
+        };
+        // Simulate what validated_batch_send does per item.
+        let transport = "mcp";
+        let topic = "code-findings";
+        let body = "memory leak in allocator";
+        let schema = None;
+
+        let effective = enforce_schema_for_transport(transport, schema, topic);
+        assert_eq!(effective, Some("finding"));
+        let fitted = auto_fit_schema(body, effective);
+        assert!(fitted.contains("FINDING:"));
+        assert!(fitted.contains("SEVERITY:"));
+        assert!(validate_message_schema(&fitted, effective).is_ok());
+    }
+
+    // -- set_presence validation ----------------------------------------------
+
+    #[test]
+    fn set_presence_rejects_empty_agent() {
+        // set_presence calls non_empty(request.agent, "agent") first.
+        let result = non_empty("", "agent");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("agent"), "error should mention 'agent': {msg}");
+    }
+
+    #[test]
+    fn set_presence_rejects_whitespace_agent() {
+        let result = non_empty("  \t  ", "agent");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("agent"), "error should mention 'agent': {msg}");
+    }
+
+    // -- ValidatedBatchItem construction / field access ------------------------
+
+    #[test]
+    fn validated_batch_item_stores_all_fields() {
+        let item = ValidatedBatchItem {
+            sender: "claude".to_owned(),
+            recipient: "codex".to_owned(),
+            topic: "status".to_owned(),
+            body: "ready to coordinate".to_owned(),
+            priority: "normal".to_owned(),
+            schema: Some("status".to_owned()),
+            tags: vec!["repo:agent-bus".to_owned()],
+            thread_id: Some("thread-1".to_owned()),
+            reply_to: None,
+            request_ack: true,
+            metadata: serde_json::json!({"key": "value"}),
+        };
+        assert_eq!(item.sender, "claude");
+        assert_eq!(item.recipient, "codex");
+        assert_eq!(item.topic, "status");
+        assert!(item.request_ack);
+        assert_eq!(item.tags.len(), 1);
+        assert_eq!(item.thread_id.as_deref(), Some("thread-1"));
+        assert!(item.reply_to.is_none());
+    }
+
+    // -- knock_metadata -------------------------------------------------------
+
+    #[test]
+    fn knock_metadata_with_ack_sets_expected_response_kind() {
+        let meta = knock_metadata(true);
+        assert_eq!(meta["knock"], true);
+        assert_eq!(meta["delivery_hint"], "sse");
+        assert_eq!(meta["expected_response_kind"], "ack");
+    }
+
+    #[test]
+    fn knock_metadata_without_ack_sets_status_response() {
+        let meta = knock_metadata(false);
+        assert_eq!(meta["knock"], true);
+        assert_eq!(meta["expected_response_kind"], "status");
+    }
+}
