@@ -3518,4 +3518,75 @@ mod tests {
             "refreshDashboardData not called in refresh()"
         );
     }
+
+    #[test]
+    fn dispatch_mcp_method_initialize_reports_server_info() {
+        let settings = crate::settings::Settings::from_env();
+        let response = dispatch_mcp_method(&settings, "initialize", &serde_json::json!({}));
+
+        assert_eq!(response["result"]["protocolVersion"], "2024-11-05");
+        assert_eq!(response["result"]["serverInfo"]["name"], "agent-bus");
+        assert_eq!(
+            response["result"]["serverInfo"]["version"],
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    #[test]
+    fn dispatch_mcp_method_tools_list_matches_transport_agnostic_definitions() {
+        let settings = crate::settings::Settings::from_env();
+        let response = dispatch_mcp_method(&settings, "tools/list", &serde_json::json!({}));
+        let tools = response["result"]["tools"]
+            .as_array()
+            .expect("tools/list must return an array");
+
+        assert_eq!(tools.len(), tool_definitions().len());
+        assert!(
+            tools.iter().any(|tool| tool["name"] == "check_inbox"),
+            "tools/list must expose the check_inbox bridge"
+        );
+        assert!(
+            tools
+                .iter()
+                .all(|tool| tool.get("inputSchema").is_some() && tool.get("description").is_some()),
+            "every tool entry must include schema and description"
+        );
+    }
+
+    #[test]
+    fn dispatch_mcp_method_surfaces_tool_validation_errors() {
+        let settings = crate::settings::Settings::from_env();
+        let response = dispatch_mcp_method(
+            &settings,
+            "tools/call",
+            &serde_json::json!({
+                "name": "check_inbox",
+                "arguments": {}
+            }),
+        );
+
+        assert_eq!(response["error"]["code"], -32603);
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("agent"),
+            "validation errors should mention the missing required field"
+        );
+    }
+
+    #[test]
+    fn dispatch_mcp_method_rejects_unknown_methods() {
+        let settings = crate::settings::Settings::from_env();
+        let response = dispatch_mcp_method(&settings, "nope/method", &serde_json::json!({}));
+
+        assert_eq!(response["error"]["code"], -32601);
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("method not found"),
+            "unknown methods should produce JSON-RPC method-not-found errors"
+        );
+    }
 }

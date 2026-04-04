@@ -6,6 +6,7 @@ pub mod agent_profile;
 pub mod channels;
 pub mod codex_bridge;
 pub mod journal;
+pub mod mcp_dispatch;
 pub mod models;
 pub mod ops;
 pub mod output;
