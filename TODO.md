@@ -24,8 +24,8 @@ Structural execution plan:
 - [x] Add durable per-agent notification streams alongside the canonical message stream.
 - [x] Add a first-class `knock` / attention signal over the durable direct-notification path.
 - [x] Add explicit subscription records for recipient, repo, session, thread, tag, topic, priority, and resource scopes. `Subscription` + `SubscriptionScopes` models; Redis storage with optional TTL; CLI subscribe/unsubscribe/subscriptions commands; HTTP CRUD endpoints; `message_matches_subscription` filter.
-- [ ] Promote `thread_id` to a joinable conversation scope with explicit membership.
-- [ ] Add ack deadlines, reminder delivery, and escalation for `request_ack=true` messages.
+- [x] Promote `thread_id` to a joinable conversation scope with explicit membership. `Thread` model + `ThreadStatus` + Redis storage + CLI thread-create/join/leave/list/close + HTTP CRUD.
+- [x] Add ack deadlines, reminder delivery, and escalation for `request_ack=true` messages. `AckDeadline` model with priority-based timeouts and escalation levels; HTTP `GET /overdue-acks`.
 - [x] Add notification replay for reconnecting SSE and MCP clients.
 
 ## P1 Query Model And Cross-Repo Awareness
@@ -43,8 +43,8 @@ Structural execution plan:
 - [x] Add durable resource-event notifications and subscriptions over `resource_id`, repo, path prefix, scope kind, and `thread_id`. `ResourceEvent` model + Redis streams (`agent_bus:resource_events:<id>`, MAXLEN 1000); events emitted on claim/renew/release/resolve; HTTP `GET /resource-events/<id>`.
 - [x] Add server-assisted reroute suggestions for namespaced resources (`cargo target`, coverage, bench output, temp install validation) so agents can isolate instead of wait. `RerouteSuggestion` struct + pattern matching for 7 known resource types; enriches contested claim responses.
 - [x] Add TTL-based resource renewal/expiry for lease-backed claims.
-- [ ] Add ack deadlines for high-risk resources such as `~/bin` installs, user config, services, and repo-default artifact roots.
-- [ ] Add cross-repo resource scopes for machine-global paths and services so one repo view can still see contention caused by another repo.
+- [x] Add ack deadlines for high-risk resources such as `~/bin` installs, user config, services, and repo-default artifact roots. Shared infrastructure with P0 ack deadlines above.
+- [x] Add cross-repo resource scopes for machine-global paths and services so one repo view can still see contention caused by another repo. `ResourceScope` enum (Repo/Machine) + auto-detection for 9 known machine-global resources; CLI `--scope` flag; HTTP/MCP scope field.
 - [x] Surface claims, task queues, pending ACKs, and contested ownership directly in the dashboard. `/dashboard/data` now returns health, presence, claims (total + contested resources), pending ACKs, and per-agent task queue depths.
 - [x] Add server-side orchestrator summaries for "what changed since last poll" instead of forcing agents to replay raw history. `OrchestratorSummary` with categorized notification counts; HTTP `GET /orchestrator-summary`.
 - [x] Generalize `codex_bridge.rs` into agent profiles/adapters so sync workflows are not Codex-specific. `AgentProfile` trait added with `Codex`, `Claude`, `Gemini`, `Custom` variants; `codex_bridge.rs` refactored to use it.
@@ -102,7 +102,7 @@ Structural execution plan:
 
 ## P7 Storage Optimization (from POSTGRES-REDIS.md)
 
-- [ ] Switch message IDs from UUIDv4 to UUIDv7 for timestamp-ordered B-tree inserts. Add `v7` feature to uuid crate, change `Uuid::new_v4()` to `Uuid::now_v7()` in message construction.
-- [ ] Add `MAXLEN ~ 1000` stream trimming to all XADD calls so Redis streams don't grow unbounded. Search for all XADD sites in `redis_bus.rs`.
-- [ ] Add TTL/EXPIRE to Redis keys by purpose: direct channels (7d), notification streams (3d), cursors (7d), group members (30d), task queues (3d), test artifacts (1h).
-- [ ] Clean up 193+ stale test keys matching `bus:direct:orchestrator:resolve-*` and `bus:direct:test-*`.
+- [x] Switch message IDs from UUIDv4 to UUIDv7 for timestamp-ordered B-tree inserts. 5 call sites changed; subscription/task card IDs remain v4.
+- [x] Add `MAXLEN ~` stream trimming to all XADD calls. Already present on all streams (100000 main, 10000 notifications, 1000 resource events/channels).
+- [x] Add TTL/EXPIRE to Redis keys by purpose: notifications (3d), cursors (7d), tasks (3d), resource events (3d), direct channels (7d), groups (30d).
+- [ ] Clean up 193+ stale test keys matching `bus:direct:orchestrator:resolve-*` and `bus:direct:test-*`. (Requires live Redis connection.)
