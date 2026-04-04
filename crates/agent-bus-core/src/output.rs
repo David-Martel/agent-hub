@@ -230,6 +230,98 @@ pub fn format_presence_toon(p: &Presence) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Tag shortening — compact/minimal encodings only
+// ---------------------------------------------------------------------------
+
+/// Shorten a single tag by replacing common prefixes with abbreviated forms.
+///
+/// | Long form       | Short form |
+/// |-----------------|------------|
+/// | `repo:X`        | `r:X`     |
+/// | `session:X`     | `s:X`     |
+/// | `thread_id:X`   | `t:X`     |
+/// | `severity:X`    | `!X`      |
+///
+/// Tags that do not match a known prefix are returned unchanged.
+#[must_use]
+pub fn shorten_tag(tag: &str) -> String {
+    if let Some(rest) = tag.strip_prefix("repo:") {
+        return format!("r:{rest}");
+    }
+    if let Some(rest) = tag.strip_prefix("session:") {
+        return format!("s:{rest}");
+    }
+    if let Some(rest) = tag.strip_prefix("thread_id:") {
+        return format!("t:{rest}");
+    }
+    if let Some(rest) = tag.strip_prefix("severity:") {
+        return format!("!{rest}");
+    }
+    tag.to_owned()
+}
+
+/// Shorten a slice of tags using [`shorten_tag`] rules.
+///
+/// Intended for compact and minimal encoding modes to reduce token cost of
+/// repeated tag prefixes across multi-message reads.
+#[must_use]
+pub fn shorten_tags(tags: &[String]) -> Vec<String> {
+    tags.iter().map(|t| shorten_tag(t)).collect()
+}
+
+/// Shorten tags within a [`serde_json::Value::Array`] of strings.
+///
+/// Non-string array elements are left unchanged.
+fn shorten_tags_value(arr: &[serde_json::Value]) -> serde_json::Value {
+    serde_json::Value::Array(
+        arr.iter()
+            .map(|v| {
+                if let Some(s) = v.as_str() {
+                    serde_json::Value::String(shorten_tag(s))
+                } else {
+                    minimize_value(v)
+                }
+            })
+            .collect(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Excerpt mode for long message bodies
+// ---------------------------------------------------------------------------
+
+/// Truncate a message body to at most `max_chars` Unicode scalar values.
+///
+/// If the body is already shorter than or equal to `max_chars`, it is returned
+/// unchanged.  Otherwise, truncate to `max_chars` characters and append a
+/// suffix indicating the original length.
+///
+/// # Examples
+///
+/// ```
+/// use agent_bus_core::output::excerpt_body;
+///
+/// assert_eq!(excerpt_body("short", 100), "short");
+/// let long = "a".repeat(200);
+/// let result = excerpt_body(&long, 50);
+/// assert!(result.starts_with("aaaa"));
+/// assert!(result.contains("[truncated,"));
+/// ```
+#[must_use]
+pub fn excerpt_body(body: &str, max_chars: usize) -> String {
+    let char_count = body.chars().count();
+    if char_count <= max_chars {
+        return body.to_owned();
+    }
+    let truncated: String = body.chars().take(max_chars).collect();
+    format!("{truncated}\u{2026} [truncated, {char_count} chars total]")
+}
+
+// ---------------------------------------------------------------------------
+// Shared — minimize_value
+// ---------------------------------------------------------------------------
+
 // Shared — minimize_value is used by the CLI Minimal encoding path and is
 // a pure data transformation with no I/O, making it safe to share across
 // transport boundaries.
@@ -264,7 +356,17 @@ pub fn minimize_value(value: &serde_json::Value) -> serde_json::Value {
                     "metadata" => "m",
                     other => other,
                 };
-                result.insert(short.to_owned(), minimize_value(v));
+                // Apply tag shortening when processing the tags array
+                let minimized_v = if k == "tags" {
+                    if let Some(arr) = v.as_array() {
+                        shorten_tags_value(arr)
+                    } else {
+                        minimize_value(v)
+                    }
+                } else {
+                    minimize_value(v)
+                };
+                result.insert(short.to_owned(), minimized_v);
             }
             serde_json::Value::Object(result)
         }
@@ -523,5 +625,125 @@ mod tests {
             msgpack_bytes.len(),
             json_bytes.len()
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tag shortening tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shorten_tag_repo_prefix() {
+        assert_eq!(shorten_tag("repo:agent-bus"), "r:agent-bus");
+    }
+
+    #[test]
+    fn shorten_tag_session_prefix() {
+        assert_eq!(shorten_tag("session:abc123"), "s:abc123");
+    }
+
+    #[test]
+    fn shorten_tag_thread_id_prefix() {
+        assert_eq!(shorten_tag("thread_id:xyz"), "t:xyz");
+    }
+
+    #[test]
+    fn shorten_tag_severity_prefix() {
+        assert_eq!(shorten_tag("severity:HIGH"), "!HIGH");
+        assert_eq!(shorten_tag("severity:low"), "!low");
+    }
+
+    #[test]
+    fn shorten_tag_unknown_prefix_unchanged() {
+        assert_eq!(shorten_tag("priority:high"), "priority:high");
+        assert_eq!(shorten_tag("component:redis"), "component:redis");
+        assert_eq!(shorten_tag("startup"), "startup");
+    }
+
+    #[test]
+    fn shorten_tags_mixed() {
+        let tags = vec![
+            "repo:agent-bus".to_owned(),
+            "session:sprint-42".to_owned(),
+            "thread_id:t-1".to_owned(),
+            "severity:MEDIUM".to_owned(),
+            "custom:value".to_owned(),
+        ];
+        let short = shorten_tags(&tags);
+        assert_eq!(
+            short,
+            vec![
+                "r:agent-bus",
+                "s:sprint-42",
+                "t:t-1",
+                "!MEDIUM",
+                "custom:value"
+            ]
+        );
+    }
+
+    #[test]
+    fn shorten_tags_empty() {
+        let empty: Vec<String> = vec![];
+        assert!(shorten_tags(&empty).is_empty());
+    }
+
+    #[test]
+    fn minimize_shortens_tags_in_compact() {
+        let input = serde_json::json!({
+            "tags": ["repo:agent-bus", "session:abc", "severity:HIGH", "custom:x"],
+        });
+        let minimized = minimize_value(&input);
+        let obj = minimized.as_object().unwrap();
+        assert_eq!(
+            obj["tg"],
+            serde_json::json!(["r:agent-bus", "s:abc", "!HIGH", "custom:x"])
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Excerpt body tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn excerpt_body_short_unchanged() {
+        assert_eq!(excerpt_body("hello world", 100), "hello world");
+    }
+
+    #[test]
+    fn excerpt_body_exact_limit_unchanged() {
+        let body = "a".repeat(50);
+        assert_eq!(excerpt_body(&body, 50), body);
+    }
+
+    #[test]
+    fn excerpt_body_truncates_long() {
+        let body = "a".repeat(200);
+        let result = excerpt_body(&body, 50);
+        assert!(result.starts_with(&"a".repeat(50)));
+        assert!(result.contains("\u{2026} [truncated, 200 chars total]"));
+    }
+
+    #[test]
+    fn excerpt_body_unicode_boundary() {
+        // "ab" (2) + 3 emojis (3) + "cdef" (4) = 9 Unicode scalar values.
+        // Multi-byte emojis test that truncation is char-based, not byte-based.
+        let body = "ab\u{1F600}\u{1F601}\u{1F602}cdef";
+        assert_eq!(body.chars().count(), 9);
+        // Truncate to 5 chars => "ab" + 3 emojis = "ab\u{1F600}\u{1F601}\u{1F602}"
+        let result = excerpt_body(body, 5);
+        assert!(result.starts_with("ab\u{1F600}\u{1F601}\u{1F602}"));
+        assert!(result.contains("[truncated, 9 chars total]"));
+    }
+
+    #[test]
+    fn excerpt_body_empty() {
+        assert_eq!(excerpt_body("", 100), "");
+    }
+
+    #[test]
+    fn excerpt_body_zero_max() {
+        let result = excerpt_body("hello", 0);
+        assert!(result.contains("[truncated, 5 chars total]"));
+        assert!(result.starts_with('\u{2026}'));
     }
 }

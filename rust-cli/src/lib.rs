@@ -202,6 +202,7 @@ async fn run(args: Vec<OsString>) -> Result<()> {
             since_minutes,
             limit,
             exclude_broadcast,
+            excerpt,
             ref encoding,
         } => {
             cmd_read(
@@ -216,6 +217,7 @@ async fn run(args: Vec<OsString>) -> Result<()> {
                     since_minutes,
                     limit,
                     exclude_broadcast,
+                    excerpt,
                     encoding,
                 },
             )?;

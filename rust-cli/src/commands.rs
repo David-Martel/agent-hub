@@ -81,6 +81,7 @@ pub(crate) struct ReadArgs<'a> {
     pub(crate) since_minutes: u64,
     pub(crate) limit: usize,
     pub(crate) exclude_broadcast: bool,
+    pub(crate) excerpt: Option<usize>,
     pub(crate) encoding: &'a Encoding,
 }
 
@@ -407,7 +408,7 @@ pub(crate) fn cmd_read(settings: &Settings, args: &ReadArgs<'_>) -> Result<()> {
         return Ok(());
     }
 
-    let msgs = list_filtered_messages(
+    let mut msgs = list_filtered_messages(
         settings,
         args.agent.as_deref(),
         args.from_agent.as_deref(),
@@ -416,6 +417,11 @@ pub(crate) fn cmd_read(settings: &Settings, args: &ReadArgs<'_>) -> Result<()> {
         !args.exclude_broadcast,
         &filters,
     )?;
+    if let Some(max_chars) = args.excerpt {
+        for msg in &mut msgs {
+            msg.body = crate::output::excerpt_body(&msg.body, max_chars);
+        }
+    }
     output_messages(&msgs, args.encoding);
     Ok(())
 }

@@ -19,8 +19,9 @@ use crate::models::{
     Health, Message, PROTOCOL_VERSION, Presence, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR,
 };
 use crate::postgres_store::{
-    PgWriter, count_both_postgres, list_messages_postgres, list_messages_postgres_with_filters,
-    persist_presence_postgres, pg_metrics, probe_postgres,
+    PgWriter, count_both_postgres, is_pg_circuit_open, list_messages_postgres,
+    list_messages_postgres_with_filters, persist_presence_postgres, pg_metrics, probe_postgres,
+    query_messages_by_tags,
 };
 use crate::settings::{Settings, redact_url};
 use crate::validation::infer_schema_from_topic;
@@ -1742,6 +1743,9 @@ pub fn bus_list_messages_from_redis_with_filters(
 
 /// List messages from `PostgreSQL` history or Redis stream (with automatic fallback).
 ///
+/// Checks the circuit breaker before attempting the `PostgreSQL` path to
+/// avoid unnecessary overhead when PG is known to be down.
+///
 /// # Errors
 ///
 /// Returns an error only if both `PostgreSQL` and the Redis fallback fail.
@@ -1753,7 +1757,7 @@ pub fn bus_list_messages(
     limit: usize,
     include_broadcast: bool,
 ) -> Result<Vec<Message>> {
-    if settings.database_url.is_some() {
+    if settings.database_url.is_some() && !is_pg_circuit_open() {
         match list_messages_postgres(
             settings,
             agent,
@@ -1766,7 +1770,7 @@ pub fn bus_list_messages(
             Err(error) => {
                 if settings.log_non_fatal_warnings() {
                     tracing::warn!(
-                        "Postgres message query failed, falling back to Redis: {error:#}"
+                        "PostgreSQL message query failed, falling back to Redis: {error:#}"
                     );
                 }
             }
@@ -1787,6 +1791,17 @@ pub fn bus_list_messages(
 
 /// List messages applying filters from `PostgreSQL` history or Redis stream.
 ///
+/// When `required_tags` (or `thread_id`) are present and `PostgreSQL` is
+/// available with a closed circuit breaker, the query is routed through the
+/// GIN-indexed `tags @> $1::jsonb` path for efficient server-side filtering.
+/// This avoids the default Redis behaviour of fetching an over-sized stream
+/// slice and filtering client-side.
+///
+/// Falls back to the Redis `XREVRANGE` + client-side filter path when:
+/// - `PostgreSQL` is not configured (`database_url` is `None`)
+/// - The circuit breaker is open (PG recently unreachable)
+/// - The `PostgreSQL` query fails for any reason
+///
 /// # Errors
 ///
 /// Returns an error only if both `PostgreSQL` and the Redis fallback fail.
@@ -1805,7 +1820,43 @@ pub fn bus_list_messages_with_filters(
     thread_id: Option<&str>,
     required_tags: &[&str],
 ) -> Result<Vec<Message>> {
-    if settings.database_url.is_some() {
+    let has_tags = !required_tags.is_empty() || thread_id.is_some();
+
+    // Fast path: when PG is configured and the circuit breaker is closed,
+    // route tag-scoped queries through the GIN index.  For unscoped queries
+    // (no tags, no thread) we still try PG for its richer history, but the
+    // optimised `query_messages_by_tags` path is reserved for cases where the
+    // GIN index provides a meaningful selectivity advantage.
+    if settings.database_url.is_some() && !is_pg_circuit_open() {
+        // When only tags/thread are specified (no agent/sender filters), use
+        // the dedicated tag-query function that skips agent/sender columns.
+        if has_tags && agent.is_none() && from_agent.is_none() {
+            tracing::debug!(
+                tags = ?required_tags,
+                ?thread_id,
+                "routing tagged query through PostgreSQL GIN index (optimised path)"
+            );
+            match query_messages_by_tags(settings, required_tags, thread_id, since_minutes, limit) {
+                Ok(messages) => return Ok(messages),
+                Err(error) => {
+                    if settings.log_non_fatal_warnings() {
+                        tracing::warn!(
+                            "PostgreSQL tag query failed, falling back to full filter path: {error:#}"
+                        );
+                    }
+                    // Fall through to the general PG path, then Redis.
+                }
+            }
+        }
+
+        // General PG path: handles agent/sender filters alongside tags.
+        tracing::debug!(
+            ?agent,
+            ?from_agent,
+            tags = ?required_tags,
+            ?thread_id,
+            "routing query through PostgreSQL (general path)"
+        );
         match list_messages_postgres_with_filters(
             settings,
             agent,
@@ -1820,13 +1871,16 @@ pub fn bus_list_messages_with_filters(
             Err(error) => {
                 if settings.log_non_fatal_warnings() {
                     tracing::warn!(
-                        "Postgres message query failed, falling back to Redis: {error:#}"
+                        "PostgreSQL message query failed, falling back to Redis: {error:#}"
                     );
                 }
             }
         }
+    } else if settings.database_url.is_some() && is_pg_circuit_open() {
+        tracing::debug!("skipping PostgreSQL path — circuit breaker open, using Redis fallback");
     }
 
+    // Redis fallback: XREVRANGE with client-side filtering.
     let mut conn = connect(settings)?;
     bus_list_messages_from_redis_with_filters(
         &mut conn,

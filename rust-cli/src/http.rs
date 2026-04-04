@@ -18,7 +18,6 @@ use serde::Deserialize;
 use tokio::sync::{Notify, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::mcp::AgentBusMcpServer;
 use crate::models::MAX_HISTORY_MINUTES;
 #[cfg(test)]
 use crate::ops::admin::ServerMode;
@@ -57,7 +56,7 @@ use crate::ops::{
     ValidatedBatchItem, ValidatedSendRequest, knock_metadata, list_messages_live, post_ack,
     post_message, set_presence, validated_batch_send, validated_post_message,
 };
-use crate::output::{format_health_toon, format_message_toon, format_presence_toon};
+use crate::output::{excerpt_body, format_health_toon, format_message_toon, format_presence_toon};
 use crate::redis_bus::{
     RedisPool, SseSubscriberCount, bus_list_messages_from_redis,
     bus_post_message_with_notifications, list_notifications, list_notifications_since_id,
@@ -65,6 +64,7 @@ use crate::redis_bus::{
 };
 use crate::settings::Settings;
 use crate::validation::validate_priority;
+use agent_bus_core::mcp_dispatch::{McpToolDispatch, tool_definitions};
 
 /// Per-agent live SSE subscriber channels.
 ///
@@ -413,6 +413,9 @@ pub(crate) struct HttpReadQuery {
     /// Optional encoding override. `toon` returns `text/plain` TOON lines.
     #[serde(default)]
     pub(crate) encoding: Option<String>,
+    /// Optional excerpt mode: truncate message bodies to at most N characters.
+    #[serde(default)]
+    pub(crate) excerpt: Option<usize>,
 }
 
 fn default_since_minutes() -> u64 {
@@ -441,7 +444,8 @@ pub(crate) async fn http_read_handler(
     let thread_id = params.thread_id;
     let broadcast = params.broadcast;
     let toon = params.encoding.as_deref() == Some("toon");
-    let msgs = tokio::task::spawn_blocking(move || {
+    let excerpt = params.excerpt;
+    let mut msgs = tokio::task::spawn_blocking(move || {
         // Always read from Redis for the HTTP path: Redis is the authoritative
         // source-of-truth (the PgWriter flushes async so PG may lag ~100 ms).
         // This ensures read-after-write consistency without the synchronous PG
@@ -469,6 +473,13 @@ pub(crate) async fn http_read_handler(
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
+
+    // Apply excerpt truncation when requested.
+    if let Some(max_chars) = excerpt {
+        for msg in &mut msgs {
+            msg.body = excerpt_body(&msg.body, max_chars);
+        }
+    }
 
     if toon {
         let lines: Vec<String> = msgs.iter().map(format_message_toon).collect();
@@ -778,7 +789,7 @@ async fn http_presence_history_handler(
 // 4. Session continuity is maintained via the `Mcp-Session-Id` response header;
 //    clients echo it back on subsequent requests.
 //
-// This implementation routes to the same `AgentBusMcpServer` tool handlers used
+// This implementation routes to the same `McpToolDispatch` dispatch logic used
 // by the stdio transport, ensuring behavioural parity across transports.
 
 /// Dispatch a JSON-RPC 2.0 request to the appropriate MCP tool and return a
@@ -812,9 +823,9 @@ pub(crate) async fn handle_mcp_http(
         .cloned()
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
-    let server = AgentBusMcpServer::new((*state.settings).clone());
+    let settings = (*state.settings).clone();
     let response =
-        tokio::task::spawn_blocking(move || dispatch_mcp_method(&server, &method, &params))
+        tokio::task::spawn_blocking(move || dispatch_mcp_method(&settings, &method, &params))
             .await
             .unwrap_or_else(|e| {
                 serde_json::json!({
@@ -861,10 +872,10 @@ pub(crate) async fn handle_mcp_http(
 
 /// Route a JSON-RPC method to the matching MCP tool or lifecycle handler.
 ///
-/// Returns a partial JSON-RPC response (no `jsonrpc` or `id` fields — the
+/// Returns a partial JSON-RPC response (no `jsonrpc` or `id` fields -- the
 /// caller merges those in).
 fn dispatch_mcp_method(
-    server: &AgentBusMcpServer,
+    settings: &crate::settings::Settings,
     method: &str,
     params: &serde_json::Value,
 ) -> serde_json::Value {
@@ -887,13 +898,13 @@ fn dispatch_mcp_method(
         }
 
         "tools/list" => {
-            let tools: Vec<serde_json::Value> = AgentBusMcpServer::tool_list()
+            let tools: Vec<serde_json::Value> = tool_definitions()
                 .into_iter()
                 .map(|t| {
                     serde_json::json!({
                         "name": t.name,
                         "description": t.description,
-                        "inputSchema": *t.input_schema,
+                        "inputSchema": t.schema,
                     })
                 })
                 .collect();
@@ -912,7 +923,8 @@ fn dispatch_mcp_method(
                 .cloned()
                 .unwrap_or_default();
 
-            match server.call_tool_sync(&tool_name, &args) {
+            let dispatch = McpToolDispatch::new(settings);
+            match dispatch.dispatch_tool(&tool_name, &args) {
                 Ok(value) => {
                     serde_json::json!({"result": {"content": [{"type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default()}]}})
                 }
@@ -936,13 +948,13 @@ fn dispatch_mcp_method(
 /// Clients that only need to enumerate capabilities without sending a
 /// JSON-RPC body can GET this endpoint.
 pub(crate) async fn handle_mcp_sse(State(state): State<AppState>) -> impl IntoResponse {
-    let tools: Vec<serde_json::Value> = AgentBusMcpServer::tool_list()
+    let tools: Vec<serde_json::Value> = tool_definitions()
         .into_iter()
         .map(|t| {
             serde_json::json!({
                 "name": t.name,
                 "description": t.description,
-                "inputSchema": *t.input_schema,
+                "inputSchema": t.schema,
             })
         })
         .collect();

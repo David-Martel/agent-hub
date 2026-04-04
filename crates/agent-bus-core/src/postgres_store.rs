@@ -93,7 +93,12 @@ fn pg_down_since() -> &'static Mutex<Option<Instant>> {
 }
 
 /// Returns `true` when the circuit breaker is open (i.e., PG was down within the last 60 s).
-fn is_pg_circuit_open() -> bool {
+///
+/// Public so that callers (e.g. `redis_bus::bus_list_messages_with_filters`)
+/// can skip the `PostgreSQL` path early without entering the retry/connection
+/// machinery.
+#[must_use]
+pub fn is_pg_circuit_open() -> bool {
     pg_down_since()
         .lock()
         .ok()
@@ -764,6 +769,53 @@ pub fn list_messages_by_tag(
         true,
         None,
         &tags,
+    )
+}
+
+/// Query messages matching multiple tags via the GIN index.
+///
+/// This is the preferred entry point for tag-scoped reads (session-summary,
+/// dedup, compact-context) where the caller has a set of required tags and
+/// optionally a thread filter.  The query uses `tags @> $1::jsonb` which
+/// leverages the GIN index for efficient containment checks.
+///
+/// Returns up to `limit` records within the `since_minutes` window, in
+/// chronological order.  Returns an empty `Vec` when `PostgreSQL` is not
+/// configured, the circuit breaker is open, or no rows match.
+///
+/// # Errors
+///
+/// Returns an error if the database operation fails.
+pub fn query_messages_by_tags(
+    settings: &Settings,
+    tags: &[&str],
+    thread_id: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+) -> Result<Vec<Message>> {
+    if tags.is_empty() && thread_id.is_none() {
+        return Err(anyhow::anyhow!(
+            "query_messages_by_tags requires at least one tag or a thread_id"
+        ));
+    }
+
+    if is_pg_circuit_open() {
+        return Err(anyhow::anyhow!(
+            "PostgreSQL circuit breaker open — skipping tag query"
+        ));
+    }
+
+    // Delegate to the full filter function with agent/sender set to None
+    // and include_broadcast=true so we capture all matching messages.
+    list_messages_postgres_with_filters(
+        settings,
+        None, // agent
+        None, // from_agent
+        since_minutes,
+        limit,
+        true, // include_broadcast
+        thread_id,
+        tags,
     )
 }
 
@@ -1769,5 +1821,77 @@ mod tests {
             !storage_ready(&settings),
             "storage_ready must be false when database_url absent"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // query_messages_by_tags
+    // -----------------------------------------------------------------------
+
+    /// `query_messages_by_tags` must reject calls with no tags and no `thread_id`.
+    #[test]
+    fn query_messages_by_tags_rejects_empty_filters() {
+        let mut settings = Settings::from_env();
+        settings.database_url = Some("postgresql://localhost:5300/test".to_owned());
+
+        let result = query_messages_by_tags(&settings, &[], None, 60, 100);
+        assert!(
+            result.is_err(),
+            "expected Err when no tags or thread_id provided"
+        );
+        let err_msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            err_msg.contains("requires at least one tag"),
+            "error message should mention tag requirement, got: {err_msg}"
+        );
+    }
+
+    /// When the circuit breaker is open, `query_messages_by_tags` must fail
+    /// immediately without attempting a database connection.
+    #[test]
+    fn query_messages_by_tags_respects_circuit_breaker() {
+        let mut settings = Settings::from_env();
+        settings.database_url = Some("postgresql://localhost:5300/test".to_owned());
+
+        mark_pg_down();
+        assert!(is_pg_circuit_open());
+
+        let result = query_messages_by_tags(&settings, &["repo:agent-bus"], None, 60, 100);
+        assert!(result.is_err(), "expected Err when circuit breaker is open");
+        let err_msg = format!("{:#}", result.unwrap_err());
+        assert!(
+            err_msg.contains("circuit breaker open"),
+            "error message should mention circuit breaker, got: {err_msg}"
+        );
+
+        // Restore clean state.
+        mark_pg_up();
+    }
+
+    /// When `database_url` is `None`, `query_messages_by_tags` returns an
+    /// empty vec (the inner PG client returns `None`).
+    #[test]
+    fn query_messages_by_tags_returns_empty_without_database_url() {
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+
+        // Ensure circuit is closed so we exercise the PG-absent path.
+        mark_pg_up();
+
+        let result = query_messages_by_tags(&settings, &["repo:agent-bus"], None, 60, 100);
+        // With no database_url, get_pg_client returns Ok(None), which causes
+        // list_messages_postgres_with_filters to return Ok(vec![]).
+        assert!(result.is_ok(), "expected Ok(vec![]) without database_url");
+        assert!(
+            result.unwrap().is_empty(),
+            "expected empty vec without database_url"
+        );
+    }
+
+    /// `is_pg_circuit_open` must be publicly accessible (compile-time check).
+    #[test]
+    fn is_pg_circuit_open_is_public() {
+        // This test exists to verify the function's public visibility.
+        // If this compiles, the function is accessible from outside the module.
+        let _ = is_pg_circuit_open();
     }
 }

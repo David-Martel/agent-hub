@@ -206,6 +206,33 @@ pub struct OwnershipClaim {
     /// ISO-8601 expiry timestamp for stale-claim pruning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    /// Server-suggested alternative when this claim is contested.
+    ///
+    /// Present only when `status == Contested` and the resource name matches a
+    /// known reroutable pattern. Agents may use the suggestion to work in
+    /// isolation rather than waiting for lock resolution. Advisory only — agents
+    /// can ignore this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reroute_suggestion: Option<RerouteSuggestion>,
+}
+
+/// An advisory suggestion for an alternative namespaced resource that an agent
+/// can claim to avoid waiting on a contested resource.
+///
+/// Reroute suggestions are generated server-side when a claim results in
+/// `Contested` status and the resource name matches a known pattern (e.g.
+/// `cargo-target`, `coverage`, `bench-output`, `bin-install`). Agents may use
+/// the [`isolation_hint`](Self::isolation_hint) to set up a private workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RerouteSuggestion {
+    /// The original resource that was contested.
+    pub original_resource: String,
+    /// A namespaced alternative resource the agent could claim instead.
+    pub suggested_resource: String,
+    /// Human/agent-readable hint on how to use the alternative (e.g. CLI flag).
+    pub isolation_hint: String,
+    /// Why the reroute was suggested (e.g. "resource contested by agent-x").
+    pub reason: String,
 }
 
 fn default_claim_status_pending() -> ClaimStatus {
@@ -977,7 +1004,104 @@ pub fn claim_resource(
     )
 }
 
+// ---------------------------------------------------------------------------
+// Reroute suggestion engine
+// ---------------------------------------------------------------------------
+
+/// Known resource patterns and their isolation strategies.
+///
+/// Each entry is `(pattern_substring, suggested_suffix_template, isolation_hint_template)`.
+/// The `{agent}` placeholder in templates is replaced with the requesting agent name.
+const REROUTE_RULES: &[(&str, &str, &str)] = &[
+    (
+        "cargo-target",
+        "cargo-target:{agent}",
+        "use --target-dir T:\\RustCache\\cargo-target-{agent}",
+    ),
+    (
+        "target-dir",
+        "target-dir:{agent}",
+        "use --target-dir T:\\RustCache\\cargo-target-{agent}",
+    ),
+    (
+        "coverage-output",
+        "coverage-output:{agent}",
+        "use --output-dir coverage-{agent}",
+    ),
+    (
+        "coverage",
+        "coverage:{agent}",
+        "use --output-dir coverage-{agent}",
+    ),
+    (
+        "bench-output",
+        "bench-output:{agent}",
+        "write benchmark results to bench-output-{agent}/",
+    ),
+    (
+        "bin-install",
+        "bin-install:{agent}",
+        "install to ~/.local/bin-{agent}",
+    ),
+    (
+        "~/bin",
+        "bin-install:{agent}",
+        "install to ~/.local/bin-{agent}",
+    ),
+];
+
+/// Suggest a namespaced alternative resource when a claim is contested.
+///
+/// Returns `Some(RerouteSuggestion)` if `resource` matches a known reroutable
+/// pattern, or a generic fallback suggestion for any resource. The suggestion
+/// is purely advisory — agents may ignore it.
+///
+/// `contested_by` lists the other agent(s) currently holding competing claims.
+#[must_use]
+pub fn suggest_reroute(
+    resource: &str,
+    agent: &str,
+    contested_by: &[String],
+) -> Option<RerouteSuggestion> {
+    if resource.is_empty() || agent.is_empty() {
+        return None;
+    }
+
+    let others = if contested_by.is_empty() {
+        "another agent".to_owned()
+    } else {
+        contested_by.join(", ")
+    };
+    let reason = format!("resource contested by {others}");
+
+    // Check known patterns (first match wins — more-specific patterns listed first).
+    let resource_lower = resource.to_lowercase();
+    for &(pattern, suggested_tmpl, hint_tmpl) in REROUTE_RULES {
+        if resource_lower.contains(pattern) {
+            let suggested = suggested_tmpl.replace("{agent}", agent);
+            let hint = hint_tmpl.replace("{agent}", agent);
+            return Some(RerouteSuggestion {
+                original_resource: resource.to_owned(),
+                suggested_resource: suggested,
+                isolation_hint: hint,
+                reason,
+            });
+        }
+    }
+
+    // Generic fallback: append :<agent> to the resource name.
+    Some(RerouteSuggestion {
+        original_resource: resource.to_owned(),
+        suggested_resource: format!("{resource}:{agent}"),
+        isolation_hint: format!("use namespaced resource '{resource}:{agent}' for isolation"),
+        reason,
+    })
+}
+
 /// Claim a resource with structured lease options.
+///
+/// When a claim results in `Contested` status, the returned [`OwnershipClaim`]
+/// includes a [`RerouteSuggestion`] so agents can isolate instead of wait.
 ///
 /// # Errors
 ///
@@ -1031,12 +1155,13 @@ pub fn claim_resource_with_options(
         thread_id: options.thread_id.clone(),
         lease_ttl_seconds: options.lease_ttl_seconds.max(1),
         expires_at,
+        reroute_suggestion: None,
     });
 
     recompute_claim_statuses(&mut claims);
     persist_claims(&mut conn, &key, &claims, now)?;
 
-    let claim = claims
+    let mut claim = claims
         .iter()
         .find(|claim| claim.agent == agent)
         .cloned()
@@ -1047,6 +1172,11 @@ pub fn claim_resource_with_options(
         .filter(|claimant| claimant.agent != agent)
         .map(|claimant| claimant.agent.clone())
         .collect();
+
+    // Attach a reroute suggestion when the claim is contested.
+    if claim.status == ClaimStatus::Contested {
+        claim.reroute_suggestion = suggest_reroute(resource, agent, &other_claimants);
+    }
 
     if claim.status == ClaimStatus::Contested && !other_claimants.is_empty() {
         // Best-effort escalation notification — failure is non-fatal.
@@ -1664,6 +1794,7 @@ mod tests {
             thread_id: None,
             lease_ttl_seconds: CLAIM_TTL_SECS,
             expires_at: Some("2026-01-01T01:00:00.000000Z".to_owned()),
+            reroute_suggestion: None,
         }
     }
 
@@ -2005,6 +2136,7 @@ mod tests {
             thread_id: None,
             lease_ttl_seconds: CLAIM_TTL_SECS,
             expires_at: Some("2026-01-01T01:00:00.000000Z".to_owned()),
+            reroute_suggestion: None,
         };
         let json = serde_json::to_string(&claim).unwrap();
         let decoded: OwnershipClaim = serde_json::from_str(&json).unwrap();
@@ -2038,6 +2170,7 @@ mod tests {
             thread_id: None,
             lease_ttl_seconds: CLAIM_TTL_SECS,
             expires_at: Some("2026-03-15T13:34:56.000000Z".to_owned()),
+            reroute_suggestion: None,
         };
         let json = serde_json::to_string(&claim).unwrap();
         let decoded: OwnershipClaim = serde_json::from_str(&json).unwrap();
@@ -2617,5 +2750,180 @@ mod tests {
         assert!(ids.contains(&&"1-0".to_owned()));
         assert!(ids.contains(&&"2-0".to_owned()));
         assert!(ids.contains(&&"3-0".to_owned()));
+    }
+
+    // -----------------------------------------------------------------------
+    // Reroute suggestion tests (no Redis)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn suggest_reroute_cargo_target() {
+        let suggestion = suggest_reroute("cargo-target", "codex", &["claude".to_owned()])
+            .expect("should produce a suggestion");
+        assert_eq!(suggestion.original_resource, "cargo-target");
+        assert_eq!(suggestion.suggested_resource, "cargo-target:codex");
+        assert!(
+            suggestion.isolation_hint.contains("--target-dir"),
+            "hint should mention --target-dir: {}",
+            suggestion.isolation_hint
+        );
+        assert!(
+            suggestion.reason.contains("claude"),
+            "reason should mention the contesting agent: {}",
+            suggestion.reason
+        );
+    }
+
+    #[test]
+    fn suggest_reroute_target_dir() {
+        let suggestion = suggest_reroute("target-dir", "gemini", &["claude".to_owned()])
+            .expect("should produce a suggestion");
+        assert_eq!(suggestion.suggested_resource, "target-dir:gemini");
+        assert!(suggestion.isolation_hint.contains("--target-dir"));
+    }
+
+    #[test]
+    fn suggest_reroute_coverage_output() {
+        let suggestion = suggest_reroute("coverage-output", "codex", &["claude".to_owned()])
+            .expect("should produce a suggestion");
+        assert_eq!(suggestion.suggested_resource, "coverage-output:codex");
+        assert!(
+            suggestion.isolation_hint.contains("--output-dir"),
+            "hint should mention --output-dir: {}",
+            suggestion.isolation_hint
+        );
+    }
+
+    #[test]
+    fn suggest_reroute_coverage_bare() {
+        let suggestion =
+            suggest_reroute("coverage", "codex", &[]).expect("should produce a suggestion");
+        assert_eq!(suggestion.suggested_resource, "coverage:codex");
+        assert!(suggestion.isolation_hint.contains("--output-dir"));
+        assert!(
+            suggestion.reason.contains("another agent"),
+            "empty contested_by should say 'another agent': {}",
+            suggestion.reason
+        );
+    }
+
+    #[test]
+    fn suggest_reroute_bench_output() {
+        let suggestion = suggest_reroute(
+            "bench-output",
+            "euler",
+            &["claude".to_owned(), "codex".to_owned()],
+        )
+        .expect("should produce a suggestion");
+        assert_eq!(suggestion.suggested_resource, "bench-output:euler");
+        assert!(suggestion.isolation_hint.contains("bench-output-euler"));
+        assert!(
+            suggestion.reason.contains("claude") && suggestion.reason.contains("codex"),
+            "reason should list all contesting agents: {}",
+            suggestion.reason
+        );
+    }
+
+    #[test]
+    fn suggest_reroute_bin_install() {
+        let suggestion = suggest_reroute("bin-install", "gemini", &["codex".to_owned()])
+            .expect("should produce a suggestion");
+        assert_eq!(suggestion.suggested_resource, "bin-install:gemini");
+        assert!(suggestion.isolation_hint.contains("~/.local/bin-gemini"));
+    }
+
+    #[test]
+    fn suggest_reroute_tilde_bin() {
+        let suggestion = suggest_reroute("~/bin", "claude", &["codex".to_owned()])
+            .expect("should produce a suggestion");
+        assert_eq!(suggestion.suggested_resource, "bin-install:claude");
+        assert!(suggestion.isolation_hint.contains("~/.local/bin-claude"));
+    }
+
+    #[test]
+    fn suggest_reroute_generic_fallback() {
+        let suggestion = suggest_reroute("some-custom-resource", "codex", &["claude".to_owned()])
+            .expect("should produce a generic fallback");
+        assert_eq!(suggestion.suggested_resource, "some-custom-resource:codex");
+        assert!(
+            suggestion.isolation_hint.contains("namespaced resource"),
+            "generic hint should mention namespaced resource: {}",
+            suggestion.isolation_hint
+        );
+    }
+
+    #[test]
+    fn suggest_reroute_case_insensitive_matching() {
+        let suggestion = suggest_reroute("Cargo-Target", "codex", &["claude".to_owned()])
+            .expect("should match case-insensitively");
+        assert_eq!(suggestion.suggested_resource, "cargo-target:codex");
+    }
+
+    #[test]
+    fn suggest_reroute_returns_none_for_empty_resource() {
+        assert!(suggest_reroute("", "codex", &[]).is_none());
+    }
+
+    #[test]
+    fn suggest_reroute_returns_none_for_empty_agent() {
+        assert!(suggest_reroute("cargo-target", "", &[]).is_none());
+    }
+
+    #[test]
+    fn reroute_suggestion_round_trips_via_json() {
+        let suggestion = RerouteSuggestion {
+            original_resource: "cargo-target".to_owned(),
+            suggested_resource: "cargo-target:codex".to_owned(),
+            isolation_hint: "use --target-dir".to_owned(),
+            reason: "resource contested by claude".to_owned(),
+        };
+        let json = serde_json::to_string(&suggestion).expect("serialize");
+        let decoded: RerouteSuggestion = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, suggestion);
+    }
+
+    #[test]
+    fn ownership_claim_with_reroute_round_trips_via_json() {
+        let mut claim = make_claim("codex", "cargo-target", ClaimStatus::Contested);
+        claim.reroute_suggestion = suggest_reroute("cargo-target", "codex", &["claude".to_owned()]);
+        assert!(claim.reroute_suggestion.is_some());
+
+        let json = serde_json::to_string(&claim).expect("serialize");
+        assert!(
+            json.contains("reroute_suggestion"),
+            "JSON should include reroute_suggestion when present"
+        );
+        let decoded: OwnershipClaim = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.reroute_suggestion, claim.reroute_suggestion);
+    }
+
+    #[test]
+    fn ownership_claim_without_reroute_omits_field_in_json() {
+        let claim = make_claim("codex", "src/main.rs", ClaimStatus::Granted);
+        let json = serde_json::to_string(&claim).expect("serialize");
+        assert!(
+            !json.contains("reroute_suggestion"),
+            "JSON should omit reroute_suggestion when None"
+        );
+        let decoded: OwnershipClaim = serde_json::from_str(&json).expect("deserialize");
+        assert!(decoded.reroute_suggestion.is_none());
+    }
+
+    /// Verify that JSON from an older version (without `reroute_suggestion`)
+    /// still deserializes correctly, defaulting to `None`.
+    #[test]
+    fn ownership_claim_backwards_compat_missing_reroute() {
+        let json = r#"{
+            "resource": "src/main.rs",
+            "agent": "claude",
+            "priority_argument": "first-edit",
+            "timestamp": "2026-01-01T00:00:00.000000Z",
+            "status": "granted",
+            "mode": "exclusive",
+            "lease_ttl_seconds": 3600
+        }"#;
+        let claim: OwnershipClaim =
+            serde_json::from_str(json).expect("should deserialize without reroute_suggestion");
+        assert!(claim.reroute_suggestion.is_none());
     }
 }

@@ -158,6 +158,11 @@ pub(crate) enum Cmd {
             help = "Exclude broadcast (to='all') messages"
         )]
         exclude_broadcast: bool,
+        #[arg(
+            long,
+            help = "Truncate message bodies to N chars and append a truncation marker"
+        )]
+        excerpt: Option<usize>,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
