@@ -45,7 +45,7 @@ Structural execution plan:
 - [x] Add TTL-based resource renewal/expiry for lease-backed claims.
 - [ ] Add ack deadlines for high-risk resources such as `~/bin` installs, user config, services, and repo-default artifact roots.
 - [ ] Add cross-repo resource scopes for machine-global paths and services so one repo view can still see contention caused by another repo.
-- [ ] Surface claims, task queues, pending ACKs, and contested ownership directly in the dashboard.
+- [x] Surface claims, task queues, pending ACKs, and contested ownership directly in the dashboard. `/dashboard/data` now returns health, presence, claims (total + contested resources), pending ACKs, and per-agent task queue depths.
 - [ ] Add server-side orchestrator summaries for "what changed since last poll" instead of forcing agents to replay raw history.
 - [x] Generalize `codex_bridge.rs` into agent profiles/adapters so sync workflows are not Codex-specific. `AgentProfile` trait added with `Codex`, `Claude`, `Gemini`, `Custom` variants; `codex_bridge.rs` refactored to use it.
 
