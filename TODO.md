@@ -3,6 +3,7 @@
 Structural execution plan:
 - See [`agents.TODO.md`](./agents.TODO.md) for the canonical completion plan for the remaining package/crate refactor work.
 - Code-grounded status snapshot: [`docs/current-status-2026-04-03.md`](./docs/current-status-2026-04-03.md).
+- Phase 3 crate split plan: [`docs/phase3-crate-split-plan-2026-04-04.md`](./docs/phase3-crate-split-plan-2026-04-04.md).
 
 ## Current Baseline
 
@@ -12,8 +13,11 @@ Structural execution plan:
 - Validation now includes local deploy health checks plus an SSE notification smoke test.
 - Durable notification streams now back direct HTTP replay and the MCP `check_inbox` cursor path.
 - Direct-recipient Pub/Sub now bridges back into `/events/{agent}` so live SSE listeners can be nudged by messages posted from other processes, not only by the HTTP handler that accepted the request.
-- Structural split is ~60% complete: core ops layer (1,205 lines) covers typed wrappers but ~4,400 lines of business logic remain duplicated across `commands.rs` (1,685), `http.rs` (2,836), and `mcp.rs` (1,471).
-- 314 tests total (304 unit in agent-bus-core, 10 integration); `http_integration_test.rs` is a skeleton with 0 test functions.
+- Structural split Phase 1 (ops consolidation) and Phase 2 (transport normalization) complete: `validated_post_message`, `validated_batch_send`, `apply_service_action`, input validation on claim/presence ops, and HTTP compact-context consolidated to shared op. Core ops layer now ~1,670 lines.
+- Agent profile abstraction added (`AgentProfile` trait with `Codex`, `Claude`, `Gemini`, `Custom` variants) replacing Codex-specific bridge logic.
+- Validated task cards added (`TaskCard`, `TaskStatus`, `push_task_card`, `pull_task_card`, `peek_task_cards`) alongside existing opaque string API for backward compat.
+- 486 tests total (394 unit in agent-bus-core, 92 in rust-cli); `http_integration_test.rs` is a skeleton with 0 test functions.
+- Phase 3 crate split plan documented in `docs/phase3-crate-split-plan-2026-04-04.md`.
 
 ## P0 Direct Signaling
 
@@ -34,7 +38,7 @@ Structural execution plan:
 
 ## P2 Cross-Agent Orchestration
 
-- [ ] Replace opaque task queue strings with validated task cards: `repo`, `paths`, `priority`, `depends_on`, `reply_to`, `tags`, `status`.
+- [x] Replace opaque task queue strings with validated task cards: `repo`, `paths`, `priority`, `depends_on`, `reply_to`, `tags`, `status`. Core types added (`TaskCard`, `TaskStatus`, `push_task_card`, `pull_task_card`, `peek_task_cards`); transport wiring pending.
 - [x] Add first-class lease-backed claims with `shared`, `shared_namespaced`, and `exclusive` modes so `RESOURCE_START` / `RESOURCE_DONE` stops living only in free-text messages.
 - [ ] Add durable resource-event notifications and subscriptions over `resource_id`, repo, path prefix, scope kind, and `thread_id`.
 - [ ] Add server-assisted reroute suggestions for namespaced resources (`cargo target`, coverage, bench output, temp install validation) so agents can isolate instead of wait.
@@ -43,7 +47,7 @@ Structural execution plan:
 - [ ] Add cross-repo resource scopes for machine-global paths and services so one repo view can still see contention caused by another repo.
 - [ ] Surface claims, task queues, pending ACKs, and contested ownership directly in the dashboard.
 - [ ] Add server-side orchestrator summaries for "what changed since last poll" instead of forcing agents to replay raw history.
-- [ ] Generalize `codex_bridge.rs` into agent profiles/adapters so sync workflows are not Codex-specific.
+- [x] Generalize `codex_bridge.rs` into agent profiles/adapters so sync workflows are not Codex-specific. `AgentProfile` trait added with `Codex`, `Claude`, `Gemini`, `Custom` variants; `codex_bridge.rs` refactored to use it.
 
 ## P3 Token Efficiency
 

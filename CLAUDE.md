@@ -82,6 +82,8 @@ Current workspace layout:
 - `crates/agent-bus-core`
   - shared storage adapters (`redis_bus`, `postgres_store`)
   - channels, settings, models, token helpers, validation, and typed ops
+  - agent profiles (`agent_profile.rs`: `AgentProfile` trait)
+  - validated task cards (`ops/task.rs`: `TaskCard`, `TaskStatus`)
 - `crates/agent-bus-cli`
   - thin wrapper binary calling `agent_bus::main_entry()`
 - `crates/agent-bus-http`

@@ -126,12 +126,26 @@ Compatibility rules:
 - Preserve existing command names, HTTP routes, and MCP tool names unless a
   dedicated migration note is added first.
 
-## Phase 1: Expand The Shared Service Layer
+## Phase 1: Expand The Shared Service Layer — COMPLETE (2026-04-04)
 
 Objective:
 
 - Move transport-agnostic orchestration out of `commands.rs`, `http.rs`, and
   `mcp.rs` into typed operations modules.
+
+Completed:
+
+- 1A: `validated_post_message()` + `ValidatedSendRequest` consolidate the
+  validate→fit→post pipeline. CLI, HTTP, MCP all delegate through it.
+- 1B: `validated_batch_send()` + `ValidatedBatchItem` consolidate batch-send
+  validation + Redis pipeline into one shared path.
+- 1C: `apply_service_action()` + `ServiceAction` enum + `parse_service_action()`
+  extract the admin state machine. HTTP handler reduced from ~80 to ~37 lines.
+  10 new admin tests added.
+- Input validation (`non_empty`) added to claim/presence ops.
+- HTTP `compact_context` handler refactored to use shared op.
+- Code review found and fixed: flush action bug, silent status fallback,
+  conditional imports. 30 validation unit tests added for claim + message ops.
 
 Target shape:
 
@@ -187,12 +201,25 @@ Exit criteria:
   response conversion.
 - `mcp.rs` primarily performs MCP schema wiring and output conversion.
 
-## Phase 2: Normalize Transport Boundaries
+## Phase 2: Normalize Transport Boundaries — COMPLETE (2026-04-04)
 
 Objective:
 
 - Make the three surfaces structurally consistent so they can be split into
   separate crates with minimal logic movement.
+
+Completed:
+
+- Analysis confirmed HTTP pre-validation (empty checks, priority) must stay
+  as 400/500 status code guards — removing them would degrade client-facing
+  error responses from 400 to 500.
+- Input validation added to claim/presence core ops functions so all
+  transports get validation automatically.
+- HTTP `compact_context` handler consolidated to use shared `compact_context()`
+  op from `ops/inbox` instead of inlining duplicate fetch+compact logic.
+- MCP surface confirmed clean (0 redundant validation calls) — already the
+  model for how transports should delegate.
+- Code review and 30 unit tests added to verify the validation contracts.
 
 Tasks:
 
@@ -216,14 +243,28 @@ Exit criteria:
   the same orchestration logic for claims, channels, inbox reads, and admin
   control.
 
-## Phase 3: Split The Package Into Crates
+## Phase 3: Split The Package Into Crates — PLANNED
 
 Objective:
 
 - Reduce compile/link coupling and make each deployment surface pay only for the
   dependencies it actually uses.
 
-Recommended sequence:
+Detailed execution plan:
+[`docs/phase3-crate-split-plan-2026-04-04.md`](./docs/phase3-crate-split-plan-2026-04-04.md)
+
+Blockers identified (2026-04-04):
+
+1. `http.rs` imports `AgentBusMcpServer` for MCP-HTTP bridge → need shared
+   `McpToolDispatch` in core.
+2. All three entry points funnel through `lib.rs::run()` which parses full
+   CLI enum → need decomposed bootstrap in core.
+3. `clap::ValueEnum` on `Encoding` in core → gate behind feature flag.
+4. `server_mode.rs` is CLI-only → move to `agent-bus-cli`.
+
+Recommended sequence: MCP first (simplest) → HTTP → CLI (most complex).
+
+Previous recommended sequence (superseded):
 
 1. Create a top-level Cargo workspace.
 2. Move shared modules into `crates/agent-bus-core`.
