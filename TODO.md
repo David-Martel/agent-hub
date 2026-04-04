@@ -55,7 +55,7 @@ Structural execution plan:
 - [ ] Extend compact/minimal encodings to shorten repeated tag prefixes and schema markers.
 - [ ] Add excerpt mode for long findings so reads can return short bodies plus metadata pointers.
 - [ ] Benchmark token and byte reduction across JSON, compact, minimal, TOON, and MessagePack for realistic multi-agent sessions.
-- [ ] Add a `compact-thread` / `summarize-thread` flow for direct-channel work so agents can resume a single coordination thread without replaying unrelated repo traffic.
+- [x] Add a `compact-thread` / `summarize-thread` flow for direct-channel work so agents can resume a single coordination thread without replaying unrelated repo traffic. `compact_thread()` + `summarize_thread()` in core ops; CLI + HTTP endpoints.
 - [x] Add a machine-safe mode for machine-readable encodings (`toon`, `compact`, `minimal`, JSON) that suppresses non-fatal warnings from stdout/stderr mixing; current PostgreSQL fallback warnings pollute shell-captured LLM context.
 
 ## P4 Validation And Testing
