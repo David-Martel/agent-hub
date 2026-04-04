@@ -50,6 +50,12 @@ const CHANNEL_STREAM_MAXLEN: u64 = 1000;
 /// if never resolved, preventing stale locks.
 const CLAIM_TTL_SECS: u64 = 3600;
 
+/// TTL for direct-message streams (`bus:direct:*`): 7 days.
+const DIRECT_STREAM_TTL_SECS: u64 = 604_800;
+
+/// TTL for group membership sets (`bus:group:*:members`): 30 days.
+const GROUP_MEMBERS_TTL_SECS: u64 = 2_592_000;
+
 /// Key prefix for direct-message streams.
 const DIRECT_PREFIX: &str = "bus:direct:";
 
@@ -145,6 +151,76 @@ impl Default for ResourceLeaseMode {
     }
 }
 
+/// Visibility scope for a resource claim.
+///
+/// `Repo`-scoped claims are logically visible only within a single repo context
+/// (agents filter by repo tags). `Machine`-scoped claims are visible across all
+/// repos on the machine, making contention visible even when agents work in
+/// different repositories.
+///
+/// The Redis key structure is unchanged — claims are always stored globally.
+/// Scope affects conflict detection visibility: `Machine`-scoped claims match
+/// across ALL repos, while `Repo`-scoped claims are only visible to agents
+/// filtering within the same repo.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceScope {
+    /// Visible only within one repo context (default, backward compatible).
+    Repo,
+    /// Visible across all repos on this machine.
+    Machine,
+}
+
+fn default_resource_scope() -> ResourceScope {
+    ResourceScope::Repo
+}
+
+impl Default for ResourceScope {
+    fn default() -> Self {
+        default_resource_scope()
+    }
+}
+
+/// Resource names that should default to `Machine` scope because they represent
+/// machine-global paths, ports, or services shared across all repositories.
+///
+/// Auto-detection is advisory — callers may override with an explicit scope.
+const MACHINE_GLOBAL_RESOURCES: &[&str] = &[
+    "~/bin",
+    "bin-install",
+    "cargo-target",
+    "target-dir",
+    "port:8400",
+    "port:8401",
+    "agent-bus-service",
+    "sccache",
+    "rustup",
+];
+
+/// Returns `true` if the given resource name matches a known machine-global
+/// pattern (case-insensitive substring match).
+#[must_use]
+pub fn is_machine_global_resource(resource: &str) -> bool {
+    let lower = resource.to_lowercase();
+    MACHINE_GLOBAL_RESOURCES
+        .iter()
+        .any(|pattern| lower.contains(pattern))
+}
+
+/// Determine the effective scope for a claim: if an explicit scope is provided,
+/// use it; otherwise auto-detect based on the resource name.
+#[must_use]
+pub fn effective_scope(resource: &str, explicit: Option<&ResourceScope>) -> ResourceScope {
+    if let Some(scope) = explicit {
+        return scope.clone();
+    }
+    if is_machine_global_resource(resource) {
+        ResourceScope::Machine
+    } else {
+        ResourceScope::Repo
+    }
+}
+
 fn default_claim_ttl_secs() -> u64 {
     CLAIM_TTL_SECS
 }
@@ -166,6 +242,10 @@ pub struct ClaimOptions {
     pub thread_id: Option<String>,
     #[serde(default = "default_claim_ttl_secs")]
     pub lease_ttl_seconds: u64,
+    /// Explicit scope override. When `None`, auto-detection applies based on
+    /// the resource name (machine-global patterns → `Machine`, else `Repo`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ResourceScope>,
 }
 
 /// An ownership claim for a resource (file, directory, etc.).
@@ -206,6 +286,13 @@ pub struct OwnershipClaim {
     /// ISO-8601 expiry timestamp for stale-claim pruning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    /// Visibility scope: `repo` (default) or `machine`.
+    ///
+    /// Machine-scoped claims are visible across all repos on the machine,
+    /// making contention visible even when agents work in different repositories.
+    /// Auto-detected from the resource name when not explicitly set.
+    #[serde(default = "default_resource_scope")]
+    pub scope: ResourceScope,
     /// Server-suggested alternative when this claim is contested.
     ///
     /// Present only when `status == Contested` and the resource name matches a
@@ -579,7 +666,7 @@ fn xadd_to_stream(
     priority: &str,
     metadata: &serde_json::Value,
 ) -> Result<Message> {
-    let id = Uuid::new_v4().to_string();
+    let id = Uuid::now_v7().to_string();
     let ts = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
     let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_owned());
     let meta_json = serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_owned());
@@ -612,6 +699,18 @@ fn xadd_to_stream(
         .arg(&fields)
         .query(conn)
         .context("XADD to channel stream failed")?;
+
+    // Refresh TTL on channel streams: direct = 7 days, group = 30 days.
+    let ttl = if stream_key.starts_with(DIRECT_PREFIX) {
+        DIRECT_STREAM_TTL_SECS
+    } else {
+        GROUP_MEMBERS_TTL_SECS
+    };
+    let _: () = redis::cmd("EXPIRE")
+        .arg(stream_key)
+        .arg(ttl)
+        .query(conn)
+        .context("EXPIRE channel stream failed")?;
 
     Ok(Message {
         id: id.clone(),
@@ -765,6 +864,13 @@ pub fn create_group(
         .arg(created_by)
         .query(&mut conn)
         .context("HSETNX group meta created_by failed")?;
+
+    // Set / refresh TTL on the members set (30 days).
+    let _: () = redis::cmd("EXPIRE")
+        .arg(&members_key)
+        .arg(GROUP_MEMBERS_TTL_SECS)
+        .query(&mut conn)
+        .context("EXPIRE group members failed")?;
 
     // Return the current state of the group.
     list_group_info(&mut conn, name)
@@ -1141,6 +1247,8 @@ pub fn claim_resource_with_options(
     let mut claims = load_active_claims(&mut conn, &key)?;
     claims.retain(|claim| claim.agent != agent);
 
+    let resolved_scope = effective_scope(resource, options.scope.as_ref());
+
     claims.push(OwnershipClaim {
         resource: resource.to_owned(),
         agent: agent.to_owned(),
@@ -1155,6 +1263,7 @@ pub fn claim_resource_with_options(
         thread_id: options.thread_id.clone(),
         lease_ttl_seconds: options.lease_ttl_seconds.max(1),
         expires_at,
+        scope: resolved_scope,
         reroute_suggestion: None,
     });
 
@@ -1794,6 +1903,7 @@ mod tests {
             thread_id: None,
             lease_ttl_seconds: CLAIM_TTL_SECS,
             expires_at: Some("2026-01-01T01:00:00.000000Z".to_owned()),
+            scope: ResourceScope::Repo,
             reroute_suggestion: None,
         }
     }
@@ -2136,6 +2246,7 @@ mod tests {
             thread_id: None,
             lease_ttl_seconds: CLAIM_TTL_SECS,
             expires_at: Some("2026-01-01T01:00:00.000000Z".to_owned()),
+            scope: ResourceScope::Repo,
             reroute_suggestion: None,
         };
         let json = serde_json::to_string(&claim).unwrap();
@@ -2170,6 +2281,7 @@ mod tests {
             thread_id: None,
             lease_ttl_seconds: CLAIM_TTL_SECS,
             expires_at: Some("2026-03-15T13:34:56.000000Z".to_owned()),
+            scope: ResourceScope::Repo,
             reroute_suggestion: None,
         };
         let json = serde_json::to_string(&claim).unwrap();
@@ -2925,5 +3037,156 @@ mod tests {
         let claim: OwnershipClaim =
             serde_json::from_str(json).expect("should deserialize without reroute_suggestion");
         assert!(claim.reroute_suggestion.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // 15. ResourceScope enum and auto-detection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resource_scope_default_is_repo() {
+        assert_eq!(ResourceScope::default(), ResourceScope::Repo);
+    }
+
+    #[test]
+    fn resource_scope_round_trips_via_json() {
+        for scope in &[ResourceScope::Repo, ResourceScope::Machine] {
+            let json = serde_json::to_string(scope).unwrap();
+            let decoded: ResourceScope = serde_json::from_str(&json).unwrap();
+            assert_eq!(&decoded, scope);
+        }
+    }
+
+    #[test]
+    fn resource_scope_serializes_snake_case() {
+        let json = serde_json::to_string(&ResourceScope::Machine).unwrap();
+        assert_eq!(json, r#""machine""#);
+        let json = serde_json::to_string(&ResourceScope::Repo).unwrap();
+        assert_eq!(json, r#""repo""#);
+    }
+
+    #[test]
+    fn is_machine_global_detects_known_resources() {
+        assert!(is_machine_global_resource("~/bin"));
+        assert!(is_machine_global_resource("bin-install"));
+        assert!(is_machine_global_resource("cargo-target"));
+        assert!(is_machine_global_resource("target-dir"));
+        assert!(is_machine_global_resource("port:8400"));
+        assert!(is_machine_global_resource("port:8401"));
+        assert!(is_machine_global_resource("agent-bus-service"));
+        assert!(is_machine_global_resource("sccache"));
+        assert!(is_machine_global_resource("rustup"));
+    }
+
+    #[test]
+    fn is_machine_global_case_insensitive() {
+        assert!(is_machine_global_resource("Cargo-Target"));
+        assert!(is_machine_global_resource("SCCACHE"));
+        assert!(is_machine_global_resource("RUSTUP"));
+        assert!(is_machine_global_resource("PORT:8400"));
+    }
+
+    #[test]
+    fn is_machine_global_matches_substrings() {
+        // e.g. a resource named "my-cargo-target-dir" contains "cargo-target"
+        assert!(is_machine_global_resource("my-cargo-target-dir"));
+        assert!(is_machine_global_resource("global-sccache-lock"));
+    }
+
+    #[test]
+    fn is_machine_global_rejects_repo_scoped() {
+        assert!(!is_machine_global_resource("src/main.rs"));
+        assert!(!is_machine_global_resource("Cargo.toml"));
+        assert!(!is_machine_global_resource("README.md"));
+        assert!(!is_machine_global_resource(""));
+    }
+
+    #[test]
+    fn effective_scope_uses_explicit_override() {
+        // Even for a known machine-global resource, explicit Repo wins.
+        assert_eq!(
+            effective_scope("cargo-target", Some(&ResourceScope::Repo)),
+            ResourceScope::Repo
+        );
+        // And explicit Machine for a non-global resource.
+        assert_eq!(
+            effective_scope("src/main.rs", Some(&ResourceScope::Machine)),
+            ResourceScope::Machine
+        );
+    }
+
+    #[test]
+    fn effective_scope_auto_detects_machine() {
+        assert_eq!(
+            effective_scope("cargo-target", None),
+            ResourceScope::Machine
+        );
+        assert_eq!(effective_scope("sccache", None), ResourceScope::Machine);
+        assert_eq!(effective_scope("port:8400", None), ResourceScope::Machine);
+    }
+
+    #[test]
+    fn effective_scope_defaults_to_repo() {
+        assert_eq!(effective_scope("src/main.rs", None), ResourceScope::Repo);
+        assert_eq!(effective_scope("Cargo.toml", None), ResourceScope::Repo);
+    }
+
+    #[test]
+    fn ownership_claim_scope_round_trips_via_json() {
+        let mut claim = make_claim("claude", "cargo-target", ClaimStatus::Granted);
+        claim.scope = ResourceScope::Machine;
+        let json = serde_json::to_string(&claim).unwrap();
+        assert!(
+            json.contains(r#""scope":"machine""#),
+            "JSON should include scope:machine, got: {json}"
+        );
+        let decoded: OwnershipClaim = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.scope, ResourceScope::Machine);
+    }
+
+    #[test]
+    fn ownership_claim_scope_defaults_to_repo_on_missing() {
+        // JSON without a "scope" field should default to Repo.
+        let json = r#"{
+            "resource": "src/main.rs",
+            "agent": "claude",
+            "priority_argument": "first-edit",
+            "timestamp": "2026-01-01T00:00:00.000000Z",
+            "status": "granted",
+            "mode": "exclusive",
+            "lease_ttl_seconds": 3600
+        }"#;
+        let claim: OwnershipClaim =
+            serde_json::from_str(json).expect("should deserialize without scope field");
+        assert_eq!(claim.scope, ResourceScope::Repo);
+    }
+
+    #[test]
+    fn claim_options_scope_defaults_to_none() {
+        let opts = ClaimOptions::default();
+        assert!(opts.scope.is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // TTL constants (verify documented values)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn direct_stream_ttl_is_7_days() {
+        assert_eq!(DIRECT_STREAM_TTL_SECS, 604_800);
+    }
+
+    #[test]
+    fn group_members_ttl_is_30_days() {
+        assert_eq!(GROUP_MEMBERS_TTL_SECS, 2_592_000);
+    }
+
+    // ------------------------------------------------------------------
+    // UUIDv7 in channel message IDs
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn channel_stream_maxlen_is_1000() {
+        assert_eq!(CHANNEL_STREAM_MAXLEN, 1000);
     }
 }

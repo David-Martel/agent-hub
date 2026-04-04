@@ -1,5 +1,6 @@
 //! Shared bus operations reused across CLI, HTTP, and MCP transports.
 
+pub mod ack_deadline;
 pub mod admin;
 pub mod channel;
 pub mod claim;
@@ -8,6 +9,7 @@ pub mod inventory;
 pub mod message;
 pub mod subscription;
 pub mod task;
+pub mod thread;
 
 use crate::models::{Message, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR};
 use crate::postgres_store::query_scope_tags;

@@ -610,6 +610,11 @@ pub(crate) enum Cmd {
         thread_id: Option<String>,
         #[arg(long, default_value_t = 3600, help = "Lease TTL in seconds [1-86400]")]
         lease_ttl_seconds: u64,
+        #[arg(
+            long,
+            help = "Resource visibility scope: repo|machine (auto-detected if omitted)"
+        )]
+        scope: Option<String>,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
@@ -1049,6 +1054,96 @@ pub(crate) enum Cmd {
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
+
+    // -----------------------------------------------------------------------
+    // Thread commands (joinable conversation scope)
+    // -----------------------------------------------------------------------
+    /// Create a new conversation thread with explicit membership.
+    #[command(long_about = "Create a joinable conversation thread.\n\n\
+            The creator is automatically added as the first member.\n\
+            Other agents join via 'thread-join'. Messages referencing\n\
+            the thread_id are scoped to thread members.\n\n\
+            Example:\n  \
+            agent-bus thread-create --created-by claude --repo agent-bus --topic refactor")]
+    ThreadCreate {
+        #[arg(long, help = "Thread ID (auto-generated UUID if omitted)")]
+        thread_id: Option<String>,
+        #[arg(long, help = "Agent creating the thread")]
+        created_by: String,
+        #[arg(long, help = "Repository this thread relates to")]
+        repo: Option<String>,
+        #[arg(long, help = "Default topic for thread messages")]
+        topic: Option<String>,
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Join an existing conversation thread.
+    #[command(long_about = "Add an agent to a thread's member list.\n\n\
+            Idempotent: joining a thread you are already a member of is a no-op.\n\n\
+            Example:\n  \
+            agent-bus thread-join --thread-id review-42 --agent codex")]
+    ThreadJoin {
+        #[arg(long, help = "Thread ID to join")]
+        thread_id: String,
+        #[arg(long, help = "Agent joining the thread")]
+        agent: String,
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Leave a conversation thread.
+    #[command(long_about = "Remove an agent from a thread's member list.\n\n\
+            Example:\n  \
+            agent-bus thread-leave --thread-id review-42 --agent codex")]
+    ThreadLeave {
+        #[arg(long, help = "Thread ID to leave")]
+        thread_id: String,
+        #[arg(long, help = "Agent leaving the thread")]
+        agent: String,
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// List all conversation threads.
+    #[command(long_about = "List all threads stored in Redis.\n\n\
+            Returns thread_id, created_by, members, repo, topic, and status.\n\n\
+            Example:\n  \
+            agent-bus thread-list --encoding json")]
+    ThreadList {
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Close a conversation thread.
+    #[command(
+        long_about = "Set a thread's status to 'closed'. No new messages should be posted.\n\n\
+            Example:\n  \
+            agent-bus thread-close --thread-id review-42"
+    )]
+    ThreadClose {
+        #[arg(long, help = "Thread ID to close")]
+        thread_id: String,
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+
+    // -----------------------------------------------------------------------
+    // Ack deadline commands
+    // -----------------------------------------------------------------------
+    /// List overdue ack deadlines.
+    #[command(
+        long_about = "Scan Redis for ack deadline records that are past their deadline_at\n\
+            timestamp. These represent messages with request_ack=true that have not\n\
+            been acknowledged within the expected time window.\n\n\
+            Deadline defaults: 5 min (normal), 2 min (high), 1 min (critical/urgent).\n\n\
+            Example:\n  \
+            agent-bus overdue-acks --encoding json"
+    )]
+    OverdueAcks {
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
 }
 
 #[cfg(test)]
@@ -1297,6 +1392,18 @@ mod tests {
                 vec!["priority:high".to_owned(), "kind:finding".to_owned()]
             );
             assert_eq!(thread_id, Some("thread-123".to_owned()));
+        } else {
+            panic!("expected Cmd::Read");
+        }
+    }
+
+    #[test]
+    fn parse_read_excerpt() {
+        let cli =
+            parse(&["agent-bus", "read", "--excerpt", "80"]).expect("read with excerpt must parse");
+
+        if let Cmd::Read { excerpt, .. } = cli.command {
+            assert_eq!(excerpt, Some(80));
         } else {
             panic!("expected Cmd::Read");
         }
@@ -1854,6 +1961,126 @@ mod tests {
     fn parse_compact_thread_missing_thread_id_fails() {
         let result = parse(&["agent-bus", "compact-thread"]);
         assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // thread lifecycle
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_thread_create_with_optional_fields() {
+        let cli = parse(&[
+            "agent-bus",
+            "thread-create",
+            "--thread-id",
+            "review-42",
+            "--created-by",
+            "claude",
+            "--repo",
+            "agent-bus",
+            "--topic",
+            "refactor",
+            "--encoding",
+            "json",
+        ])
+        .expect("thread-create must parse");
+
+        if let Cmd::ThreadCreate {
+            thread_id,
+            created_by,
+            repo,
+            topic,
+            encoding,
+        } = cli.command
+        {
+            assert_eq!(thread_id.as_deref(), Some("review-42"));
+            assert_eq!(created_by, "claude");
+            assert_eq!(repo.as_deref(), Some("agent-bus"));
+            assert_eq!(topic.as_deref(), Some("refactor"));
+            assert!(matches!(encoding, Encoding::Json));
+        } else {
+            panic!("expected Cmd::ThreadCreate");
+        }
+    }
+
+    #[test]
+    fn parse_thread_join_required_args() {
+        let cli = parse(&[
+            "agent-bus",
+            "thread-join",
+            "--thread-id",
+            "review-42",
+            "--agent",
+            "codex",
+        ])
+        .expect("thread-join must parse");
+
+        if let Cmd::ThreadJoin {
+            thread_id, agent, ..
+        } = cli.command
+        {
+            assert_eq!(thread_id, "review-42");
+            assert_eq!(agent, "codex");
+        } else {
+            panic!("expected Cmd::ThreadJoin");
+        }
+    }
+
+    #[test]
+    fn parse_thread_leave_required_args() {
+        let cli = parse(&[
+            "agent-bus",
+            "thread-leave",
+            "--thread-id",
+            "review-42",
+            "--agent",
+            "codex",
+        ])
+        .expect("thread-leave must parse");
+
+        if let Cmd::ThreadLeave {
+            thread_id, agent, ..
+        } = cli.command
+        {
+            assert_eq!(thread_id, "review-42");
+            assert_eq!(agent, "codex");
+        } else {
+            panic!("expected Cmd::ThreadLeave");
+        }
+    }
+
+    #[test]
+    fn parse_thread_list_defaults() {
+        let cli = parse(&["agent-bus", "thread-list"]).expect("thread-list must parse");
+
+        if let Cmd::ThreadList { encoding } = cli.command {
+            assert!(matches!(encoding, Encoding::Compact));
+        } else {
+            panic!("expected Cmd::ThreadList");
+        }
+    }
+
+    #[test]
+    fn parse_thread_close_required_arg() {
+        let cli = parse(&["agent-bus", "thread-close", "--thread-id", "review-42"])
+            .expect("thread-close must parse");
+
+        if let Cmd::ThreadClose { thread_id, .. } = cli.command {
+            assert_eq!(thread_id, "review-42");
+        } else {
+            panic!("expected Cmd::ThreadClose");
+        }
+    }
+
+    #[test]
+    fn parse_overdue_acks_defaults() {
+        let cli = parse(&["agent-bus", "overdue-acks"]).expect("overdue-acks must parse");
+
+        if let Cmd::OverdueAcks { encoding } = cli.command {
+            assert!(matches!(encoding, Encoding::Compact));
+        } else {
+            panic!("expected Cmd::OverdueAcks");
+        }
     }
 
     // ------------------------------------------------------------------

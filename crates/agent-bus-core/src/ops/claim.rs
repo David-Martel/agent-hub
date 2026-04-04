@@ -8,13 +8,30 @@
 
 use anyhow::Result;
 
-use crate::channels::{ArbitrationState, ClaimOptions, OwnershipClaim, ResourceLeaseMode};
+use crate::channels::{
+    ArbitrationState, ClaimOptions, OwnershipClaim, ResourceLeaseMode, ResourceScope,
+};
 use crate::settings::Settings;
 use crate::validation::non_empty;
 
 // ---------------------------------------------------------------------------
 // Mode parsing
 // ---------------------------------------------------------------------------
+
+/// Parse a resource scope string into a [`ResourceScope`].
+///
+/// Accepts `"repo"` and `"machine"`.
+///
+/// # Errors
+///
+/// Returns an error if the string is not one of the recognised values.
+pub fn parse_resource_scope(scope: &str) -> Result<ResourceScope> {
+    match scope {
+        "repo" => Ok(ResourceScope::Repo),
+        "machine" => Ok(ResourceScope::Machine),
+        other => anyhow::bail!("invalid scope '{other}'; expected repo|machine"),
+    }
+}
 
 /// Parse a lease mode string into a [`ResourceLeaseMode`].
 ///
@@ -52,6 +69,9 @@ pub struct ClaimResourceRequest<'a> {
     pub repo_scopes: &'a [String],
     pub thread_id: Option<&'a str>,
     pub lease_ttl_seconds: u64,
+    /// Explicit resource scope override (`repo` or `machine`).
+    /// When `None`, auto-detection applies based on the resource name.
+    pub scope: Option<ResourceScope>,
 }
 
 /// Claim ownership of a resource with structured lease options.
@@ -78,6 +98,7 @@ pub fn claim_resource(
         repo_scopes: request.repo_scopes.to_vec(),
         thread_id: request.thread_id.map(str::to_owned),
         lease_ttl_seconds: request.lease_ttl_seconds.max(1),
+        scope: request.scope.clone(),
     };
     crate::channels::claim_resource_with_options(
         settings,
@@ -257,6 +278,33 @@ mod tests {
         Settings::from_env()
     }
 
+    // -- parse_resource_scope ---------------------------------------------------
+
+    #[test]
+    fn parse_resource_scope_accepts_repo() {
+        assert!(matches!(
+            parse_resource_scope("repo").unwrap(),
+            ResourceScope::Repo
+        ));
+    }
+
+    #[test]
+    fn parse_resource_scope_accepts_machine() {
+        assert!(matches!(
+            parse_resource_scope("machine").unwrap(),
+            ResourceScope::Machine
+        ));
+    }
+
+    #[test]
+    fn parse_resource_scope_rejects_unknown() {
+        let err = parse_resource_scope("global").unwrap_err();
+        assert!(
+            err.to_string().contains("invalid scope"),
+            "error should mention 'invalid scope': {err}"
+        );
+    }
+
     // -- parse_lease_mode -----------------------------------------------------
 
     #[test]
@@ -310,6 +358,7 @@ mod tests {
                 repo_scopes: &[],
                 thread_id: None,
                 lease_ttl_seconds: 300,
+                scope: None,
             },
         );
         assert!(result.is_err());
@@ -333,6 +382,7 @@ mod tests {
                 repo_scopes: &[],
                 thread_id: None,
                 lease_ttl_seconds: 300,
+                scope: None,
             },
         );
         assert!(result.is_err());
@@ -356,6 +406,7 @@ mod tests {
                 repo_scopes: &[],
                 thread_id: None,
                 lease_ttl_seconds: 300,
+                scope: None,
             },
         );
         assert!(result.is_err());
@@ -382,6 +433,7 @@ mod tests {
                 repo_scopes: &[],
                 thread_id: None,
                 lease_ttl_seconds: 300,
+                scope: None,
             },
         );
         assert!(result.is_err());

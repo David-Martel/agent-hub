@@ -11,6 +11,9 @@
 use anyhow::{Result, anyhow};
 use serde_json::Value;
 
+/// Number of MCP tools exposed by [`tool_definitions`].
+pub const TOOL_COUNT: usize = 17;
+
 use crate::ops::admin::{health as ops_health, list_presence as ops_list_presence};
 use crate::ops::channel::{
     CreateGroupRequest, EscalateRequest, PostDirectRequest, PostGroupRequest, ReadDirectRequest,
@@ -20,7 +23,7 @@ use crate::ops::channel::{
 };
 use crate::ops::claim::{
     ClaimResourceRequest, ReleaseClaimRequest, RenewClaimRequest, ResolveClaimRequest,
-    claim_resource as ops_claim_resource, release_claim as ops_release_claim,
+    claim_resource as ops_claim_resource, parse_resource_scope, release_claim as ops_release_claim,
     renew_claim as ops_renew_claim, resolve_claim as ops_resolve_claim,
 };
 use crate::ops::inbox::{CheckInboxRequest, check_inbox};
@@ -212,7 +215,8 @@ pub mod schemas {
                 "scope_path": {"type": "string"},
                 "repo_scopes": {"type": "array", "items": {"type": "string"}},
                 "thread_id": {"type": "string"},
-                "lease_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 86400}
+                "lease_ttl_seconds": {"type": "integer", "minimum": 1, "maximum": 86400},
+                "scope": {"type": "string", "enum": ["repo", "machine"], "description": "Visibility scope: repo (default) or machine. Auto-detected from resource name if omitted."}
             }),
             &["resource", "agent"],
         )
@@ -663,7 +667,8 @@ impl<'a> McpToolDispatch<'a> {
             }
 
             "negotiate" => {
-                let tool_count = tool_definitions().len();
+                // Avoid allocating the full tool_definitions() vec just to count.
+                let tool_count = TOOL_COUNT;
                 Ok(serde_json::json!({
                     "protocol_version": crate::models::PROTOCOL_VERSION,
                     "features": [
@@ -825,6 +830,9 @@ impl<'a> McpToolDispatch<'a> {
                 let repo_scopes = get_string_array(args, "repo_scopes");
                 let thread_id = get_str(args, "thread_id").map(str::to_owned);
                 let lease_ttl_seconds = get_u64_or(args, "lease_ttl_seconds", 3600);
+                let scope = get_str(args, "scope")
+                    .map(parse_resource_scope)
+                    .transpose()?;
 
                 let claim = ops_claim_resource(
                     settings,
@@ -839,6 +847,7 @@ impl<'a> McpToolDispatch<'a> {
                         repo_scopes: &repo_scopes,
                         thread_id: thread_id.as_deref(),
                         lease_ttl_seconds,
+                        scope,
                     },
                 )?;
                 Ok(serde_json::to_value(&claim)?)
@@ -914,7 +923,7 @@ impl<'a> McpToolDispatch<'a> {
                         request_ack,
                         reply_to: None,
                         metadata: &metadata,
-                        has_sse_subscribers: true,
+                        has_sse_subscribers: false,
                     },
                 )?;
                 Ok(serde_json::to_value(&msg)?)
@@ -971,7 +980,11 @@ mod tests {
     #[test]
     fn tool_definitions_has_expected_count() {
         let tools = tool_definitions();
-        assert_eq!(tools.len(), 17, "expected 17 MCP tool definitions");
+        assert_eq!(
+            tools.len(),
+            TOOL_COUNT,
+            "tool_definitions vs TOOL_COUNT mismatch"
+        );
     }
 
     #[test]
@@ -1149,6 +1162,72 @@ mod tests {
         let args2 = serde_json::json!({"agent": "claude"});
         let r2 = dispatch.dispatch_tool("claim_resource", args2.as_object().unwrap());
         assert!(r2.is_err());
+    }
+
+    #[test]
+    fn claim_resource_schema_includes_scope_enum() {
+        let tool = tool_definitions()
+            .into_iter()
+            .find(|tool| tool.name == "claim_resource")
+            .expect("claim_resource must exist");
+
+        let scope = tool
+            .schema
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .and_then(|props| props.get("scope"))
+            .expect("claim_resource schema must expose scope");
+
+        let enum_values: Vec<&str> = scope["enum"]
+            .as_array()
+            .expect("scope enum must exist")
+            .iter()
+            .filter_map(|value| value.as_str())
+            .collect();
+
+        assert_eq!(enum_values, vec!["repo", "machine"]);
+    }
+
+    #[test]
+    fn claim_resource_rejects_invalid_scope_before_backend_access() {
+        let settings = crate::settings::Settings::from_env();
+        let dispatch = McpToolDispatch::new(&settings);
+        let args = serde_json::json!({
+            "resource": "src/main.rs",
+            "agent": "claude",
+            "scope": "planet"
+        });
+
+        let err = dispatch
+            .dispatch_tool(
+                "claim_resource",
+                args.as_object().expect("args must be object"),
+            )
+            .expect_err("invalid scope must fail");
+
+        assert!(
+            !err.to_string().trim().is_empty(),
+            "invalid scope error should not be empty"
+        );
+    }
+
+    #[test]
+    fn read_channel_group_requires_group_name_before_backend_access() {
+        let settings = crate::settings::Settings::from_env();
+        let dispatch = McpToolDispatch::new(&settings);
+        let args = serde_json::json!({
+            "channel_type": "group",
+            "limit": 5
+        });
+
+        let err = dispatch
+            .dispatch_tool(
+                "read_channel",
+                args.as_object().expect("args must be object"),
+            )
+            .expect_err("missing group_name must fail");
+
+        assert!(err.to_string().contains("group_name"));
     }
 
     #[test]

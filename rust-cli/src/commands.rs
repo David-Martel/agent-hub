@@ -16,7 +16,7 @@ use crate::ops::channel::{
 use crate::ops::claim::{
     ClaimResourceRequest, ListClaimsRequest, ReleaseClaimRequest, RenewClaimRequest,
     ResolveClaimRequest, claim_resource as ops_claim_resource, list_claims as ops_list_claims,
-    release_claim as ops_release_claim, renew_claim as ops_renew_claim,
+    parse_resource_scope, release_claim as ops_release_claim, renew_claim as ops_renew_claim,
     resolve_claim as ops_resolve_claim,
 };
 use crate::ops::inbox::{
@@ -1037,8 +1037,11 @@ pub(crate) fn cmd_claim(
     repo_scopes: &[String],
     thread_id: Option<&str>,
     lease_ttl_seconds: u64,
+    scope: Option<&str>,
     encoding: &Encoding,
 ) -> Result<()> {
+    let parsed_scope = scope.map(parse_resource_scope).transpose()?;
+
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
         let base = settings.server_url.as_deref().unwrap_or("");
@@ -1055,6 +1058,7 @@ pub(crate) fn cmd_claim(
                 "repo_scopes": repo_scopes,
                 "thread_id": thread_id,
                 "lease_ttl_seconds": lease_ttl_seconds.max(1),
+                "scope": scope,
             }),
         )?;
         output(&val, encoding);
@@ -1074,6 +1078,7 @@ pub(crate) fn cmd_claim(
             repo_scopes,
             thread_id,
             lease_ttl_seconds,
+            scope: parsed_scope,
         },
     )?;
     output(&claim, encoding);
@@ -1766,6 +1771,135 @@ pub(crate) fn cmd_inventory(
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Thread commands (Part A)
+// ---------------------------------------------------------------------------
+
+/// Create a new conversation thread.
+///
+/// # Errors
+///
+/// Returns an error if `created_by` is empty, or the Redis connection fails.
+pub(crate) fn cmd_thread_create(
+    settings: &Settings,
+    thread_id: Option<&str>,
+    created_by: &str,
+    repo: Option<&str>,
+    topic: Option<&str>,
+    encoding: &Encoding,
+) -> Result<()> {
+    use crate::ops::thread::{CreateThreadRequest, create_thread as ops_create_thread};
+
+    let thread = ops_create_thread(
+        settings,
+        &CreateThreadRequest {
+            thread_id,
+            created_by,
+            repo,
+            topic,
+        },
+    )?;
+
+    output(&serde_json::to_value(&thread)?, encoding);
+    Ok(())
+}
+
+/// Join a conversation thread.
+///
+/// # Errors
+///
+/// Returns an error if `thread_id` or `agent` is empty, the thread does not
+/// exist, or the Redis connection fails.
+pub(crate) fn cmd_thread_join(
+    settings: &Settings,
+    thread_id: &str,
+    agent: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    use crate::ops::thread::{ThreadMemberRequest, join_thread as ops_join_thread};
+
+    let thread = ops_join_thread(settings, &ThreadMemberRequest { thread_id, agent })?;
+
+    output(&serde_json::to_value(&thread)?, encoding);
+    Ok(())
+}
+
+/// Leave a conversation thread.
+///
+/// # Errors
+///
+/// Returns an error if `thread_id` or `agent` is empty, the thread does not
+/// exist, or the Redis connection fails.
+pub(crate) fn cmd_thread_leave(
+    settings: &Settings,
+    thread_id: &str,
+    agent: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    use crate::ops::thread::{ThreadMemberRequest, leave_thread as ops_leave_thread};
+
+    let thread = ops_leave_thread(settings, &ThreadMemberRequest { thread_id, agent })?;
+
+    output(&serde_json::to_value(&thread)?, encoding);
+    Ok(())
+}
+
+/// List all threads.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection fails.
+pub(crate) fn cmd_thread_list(settings: &Settings, encoding: &Encoding) -> Result<()> {
+    use crate::ops::thread::list_threads as ops_list_threads;
+
+    let threads = ops_list_threads(settings)?;
+    let count = threads.len();
+    output(
+        &serde_json::json!({"threads": threads, "count": count}),
+        encoding,
+    );
+    Ok(())
+}
+
+/// Close a conversation thread.
+///
+/// # Errors
+///
+/// Returns an error if `thread_id` is empty, the thread does not exist,
+/// or the Redis connection fails.
+pub(crate) fn cmd_thread_close(
+    settings: &Settings,
+    thread_id: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    use crate::ops::thread::close_thread as ops_close_thread;
+
+    let thread = ops_close_thread(settings, thread_id)?;
+    output(&serde_json::to_value(&thread)?, encoding);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Ack deadline commands (Part B)
+// ---------------------------------------------------------------------------
+
+/// List overdue ack deadlines.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection fails.
+pub(crate) fn cmd_overdue_acks(settings: &Settings, encoding: &Encoding) -> Result<()> {
+    use crate::ops::ack_deadline::check_overdue_acks as ops_check_overdue_acks;
+
+    let overdue = ops_check_overdue_acks(settings)?;
+    let count = overdue.len();
+    output(
+        &serde_json::json!({"overdue_acks": overdue, "count": count}),
+        encoding,
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1843,5 +1977,218 @@ mod tests {
         let expanded = extra_filter_fetch_limit(10, &filters);
         assert!(expanded >= 10);
         assert!(expanded >= crate::models::XREVRANGE_MIN_FETCH);
+    }
+
+    #[cfg(feature = "server-mode")]
+    #[test]
+    fn build_server_resource_url_encodes_embedded_path_separators() {
+        let url = build_server_resource_url(
+            "http://localhost:8400/api/v1",
+            "repo/path with spaces/file.rs",
+            Some("resolve"),
+        )
+        .expect("resource URL should build");
+
+        assert_eq!(
+            url,
+            "http://localhost:8400/api/v1/channels/arbitrate/repo%2Fpath%20with%20spaces%2Ffile.rs/resolve"
+        );
+    }
+
+    #[test]
+    fn severity_rank_orders_known_levels_and_unknowns() {
+        assert_eq!(severity_rank("CRITICAL"), 4);
+        assert_eq!(severity_rank("HIGH"), 3);
+        assert_eq!(severity_rank("MEDIUM"), 2);
+        assert_eq!(severity_rank("LOW"), 1);
+        assert_eq!(severity_rank("unexpected"), 0);
+    }
+
+    fn test_settings() -> Settings {
+        Settings::from_env()
+    }
+
+    #[test]
+    fn cmd_service_rejects_unknown_action_before_side_effects() {
+        let err = cmd_service(
+            &test_settings(),
+            "bogus",
+            None,
+            Some("http://localhost:8400"),
+            None,
+            1,
+            &Encoding::Json,
+        )
+        .expect_err("invalid service action must fail");
+
+        assert!(err.to_string().contains("invalid service action"));
+    }
+
+    #[test]
+    fn cmd_push_task_rejects_blank_agent_before_queue_access() {
+        let err = cmd_push_task(
+            &test_settings(),
+            "   ",
+            "do the thing",
+            &Encoding::Json,
+            None,
+            "normal",
+            &[],
+            &[],
+            None,
+            "codex",
+        )
+        .expect_err("blank agent must fail");
+
+        assert!(err.to_string().contains("--agent"));
+    }
+
+    #[test]
+    fn cmd_push_task_rejects_blank_task_before_queue_access() {
+        let err = cmd_push_task(
+            &test_settings(),
+            "codex",
+            "   ",
+            &Encoding::Json,
+            None,
+            "normal",
+            &[],
+            &[],
+            None,
+            "codex",
+        )
+        .expect_err("blank task must fail");
+
+        assert!(err.to_string().contains("--task"));
+    }
+
+    #[test]
+    fn cmd_pull_task_rejects_blank_agent_before_queue_access() {
+        let err = cmd_pull_task(&test_settings(), "   ", &Encoding::Json)
+            .expect_err("blank agent must fail");
+
+        assert!(err.to_string().contains("--agent"));
+    }
+
+    #[test]
+    fn cmd_peek_tasks_rejects_blank_agent_before_queue_access() {
+        let err = cmd_peek_tasks(&test_settings(), "   ", 5, &Encoding::Json)
+            .expect_err("blank agent must fail");
+
+        assert!(err.to_string().contains("--agent"));
+    }
+
+    #[test]
+    fn cmd_knock_rejects_blank_body_before_bus_access() {
+        let err = cmd_knock(
+            &test_settings(),
+            "codex",
+            "claude",
+            "   ",
+            None,
+            &[],
+            false,
+            &Encoding::Json,
+        )
+        .expect_err("blank knock body must fail");
+
+        assert!(err.to_string().contains("--body"));
+    }
+
+    #[test]
+    fn cmd_presence_rejects_blank_agent_before_presence_write() {
+        let session_id = Some("session-123".to_owned());
+        let err = cmd_presence(
+            &test_settings(),
+            &PresenceArgs {
+                agent: "   ",
+                status: "online",
+                session_id: &session_id,
+                capabilities: &[],
+                ttl_seconds: 60,
+                metadata: None,
+                encoding: &Encoding::Json,
+            },
+        )
+        .expect_err("blank agent must fail");
+
+        assert!(err.to_string().contains("--agent"));
+    }
+
+    #[test]
+    fn cmd_claim_rejects_invalid_scope_before_bus_access() {
+        let err = cmd_claim(
+            &test_settings(),
+            "src/main.rs",
+            "codex",
+            "editing",
+            "exclusive",
+            None,
+            None,
+            None,
+            &[],
+            None,
+            60,
+            Some("planet"),
+            &Encoding::Json,
+        )
+        .expect_err("invalid scope must fail");
+
+        assert!(err.to_string().contains("invalid scope"));
+    }
+
+    #[test]
+    fn cmd_thread_create_rejects_blank_created_by_before_bus_access() {
+        let err = cmd_thread_create(
+            &test_settings(),
+            Some("thread-1"),
+            "   ",
+            Some("agent-bus"),
+            Some("review"),
+            &Encoding::Json,
+        )
+        .expect_err("blank created_by must fail");
+
+        assert!(err.to_string().contains("created_by"));
+    }
+
+    #[test]
+    fn cmd_thread_join_rejects_blank_thread_id_before_bus_access() {
+        let err = cmd_thread_join(&test_settings(), "   ", "codex", &Encoding::Json)
+            .expect_err("blank thread_id must fail");
+
+        assert!(err.to_string().contains("thread_id"));
+    }
+
+    #[test]
+    fn cmd_thread_join_rejects_blank_agent_before_bus_access() {
+        let err = cmd_thread_join(&test_settings(), "thread-1", "   ", &Encoding::Json)
+            .expect_err("blank agent must fail");
+
+        assert!(err.to_string().contains("agent"));
+    }
+
+    #[test]
+    fn cmd_thread_leave_rejects_blank_thread_id_before_bus_access() {
+        let err = cmd_thread_leave(&test_settings(), "   ", "codex", &Encoding::Json)
+            .expect_err("blank thread_id must fail");
+
+        assert!(err.to_string().contains("thread_id"));
+    }
+
+    #[test]
+    fn cmd_thread_leave_rejects_blank_agent_before_bus_access() {
+        let err = cmd_thread_leave(&test_settings(), "thread-1", "   ", &Encoding::Json)
+            .expect_err("blank agent must fail");
+
+        assert!(err.to_string().contains("agent"));
+    }
+
+    #[test]
+    fn cmd_thread_close_rejects_blank_thread_id_before_bus_access() {
+        let err = cmd_thread_close(&test_settings(), "   ", &Encoding::Json)
+            .expect_err("blank thread_id must fail");
+
+        assert!(err.to_string().contains("thread_id"));
     }
 }

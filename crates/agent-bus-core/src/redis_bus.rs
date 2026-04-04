@@ -226,6 +226,22 @@ pub struct PostedMessage {
 /// Approximate MAXLEN for per-agent notification streams.
 const NOTIFICATION_STREAM_MAXLEN: u64 = 10_000;
 
+// ---------------------------------------------------------------------------
+// TTL constants for Redis key expiry (seconds)
+// ---------------------------------------------------------------------------
+
+/// TTL for notification streams (`agent_bus:notify:*`): 3 days.
+const NOTIFICATION_STREAM_TTL_SECS: u64 = 259_200;
+
+/// TTL for notification and inbox cursors (`bus:cursor:*`, `bus:notify_cursor:*`): 7 days.
+const CURSOR_TTL_SECS: u64 = 604_800;
+
+/// TTL for per-agent task queues (`bus:tasks:*`): 3 days.
+const TASK_QUEUE_TTL_SECS: u64 = 259_200;
+
+/// TTL for per-resource event streams (`agent_bus:resource_events:*`): 3 days.
+const RESOURCE_EVENT_TTL_SECS: u64 = 259_200;
+
 /// Redis key prefix for per-agent notification streams.
 const NOTIFICATION_STREAM_PREFIX: &str = "agent_bus:notify:";
 
@@ -311,8 +327,11 @@ pub fn set_scoped_notification_cursor(
     stream_id: &str,
 ) -> Result<()> {
     let key = scoped_notification_cursor_key(agent, repo, session);
-    let _: () =
-        redis::Commands::set(conn, &key, stream_id).context("SET scoped notification cursor")?;
+    let mut pipe = redis::pipe();
+    pipe.cmd("SET").arg(&key).arg(stream_id);
+    pipe.cmd("EXPIRE").arg(&key).arg(CURSOR_TTL_SECS);
+    pipe.query::<((), ())>(conn)
+        .context("SET + EXPIRE scoped notification cursor")?;
     Ok(())
 }
 
@@ -372,7 +391,7 @@ fn append_notifications_for_message(
     }
 
     let agent = msg.to.clone();
-    let id = Uuid::new_v4().to_string();
+    let id = Uuid::now_v7().to_string();
     let message_json = serde_json::to_string(msg).context("serialize message for notification")?;
     let created_at = msg.timestamp_utc.clone();
     let reason = notification_reason(msg).to_owned();
@@ -396,6 +415,13 @@ fn append_notifications_for_message(
         .query(conn)
         .context("XADD notification failed")?;
 
+    // Refresh TTL on the notification stream (3 days).
+    let _: () = redis::cmd("EXPIRE")
+        .arg(&key)
+        .arg(NOTIFICATION_STREAM_TTL_SECS)
+        .query(conn)
+        .context("EXPIRE notification stream failed")?;
+
     Ok(vec![Notification {
         id,
         agent,
@@ -412,7 +438,7 @@ fn prepare_notification_fields(msg: &Message) -> Option<[String; 5]> {
         return None;
     }
 
-    let id = Uuid::new_v4().to_string();
+    let id = Uuid::now_v7().to_string();
     let created_at = msg.timestamp_utc.clone();
     let reason = notification_reason(msg).to_owned();
     let requires_ack = if msg.request_ack {
@@ -754,7 +780,7 @@ fn prepare_message(
     metadata: &serde_json::Value,
     session_id: Option<&str>,
 ) -> PreparedMessage {
-    let id = Uuid::new_v4().to_string();
+    let id = Uuid::now_v7().to_string();
     let ts = {
         let mut buf = String::with_capacity(32);
         let _ = write!(buf, "{}", Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ"));
@@ -1042,6 +1068,32 @@ pub fn bus_post_messages_batch_with_notifications(
         if let Err(e) = ack_pipe.query::<Vec<String>>(conn) {
             tracing::warn!("batch pending-ack pipeline failed (non-fatal): {e:#}");
         }
+
+        // Ack deadline tracking (additive, pipelined alongside pending acks).
+        let mut deadline_pipe = redis::pipe();
+        for msg in messages.iter().filter(|m| m.request_ack) {
+            let ttl = crate::models::ack_deadline_seconds(&msg.priority);
+            let deadline_at =
+                chrono::Utc::now() + chrono::Duration::seconds(i64::try_from(ttl).unwrap_or(300));
+            let deadline = crate::models::AckDeadline {
+                message_id: msg.id.clone(),
+                recipient: msg.to.clone(),
+                deadline_at: deadline_at.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string(),
+                escalation_level: 0,
+                escalated_to: None,
+            };
+            let key = format!("{ACK_DEADLINE_PREFIX}{}", msg.id);
+            let json = serde_json::to_string(&deadline).unwrap_or_default();
+            deadline_pipe
+                .cmd("SET")
+                .arg(&key)
+                .arg(&json)
+                .arg("EX")
+                .arg(ttl);
+        }
+        if let Err(e) = deadline_pipe.query::<Vec<String>>(conn) {
+            tracing::warn!("batch ack-deadline pipeline failed (non-fatal): {e:#}");
+        }
     }
 
     let mut notifications_by_message: Vec<Vec<Notification>> =
@@ -1056,9 +1108,10 @@ pub fn bus_post_messages_batch_with_notifications(
                 continue;
             };
             message_indexes.push(idx);
+            let notify_key = notification_stream_key(messages[idx].to.as_str());
             notify_pipe
                 .cmd("XADD")
-                .arg(notification_stream_key(messages[idx].to.as_str()))
+                .arg(&notify_key)
                 .arg("MAXLEN")
                 .arg("~")
                 .arg(NOTIFICATION_STREAM_MAXLEN)
@@ -1071,6 +1124,12 @@ pub fn bus_post_messages_batch_with_notifications(
                     ("requires_ack", fields[3].as_str()),
                     ("message", fields[4].as_str()),
                 ]);
+            // Refresh TTL on the notification stream (3 days).
+            notify_pipe
+                .cmd("EXPIRE")
+                .arg(&notify_key)
+                .arg(NOTIFICATION_STREAM_TTL_SECS)
+                .ignore();
         }
 
         if !message_indexes.is_empty() {
@@ -1184,7 +1243,7 @@ pub fn bus_post_message_with_notifications(
     pg_writer: Option<&PgWriter>,
     has_sse_subscribers: bool,
 ) -> Result<PostedMessage> {
-    let id = Uuid::new_v4().to_string();
+    let id = Uuid::now_v7().to_string();
     // Fix 3: pre-allocate a 32-byte buffer and write directly into it, avoiding
     // the intermediate `DelayedFormat` heap allocation from `.to_string()`.
     let ts = {
@@ -1365,6 +1424,15 @@ pub fn bus_post_message_with_notifications(
     // surface unacknowledged messages.  Failures are non-fatal.
     if request_ack && let Err(error) = track_pending_ack(conn, &id, to, &msg.timestamp_utc) {
         tracing::warn!("failed to track pending ack for {id}: {error:#}");
+    }
+
+    // --- Ack deadline tracking (additive) ------------------------------------
+    // When the sender requests acknowledgement, also store an ack deadline
+    // record with a priority-dependent TTL. This is non-fatal.
+    if request_ack
+        && let Err(error) = crate::ops::ack_deadline::store_ack_deadline(conn, &id, to, priority)
+    {
+        tracing::warn!("failed to store ack deadline for {id}: {error:#}");
     }
     // -------------------------------------------------------------------------
 
@@ -1996,8 +2064,8 @@ pub fn get_inbox_cursor(conn: &mut redis::Connection, agent: &str) -> Result<Str
 
 /// Advance the inbox cursor for `agent` to `stream_id`.
 ///
-/// The cursor is stored without a TTL so it persists across restarts.
-/// Callers should only advance after successfully delivering the messages.
+/// The cursor is given a 7-day TTL so inactive agents' cursors are
+/// eventually reclaimed.  Each advance refreshes the TTL.
 ///
 /// # Errors
 ///
@@ -2008,7 +2076,11 @@ pub fn get_inbox_cursor(conn: &mut redis::Connection, agent: &str) -> Result<Str
 )]
 pub fn set_inbox_cursor(conn: &mut redis::Connection, agent: &str, stream_id: &str) -> Result<()> {
     let key = inbox_cursor_key(agent);
-    let _: () = redis::Commands::set(conn, &key, stream_id).context("SET inbox cursor")?;
+    let mut pipe = redis::pipe();
+    pipe.cmd("SET").arg(&key).arg(stream_id);
+    pipe.cmd("EXPIRE").arg(&key).arg(CURSOR_TTL_SECS);
+    pipe.query::<((), ())>(conn)
+        .context("SET + EXPIRE inbox cursor")?;
     Ok(())
 }
 
@@ -2049,7 +2121,7 @@ pub fn bus_set_presence(
     pg_writer: Option<&PgWriter>,
 ) -> Result<Presence> {
     let key = format!("{}{agent}", settings.presence_prefix);
-    let sid = session_id.map_or_else(|| Uuid::new_v4().to_string(), String::from);
+    let sid = session_id.map_or_else(|| Uuid::now_v7().to_string(), String::from);
 
     let presence = Presence {
         agent: agent.to_owned(),
@@ -2255,11 +2327,16 @@ pub const TASK_QUEUE_PREFIX: &str = "bus:tasks:";
 pub fn push_task(settings: &Settings, agent: &str, task_json: &str) -> Result<u64> {
     let mut conn = connect(settings)?;
     let key = format!("{TASK_QUEUE_PREFIX}{agent}");
-    let len: u64 = redis::cmd("RPUSH")
+    let (len,): (u64,) = redis::pipe()
+        .cmd("RPUSH")
         .arg(&key)
         .arg(task_json)
+        .cmd("EXPIRE")
+        .arg(&key)
+        .arg(TASK_QUEUE_TTL_SECS)
+        .ignore()
         .query(&mut conn)
-        .context("RPUSH task failed")?;
+        .context("RPUSH + EXPIRE task failed")?;
     Ok(len)
 }
 
@@ -2475,15 +2552,20 @@ pub fn emit_resource_event(
         ("timestamp", &ts),
     ];
 
-    let stream_id: String = redis::cmd("XADD")
+    let (stream_id,): (String,) = redis::pipe()
+        .cmd("XADD")
         .arg(&key)
         .arg("MAXLEN")
         .arg("~")
         .arg(RESOURCE_EVENT_MAXLEN)
         .arg("*")
         .arg(&fields)
+        .cmd("EXPIRE")
+        .arg(&key)
+        .arg(RESOURCE_EVENT_TTL_SECS)
+        .ignore()
         .query(conn)
-        .context("XADD resource event failed")?;
+        .context("XADD + EXPIRE resource event failed")?;
 
     Ok(stream_id)
 }
@@ -2542,6 +2624,269 @@ pub fn list_resource_events(
     }
 
     Ok(events)
+}
+
+// ---------------------------------------------------------------------------
+// Thread storage (Part A)
+// ---------------------------------------------------------------------------
+
+/// Redis key prefix for thread records.
+const THREAD_PREFIX: &str = "agent_bus:thread:";
+
+/// Create a new thread in Redis.
+///
+/// Stores the thread JSON at `agent_bus:thread:<thread_id>`.
+///
+/// # Errors
+///
+/// Returns an error if the Redis `SET` command fails or the thread already
+/// exists.
+pub fn create_thread(conn: &mut redis::Connection, thread: &crate::models::Thread) -> Result<()> {
+    let key = format!("{THREAD_PREFIX}{}", thread.thread_id);
+
+    // Check if thread already exists (NX-style guard).
+    let existing: Option<String> =
+        redis::Commands::get(conn, &key).context("GET thread check failed")?;
+    if existing.is_some() {
+        anyhow::bail!("thread '{}' already exists", thread.thread_id);
+    }
+
+    let json = serde_json::to_string(thread).context("serialize thread")?;
+    let _: () = redis::Commands::set(conn, &key, &json).context("SET thread failed")?;
+    Ok(())
+}
+
+/// Add an agent to a thread's member list.
+///
+/// Returns the updated thread.
+///
+/// # Errors
+///
+/// Returns an error if the thread does not exist or the Redis command fails.
+pub fn join_thread(
+    conn: &mut redis::Connection,
+    thread_id: &str,
+    agent: &str,
+) -> Result<crate::models::Thread> {
+    let key = format!("{THREAD_PREFIX}{thread_id}");
+    let json: String =
+        redis::Commands::get(conn, &key).context("GET thread failed (thread not found)")?;
+    let mut thread: crate::models::Thread =
+        serde_json::from_str(&json).context("deserialize thread")?;
+
+    if !thread.members.iter().any(|m| m == agent) {
+        thread.members.push(agent.to_owned());
+    }
+
+    let updated = serde_json::to_string(&thread).context("serialize thread")?;
+    let _: () = redis::Commands::set(conn, &key, &updated).context("SET thread failed")?;
+    Ok(thread)
+}
+
+/// Remove an agent from a thread's member list.
+///
+/// Returns the updated thread.
+///
+/// # Errors
+///
+/// Returns an error if the thread does not exist or the Redis command fails.
+pub fn leave_thread(
+    conn: &mut redis::Connection,
+    thread_id: &str,
+    agent: &str,
+) -> Result<crate::models::Thread> {
+    let key = format!("{THREAD_PREFIX}{thread_id}");
+    let json: String =
+        redis::Commands::get(conn, &key).context("GET thread failed (thread not found)")?;
+    let mut thread: crate::models::Thread =
+        serde_json::from_str(&json).context("deserialize thread")?;
+
+    thread.members.retain(|m| m != agent);
+
+    let updated = serde_json::to_string(&thread).context("serialize thread")?;
+    let _: () = redis::Commands::set(conn, &key, &updated).context("SET thread failed")?;
+    Ok(thread)
+}
+
+/// Retrieve a thread by ID.
+///
+/// Returns `None` if the key does not exist.
+///
+/// # Errors
+///
+/// Returns an error if the Redis `GET` or JSON deserialization fails.
+pub fn get_thread(
+    conn: &mut redis::Connection,
+    thread_id: &str,
+) -> Result<Option<crate::models::Thread>> {
+    let key = format!("{THREAD_PREFIX}{thread_id}");
+    let value: Option<String> = redis::Commands::get(conn, &key).context("GET thread failed")?;
+    match value {
+        Some(json) => {
+            let thread = serde_json::from_str(&json).context("deserialize thread")?;
+            Ok(Some(thread))
+        }
+        None => Ok(None),
+    }
+}
+
+/// List all threads from Redis.
+///
+/// Uses cursor-based SCAN to avoid blocking KEYS.
+///
+/// # Errors
+///
+/// Returns an error if the SCAN or GET commands fail.
+pub fn list_threads(conn: &mut redis::Connection) -> Result<Vec<crate::models::Thread>> {
+    let pattern = format!("{THREAD_PREFIX}*");
+    let mut keys: Vec<String> = Vec::new();
+    let mut cursor: u64 = 0;
+    loop {
+        let (next_cursor, batch): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(200)
+            .query(conn)
+            .context("SCAN threads failed")?;
+        keys.extend(batch);
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    let mut results: Vec<crate::models::Thread> = Vec::new();
+    for key in &keys {
+        let value: Option<String> = redis::Commands::get(conn, key).context("GET thread failed")?;
+        if let Some(json) = value
+            && let Ok(t) = serde_json::from_str::<crate::models::Thread>(&json)
+        {
+            results.push(t);
+        }
+    }
+    results.sort_by(|a, b| a.thread_id.cmp(&b.thread_id));
+    Ok(results)
+}
+
+/// Close a thread by setting its status to [`ThreadStatus::Closed`].
+///
+/// Returns the updated thread.
+///
+/// # Errors
+///
+/// Returns an error if the thread does not exist or the Redis command fails.
+pub fn close_thread(
+    conn: &mut redis::Connection,
+    thread_id: &str,
+) -> Result<crate::models::Thread> {
+    let key = format!("{THREAD_PREFIX}{thread_id}");
+    let json: String =
+        redis::Commands::get(conn, &key).context("GET thread failed (thread not found)")?;
+    let mut thread: crate::models::Thread =
+        serde_json::from_str(&json).context("deserialize thread")?;
+
+    thread.status = crate::models::ThreadStatus::Closed;
+
+    let updated = serde_json::to_string(&thread).context("serialize thread")?;
+    let _: () = redis::Commands::set(conn, &key, &updated).context("SET thread failed")?;
+    Ok(thread)
+}
+
+// ---------------------------------------------------------------------------
+// Ack deadline storage (Part B)
+// ---------------------------------------------------------------------------
+
+/// Redis key prefix for ack deadline records.
+const ACK_DEADLINE_PREFIX: &str = "agent_bus:ack_deadline:";
+
+/// Store an ack deadline record in Redis with a TTL matching the deadline.
+///
+/// # Errors
+///
+/// Returns an error if the Redis `SET EX` command fails.
+pub fn track_ack_deadline(
+    conn: &mut redis::Connection,
+    deadline: &crate::models::AckDeadline,
+    ttl_seconds: u64,
+) -> Result<()> {
+    let key = format!("{ACK_DEADLINE_PREFIX}{}", deadline.message_id);
+    let json = serde_json::to_string(deadline).context("serialize ack deadline")?;
+    let _: () = redis::Commands::set_ex(conn, &key, &json, ttl_seconds)
+        .context("SET EX ack_deadline failed")?;
+    Ok(())
+}
+
+/// Remove an ack deadline record (e.g. when the ack arrives).
+///
+/// # Errors
+///
+/// Returns an error if the Redis `DEL` command fails.
+pub fn clear_ack_deadline(conn: &mut redis::Connection, message_id: &str) -> Result<()> {
+    let key = format!("{ACK_DEADLINE_PREFIX}{message_id}");
+    let _: () = redis::Commands::del(conn, &key).context("DEL ack_deadline failed")?;
+    Ok(())
+}
+
+/// List all ack deadlines that are still live in Redis.
+///
+/// Returns records that have not yet expired (key still exists).
+///
+/// # Errors
+///
+/// Returns an error if the SCAN or GET commands fail.
+pub fn list_ack_deadlines(conn: &mut redis::Connection) -> Result<Vec<crate::models::AckDeadline>> {
+    let pattern = format!("{ACK_DEADLINE_PREFIX}*");
+    let mut keys: Vec<String> = Vec::new();
+    let mut cursor: u64 = 0;
+    loop {
+        let (next_cursor, batch): (u64, Vec<String>) = redis::cmd("SCAN")
+            .arg(cursor)
+            .arg("MATCH")
+            .arg(&pattern)
+            .arg("COUNT")
+            .arg(200)
+            .query(conn)
+            .context("SCAN ack_deadlines failed")?;
+        keys.extend(batch);
+        cursor = next_cursor;
+        if cursor == 0 {
+            break;
+        }
+    }
+
+    let mut results: Vec<crate::models::AckDeadline> = Vec::new();
+    for key in &keys {
+        let value: Option<String> =
+            redis::Commands::get(conn, key).context("GET ack_deadline failed")?;
+        if let Some(json) = value
+            && let Ok(d) = serde_json::from_str::<crate::models::AckDeadline>(&json)
+        {
+            results.push(d);
+        }
+    }
+    results.sort_by(|a, b| a.deadline_at.cmp(&b.deadline_at));
+    Ok(results)
+}
+
+/// Return only the ack deadlines that are past their `deadline_at` timestamp.
+///
+/// # Errors
+///
+/// Returns an error if listing deadlines fails.
+pub fn check_overdue_acks(conn: &mut redis::Connection) -> Result<Vec<crate::models::AckDeadline>> {
+    let now = chrono::Utc::now();
+    let all = list_ack_deadlines(conn)?;
+    let overdue = all
+        .into_iter()
+        .filter(|d| {
+            chrono::DateTime::parse_from_rfc3339(&d.deadline_at.replace('Z', "+00:00"))
+                .map(|ts| ts.with_timezone(&chrono::Utc) < now)
+                .unwrap_or(false)
+        })
+        .collect();
+    Ok(overdue)
 }
 
 #[cfg(test)]
@@ -3313,5 +3658,78 @@ mod tests {
         // the limit == 0 branch by confirming the function signature accepts it.
         // The actual integration test would need a running Redis instance.
         assert_eq!(RESOURCE_EVENT_MAXLEN, 1000);
+    }
+
+    // ------------------------------------------------------------------
+    // UUIDv7 message ID ordering (no Redis required)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn uuidv7_message_ids_are_monotonically_ordered() {
+        // UUIDv7 encodes a millisecond timestamp in the high bits, so
+        // sequential generation produces lexicographically ordered IDs.
+        let a = Uuid::now_v7().to_string();
+        let b = Uuid::now_v7().to_string();
+        assert!(
+            a <= b,
+            "UUIDv7 IDs must be monotonically ordered: a={a}, b={b}"
+        );
+    }
+
+    #[test]
+    fn uuidv7_ids_are_valid_uuid() {
+        let id = Uuid::now_v7();
+        assert_eq!(id.get_version(), Some(uuid::Version::SortRand));
+    }
+
+    #[test]
+    fn prepare_message_uses_uuidv7() {
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let pm = prepare_message(
+            "alice",
+            "bob",
+            "status",
+            "ok",
+            None,
+            &[],
+            "normal",
+            false,
+            None,
+            &meta,
+            None,
+        );
+        // UUIDv7 IDs start with a timestamp-derived prefix. Verify it
+        // parses as a valid UUID and has version 7.
+        let parsed =
+            uuid::Uuid::parse_str(&pm.message.id).expect("message ID must be a valid UUID string");
+        assert_eq!(
+            parsed.get_version(),
+            Some(uuid::Version::SortRand),
+            "message ID must be UUIDv7"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // TTL constants (verify documented values)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn notification_stream_ttl_is_3_days() {
+        assert_eq!(NOTIFICATION_STREAM_TTL_SECS, 259_200);
+    }
+
+    #[test]
+    fn cursor_ttl_is_7_days() {
+        assert_eq!(CURSOR_TTL_SECS, 604_800);
+    }
+
+    #[test]
+    fn task_queue_ttl_is_3_days() {
+        assert_eq!(TASK_QUEUE_TTL_SECS, 259_200);
+    }
+
+    #[test]
+    fn resource_event_ttl_is_3_days() {
+        assert_eq!(RESOURCE_EVENT_TTL_SECS, 259_200);
     }
 }

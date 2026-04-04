@@ -38,12 +38,13 @@ use cli::{Cli, Cmd};
 use commands::{
     CompactContextArgs, PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_batch_send, cmd_claim,
     cmd_claims, cmd_codex_sync, cmd_compact_context, cmd_compact_thread, cmd_dedup, cmd_export,
-    cmd_health, cmd_inventory, cmd_journal, cmd_knock, cmd_monitor, cmd_peek_tasks,
-    cmd_pending_acks, cmd_post_direct, cmd_post_group, cmd_presence, cmd_presence_history,
-    cmd_presence_list, cmd_prune, cmd_pull_task, cmd_push_task, cmd_read, cmd_read_direct,
-    cmd_read_group, cmd_release_claim, cmd_renew_claim, cmd_resolve, cmd_send, cmd_service,
-    cmd_session_summary, cmd_subscribe, cmd_subscriptions, cmd_summarize_thread, cmd_sync,
-    cmd_token_count, cmd_unsubscribe, cmd_watch,
+    cmd_health, cmd_inventory, cmd_journal, cmd_knock, cmd_monitor, cmd_overdue_acks,
+    cmd_peek_tasks, cmd_pending_acks, cmd_post_direct, cmd_post_group, cmd_presence,
+    cmd_presence_history, cmd_presence_list, cmd_prune, cmd_pull_task, cmd_push_task, cmd_read,
+    cmd_read_direct, cmd_read_group, cmd_release_claim, cmd_renew_claim, cmd_resolve, cmd_send,
+    cmd_service, cmd_session_summary, cmd_subscribe, cmd_subscriptions, cmd_summarize_thread,
+    cmd_sync, cmd_thread_close, cmd_thread_create, cmd_thread_join, cmd_thread_leave,
+    cmd_thread_list, cmd_token_count, cmd_unsubscribe, cmd_watch,
 };
 use http::{start_http_server, start_mcp_http_server};
 use mcp::AgentBusMcpServer;
@@ -476,6 +477,7 @@ async fn run(args: Vec<OsString>) -> Result<()> {
             ref repo_scope,
             ref thread_id,
             lease_ttl_seconds,
+            ref scope,
             ref encoding,
         } => {
             cmd_claim(
@@ -490,6 +492,7 @@ async fn run(args: Vec<OsString>) -> Result<()> {
                 repo_scope,
                 thread_id.as_deref(),
                 lease_ttl_seconds,
+                scope.as_deref(),
                 encoding,
             )?;
         }
@@ -715,6 +718,60 @@ async fn run(args: Vec<OsString>) -> Result<()> {
             ref encoding,
         } => {
             cmd_inventory(&settings, repo.as_deref(), encoding)?;
+        }
+
+        // ---------------------------------------------------------------
+        // Thread commands
+        // ---------------------------------------------------------------
+        Cmd::ThreadCreate {
+            ref thread_id,
+            ref created_by,
+            ref repo,
+            ref topic,
+            ref encoding,
+        } => {
+            cmd_thread_create(
+                &settings,
+                thread_id.as_deref(),
+                created_by,
+                repo.as_deref(),
+                topic.as_deref(),
+                encoding,
+            )?;
+        }
+
+        Cmd::ThreadJoin {
+            ref thread_id,
+            ref agent,
+            ref encoding,
+        } => {
+            cmd_thread_join(&settings, thread_id, agent, encoding)?;
+        }
+
+        Cmd::ThreadLeave {
+            ref thread_id,
+            ref agent,
+            ref encoding,
+        } => {
+            cmd_thread_leave(&settings, thread_id, agent, encoding)?;
+        }
+
+        Cmd::ThreadList { ref encoding } => {
+            cmd_thread_list(&settings, encoding)?;
+        }
+
+        Cmd::ThreadClose {
+            ref thread_id,
+            ref encoding,
+        } => {
+            cmd_thread_close(&settings, thread_id, encoding)?;
+        }
+
+        // ---------------------------------------------------------------
+        // Ack deadline commands
+        // ---------------------------------------------------------------
+        Cmd::OverdueAcks { ref encoding } => {
+            cmd_overdue_acks(&settings, encoding)?;
         }
     }
 

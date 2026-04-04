@@ -207,6 +207,14 @@ pub fn post_ack(
         );
     }
 
+    // Also clear the ack deadline record if one exists (non-fatal).
+    if let Err(error) = crate::ops::ack_deadline::clear_deadline(conn, request.message_id) {
+        tracing::warn!(
+            "failed to clear ack deadline for {}: {error:#}",
+            request.message_id
+        );
+    }
+
     Ok(AckMessageResult {
         message,
         acked_message_id: request.message_id.to_owned(),

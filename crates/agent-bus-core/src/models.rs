@@ -83,6 +83,109 @@ pub struct ResourceEvent {
     pub stream_id: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Thread (joinable conversation scope)
+// ---------------------------------------------------------------------------
+
+/// Status of a conversation thread.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadStatus {
+    /// Thread is active and accepting messages.
+    Open,
+    /// Thread is closed — no new messages should be posted.
+    Closed,
+    /// Thread is archived — preserved for reference only.
+    Archived,
+}
+
+impl std::fmt::Display for ThreadStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Open => write!(f, "open"),
+            Self::Closed => write!(f, "closed"),
+            Self::Archived => write!(f, "archived"),
+        }
+    }
+}
+
+impl std::str::FromStr for ThreadStatus {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(Self::Open),
+            "closed" => Ok(Self::Closed),
+            "archived" => Ok(Self::Archived),
+            other => Err(anyhow::anyhow!(
+                "invalid thread status '{other}'; expected open|closed|archived"
+            )),
+        }
+    }
+}
+
+/// A joinable conversation thread with explicit membership.
+///
+/// Thread data is stored as a single JSON value in Redis keyed by
+/// `agent_bus:thread:<thread_id>`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Thread {
+    /// Unique thread identifier (user-supplied or auto-generated).
+    pub thread_id: String,
+    /// Agent that created the thread.
+    pub created_by: String,
+    /// ISO 8601 UTC timestamp of creation.
+    pub created_at: String,
+    /// List of agent names that are members of this thread.
+    pub members: Vec<String>,
+    /// Optional repository this thread relates to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// Optional default topic for messages in this thread.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+    /// Current status of the thread.
+    pub status: ThreadStatus,
+}
+
+// ---------------------------------------------------------------------------
+// Ack deadline tracking
+// ---------------------------------------------------------------------------
+
+/// A deadline record for a message awaiting acknowledgement.
+///
+/// Stored in Redis at `agent_bus:ack_deadline:<message_id>` with a TTL
+/// matching the deadline duration.  When the key expires, the deadline
+/// is considered missed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AckDeadline {
+    /// The message ID awaiting acknowledgement.
+    pub message_id: String,
+    /// The agent the message was sent to.
+    pub recipient: String,
+    /// ISO 8601 UTC timestamp when the ack is due.
+    pub deadline_at: String,
+    /// Escalation level: 0 = initial, 1 = reminder, 2 = escalated.
+    pub escalation_level: u8,
+    /// Agent the deadline was escalated to, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub escalated_to: Option<String>,
+}
+
+/// Default ack deadline in seconds for each priority level.
+#[must_use]
+pub fn ack_deadline_seconds(priority: &str) -> u64 {
+    match priority {
+        "critical" | "urgent" => 60,
+        "high" => 120,
+        _ => 300, // normal, low, or unrecognised
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Health
+// ---------------------------------------------------------------------------
+
 /// Bus health response.
 #[derive(Debug, Clone, Serialize)]
 pub struct Health {
@@ -1006,5 +1109,154 @@ mod tests {
         );
         assert_eq!(v["event"], "released");
         assert_eq!(v["agent"], "codex");
+    }
+
+    // ------------------------------------------------------------------
+    // ThreadStatus
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn thread_status_display() {
+        assert_eq!(ThreadStatus::Open.to_string(), "open");
+        assert_eq!(ThreadStatus::Closed.to_string(), "closed");
+        assert_eq!(ThreadStatus::Archived.to_string(), "archived");
+    }
+
+    #[test]
+    fn thread_status_from_str() {
+        assert_eq!("open".parse::<ThreadStatus>().unwrap(), ThreadStatus::Open);
+        assert_eq!(
+            "closed".parse::<ThreadStatus>().unwrap(),
+            ThreadStatus::Closed
+        );
+        assert_eq!(
+            "archived".parse::<ThreadStatus>().unwrap(),
+            ThreadStatus::Archived
+        );
+        assert!("invalid".parse::<ThreadStatus>().is_err());
+    }
+
+    #[test]
+    fn thread_status_serde_rename() {
+        let open = serde_json::to_string(&ThreadStatus::Open).unwrap();
+        assert_eq!(open, "\"open\"");
+        let closed: ThreadStatus = serde_json::from_str("\"closed\"").unwrap();
+        assert_eq!(closed, ThreadStatus::Closed);
+    }
+
+    // ------------------------------------------------------------------
+    // Thread serialization
+    // ------------------------------------------------------------------
+
+    fn make_thread() -> Thread {
+        Thread {
+            thread_id: "thread-42".to_owned(),
+            created_by: "claude".to_owned(),
+            created_at: "2026-04-04T12:00:00Z".to_owned(),
+            members: vec!["claude".to_owned(), "codex".to_owned()],
+            repo: Some("agent-bus".to_owned()),
+            topic: Some("refactor".to_owned()),
+            status: ThreadStatus::Open,
+        }
+    }
+
+    #[test]
+    fn thread_serialization_round_trip() {
+        let original = make_thread();
+        let json = serde_json::to_string(&original).expect("serialize failed");
+        let restored: Thread = serde_json::from_str(&json).expect("deserialize failed");
+
+        assert_eq!(restored.thread_id, original.thread_id);
+        assert_eq!(restored.created_by, original.created_by);
+        assert_eq!(restored.created_at, original.created_at);
+        assert_eq!(restored.members, original.members);
+        assert_eq!(restored.repo, original.repo);
+        assert_eq!(restored.topic, original.topic);
+        assert_eq!(restored.status, original.status);
+    }
+
+    #[test]
+    fn thread_optional_fields_absent_when_none() {
+        let thread = Thread {
+            thread_id: "t-1".to_owned(),
+            created_by: "euler".to_owned(),
+            created_at: "2026-01-01T00:00:00Z".to_owned(),
+            members: vec![],
+            repo: None,
+            topic: None,
+            status: ThreadStatus::Closed,
+        };
+        let v: serde_json::Value = serde_json::to_value(&thread).expect("to_value failed");
+        let obj = v.as_object().unwrap();
+        assert!(!obj.contains_key("repo"), "repo must be absent when None");
+        assert!(!obj.contains_key("topic"), "topic must be absent when None");
+        assert_eq!(v["status"], "closed");
+    }
+
+    // ------------------------------------------------------------------
+    // AckDeadline
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn ack_deadline_serialization_round_trip() {
+        let original = AckDeadline {
+            message_id: "msg-100".to_owned(),
+            recipient: "codex".to_owned(),
+            deadline_at: "2026-04-04T12:05:00Z".to_owned(),
+            escalation_level: 0,
+            escalated_to: None,
+        };
+        let json = serde_json::to_string(&original).expect("serialize failed");
+        let restored: AckDeadline = serde_json::from_str(&json).expect("deserialize failed");
+
+        assert_eq!(restored.message_id, original.message_id);
+        assert_eq!(restored.recipient, original.recipient);
+        assert_eq!(restored.deadline_at, original.deadline_at);
+        assert_eq!(restored.escalation_level, original.escalation_level);
+        assert!(restored.escalated_to.is_none());
+    }
+
+    #[test]
+    fn ack_deadline_escalated_to_absent_when_none() {
+        let d = AckDeadline {
+            message_id: "m".to_owned(),
+            recipient: "r".to_owned(),
+            deadline_at: "2026-01-01T00:00:00Z".to_owned(),
+            escalation_level: 0,
+            escalated_to: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&d).expect("to_value failed");
+        assert!(
+            !v.as_object().unwrap().contains_key("escalated_to"),
+            "escalated_to must be absent when None"
+        );
+    }
+
+    #[test]
+    fn ack_deadline_escalated_to_present_when_some() {
+        let d = AckDeadline {
+            message_id: "m".to_owned(),
+            recipient: "r".to_owned(),
+            deadline_at: "2026-01-01T00:00:00Z".to_owned(),
+            escalation_level: 2,
+            escalated_to: Some("orchestrator".to_owned()),
+        };
+        let v: serde_json::Value = serde_json::to_value(&d).expect("to_value failed");
+        assert_eq!(v["escalated_to"], "orchestrator");
+        assert_eq!(v["escalation_level"], 2);
+    }
+
+    // ------------------------------------------------------------------
+    // ack_deadline_seconds
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn ack_deadline_seconds_by_priority() {
+        assert_eq!(ack_deadline_seconds("critical"), 60);
+        assert_eq!(ack_deadline_seconds("urgent"), 60);
+        assert_eq!(ack_deadline_seconds("high"), 120);
+        assert_eq!(ack_deadline_seconds("normal"), 300);
+        assert_eq!(ack_deadline_seconds("low"), 300);
+        assert_eq!(ack_deadline_seconds("unknown"), 300);
     }
 }

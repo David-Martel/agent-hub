@@ -37,7 +37,7 @@ use crate::ops::claim::{
     ClaimResourceRequest, ListClaimsRequest, ReleaseClaimRequest, RenewClaimRequest,
     ResolveClaimRequest, claim_resource as ops_claim_resource,
     get_arbitration_state as ops_get_arbitration_state, list_claims as ops_list_claims,
-    release_claim as ops_release_claim, renew_claim as ops_renew_claim,
+    parse_resource_scope, release_claim as ops_release_claim, renew_claim as ops_renew_claim,
     resolve_claim as ops_resolve_claim,
 };
 use crate::ops::inbox::{
@@ -1809,6 +1809,10 @@ pub(crate) struct HttpClaimRequest {
     pub(crate) thread_id: Option<String>,
     #[serde(default = "default_claim_ttl_seconds")]
     pub(crate) lease_ttl_seconds: u64,
+    /// Resource visibility scope: `"repo"` or `"machine"`.
+    /// When absent, auto-detection applies based on the resource name.
+    #[serde(default)]
+    pub(crate) scope: Option<String>,
 }
 
 fn default_priority_argument() -> String {
@@ -1842,6 +1846,12 @@ async fn http_claim_handler(
     let repo_scopes = req.repo_scopes;
     let thread_id = req.thread_id;
     let lease_ttl_seconds = req.lease_ttl_seconds;
+    let parsed_scope = req
+        .scope
+        .as_deref()
+        .map(parse_resource_scope)
+        .transpose()
+        .map_err(|e| bad_request(e.to_string()))?;
 
     let claim = tokio::task::spawn_blocking(move || {
         ops_claim_resource(
@@ -1857,6 +1867,7 @@ async fn http_claim_handler(
                 repo_scopes: &repo_scopes,
                 thread_id: thread_id.as_deref(),
                 lease_ttl_seconds,
+                scope: parsed_scope,
             },
         )
     })
@@ -3116,6 +3127,204 @@ async fn http_delete_subscription_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Thread handlers (Part A)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /threads`.
+#[derive(Debug, Deserialize)]
+struct HttpCreateThreadRequest {
+    created_by: String,
+    #[serde(default)]
+    thread_id: Option<String>,
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    topic: Option<String>,
+}
+
+/// Query parameters for `PUT /threads/:id/join` and `PUT /threads/:id/leave`.
+#[derive(Debug, Deserialize)]
+struct HttpThreadMemberQuery {
+    agent: String,
+}
+
+/// `POST /threads` -- create a new conversation thread.
+async fn http_create_thread_handler(
+    State(state): State<AppState>,
+    payload: Result<Json<HttpCreateThreadRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
+    if req.created_by.trim().is_empty() {
+        return Err(bad_request("created_by must not be empty"));
+    }
+
+    let thread = tokio::task::spawn_blocking(move || {
+        use crate::ops::thread::{CreateThreadRequest, create_thread as ops_create_thread};
+        ops_create_thread(
+            &state.settings,
+            &CreateThreadRequest {
+                thread_id: req.thread_id.as_deref(),
+                created_by: &req.created_by,
+                repo: req.repo.as_deref(),
+                topic: req.topic.as_deref(),
+            },
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(&thread).unwrap_or_default()),
+    ))
+}
+
+/// `GET /threads` -- list all threads.
+async fn http_list_threads_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let threads = tokio::task::spawn_blocking(move || {
+        use crate::ops::thread::list_threads as ops_list_threads;
+        ops_list_threads(&state.settings)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    let count = threads.len();
+    Ok(Json(serde_json::json!({
+        "threads": threads,
+        "count": count,
+    })))
+}
+
+/// `GET /threads/:id` -- get a single thread.
+async fn http_get_thread_handler(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if thread_id.trim().is_empty() {
+        return Err(bad_request("thread_id must not be empty"));
+    }
+
+    let thread = tokio::task::spawn_blocking(move || {
+        use crate::ops::thread::get_thread as ops_get_thread;
+        ops_get_thread(&state.settings, &thread_id)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    match thread {
+        Some(t) => Ok(Json(serde_json::to_value(&t).unwrap_or_default())),
+        None => Err((
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "thread not found"})),
+        )),
+    }
+}
+
+/// `PUT /threads/:id/join?agent=<name>` -- join a thread.
+async fn http_join_thread_handler(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    Query(params): Query<HttpThreadMemberQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if params.agent.trim().is_empty() {
+        return Err(bad_request("agent query parameter must not be empty"));
+    }
+    let agent = params.agent.clone();
+
+    let thread = tokio::task::spawn_blocking(move || {
+        use crate::ops::thread::{ThreadMemberRequest, join_thread as ops_join_thread};
+        ops_join_thread(
+            &state.settings,
+            &ThreadMemberRequest {
+                thread_id: &thread_id,
+                agent: &agent,
+            },
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(&thread).unwrap_or_default()))
+}
+
+/// `PUT /threads/:id/leave?agent=<name>` -- leave a thread.
+async fn http_leave_thread_handler(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+    Query(params): Query<HttpThreadMemberQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if params.agent.trim().is_empty() {
+        return Err(bad_request("agent query parameter must not be empty"));
+    }
+    let agent = params.agent.clone();
+
+    let thread = tokio::task::spawn_blocking(move || {
+        use crate::ops::thread::{ThreadMemberRequest, leave_thread as ops_leave_thread};
+        ops_leave_thread(
+            &state.settings,
+            &ThreadMemberRequest {
+                thread_id: &thread_id,
+                agent: &agent,
+            },
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(&thread).unwrap_or_default()))
+}
+
+/// `PUT /threads/:id/close` -- close a thread.
+async fn http_close_thread_handler(
+    State(state): State<AppState>,
+    Path(thread_id): Path<String>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if thread_id.trim().is_empty() {
+        return Err(bad_request("thread_id must not be empty"));
+    }
+
+    let thread = tokio::task::spawn_blocking(move || {
+        use crate::ops::thread::close_thread as ops_close_thread;
+        ops_close_thread(&state.settings, &thread_id)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(&thread).unwrap_or_default()))
+}
+
+// ---------------------------------------------------------------------------
+// Ack deadline handlers (Part B)
+// ---------------------------------------------------------------------------
+
+/// `GET /overdue-acks` -- list overdue ack deadlines.
+async fn http_overdue_acks_handler(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let overdue = tokio::task::spawn_blocking(move || {
+        use crate::ops::ack_deadline::check_overdue_acks as ops_check_overdue_acks;
+        ops_check_overdue_acks(&state.settings)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    let count = overdue.len();
+    Ok(Json(serde_json::json!({
+        "overdue_acks": overdue,
+        "count": count,
+    })))
+}
+
+// ---------------------------------------------------------------------------
 
 #[expect(
     clippy::too_many_lines,
@@ -3222,6 +3431,17 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         )
         // Inventory
         .route("/inventory", get(http_inventory_handler))
+        // Thread routes (Part A)
+        .route(
+            "/threads",
+            post(http_create_thread_handler).get(http_list_threads_handler),
+        )
+        .route("/threads/{id}", get(http_get_thread_handler))
+        .route("/threads/{id}/join", put(http_join_thread_handler))
+        .route("/threads/{id}/leave", put(http_leave_thread_handler))
+        .route("/threads/{id}/close", put(http_close_thread_handler))
+        // Ack deadline routes (Part B)
+        .route("/overdue-acks", get(http_overdue_acks_handler))
         // Monitoring dashboard
         .route("/dashboard", get(http_dashboard_handler))
         .route("/dashboard/data", get(http_dashboard_data_handler))
@@ -3272,6 +3492,22 @@ mod tests {
             pg_writes_completed: Some(99),
             pg_batches: Some(20),
             pg_write_errors: Some(1),
+        }
+    }
+
+    fn test_state() -> AppState {
+        let settings = Settings::from_env();
+        let redis = RedisPool::new(&settings).expect("test state must build a Redis pool");
+        AppState {
+            settings: Arc::new(settings),
+            redis,
+            agent_connections: Arc::new(RwLock::new(HashMap::new())),
+            sse_subscriber_count: Arc::new(SseSubscriberCount::default()),
+            control_status: Arc::new(RwLock::new(ServerControlStatus::new(
+                "agent-bus",
+                "AgentHub",
+            ))),
+            shutdown_signal: Arc::new(Notify::new()),
         }
     }
 
@@ -3420,6 +3656,89 @@ mod tests {
     fn write_guard_response_allows_mutations_while_running() {
         let status = ServerControlStatus::new("agent-bus", "AgentHub");
         assert!(write_guard_response(&status, "send").is_none());
+    }
+
+    #[tokio::test]
+    async fn http_create_thread_handler_rejects_blank_created_by() {
+        let result = http_create_thread_handler(
+            State(test_state()),
+            Ok(Json(HttpCreateThreadRequest {
+                created_by: "   ".to_owned(),
+                thread_id: Some("review-42".to_owned()),
+                repo: Some("agent-bus".to_owned()),
+                topic: Some("refactor".to_owned()),
+            })),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("blank creator must fail");
+        };
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        let body = serde_json::to_value(err.1.0).expect("error body must serialize");
+        assert_eq!(body["error"], "created_by must not be empty");
+    }
+
+    #[tokio::test]
+    async fn http_join_thread_handler_rejects_blank_agent() {
+        let result = http_join_thread_handler(
+            State(test_state()),
+            Path("review-42".to_owned()),
+            Query(HttpThreadMemberQuery {
+                agent: "   ".to_owned(),
+            }),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("blank agent must fail");
+        };
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        let body = serde_json::to_value(err.1.0).expect("error body must serialize");
+        assert_eq!(body["error"], "agent query parameter must not be empty");
+    }
+
+    #[tokio::test]
+    async fn http_leave_thread_handler_rejects_blank_agent() {
+        let result = http_leave_thread_handler(
+            State(test_state()),
+            Path("review-42".to_owned()),
+            Query(HttpThreadMemberQuery {
+                agent: "   ".to_owned(),
+            }),
+        )
+        .await;
+        let Err(err) = result else {
+            panic!("blank agent must fail");
+        };
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        let body = serde_json::to_value(err.1.0).expect("error body must serialize");
+        assert_eq!(body["error"], "agent query parameter must not be empty");
+    }
+
+    #[tokio::test]
+    async fn http_get_thread_handler_rejects_blank_thread_id() {
+        let result = http_get_thread_handler(State(test_state()), Path("   ".to_owned())).await;
+        let Err(err) = result else {
+            panic!("blank thread_id must fail");
+        };
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        let body = serde_json::to_value(err.1.0).expect("error body must serialize");
+        assert_eq!(body["error"], "thread_id must not be empty");
+    }
+
+    #[tokio::test]
+    async fn http_close_thread_handler_rejects_blank_thread_id() {
+        let result = http_close_thread_handler(State(test_state()), Path("   ".to_owned())).await;
+        let Err(err) = result else {
+            panic!("blank thread_id must fail");
+        };
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        let body = serde_json::to_value(err.1.0).expect("error body must serialize");
+        assert_eq!(body["error"], "thread_id must not be empty");
     }
 
     #[test]
