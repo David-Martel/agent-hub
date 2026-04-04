@@ -10,6 +10,7 @@ use anyhow::Result;
 
 use crate::channels::{ArbitrationState, ClaimOptions, OwnershipClaim, ResourceLeaseMode};
 use crate::settings::Settings;
+use crate::validation::non_empty;
 
 // ---------------------------------------------------------------------------
 // Mode parsing
@@ -66,6 +67,9 @@ pub fn claim_resource(
     settings: &Settings,
     request: &ClaimResourceRequest<'_>,
 ) -> Result<OwnershipClaim> {
+    let agent = non_empty(request.agent, "agent")?;
+    let resource = non_empty(request.resource, "resource")?;
+
     let options = ClaimOptions {
         mode: parse_lease_mode(request.mode)?,
         namespace: request.namespace.map(str::to_owned),
@@ -77,8 +81,8 @@ pub fn claim_resource(
     };
     crate::channels::claim_resource_with_options(
         settings,
-        request.resource,
-        request.agent,
+        resource,
+        agent,
         request.reason,
         &options,
     )
@@ -105,10 +109,13 @@ pub struct RenewClaimRequest<'a> {
 /// Returns an error if no active claim exists for the agent, or if Redis
 /// commands fail.
 pub fn renew_claim(settings: &Settings, request: &RenewClaimRequest<'_>) -> Result<OwnershipClaim> {
+    let agent = non_empty(request.agent, "agent")?;
+    let resource = non_empty(request.resource, "resource")?;
+
     crate::channels::renew_claim(
         settings,
-        request.resource,
-        request.agent,
+        resource,
+        agent,
         Some(request.lease_ttl_seconds.max(1)),
     )
 }
@@ -136,7 +143,10 @@ pub fn release_claim(
     settings: &Settings,
     request: &ReleaseClaimRequest<'_>,
 ) -> Result<ArbitrationState> {
-    crate::channels::release_claim(settings, request.resource, request.agent)
+    let agent = non_empty(request.agent, "agent")?;
+    let resource = non_empty(request.resource, "resource")?;
+
+    crate::channels::release_claim(settings, resource, agent)
 }
 
 // ---------------------------------------------------------------------------
@@ -164,10 +174,13 @@ pub fn resolve_claim(
     settings: &Settings,
     request: &ResolveClaimRequest<'_>,
 ) -> Result<ArbitrationState> {
+    let winner = non_empty(request.winner, "winner")?;
+    let resource = non_empty(request.resource, "resource")?;
+
     crate::channels::resolve_claim(
         settings,
-        request.resource,
-        request.winner,
+        resource,
+        winner,
         request.reason,
         request.resolved_by,
     )

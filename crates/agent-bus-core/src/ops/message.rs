@@ -223,10 +223,12 @@ pub fn set_presence(
     settings: &Settings,
     request: &PresenceRequest<'_>,
 ) -> Result<Presence> {
+    let agent = non_empty(request.agent, "agent")?;
+
     bus_set_presence(
         conn,
         settings,
-        request.agent,
+        agent,
         request.status,
         request.session_id,
         request.capabilities,

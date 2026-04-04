@@ -40,6 +40,7 @@ use crate::ops::claim::{
     release_claim as ops_release_claim, renew_claim as ops_renew_claim,
     resolve_claim as ops_resolve_claim,
 };
+use crate::ops::inbox::{CompactContextRequest, compact_context as ops_compact_context};
 use crate::ops::task::{
     PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
     push_task as ops_push_task, task_queue_length as ops_task_queue_length,
@@ -2128,33 +2129,29 @@ async fn http_compact_context_handler(
     let thread_id = req.thread_id;
     let settings = Arc::clone(&state.settings);
 
-    let compacted = tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        let filters = MessageFilters {
-            repo: repo.as_deref(),
-            session: session.as_deref(),
-            tags: &tags,
-            thread_id: thread_id.as_deref(),
-        };
-        list_messages_live(
+        ops_compact_context(
             &mut conn,
             &settings,
-            &ReadMessagesRequest {
+            &CompactContextRequest {
                 agent: agent.as_deref(),
-                from_agent: None,
+                filters: MessageFilters {
+                    repo: repo.as_deref(),
+                    session: session.as_deref(),
+                    tags: &tags,
+                    thread_id: thread_id.as_deref(),
+                },
                 since_minutes: since,
-                limit: 500,
-                include_broadcast: true,
-                filters,
+                max_tokens,
             },
         )
-        .map(|msgs| crate::token::compact_context(&msgs, max_tokens))
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
-    Ok(Json(serde_json::Value::Array(compacted)))
+    Ok(Json(serde_json::Value::Array(result.messages)))
 }
 
 // ---------------------------------------------------------------------------
