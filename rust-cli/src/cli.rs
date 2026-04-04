@@ -806,6 +806,26 @@ pub(crate) enum Cmd {
         task: String,
         #[arg(long, default_value = "compact", value_enum, help = "Output format")]
         encoding: Encoding,
+        #[arg(long, help = "Repository this task relates to")]
+        repo: Option<String>,
+        #[arg(
+            long,
+            default_value = "normal",
+            help = "Priority: normal, high, or critical"
+        )]
+        priority: String,
+        #[arg(long, value_delimiter = ',', help = "Comma-separated tags")]
+        tags: Vec<String>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Comma-separated task IDs this depends on"
+        )]
+        depends_on: Vec<String>,
+        #[arg(long, help = "Message ID this task is a reply to")]
+        reply_to: Option<String>,
+        #[arg(long, default_value = "cli", help = "Agent or user creating this task")]
+        created_by: String,
     },
 
     /// Pull the next task from an agent's queue (destructive).
@@ -1597,6 +1617,88 @@ mod tests {
     fn parse_push_task_missing_agent_fails() {
         let result = parse(&["agent-bus", "push-task", "--task", "do something"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_push_task_defaults() {
+        let cli = parse(&[
+            "agent-bus",
+            "push-task",
+            "--agent",
+            "codex",
+            "--task",
+            "review main.rs",
+        ])
+        .expect("push-task must parse");
+
+        if let Cmd::PushTask {
+            priority,
+            created_by,
+            repo,
+            tags,
+            depends_on,
+            reply_to,
+            ..
+        } = cli.command
+        {
+            assert_eq!(priority, "normal");
+            assert_eq!(created_by, "cli");
+            assert!(repo.is_none());
+            assert!(tags.is_empty());
+            assert!(depends_on.is_empty());
+            assert!(reply_to.is_none());
+        } else {
+            panic!("expected Cmd::PushTask");
+        }
+    }
+
+    #[test]
+    fn parse_push_task_with_card_fields() {
+        let cli = parse(&[
+            "agent-bus",
+            "push-task",
+            "--agent",
+            "codex",
+            "--task",
+            "review main.rs",
+            "--repo",
+            "agent-bus",
+            "--priority",
+            "high",
+            "--tags",
+            "urgent,repo:agent-bus",
+            "--depends-on",
+            "task-001,task-002",
+            "--reply-to",
+            "msg-42",
+            "--created-by",
+            "claude",
+        ])
+        .expect("push-task with card fields must parse");
+
+        if let Cmd::PushTask {
+            agent,
+            task,
+            repo,
+            priority,
+            tags,
+            depends_on,
+            reply_to,
+            created_by,
+            ..
+        } = cli.command
+        {
+            assert_eq!(agent, "codex");
+            assert_eq!(task, "review main.rs");
+            assert_eq!(repo.as_deref(), Some("agent-bus"));
+            assert_eq!(priority, "high");
+            assert_eq!(tags, vec!["urgent", "repo:agent-bus"]);
+            assert_eq!(depends_on, vec!["task-001", "task-002"]);
+            assert_eq!(reply_to.as_deref(), Some("msg-42"));
+            assert_eq!(created_by, "claude");
+        } else {
+            panic!("expected Cmd::PushTask");
+        }
     }
 
     // ------------------------------------------------------------------

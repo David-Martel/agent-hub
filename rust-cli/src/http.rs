@@ -35,15 +35,17 @@ use crate::ops::channel::{
     read_direct as ops_read_direct, read_group as ops_read_group,
 };
 use crate::ops::claim::{
-    ClaimResourceRequest, ReleaseClaimRequest, RenewClaimRequest, ResolveClaimRequest,
-    claim_resource as ops_claim_resource, get_arbitration_state as ops_get_arbitration_state,
+    ClaimResourceRequest, ListClaimsRequest, ReleaseClaimRequest, RenewClaimRequest,
+    ResolveClaimRequest, claim_resource as ops_claim_resource,
+    get_arbitration_state as ops_get_arbitration_state, list_claims as ops_list_claims,
     release_claim as ops_release_claim, renew_claim as ops_renew_claim,
     resolve_claim as ops_resolve_claim,
 };
 use crate::ops::inbox::{CompactContextRequest, compact_context as ops_compact_context};
 use crate::ops::task::{
-    PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
-    push_task as ops_push_task, task_queue_length as ops_task_queue_length,
+    PushTaskCardRequest, peek_task_cards as ops_peek_task_cards,
+    pull_task_card as ops_pull_task_card, push_task_card as ops_push_task_card,
+    task_queue_length as ops_task_queue_length,
 };
 use crate::ops::{
     AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
@@ -2162,9 +2164,33 @@ async fn http_compact_context_handler(
 // ---------------------------------------------------------------------------
 
 /// Request body for `POST /tasks/:agent`.
+///
+/// The `task` field is required and becomes the card body.  All other fields
+/// are optional; when omitted the card is created with sensible defaults
+/// (priority `"normal"`, `created_by` `"http"`, etc.).
 #[derive(Debug, Deserialize)]
 struct HttpPushTaskRequest {
     task: String,
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default = "default_push_priority")]
+    priority: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    depends_on: Vec<String>,
+    #[serde(default)]
+    reply_to: Option<String>,
+    #[serde(default = "default_push_created_by")]
+    created_by: String,
+}
+
+fn default_push_priority() -> String {
+    "normal".to_owned()
+}
+
+fn default_push_created_by() -> String {
+    "http".to_owned()
 }
 
 /// Query parameters for `GET /tasks/:agent`.
@@ -2178,10 +2204,13 @@ fn default_peek_limit() -> usize {
     10
 }
 
-/// `POST /tasks/:agent` — push a task to the tail of an agent's queue.
+/// `POST /tasks/:agent` — push a structured task card to an agent's queue.
 ///
-/// Request body: `{"task": "<payload>"}`.
-/// Response: `{"agent": "<id>", "queue_length": N}`.
+/// Request body: `{"task": "<payload>", ...optional card fields...}`.
+/// Backward compatible: `{"task": "do something"}` still works, creating a
+/// card with default metadata.
+///
+/// Response: the created `TaskCard` JSON.
 async fn http_push_task_handler(
     State(state): State<AppState>,
     Path(agent): Path<String>,
@@ -2197,12 +2226,19 @@ async fn http_push_task_handler(
         return Err(bad_request("agent must not be empty"));
     }
 
-    let len = tokio::task::spawn_blocking(move || {
-        ops_push_task(
+    let card = tokio::task::spawn_blocking(move || {
+        ops_push_task_card(
             &state.settings,
-            &PushTaskRequest {
+            &PushTaskCardRequest {
                 agent: &agent,
-                task: &task,
+                body: &task,
+                created_by: &req.created_by,
+                priority: &req.priority,
+                repo: req.repo.as_deref(),
+                paths: &[],
+                depends_on: &req.depends_on,
+                reply_to: req.reply_to.as_deref(),
+                tags: &req.tags,
             },
         )
     })
@@ -2210,18 +2246,17 @@ async fn http_push_task_handler(
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
-    Ok(Json(
-        serde_json::to_value(serde_json::json!({"queue_length": len})).unwrap_or_default(),
-    ))
+    Ok(Json(serde_json::to_value(&card).unwrap_or_default()))
 }
 
-/// `GET /tasks/:agent` — peek at pending tasks without consuming them.
+/// `GET /tasks/:agent` — peek at pending tasks as `TaskCard` objects.
 ///
 /// Query params: `?limit=10` (default 10; `0` returns all).
-/// Response: `{"agent": "<id>", "tasks": [...], "count": N, "queue_length": N}`.
+/// Response: `{"agent": "<id>", "tasks": [...TaskCard...], "count": N, "queue_length": N}`.
 ///
 /// `count` is the number of tasks returned (bounded by `limit`).
 /// `queue_length` is the total number of pending tasks in the queue.
+/// Legacy plain-string entries are wrapped in minimal `TaskCard` objects.
 async fn http_peek_tasks_handler(
     State(state): State<AppState>,
     Path(agent): Path<String>,
@@ -2233,20 +2268,20 @@ async fn http_peek_tasks_handler(
     let limit = params.limit;
     let agent_clone = agent.clone();
 
-    let (tasks, queue_length) = tokio::task::spawn_blocking(move || {
-        let tasks = ops_peek_tasks(&state.settings, &agent_clone, limit)?;
+    let (cards, queue_length) = tokio::task::spawn_blocking(move || {
+        let cards = ops_peek_task_cards(&state.settings, &agent_clone, limit)?;
         let queue_length = ops_task_queue_length(&state.settings, &agent_clone)?;
-        Ok::<_, anyhow::Error>((tasks, queue_length))
+        Ok::<_, anyhow::Error>((cards, queue_length))
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
     .map_err(internal_error)?;
 
-    let count = tasks.len();
+    let count = cards.len();
     Ok(Json(
         serde_json::to_value(serde_json::json!({
             "agent": agent,
-            "tasks": tasks,
+            "tasks": cards,
             "count": count,
             "queue_length": queue_length,
         }))
@@ -2254,9 +2289,11 @@ async fn http_peek_tasks_handler(
     ))
 }
 
-/// `DELETE /tasks/:agent` — pop and consume the next task.
+/// `DELETE /tasks/:agent` — pop and consume the next task as a `TaskCard`.
 ///
-/// Response: `{"agent": "<id>", "task": "<payload>" | null}`.
+/// Response: the `TaskCard` JSON, or `{"agent": "<id>", "task": null}` when
+/// the queue is empty. Legacy plain-string entries are wrapped in minimal
+/// `TaskCard` objects.
 async fn http_pull_task_handler(
     State(state): State<AppState>,
     Path(agent): Path<String>,
@@ -2267,14 +2304,16 @@ async fn http_pull_task_handler(
     }
     let agent_clone = agent.clone();
 
-    let task = tokio::task::spawn_blocking(move || ops_pull_task(&state.settings, &agent_clone))
-        .await
-        .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-        .map_err(internal_error)?;
+    let card =
+        tokio::task::spawn_blocking(move || ops_pull_task_card(&state.settings, &agent_clone))
+            .await
+            .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+            .map_err(internal_error)?;
 
-    Ok(Json(
-        serde_json::to_value(serde_json::json!({"agent": agent, "task": task})).unwrap_or_default(),
-    ))
+    match card {
+        Some(c) => Ok(Json(serde_json::to_value(&c).unwrap_or_default())),
+        None => Ok(Json(serde_json::json!({"agent": agent, "task": null}))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2398,6 +2437,29 @@ tr:hover td{{background:#1c2128}}
   <div id="messages-body"><span class="spinner"></span>Loading&hellip;</div>
 </div>
 
+<div class="grid">
+  <div class="card" id="claims-card">
+    <h2>Claims <span class="refresh-ts" id="claims-ts"></span></h2>
+    <div class="stat"><span class="stat-label">Total active</span><span class="stat-value" id="claims-total">&mdash;</span></div>
+    <div class="stat"><span class="stat-label">Contested</span><span class="stat-value" id="claims-contested">&mdash;</span></div>
+    <div id="claims-contested-list"></div>
+  </div>
+  <div class="card" id="acks-card">
+    <h2>Pending ACKs <span class="refresh-ts" id="acks-ts"></span></h2>
+    <div class="stat"><span class="stat-label">Awaiting ACK</span><span class="stat-value" id="acks-total">&mdash;</span></div>
+  </div>
+</div>
+
+<div class="section" id="task-queues-section">
+  <h2>Task Queues <span class="refresh-ts" id="tasks-ts"></span></h2>
+  <div id="task-queues-body"><span class="spinner"></span>Loading&hellip;</div>
+</div>
+
+<div class="section" id="claims-detail-section">
+  <h2>Claim Details (max 100) <span class="refresh-ts" id="claims-detail-ts"></span></h2>
+  <div id="claims-detail-body"><span class="spinner"></span>Loading&hellip;</div>
+</div>
+
 <script>
 function ts() {{
   return new Date().toLocaleTimeString();
@@ -2405,6 +2467,12 @@ function ts() {{
 
 function statusBadge(s) {{
   const cls = s === 'online' ? 'online' : s === 'busy' ? 'busy' : 'offline';
+  return '<span class="badge badge-' + cls + '">' + esc(s) + '</span>';
+}}
+
+function claimStatusBadge(s) {{
+  const cls = s === 'contested' ? 'critical' : s === 'granted' ? 'online'
+            : s === 'pending' ? 'busy' : 'offline';
   return '<span class="badge badge-' + cls + '">' + esc(s) + '</span>';
 }}
 
@@ -2473,8 +2541,83 @@ async function refreshMessages() {{
   }}
 }}
 
+async function refreshDashboardData() {{
+  try {{
+    const data = await fetch('/dashboard/data').then(r => r.json());
+    const now = ts();
+
+    // Claims summary card
+    const claims = data.claims || {{}};
+    document.getElementById('claims-total').textContent = claims.total != null ? claims.total : 0;
+    const contested = claims.contested || [];
+    const contestedEl = document.getElementById('claims-contested');
+    contestedEl.textContent = contested.length;
+    contestedEl.className = 'stat-value' + (contested.length > 0 ? ' err' : '');
+    let contestedListHtml = '';
+    if (contested.length > 0) {{
+      contestedListHtml = '<div style="margin-top:8px;font-size:12px;color:#f85149">';
+      contested.forEach(r => {{ contestedListHtml += '<div>' + esc(r) + '</div>'; }});
+      contestedListHtml += '</div>';
+    }}
+    document.getElementById('claims-contested-list').innerHTML = contestedListHtml;
+    document.getElementById('claims-ts').textContent = 'updated ' + now;
+
+    // Pending ACKs card
+    const acks = data.pending_acks || {{}};
+    const acksTotal = acks.total != null ? acks.total : 0;
+    const acksEl = document.getElementById('acks-total');
+    acksEl.textContent = acksTotal;
+    acksEl.className = 'stat-value' + (acksTotal > 0 ? ' warn' : '');
+    document.getElementById('acks-ts').textContent = 'updated ' + now;
+
+    // Task queues table
+    const queues = data.task_queues || {{}};
+    const agents = Object.keys(queues);
+    let tqHtml;
+    if (agents.length === 0) {{
+      tqHtml = '<p class="empty">No agents with task queues</p>';
+    }} else {{
+      tqHtml = '<table><thead><tr><th>Agent</th><th>Queue Depth</th></tr></thead><tbody>';
+      agents.sort().forEach(a => {{
+        const depth = queues[a];
+        const cls = depth > 0 ? ' warn' : '';
+        tqHtml += '<tr><td>' + esc(a) + '</td><td class="stat-value' + cls + '">' + depth + '</td></tr>';
+      }});
+      tqHtml += '</tbody></table>';
+    }}
+    document.getElementById('task-queues-body').innerHTML = tqHtml;
+    document.getElementById('tasks-ts').textContent = 'updated ' + now;
+
+    // Claims detail table
+    const summary = claims.summary || [];
+    let cdHtml;
+    if (summary.length === 0) {{
+      cdHtml = '<p class="empty">No active claims</p>';
+    }} else {{
+      cdHtml = '<table><thead><tr><th>Resource</th><th>Agent</th><th>Status</th><th>Mode</th><th>Claimed At</th><th>Expires</th></tr></thead><tbody>';
+      summary.forEach(c => {{
+        cdHtml += '<tr><td>' + esc(c.resource) + '</td><td>' + esc(c.agent)
+                + '</td><td>' + claimStatusBadge(c.status || 'pending')
+                + '</td><td>' + esc(c.mode || 'exclusive')
+                + '</td><td>' + fmtTime(c.timestamp)
+                + '</td><td>' + fmtTime(c.expires_at || '')
+                + '</td></tr>';
+      }});
+      cdHtml += '</tbody></table>';
+    }}
+    document.getElementById('claims-detail-body').innerHTML = cdHtml;
+    document.getElementById('claims-detail-ts').textContent = 'updated ' + now;
+  }} catch(e) {{
+    const errMsg = '<p class="empty err">Failed to load: ' + esc(String(e)) + '</p>';
+    document.getElementById('claims-total').textContent = '?';
+    document.getElementById('acks-total').textContent = '?';
+    document.getElementById('task-queues-body').innerHTML = errMsg;
+    document.getElementById('claims-detail-body').innerHTML = errMsg;
+  }}
+}}
+
 async function refresh() {{
-  await Promise.all([refreshAgents(), refreshMessages()]);
+  await Promise.all([refreshAgents(), refreshMessages(), refreshDashboardData()]);
 }}
 
 refresh();
@@ -2495,6 +2638,86 @@ setInterval(refresh, 10000);
         err_class = if write_errors > 0 { "err" } else { "ok" },
         codec = health.codec.as_str(),
     )
+}
+
+// ---------------------------------------------------------------------------
+// GET /dashboard/data — enriched JSON snapshot for the dashboard
+// ---------------------------------------------------------------------------
+
+/// Return a JSON snapshot with health, presence, claims, pending ACKs, and
+/// per-agent task queue depths.
+///
+/// This endpoint is consumed by the HTML dashboard's client-side JavaScript.
+/// All Redis interactions run inside `spawn_blocking` to keep the async
+/// runtime non-blocking.
+pub(crate) async fn http_dashboard_data_handler(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let pool = state.redis.clone();
+    let settings = Arc::clone(&state.settings);
+
+    // Gather all data in a single spawn_blocking call to minimize overhead.
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
+        // 1. Health
+        let health = ops_health(&settings, Some(&pool));
+
+        // 2. Presence (also needed to enumerate agents for task queues)
+        let mut conn = pool.get_connection()?;
+        let presence = ops_list_presence(&mut conn, &settings).unwrap_or_default();
+
+        // 3. Pending ACKs
+        let pending_acks = ops_list_pending_acks(&mut conn, None).unwrap_or_default();
+
+        // 4. Claims (cap at 100 to keep the endpoint fast)
+        let all_claims = ops_list_claims(
+            &settings,
+            &ListClaimsRequest {
+                resource: None,
+                status: None,
+            },
+        )
+        .unwrap_or_default();
+        let claims_total = all_claims.len();
+        let contested: Vec<String> = all_claims
+            .iter()
+            .filter(|c| c.status == crate::channels::ClaimStatus::Contested)
+            .map(|c| c.resource.clone())
+            .collect();
+        // Deduplicate contested resource names
+        let mut contested_deduped = contested;
+        contested_deduped.sort();
+        contested_deduped.dedup();
+        // Limit claim summary to first 100 entries
+        let claims_summary: Vec<_> = all_claims.into_iter().take(100).collect();
+
+        // 5. Task queue depths for each known agent from presence
+        let mut task_queues = serde_json::Map::new();
+        for p in &presence {
+            let depth = ops_task_queue_length(&settings, &p.agent).unwrap_or(0);
+            task_queues.insert(p.agent.clone(), serde_json::Value::from(depth));
+        }
+
+        Ok(serde_json::json!({
+            "health": serde_json::to_value(&health).unwrap_or_default(),
+            "presence": serde_json::to_value(&presence).unwrap_or_default(),
+            "claims": {
+                "total": claims_total,
+                "contested": contested_deduped,
+                "summary": serde_json::to_value(&claims_summary).unwrap_or_default(),
+            },
+            "pending_acks": {
+                "total": pending_acks.len(),
+            },
+            "task_queues": task_queues,
+        }))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(data)) => (StatusCode::OK, Json(data)).into_response(),
+        Ok(Err(e)) => internal_error(e).into_response(),
+        Err(e) => internal_error(anyhow::anyhow!("task join: {e}")).into_response(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2579,6 +2802,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         )
         // Monitoring dashboard
         .route("/dashboard", get(http_dashboard_handler))
+        .route("/dashboard/data", get(http_dashboard_data_handler))
         .with_state(state);
 
     let addr = format!("{bind_host}:{port}");
@@ -2689,6 +2913,10 @@ mod tests {
             "messages fetch missing"
         );
         assert!(
+            html.contains("fetch('/dashboard/data')"),
+            "dashboard data fetch missing"
+        );
+        assert!(
             html.contains("setInterval(refresh, 10000)"),
             "10 s interval missing"
         );
@@ -2770,5 +2998,102 @@ mod tests {
     fn write_guard_response_allows_mutations_while_running() {
         let status = ServerControlStatus::new("agent-bus", "AgentHub");
         assert!(write_guard_response(&status, "send").is_none());
+    }
+
+    #[test]
+    fn dashboard_html_contains_claims_section() {
+        let health = make_health(true, true);
+        let html = generate_dashboard_html(&health);
+
+        assert!(
+            html.contains("id=\"claims-card\""),
+            "claims card section missing"
+        );
+        assert!(
+            html.contains("id=\"claims-total\""),
+            "claims total element missing"
+        );
+        assert!(
+            html.contains("id=\"claims-contested\""),
+            "claims contested element missing"
+        );
+    }
+
+    #[test]
+    fn dashboard_html_contains_pending_acks_section() {
+        let health = make_health(true, true);
+        let html = generate_dashboard_html(&health);
+
+        assert!(
+            html.contains("id=\"acks-card\""),
+            "pending acks card missing"
+        );
+        assert!(
+            html.contains("id=\"acks-total\""),
+            "pending acks total element missing"
+        );
+        assert!(html.contains("Awaiting ACK"), "pending acks label missing");
+    }
+
+    #[test]
+    fn dashboard_html_contains_task_queues_section() {
+        let health = make_health(true, true);
+        let html = generate_dashboard_html(&health);
+
+        assert!(
+            html.contains("id=\"task-queues-section\""),
+            "task queues section missing"
+        );
+        assert!(
+            html.contains("id=\"task-queues-body\""),
+            "task queues body element missing"
+        );
+        assert!(html.contains("Task Queues"), "task queues heading missing");
+    }
+
+    #[test]
+    fn dashboard_html_contains_claims_detail_section() {
+        let health = make_health(true, true);
+        let html = generate_dashboard_html(&health);
+
+        assert!(
+            html.contains("id=\"claims-detail-section\""),
+            "claims detail section missing"
+        );
+        assert!(
+            html.contains("id=\"claims-detail-body\""),
+            "claims detail body element missing"
+        );
+        assert!(
+            html.contains("Claim Details"),
+            "claims detail heading missing"
+        );
+    }
+
+    #[test]
+    fn dashboard_html_contains_claim_status_badge_function() {
+        let health = make_health(true, true);
+        let html = generate_dashboard_html(&health);
+
+        assert!(
+            html.contains("claimStatusBadge"),
+            "claimStatusBadge JS function missing"
+        );
+    }
+
+    #[test]
+    fn dashboard_html_refresh_includes_dashboard_data() {
+        let health = make_health(true, true);
+        let html = generate_dashboard_html(&health);
+
+        assert!(
+            html.contains("refreshDashboardData"),
+            "refreshDashboardData JS function missing"
+        );
+        // The refresh() function should call all three refresh functions
+        assert!(
+            html.contains("refreshDashboardData()"),
+            "refreshDashboardData not called in refresh()"
+        );
     }
 }

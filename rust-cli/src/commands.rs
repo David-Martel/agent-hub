@@ -21,8 +21,8 @@ use crate::ops::claim::{
 };
 use crate::ops::inbox::{CompactContextRequest, compact_context as compact_context_op};
 use crate::ops::task::{
-    PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
-    push_task as ops_push_task,
+    PushTaskCardRequest, peek_task_cards as ops_peek_task_cards,
+    pull_task_card as ops_pull_task_card, push_task_card as ops_push_task_card,
 };
 use crate::ops::{
     AckMessageRequest, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
@@ -1551,48 +1551,70 @@ pub(crate) fn cmd_compact_context(
 // Task queue command implementations
 // ---------------------------------------------------------------------------
 
-/// Push a task JSON string to the tail of an agent's task queue.
+/// Push a structured [`TaskCard`] to the tail of an agent's task queue.
 ///
-/// Outputs `{"agent": "<id>", "queue_length": N}` on success.
+/// Outputs the created `TaskCard` JSON on success.
 ///
 /// # Errors
 ///
 /// Returns an error if the Redis connection or `RPUSH` fails, or if `agent`
-/// is empty.
+/// or `task` is empty, or if `priority` is invalid.
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn cmd_push_task(
     settings: &Settings,
     agent: &str,
     task: &str,
     encoding: &Encoding,
+    repo: Option<&str>,
+    priority: &str,
+    tags: &[String],
+    depends_on: &[String],
+    reply_to: Option<&str>,
+    created_by: &str,
 ) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
-    let task = non_empty(task, "--task")?;
-    let len = ops_push_task(settings, &PushTaskRequest { agent, task })?;
-    output(
-        &serde_json::json!({"agent": agent, "queue_length": len}),
-        encoding,
-    );
+    let body = non_empty(task, "--task")?;
+    let card = ops_push_task_card(
+        settings,
+        &PushTaskCardRequest {
+            agent,
+            body,
+            created_by,
+            priority,
+            repo,
+            paths: &[],
+            depends_on,
+            reply_to,
+            tags,
+        },
+    )?;
+    output(&serde_json::to_value(&card)?, encoding);
     Ok(())
 }
 
-/// Pop and return the next task from an agent's queue.
+/// Pop and return the next task from an agent's queue as a [`TaskCard`].
 ///
-/// Outputs `{"agent": "<id>", "task": "<payload>"}` where `task` is `null`
-/// when the queue is empty.
+/// Outputs the `TaskCard` JSON, or `{"agent": "<id>", "task": null}` when the
+/// queue is empty. Legacy plain-string entries are wrapped in a minimal card.
 ///
 /// # Errors
 ///
 /// Returns an error if the Redis connection or `LPOP` fails.
 pub(crate) fn cmd_pull_task(settings: &Settings, agent: &str, encoding: &Encoding) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
-    let task = ops_pull_task(settings, agent)?;
-    output(&serde_json::json!({"agent": agent, "task": task}), encoding);
+    let card = ops_pull_task_card(settings, agent)?;
+    match card {
+        Some(c) => output(&serde_json::to_value(&c)?, encoding),
+        None => output(&serde_json::json!({"agent": agent, "task": null}), encoding),
+    }
     Ok(())
 }
 
 /// Peek at the pending tasks in an agent's queue without consuming them.
 ///
-/// Outputs `{"agent": "<id>", "tasks": [...], "count": N}`.
+/// Outputs `{"agent": "<id>", "tasks": [...], "count": N}` where each task is
+/// a full [`TaskCard`] JSON object. Legacy plain-string entries are wrapped in
+/// minimal cards.
 ///
 /// # Errors
 ///
@@ -1604,10 +1626,10 @@ pub(crate) fn cmd_peek_tasks(
     encoding: &Encoding,
 ) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
-    let tasks = ops_peek_tasks(settings, agent, limit)?;
-    let count = tasks.len();
+    let cards = ops_peek_task_cards(settings, agent, limit)?;
+    let count = cards.len();
     output(
-        &serde_json::json!({"agent": agent, "tasks": tasks, "count": count}),
+        &serde_json::json!({"agent": agent, "tasks": cards, "count": count}),
         encoding,
     );
     Ok(())
