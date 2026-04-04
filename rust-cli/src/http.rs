@@ -42,8 +42,10 @@ use crate::ops::claim::{
     resolve_claim as ops_resolve_claim,
 };
 use crate::ops::inbox::{
-    CompactContextRequest, SummarizeSessionRequest, compact_context as ops_compact_context,
-    summarize_session as ops_summarize_session,
+    CompactContextRequest, CompactThreadRequest, SummarizeSessionRequest, SummarizeThreadRequest,
+    compact_context as ops_compact_context, compact_thread as ops_compact_thread,
+    orchestrator_summary as ops_orchestrator_summary, summarize_session as ops_summarize_session,
+    summarize_thread as ops_summarize_thread,
 };
 use crate::ops::task::{
     PushTaskCardRequest, peek_task_cards as ops_peek_task_cards,
@@ -59,6 +61,7 @@ use crate::output::{format_health_toon, format_message_toon, format_presence_too
 use crate::redis_bus::{
     RedisPool, SseSubscriberCount, bus_list_messages_from_redis,
     bus_post_message_with_notifications, list_notifications, list_notifications_since_id,
+    list_resource_events as redis_list_resource_events,
 };
 use crate::settings::Settings;
 use crate::validation::validate_priority;
@@ -2255,6 +2258,181 @@ async fn http_session_summary_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Thread summary HTTP handler
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /thread-summary`.
+#[derive(Debug, Deserialize)]
+struct HttpThreadSummaryQuery {
+    thread_id: String,
+    #[serde(default = "default_summary_since_minutes")]
+    since_minutes: u64,
+    #[serde(default = "default_summary_limit")]
+    limit: usize,
+}
+
+async fn http_thread_summary_handler(
+    State(state): State<AppState>,
+    Query(query): Query<HttpThreadSummaryQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let since = query.since_minutes.min(MAX_HISTORY_MINUTES);
+    let limit = query.limit.min(50_000);
+    let thread_id = query.thread_id;
+    let settings = Arc::clone(&state.settings);
+
+    let summary = tokio::task::spawn_blocking(move || {
+        ops_summarize_thread(
+            &settings,
+            &SummarizeThreadRequest {
+                thread_id: &thread_id,
+                since_minutes: since,
+                limit,
+            },
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(&summary).unwrap_or_default()))
+}
+
+// ---------------------------------------------------------------------------
+// Thread compact HTTP handler
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /compact-thread`.
+#[derive(Debug, Deserialize)]
+struct HttpCompactThreadRequest {
+    thread_id: String,
+    #[serde(default = "default_max_tokens")]
+    token_budget: usize,
+    #[serde(default = "default_since_minutes")]
+    since_minutes: u64,
+    #[serde(default = "default_compact_thread_limit")]
+    limit: usize,
+}
+
+fn default_compact_thread_limit() -> usize {
+    500
+}
+
+async fn http_compact_thread_handler(
+    State(state): State<AppState>,
+    payload: Result<Json<HttpCompactThreadRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
+    let since = req.since_minutes.min(MAX_HISTORY_MINUTES);
+    let token_budget = req.token_budget;
+    let limit = req.limit.min(50_000);
+    let thread_id = req.thread_id;
+    let settings = Arc::clone(&state.settings);
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut conn = state.redis.get_connection()?;
+        ops_compact_thread(
+            &mut conn,
+            &settings,
+            &CompactThreadRequest {
+                thread_id: &thread_id,
+                token_budget,
+                since_minutes: since,
+                limit,
+            },
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::json!({
+        "messages": result.messages,
+        "token_count": result.token_count,
+        "truncated": result.truncated,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator summary HTTP handler
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /orchestrator-summary`.
+#[derive(Debug, Deserialize)]
+struct HttpOrchestratorSummaryQuery {
+    /// Agent whose inbox to summarise (required).
+    agent: String,
+    /// Optional cursor to resume from (if omitted, uses the stored cursor).
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+/// Return a token-efficient orchestrator summary of what changed since last
+/// poll for the given agent.
+///
+/// Categorises new notifications by topic and returns counts + changed entity
+/// names rather than full message bodies.
+async fn http_orchestrator_summary_handler(
+    State(state): State<AppState>,
+    Query(query): Query<HttpOrchestratorSummaryQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if query.agent.trim().is_empty() {
+        return Err(bad_request("agent query parameter is required"));
+    }
+    let agent = query.agent;
+    let cursor = query.cursor;
+
+    let summary = tokio::task::spawn_blocking(move || {
+        let mut conn = state.redis.get_connection()?;
+        ops_orchestrator_summary(&mut conn, &agent, cursor.as_deref())
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(&summary).unwrap_or_default()))
+}
+
+// ---------------------------------------------------------------------------
+// Resource events HTTP handler
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /resource-events/:resource_id`.
+#[derive(Debug, Deserialize)]
+struct HttpResourceEventsQuery {
+    /// Only return events after this stream ID.
+    #[serde(default)]
+    since: Option<String>,
+    /// Maximum number of events to return (default 100, max 1000).
+    #[serde(default = "default_resource_events_limit")]
+    limit: usize,
+}
+
+fn default_resource_events_limit() -> usize {
+    100
+}
+
+/// List resource lifecycle events (claimed, renewed, released, resolved,
+/// contested) for a specific resource.
+async fn http_resource_events_handler(
+    State(state): State<AppState>,
+    Path(resource_id): Path<String>,
+    Query(query): Query<HttpResourceEventsQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let limit = query.limit.min(1000);
+    let since = query.since;
+
+    let events = tokio::task::spawn_blocking(move || {
+        let mut conn = state.redis.get_connection()?;
+        redis_list_resource_events(&mut conn, &resource_id, since.as_deref(), limit)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(&events).unwrap_or_default()))
+}
+
+// ---------------------------------------------------------------------------
 // Task queue HTTP handlers
 // ---------------------------------------------------------------------------
 
@@ -2816,7 +2994,121 @@ pub(crate) async fn http_dashboard_data_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Subscription HTTP handlers
+// ---------------------------------------------------------------------------
 
+/// Request body for `POST /subscriptions`.
+#[derive(Debug, Deserialize)]
+struct HttpSubscribeRequest {
+    agent: String,
+    #[serde(default)]
+    scopes: agent_bus_core::models::SubscriptionScopes,
+    #[serde(default)]
+    ttl_seconds: Option<u64>,
+}
+
+/// Query parameters for `GET /subscriptions`.
+#[derive(Debug, Deserialize)]
+struct HttpSubscriptionsQuery {
+    agent: String,
+}
+
+/// Query parameters for `DELETE /subscriptions/{id}`.
+#[derive(Debug, Deserialize)]
+struct HttpUnsubscribeQuery {
+    agent: String,
+}
+
+/// `POST /subscriptions` -- create a new subscription.
+async fn http_subscribe_handler(
+    State(state): State<AppState>,
+    payload: Result<Json<HttpSubscribeRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let Json(req) = payload.map_err(json_rejection_to_400)?;
+    if req.agent.trim().is_empty() {
+        return Err(bad_request("agent must not be empty"));
+    }
+
+    let sub = tokio::task::spawn_blocking(move || {
+        use crate::ops::subscription::{SubscribeRequest, subscribe as ops_subscribe};
+        ops_subscribe(
+            &state.settings,
+            &SubscribeRequest {
+                agent: &req.agent,
+                scopes: &req.scopes,
+                ttl_seconds: req.ttl_seconds,
+            },
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::to_value(&sub).unwrap_or_default()),
+    ))
+}
+
+/// `GET /subscriptions?agent=<name>` -- list subscriptions for an agent.
+async fn http_list_subscriptions_handler(
+    State(state): State<AppState>,
+    Query(params): Query<HttpSubscriptionsQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if params.agent.trim().is_empty() {
+        return Err(bad_request("agent query parameter must not be empty"));
+    }
+    let agent = params.agent.clone();
+
+    let subs = tokio::task::spawn_blocking(move || {
+        use crate::ops::subscription::list_subscriptions as ops_list_subscriptions;
+        ops_list_subscriptions(&state.settings, &agent)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    let count = subs.len();
+    Ok(Json(serde_json::json!({
+        "agent": params.agent,
+        "subscriptions": subs,
+        "count": count,
+    })))
+}
+
+/// `DELETE /subscriptions/{id}?agent=<name>` -- delete a subscription.
+async fn http_delete_subscription_handler(
+    State(state): State<AppState>,
+    Path(sub_id): Path<String>,
+    Query(params): Query<HttpUnsubscribeQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    if params.agent.trim().is_empty() {
+        return Err(bad_request("agent query parameter must not be empty"));
+    }
+    let agent = params.agent.clone();
+    let id = sub_id.clone();
+
+    let deleted = tokio::task::spawn_blocking(move || {
+        use crate::ops::subscription::unsubscribe as ops_unsubscribe;
+        ops_unsubscribe(&state.settings, &agent, &id)
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::json!({
+        "agent": params.agent,
+        "id": sub_id,
+        "deleted": deleted,
+    })))
+}
+
+// ---------------------------------------------------------------------------
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "route registration table is large but flat — splitting it would hurt readability"
+)]
 pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<()> {
     let bind_host = settings.server_host.clone();
     let redis = RedisPool::new(&settings).context("Redis client creation failed")?;
@@ -2889,12 +3181,32 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         .route("/token-count", post(http_token_count_handler))
         .route("/compact-context", post(http_compact_context_handler))
         .route("/session-summary", get(http_session_summary_handler))
+        .route("/thread-summary", get(http_thread_summary_handler))
+        .route("/compact-thread", post(http_compact_thread_handler))
+        // Orchestrator summary + resource events
+        .route(
+            "/orchestrator-summary",
+            get(http_orchestrator_summary_handler),
+        )
+        .route(
+            "/resource-events/{resource_id}",
+            get(http_resource_events_handler),
+        )
         // Task queue routes
         .route(
             "/tasks/{agent}",
             post(http_push_task_handler)
                 .get(http_peek_tasks_handler)
                 .delete(http_pull_task_handler),
+        )
+        // Subscription routes
+        .route(
+            "/subscriptions",
+            post(http_subscribe_handler).get(http_list_subscriptions_handler),
+        )
+        .route(
+            "/subscriptions/{id}",
+            axum::routing::delete(http_delete_subscription_handler),
         )
         // Inventory
         .route("/inventory", get(http_inventory_handler))

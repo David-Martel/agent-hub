@@ -33,7 +33,7 @@ Structural execution plan:
 - [x] Add first-class `repo`, `session`, `tag`, and `thread_id` filters to CLI, HTTP, and MCP read paths.
 - [ ] Stop over-fetching for `session-summary`, `dedup`, and related commands; route tagged queries through PostgreSQL indexes when available.
 - [ ] Add repo/session-scoped inbox cursors instead of one global cursor per agent.
-- [ ] Add repo/session inventory commands: active repos, active sessions, agents by repo, open claims by repo.
+- [x] Add repo/session inventory commands: active repos, active sessions, agents by repo, open claims by repo. CLI `inventory` + HTTP `GET /inventory` with `?repo=` drill-down.
 - [ ] Add first-class thread summaries/compaction for `thread_id` and direct channels; current `session-summary` is useful only when `session:<id>` tags are present, but live coordination often centers on `thread_id` (`wezterm-joint-plan-*`, resource threads) instead.
 
 ## P2 Cross-Agent Orchestration
@@ -51,7 +51,7 @@ Structural execution plan:
 
 ## P3 Token Efficiency
 
-- [ ] Add `summarize-session` and `summarize-inbox` APIs that emit compact rollups for LLM consumers.
+- [x] Add `summarize-session` and `summarize-inbox` APIs that emit compact rollups for LLM consumers. `summarize_session()` + `summarize_inbox()` + `aggregate_messages()` in core ops; CLI refactored to delegate; HTTP `GET /session-summary`.
 - [ ] Extend compact/minimal encodings to shorten repeated tag prefixes and schema markers.
 - [ ] Add excerpt mode for long findings so reads can return short bodies plus metadata pointers.
 - [ ] Benchmark token and byte reduction across JSON, compact, minimal, TOON, and MessagePack for realistic multi-agent sessions.

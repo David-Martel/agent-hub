@@ -37,12 +37,13 @@ use agent_bus_core::{init_pg_writer, maybe_announce_startup, pg_writer};
 use cli::{Cli, Cmd};
 use commands::{
     CompactContextArgs, PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_batch_send, cmd_claim,
-    cmd_claims, cmd_codex_sync, cmd_compact_context, cmd_dedup, cmd_export, cmd_health,
-    cmd_inventory, cmd_journal, cmd_knock, cmd_monitor, cmd_peek_tasks, cmd_pending_acks,
-    cmd_post_direct, cmd_post_group, cmd_presence, cmd_presence_history, cmd_presence_list,
-    cmd_prune, cmd_pull_task, cmd_push_task, cmd_read, cmd_read_direct, cmd_read_group,
-    cmd_release_claim, cmd_renew_claim, cmd_resolve, cmd_send, cmd_service, cmd_session_summary,
-    cmd_sync, cmd_token_count, cmd_watch,
+    cmd_claims, cmd_codex_sync, cmd_compact_context, cmd_compact_thread, cmd_dedup, cmd_export,
+    cmd_health, cmd_inventory, cmd_journal, cmd_knock, cmd_monitor, cmd_peek_tasks,
+    cmd_pending_acks, cmd_post_direct, cmd_post_group, cmd_presence, cmd_presence_history,
+    cmd_presence_list, cmd_prune, cmd_pull_task, cmd_push_task, cmd_read, cmd_read_direct,
+    cmd_read_group, cmd_release_claim, cmd_renew_claim, cmd_resolve, cmd_send, cmd_service,
+    cmd_session_summary, cmd_subscribe, cmd_subscriptions, cmd_summarize_thread, cmd_sync,
+    cmd_token_count, cmd_unsubscribe, cmd_watch,
 };
 use http::{start_http_server, start_mcp_http_server};
 use mcp::AgentBusMcpServer;
@@ -599,6 +600,32 @@ async fn run(args: Vec<OsString>) -> Result<()> {
             cmd_compact_context(&settings, &args)?;
         }
 
+        Cmd::SummarizeThread {
+            ref thread_id,
+            since_minutes,
+            limit,
+            ref encoding,
+        } => {
+            cmd_summarize_thread(&settings, thread_id, since_minutes, limit, encoding)?;
+        }
+
+        Cmd::CompactThread {
+            ref thread_id,
+            token_budget,
+            since_minutes,
+            limit,
+            ref encoding,
+        } => {
+            cmd_compact_thread(
+                &settings,
+                thread_id,
+                token_budget,
+                since_minutes,
+                limit,
+                encoding,
+            )?;
+        }
+
         Cmd::PushTask {
             ref agent,
             ref task,
@@ -637,6 +664,48 @@ async fn run(args: Vec<OsString>) -> Result<()> {
             ref encoding,
         } => {
             cmd_peek_tasks(&settings, agent, limit, encoding)?;
+        }
+
+        Cmd::Subscribe {
+            ref agent,
+            ref repo,
+            ref session,
+            ref thread,
+            ref tag,
+            ref topic,
+            ref priority_min,
+            ref resource,
+            ttl,
+            ref encoding,
+        } => {
+            cmd_subscribe(
+                &settings,
+                agent,
+                repo,
+                session,
+                thread,
+                tag,
+                topic,
+                priority_min.as_deref(),
+                resource,
+                ttl,
+                encoding,
+            )?;
+        }
+
+        Cmd::Unsubscribe {
+            ref agent,
+            ref id,
+            ref encoding,
+        } => {
+            cmd_unsubscribe(&settings, agent, id, encoding)?;
+        }
+
+        Cmd::Subscriptions {
+            ref agent,
+            ref encoding,
+        } => {
+            cmd_subscriptions(&settings, agent, encoding)?;
         }
 
         Cmd::Inventory {

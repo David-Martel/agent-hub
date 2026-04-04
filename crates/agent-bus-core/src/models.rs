@@ -63,6 +63,26 @@ pub struct Presence {
     pub ttl_seconds: u64,
 }
 
+/// A resource lifecycle event emitted when a claim is created, renewed,
+/// released, resolved, or contested.
+///
+/// Resource events are stored in per-resource Redis streams keyed by
+/// `agent_bus:resource_events:<resource_id>` with a MAXLEN of 1000.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceEvent {
+    /// The type of event that occurred.
+    pub event: String,
+    /// Agent that performed the action.
+    pub agent: String,
+    /// Resource the event applies to.
+    pub resource: String,
+    /// ISO-8601 timestamp when the event was recorded.
+    pub timestamp: String,
+    /// Redis stream ID for this event entry.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
+}
+
 /// Bus health response.
 #[derive(Debug, Clone, Serialize)]
 pub struct Health {
@@ -93,6 +113,189 @@ pub struct Health {
     /// Total write failures logged by the background `PgWriter` task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pg_write_errors: Option<u64>,
+}
+
+// ---------------------------------------------------------------------------
+// Subscription models
+// ---------------------------------------------------------------------------
+
+/// Valid priority levels that can be used as a minimum threshold in
+/// subscription scope filters.
+pub const VALID_SUBSCRIPTION_PRIORITIES: &[&str] = &["low", "normal", "high", "urgent"];
+
+/// An agent's registered interest in a set of message scopes.
+///
+/// Subscriptions are metadata records stored in Redis.  The bus can use them
+/// to pre-filter messages destined for an agent, but the current version
+/// treats them as opt-in declarations — the actual filtering integration
+/// (e.g. `check_inbox`) is planned for a later phase.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Subscription {
+    /// Auto-generated UUID v4 identifier.
+    pub id: String,
+    /// The agent that owns this subscription.
+    pub agent: String,
+    /// The scope filters this subscription covers.
+    pub scopes: SubscriptionScopes,
+    /// ISO 8601 UTC timestamp of creation.
+    pub created_at: String,
+    /// Optional time-to-live in seconds.  When set, the subscription
+    /// automatically expires after this duration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl_seconds: Option<u64>,
+    /// ISO 8601 UTC timestamp at which this subscription expires.
+    /// Computed from `created_at + ttl_seconds` when a TTL is set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+}
+
+/// Scope filters for a [`Subscription`].
+///
+/// All fields are optional.  A subscription matches a message when the
+/// message satisfies **all** non-empty scope fields (logical AND across
+/// categories, logical OR within each category's list).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SubscriptionScopes {
+    /// Match messages tagged with any of these `repo:<name>` values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repos: Vec<String>,
+    /// Match messages tagged with any of these `session:<id>` values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sessions: Vec<String>,
+    /// Match messages with any of these `thread_id` values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub threads: Vec<String>,
+    /// Match messages containing any of these tags (exact match).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Match messages with any of these topic values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub topics: Vec<String>,
+    /// Minimum priority threshold.  When set, only messages at this level
+    /// or above match.  Priority ordering: low < normal < high < urgent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority_min: Option<String>,
+    /// Match messages referencing any of these resource identifiers (e.g.
+    /// file paths used in ownership claims).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<String>,
+}
+
+impl SubscriptionScopes {
+    /// Returns `true` if every scope field is empty / `None`.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.repos.is_empty()
+            && self.sessions.is_empty()
+            && self.threads.is_empty()
+            && self.tags.is_empty()
+            && self.topics.is_empty()
+            && self.priority_min.is_none()
+            && self.resources.is_empty()
+    }
+}
+
+/// Map a priority string to its numeric rank for comparison.
+/// Returns `None` for unrecognised values.
+#[must_use]
+fn priority_rank(p: &str) -> Option<u8> {
+    match p {
+        "low" => Some(0),
+        "normal" => Some(1),
+        "high" => Some(2),
+        "urgent" => Some(3),
+        _ => None,
+    }
+}
+
+/// Check whether a [`Message`] matches the scope filters of a
+/// [`Subscription`].
+///
+/// Matching rules (AND across categories, OR within each list):
+/// - **repos**: message must have a `repo:<name>` tag matching any entry.
+/// - **sessions**: message must have a `session:<id>` tag matching any entry.
+/// - **threads**: message `thread_id` must match any entry.
+/// - **tags**: message tags must contain at least one of the listed tags.
+/// - **topics**: message topic must match any entry.
+/// - **`priority_min`**: message priority must be >= the threshold.
+/// - **resources**: message body or tags must reference any listed resource.
+///
+/// Empty scope fields are ignored (always pass).
+#[must_use]
+pub fn message_matches_subscription(msg: &Message, sub: &Subscription) -> bool {
+    let scopes = &sub.scopes;
+
+    // repos
+    if !scopes.repos.is_empty() {
+        let matched = scopes.repos.iter().any(|repo| {
+            let expected = format!("repo:{repo}");
+            msg.tags.iter().any(|t| t == &expected)
+        });
+        if !matched {
+            return false;
+        }
+    }
+
+    // sessions
+    if !scopes.sessions.is_empty() {
+        let matched = scopes.sessions.iter().any(|session| {
+            let expected = format!("session:{session}");
+            msg.tags.iter().any(|t| t == &expected)
+        });
+        if !matched {
+            return false;
+        }
+    }
+
+    // threads
+    if !scopes.threads.is_empty() {
+        let matched = msg
+            .thread_id
+            .as_deref()
+            .is_some_and(|tid| scopes.threads.iter().any(|t| t == tid));
+        if !matched {
+            return false;
+        }
+    }
+
+    // tags
+    if !scopes.tags.is_empty() {
+        let matched = scopes
+            .tags
+            .iter()
+            .any(|scope_tag| msg.tags.iter().any(|mt| mt == scope_tag));
+        if !matched {
+            return false;
+        }
+    }
+
+    // topics
+    if !scopes.topics.is_empty() && !scopes.topics.iter().any(|t| t == &msg.topic) {
+        return false;
+    }
+
+    // priority_min
+    if let Some(ref min_priority) = scopes.priority_min {
+        let min_rank = priority_rank(min_priority).unwrap_or(0);
+        let msg_rank = priority_rank(&msg.priority).unwrap_or(1);
+        if msg_rank < min_rank {
+            return false;
+        }
+    }
+
+    // resources — check if the message body or tags reference any listed resource
+    if !scopes.resources.is_empty() {
+        let matched = scopes.resources.iter().any(|resource| {
+            msg.body.contains(resource)
+                || msg.tags.iter().any(|t| t.contains(resource))
+                || msg.topic.contains(resource)
+        });
+        if !matched {
+            return false;
+        }
+    }
+
+    true
 }
 
 #[cfg(test)]
@@ -451,5 +654,357 @@ mod tests {
         let p: Presence = serde_json::from_str(json).expect("deserialize failed");
         assert!(p.capabilities.is_empty());
         assert_eq!(p.metadata, serde_json::Value::Null);
+    }
+
+    // ------------------------------------------------------------------
+    // Subscription serialization
+    // ------------------------------------------------------------------
+
+    fn make_subscription() -> Subscription {
+        Subscription {
+            id: "sub-001".to_owned(),
+            agent: "claude".to_owned(),
+            scopes: SubscriptionScopes {
+                repos: vec!["agent-bus".to_owned()],
+                sessions: vec!["s1".to_owned()],
+                threads: vec!["thread-42".to_owned()],
+                tags: vec!["urgent".to_owned()],
+                topics: vec!["status".to_owned()],
+                priority_min: Some("high".to_owned()),
+                resources: vec!["src/main.rs".to_owned()],
+            },
+            created_at: "2026-04-04T12:00:00Z".to_owned(),
+            ttl_seconds: Some(3600),
+            expires_at: Some("2026-04-04T13:00:00Z".to_owned()),
+        }
+    }
+
+    #[test]
+    fn subscription_serialization_round_trip() {
+        let original = make_subscription();
+        let json = serde_json::to_string(&original).expect("serialize failed");
+        let restored: Subscription = serde_json::from_str(&json).expect("deserialize failed");
+
+        assert_eq!(restored.id, original.id);
+        assert_eq!(restored.agent, original.agent);
+        assert_eq!(restored.scopes, original.scopes);
+        assert_eq!(restored.created_at, original.created_at);
+        assert_eq!(restored.ttl_seconds, original.ttl_seconds);
+        assert_eq!(restored.expires_at, original.expires_at);
+    }
+
+    #[test]
+    fn subscription_defaults_on_deserialize() {
+        let json = r#"{
+            "id": "sub-x",
+            "agent": "codex",
+            "scopes": {},
+            "created_at": "2026-01-01T00:00:00Z"
+        }"#;
+        let sub: Subscription = serde_json::from_str(json).expect("deserialize failed");
+        assert!(sub.scopes.is_empty());
+        assert!(sub.ttl_seconds.is_none());
+        assert!(sub.expires_at.is_none());
+    }
+
+    #[test]
+    fn subscription_scopes_skip_empty_fields_in_json() {
+        let sub = Subscription {
+            id: "sub-empty".to_owned(),
+            agent: "euler".to_owned(),
+            scopes: SubscriptionScopes::default(),
+            created_at: "2026-01-01T00:00:00Z".to_owned(),
+            ttl_seconds: None,
+            expires_at: None,
+        };
+        let json = serde_json::to_string(&sub).expect("serialize failed");
+        let v: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        let scopes_obj = v["scopes"].as_object().expect("scopes should be object");
+        assert!(
+            scopes_obj.is_empty(),
+            "empty scopes should serialize as empty object: {json}"
+        );
+        assert!(!v.as_object().unwrap().contains_key("ttl_seconds"));
+        assert!(!v.as_object().unwrap().contains_key("expires_at"));
+    }
+
+    #[test]
+    fn subscription_scopes_is_empty_true_for_default() {
+        assert!(SubscriptionScopes::default().is_empty());
+    }
+
+    #[test]
+    fn subscription_scopes_is_empty_false_when_populated() {
+        let s = SubscriptionScopes {
+            repos: vec!["r".to_owned()],
+            ..Default::default()
+        };
+        assert!(!s.is_empty());
+    }
+
+    // ------------------------------------------------------------------
+    // message_matches_subscription
+    // ------------------------------------------------------------------
+
+    fn make_test_msg() -> Message {
+        Message {
+            id: "msg-t".to_owned(),
+            timestamp_utc: "2026-04-04T12:00:00Z".to_owned(),
+            protocol_version: PROTOCOL_VERSION.to_owned(),
+            from: "claude".to_owned(),
+            to: "codex".to_owned(),
+            topic: "status".to_owned(),
+            body: "working on src/main.rs refactor".to_owned(),
+            thread_id: Some("thread-42".to_owned()),
+            tags: smallvec::smallvec![
+                "repo:agent-bus".to_owned(),
+                "session:s1".to_owned(),
+                "urgent".to_owned(),
+            ],
+            priority: "high".to_owned(),
+            request_ack: false,
+            reply_to: None,
+            metadata: serde_json::Value::Null,
+            stream_id: None,
+        }
+    }
+
+    fn sub_with_scopes(scopes: SubscriptionScopes) -> Subscription {
+        Subscription {
+            id: "sub-test".to_owned(),
+            agent: "codex".to_owned(),
+            scopes,
+            created_at: "2026-04-04T12:00:00Z".to_owned(),
+            ttl_seconds: None,
+            expires_at: None,
+        }
+    }
+
+    #[test]
+    fn matches_empty_scopes_matches_everything() {
+        let msg = make_test_msg();
+        let sub = sub_with_scopes(SubscriptionScopes::default());
+        assert!(message_matches_subscription(&msg, &sub));
+    }
+
+    #[test]
+    fn matches_repo_scope() {
+        let msg = make_test_msg();
+        let sub = sub_with_scopes(SubscriptionScopes {
+            repos: vec!["agent-bus".to_owned()],
+            ..Default::default()
+        });
+        assert!(message_matches_subscription(&msg, &sub));
+
+        let sub_miss = sub_with_scopes(SubscriptionScopes {
+            repos: vec!["other-repo".to_owned()],
+            ..Default::default()
+        });
+        assert!(!message_matches_subscription(&msg, &sub_miss));
+    }
+
+    #[test]
+    fn matches_session_scope() {
+        let msg = make_test_msg();
+        let sub = sub_with_scopes(SubscriptionScopes {
+            sessions: vec!["s1".to_owned()],
+            ..Default::default()
+        });
+        assert!(message_matches_subscription(&msg, &sub));
+
+        let sub_miss = sub_with_scopes(SubscriptionScopes {
+            sessions: vec!["s999".to_owned()],
+            ..Default::default()
+        });
+        assert!(!message_matches_subscription(&msg, &sub_miss));
+    }
+
+    #[test]
+    fn matches_thread_scope() {
+        let msg = make_test_msg();
+        let sub = sub_with_scopes(SubscriptionScopes {
+            threads: vec!["thread-42".to_owned()],
+            ..Default::default()
+        });
+        assert!(message_matches_subscription(&msg, &sub));
+
+        let sub_miss = sub_with_scopes(SubscriptionScopes {
+            threads: vec!["thread-999".to_owned()],
+            ..Default::default()
+        });
+        assert!(!message_matches_subscription(&msg, &sub_miss));
+    }
+
+    #[test]
+    fn matches_thread_scope_when_msg_has_no_thread() {
+        let mut msg = make_test_msg();
+        msg.thread_id = None;
+        let sub = sub_with_scopes(SubscriptionScopes {
+            threads: vec!["thread-42".to_owned()],
+            ..Default::default()
+        });
+        assert!(!message_matches_subscription(&msg, &sub));
+    }
+
+    #[test]
+    fn matches_tag_scope() {
+        let msg = make_test_msg();
+        let sub = sub_with_scopes(SubscriptionScopes {
+            tags: vec!["urgent".to_owned()],
+            ..Default::default()
+        });
+        assert!(message_matches_subscription(&msg, &sub));
+
+        let sub_miss = sub_with_scopes(SubscriptionScopes {
+            tags: vec!["not-a-tag".to_owned()],
+            ..Default::default()
+        });
+        assert!(!message_matches_subscription(&msg, &sub_miss));
+    }
+
+    #[test]
+    fn matches_topic_scope() {
+        let msg = make_test_msg();
+        let sub = sub_with_scopes(SubscriptionScopes {
+            topics: vec!["status".to_owned()],
+            ..Default::default()
+        });
+        assert!(message_matches_subscription(&msg, &sub));
+
+        let sub_miss = sub_with_scopes(SubscriptionScopes {
+            topics: vec!["review-findings".to_owned()],
+            ..Default::default()
+        });
+        assert!(!message_matches_subscription(&msg, &sub_miss));
+    }
+
+    #[test]
+    fn matches_priority_min_scope() {
+        let msg = make_test_msg(); // priority = "high"
+
+        // high >= normal => matches
+        let sub_normal = sub_with_scopes(SubscriptionScopes {
+            priority_min: Some("normal".to_owned()),
+            ..Default::default()
+        });
+        assert!(message_matches_subscription(&msg, &sub_normal));
+
+        // high >= high => matches
+        let sub_high = sub_with_scopes(SubscriptionScopes {
+            priority_min: Some("high".to_owned()),
+            ..Default::default()
+        });
+        assert!(message_matches_subscription(&msg, &sub_high));
+
+        // high < urgent => does not match
+        let sub_urgent = sub_with_scopes(SubscriptionScopes {
+            priority_min: Some("urgent".to_owned()),
+            ..Default::default()
+        });
+        assert!(!message_matches_subscription(&msg, &sub_urgent));
+    }
+
+    #[test]
+    fn matches_resource_scope() {
+        let msg = make_test_msg(); // body contains "src/main.rs"
+        let sub = sub_with_scopes(SubscriptionScopes {
+            resources: vec!["src/main.rs".to_owned()],
+            ..Default::default()
+        });
+        assert!(message_matches_subscription(&msg, &sub));
+
+        let sub_miss = sub_with_scopes(SubscriptionScopes {
+            resources: vec!["src/lib.rs".to_owned()],
+            ..Default::default()
+        });
+        assert!(!message_matches_subscription(&msg, &sub_miss));
+    }
+
+    #[test]
+    fn matches_multiple_scopes_all_must_pass() {
+        let msg = make_test_msg();
+        // repo matches, topic matches => overall matches
+        let sub = sub_with_scopes(SubscriptionScopes {
+            repos: vec!["agent-bus".to_owned()],
+            topics: vec!["status".to_owned()],
+            ..Default::default()
+        });
+        assert!(message_matches_subscription(&msg, &sub));
+
+        // repo matches, topic does NOT match => overall does not match
+        let sub_partial = sub_with_scopes(SubscriptionScopes {
+            repos: vec!["agent-bus".to_owned()],
+            topics: vec!["benchmark".to_owned()],
+            ..Default::default()
+        });
+        assert!(!message_matches_subscription(&msg, &sub_partial));
+    }
+
+    #[test]
+    fn matches_or_within_list() {
+        let msg = make_test_msg();
+        // Multiple repos: message has "repo:agent-bus", so "other" fails but "agent-bus" succeeds => OR => pass.
+        let sub = sub_with_scopes(SubscriptionScopes {
+            repos: vec!["other".to_owned(), "agent-bus".to_owned()],
+            ..Default::default()
+        });
+        assert!(message_matches_subscription(&msg, &sub));
+    }
+
+    // ------------------------------------------------------------------
+    // priority_rank
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn priority_rank_ordering() {
+        assert!(priority_rank("low").unwrap() < priority_rank("normal").unwrap());
+        assert!(priority_rank("normal").unwrap() < priority_rank("high").unwrap());
+        assert!(priority_rank("high").unwrap() < priority_rank("urgent").unwrap());
+    }
+
+    #[test]
+    fn priority_rank_unknown_returns_none() {
+        assert!(priority_rank("critical").is_none());
+        assert!(priority_rank("").is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // ResourceEvent serialization
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn resource_event_round_trip() {
+        let event = ResourceEvent {
+            event: "claimed".to_owned(),
+            agent: "claude".to_owned(),
+            resource: "src/http.rs".to_owned(),
+            timestamp: "2026-04-01T10:00:00.000000Z".to_owned(),
+            stream_id: Some("1234567890000-0".to_owned()),
+        };
+        let json = serde_json::to_string(&event).expect("serialize failed");
+        let restored: ResourceEvent = serde_json::from_str(&json).expect("deserialize failed");
+        assert_eq!(restored.event, "claimed");
+        assert_eq!(restored.agent, "claude");
+        assert_eq!(restored.resource, "src/http.rs");
+        assert_eq!(restored.stream_id, Some("1234567890000-0".to_owned()));
+    }
+
+    #[test]
+    fn resource_event_stream_id_absent_when_none() {
+        let event = ResourceEvent {
+            event: "released".to_owned(),
+            agent: "codex".to_owned(),
+            resource: "src/lib.rs".to_owned(),
+            timestamp: "2026-04-01T11:00:00.000000Z".to_owned(),
+            stream_id: None,
+        };
+        let v: serde_json::Value = serde_json::to_value(&event).expect("to_value failed");
+        let obj = v.as_object().expect("should be object");
+        assert!(
+            !obj.contains_key("stream_id"),
+            "stream_id should be absent when None"
+        );
+        assert_eq!(v["event"], "released");
+        assert_eq!(v["agent"], "codex");
     }
 }

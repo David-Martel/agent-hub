@@ -783,6 +783,72 @@ pub(crate) enum Cmd {
         encoding: Encoding,
     },
 
+    /// Summarize messages within a single thread.
+    ///
+    /// Thread-scoped analogue of session-summary: retrieves messages with
+    /// the given `thread_id` and produces an aggregated summary (agents,
+    /// topics, severity, time range).
+    #[command(
+        long_about = "Fetch messages tagged with a specific thread_id and produce a\n\
+            compact aggregated summary.\n\n\
+            Reports: agents involved, topic distribution, severity counts, and\n\
+            time range — scoped to the single thread.\n\n\
+            Example:\n  \
+            agent-bus summarize-thread --thread-id review-42 --encoding json"
+    )]
+    SummarizeThread {
+        #[arg(long, help = "Thread ID to summarize (required)")]
+        thread_id: String,
+        #[arg(
+            long,
+            default_value_t = 10_080,
+            help = "Look back this many minutes [default: 7 days]"
+        )]
+        since_minutes: u64,
+        #[arg(
+            long,
+            default_value_t = 10_000,
+            help = "Max messages to consider [default: 10000]"
+        )]
+        limit: usize,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Compact messages within a single thread to fit a token budget.
+    ///
+    /// Thread-scoped analogue of compact-context: fetches messages from the
+    /// live Redis stream filtered to the given `thread_id`, then trims to
+    /// the token budget (newest messages preferred).
+    #[command(
+        long_about = "Fetch recent messages for a specific thread_id from the live\n\
+            Redis stream and compact them to fit within a token budget.\n\n\
+            Useful for injecting thread-scoped context into an LLM prompt\n\
+            without exceeding the token window.\n\n\
+            Example:\n  \
+            agent-bus compact-thread --thread-id review-42 --token-budget 2000"
+    )]
+    CompactThread {
+        #[arg(long, help = "Thread ID to compact (required)")]
+        thread_id: String,
+        #[arg(long, default_value_t = 4000, help = "Token budget [default: 4000]")]
+        token_budget: usize,
+        #[arg(
+            long,
+            default_value_t = 60,
+            help = "Look back this many minutes [default: 60]"
+        )]
+        since_minutes: u64,
+        #[arg(
+            long,
+            default_value_t = 500,
+            help = "Max messages to fetch before compaction [default: 500]"
+        )]
+        limit: usize,
+        #[arg(long, default_value = "compact", value_enum)]
+        encoding: Encoding,
+    },
+
     // -----------------------------------------------------------------------
     // Task queue commands
     // -----------------------------------------------------------------------
@@ -862,6 +928,97 @@ pub(crate) enum Cmd {
         agent: String,
         #[arg(long, default_value_t = 10, help = "Max tasks to return (0 = all)")]
         limit: usize,
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+
+    // -----------------------------------------------------------------------
+    // Subscription commands
+    // -----------------------------------------------------------------------
+    /// Register interest in specific message scopes.
+    ///
+    /// Creates a subscription record so the bus knows what this agent cares
+    /// about.  Scope filters are combined with AND across categories and OR
+    /// within each category's list.
+    #[command(
+        long_about = "Create a subscription that declares which messages an agent is\n\
+            interested in. Scope filters (repo, session, thread, tag, topic,\n\
+            priority, resource) are combined with AND across categories and\n\
+            OR within each category's list.\n\n\
+            Subscriptions are metadata records stored in Redis.  When a TTL is\n\
+            specified, the subscription auto-expires after that many seconds.\n\n\
+            Examples:\n  \
+            agent-bus subscribe --agent claude --repo agent-bus --topic status\n  \
+            agent-bus subscribe --agent codex --tag urgent --priority-min high --ttl 3600"
+    )]
+    Subscribe {
+        #[arg(long, help = "Subscribing agent ID")]
+        agent: String,
+        #[arg(long, value_delimiter = ',', help = "Repos to match (comma-separated)")]
+        repo: Vec<String>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Sessions to match (comma-separated)"
+        )]
+        session: Vec<String>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Thread IDs to match (comma-separated)"
+        )]
+        thread: Vec<String>,
+        #[arg(long, value_delimiter = ',', help = "Tags to match (comma-separated)")]
+        tag: Vec<String>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Topics to match (comma-separated)"
+        )]
+        topic: Vec<String>,
+        #[arg(long, help = "Minimum priority threshold: low, normal, high, urgent")]
+        priority_min: Option<String>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Resources to match (comma-separated)"
+        )]
+        resource: Vec<String>,
+        #[arg(long, help = "Auto-expire after this many seconds")]
+        ttl: Option<u64>,
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Remove a subscription by ID.
+    #[command(
+        long_about = "Delete a subscription record from Redis.  The subscription ID is\n\
+            the UUID returned by the `subscribe` command.\n\n\
+            Returns {\"deleted\": true} if the subscription existed and was removed,\n\
+            or {\"deleted\": false} if it was already expired or never existed.\n\n\
+            Example:\n  \
+            agent-bus unsubscribe --agent claude --id <subscription-uuid>"
+    )]
+    Unsubscribe {
+        #[arg(long, help = "Agent that owns the subscription")]
+        agent: String,
+        #[arg(long, help = "Subscription UUID to remove")]
+        id: String,
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// List an agent's active subscriptions.
+    #[command(
+        long_about = "List all active subscriptions for a given agent.  Expired\n\
+            subscriptions (past their TTL) are automatically excluded.\n\n\
+            Returns JSON: {\"agent\": \"<id>\", \"subscriptions\": [...], \"count\": N}\n\n\
+            Example:\n  \
+            agent-bus subscriptions --agent claude --encoding json"
+    )]
+    Subscriptions {
+        #[arg(long, help = "Agent ID to list subscriptions for")]
+        agent: String,
         #[arg(long, default_value = "compact", value_enum, help = "Output format")]
         encoding: Encoding,
     },
@@ -1606,6 +1763,95 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // summarize-thread
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_summarize_thread() {
+        let cli = parse(&["agent-bus", "summarize-thread", "--thread-id", "review-42"])
+            .expect("summarize-thread must parse");
+
+        if let Cmd::SummarizeThread {
+            thread_id,
+            since_minutes,
+            limit,
+            ..
+        } = cli.command
+        {
+            assert_eq!(thread_id, "review-42");
+            assert_eq!(since_minutes, 10_080);
+            assert_eq!(limit, 10_000);
+        } else {
+            panic!("expected Cmd::SummarizeThread");
+        }
+    }
+
+    #[test]
+    fn parse_summarize_thread_missing_thread_id_fails() {
+        let result = parse(&["agent-bus", "summarize-thread"]);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // compact-thread
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_compact_thread() {
+        let cli = parse(&[
+            "agent-bus",
+            "compact-thread",
+            "--thread-id",
+            "review-42",
+            "--token-budget",
+            "2000",
+        ])
+        .expect("compact-thread must parse");
+
+        if let Cmd::CompactThread {
+            thread_id,
+            token_budget,
+            since_minutes,
+            limit,
+            ..
+        } = cli.command
+        {
+            assert_eq!(thread_id, "review-42");
+            assert_eq!(token_budget, 2000);
+            assert_eq!(since_minutes, 60);
+            assert_eq!(limit, 500);
+        } else {
+            panic!("expected Cmd::CompactThread");
+        }
+    }
+
+    #[test]
+    fn parse_compact_thread_defaults() {
+        let cli = parse(&["agent-bus", "compact-thread", "--thread-id", "t-1"])
+            .expect("compact-thread with defaults must parse");
+
+        if let Cmd::CompactThread {
+            token_budget,
+            since_minutes,
+            limit,
+            ..
+        } = cli.command
+        {
+            assert_eq!(token_budget, 4000);
+            assert_eq!(since_minutes, 60);
+            assert_eq!(limit, 500);
+        } else {
+            panic!("expected Cmd::CompactThread");
+        }
+    }
+
+    #[test]
+    fn parse_compact_thread_missing_thread_id_fails() {
+        let result = parse(&["agent-bus", "compact-thread"]);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
     // push-task
     // ------------------------------------------------------------------
 
@@ -1943,5 +2189,158 @@ mod tests {
         let cli = parse(&["agent-bus", "inventory", "--encoding", "json"])
             .expect("inventory --encoding must parse");
         assert!(matches!(cli.command, Cmd::Inventory { .. }));
+    }
+
+    // ------------------------------------------------------------------
+    // subscribe
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_subscribe_minimal() {
+        let cli =
+            parse(&["agent-bus", "subscribe", "--agent", "claude"]).expect("subscribe must parse");
+
+        if let Cmd::Subscribe {
+            agent,
+            repo,
+            session,
+            thread,
+            tag,
+            topic,
+            priority_min,
+            resource,
+            ttl,
+            ..
+        } = cli.command
+        {
+            assert_eq!(agent, "claude");
+            assert!(repo.is_empty());
+            assert!(session.is_empty());
+            assert!(thread.is_empty());
+            assert!(tag.is_empty());
+            assert!(topic.is_empty());
+            assert!(priority_min.is_none());
+            assert!(resource.is_empty());
+            assert!(ttl.is_none());
+        } else {
+            panic!("expected Cmd::Subscribe");
+        }
+    }
+
+    #[test]
+    fn parse_subscribe_with_all_scopes() {
+        let cli = parse(&[
+            "agent-bus",
+            "subscribe",
+            "--agent",
+            "claude",
+            "--repo",
+            "agent-bus,other-repo",
+            "--session",
+            "s1",
+            "--thread",
+            "t1,t2",
+            "--tag",
+            "urgent",
+            "--topic",
+            "status,review-findings",
+            "--priority-min",
+            "high",
+            "--resource",
+            "src/main.rs",
+            "--ttl",
+            "3600",
+        ])
+        .expect("subscribe with all scopes must parse");
+
+        if let Cmd::Subscribe {
+            agent,
+            repo,
+            session,
+            thread,
+            tag,
+            topic,
+            priority_min,
+            resource,
+            ttl,
+            ..
+        } = cli.command
+        {
+            assert_eq!(agent, "claude");
+            assert_eq!(repo, vec!["agent-bus", "other-repo"]);
+            assert_eq!(session, vec!["s1"]);
+            assert_eq!(thread, vec!["t1", "t2"]);
+            assert_eq!(tag, vec!["urgent"]);
+            assert_eq!(topic, vec!["status", "review-findings"]);
+            assert_eq!(priority_min.as_deref(), Some("high"));
+            assert_eq!(resource, vec!["src/main.rs"]);
+            assert_eq!(ttl, Some(3600));
+        } else {
+            panic!("expected Cmd::Subscribe");
+        }
+    }
+
+    #[test]
+    fn parse_subscribe_missing_agent_fails() {
+        let result = parse(&["agent-bus", "subscribe", "--repo", "agent-bus"]);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // unsubscribe
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_unsubscribe() {
+        let cli = parse(&[
+            "agent-bus",
+            "unsubscribe",
+            "--agent",
+            "claude",
+            "--id",
+            "sub-uuid-123",
+        ])
+        .expect("unsubscribe must parse");
+
+        if let Cmd::Unsubscribe { agent, id, .. } = cli.command {
+            assert_eq!(agent, "claude");
+            assert_eq!(id, "sub-uuid-123");
+        } else {
+            panic!("expected Cmd::Unsubscribe");
+        }
+    }
+
+    #[test]
+    fn parse_unsubscribe_missing_id_fails() {
+        let result = parse(&["agent-bus", "unsubscribe", "--agent", "claude"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_unsubscribe_missing_agent_fails() {
+        let result = parse(&["agent-bus", "unsubscribe", "--id", "sub-123"]);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // subscriptions
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_subscriptions() {
+        let cli = parse(&["agent-bus", "subscriptions", "--agent", "claude"])
+            .expect("subscriptions must parse");
+
+        if let Cmd::Subscriptions { agent, .. } = cli.command {
+            assert_eq!(agent, "claude");
+        } else {
+            panic!("expected Cmd::Subscriptions");
+        }
+    }
+
+    #[test]
+    fn parse_subscriptions_missing_agent_fails() {
+        let result = parse(&["agent-bus", "subscriptions"]);
+        assert!(result.is_err());
     }
 }

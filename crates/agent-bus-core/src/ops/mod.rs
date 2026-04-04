@@ -6,6 +6,7 @@ pub mod claim;
 pub mod inbox;
 pub mod inventory;
 pub mod message;
+pub mod subscription;
 pub mod task;
 
 use crate::models::{Message, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR};

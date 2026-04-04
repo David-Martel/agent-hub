@@ -1071,6 +1071,16 @@ pub fn claim_resource_with_options(
         }
     }
 
+    // Best-effort resource event emission.
+    let event_type = if claim.status == ClaimStatus::Contested {
+        "contested"
+    } else {
+        "claimed"
+    };
+    if let Err(e) = crate::redis_bus::emit_resource_event(&mut conn, event_type, agent, resource) {
+        tracing::warn!("failed to emit resource event for claim: {e:#}");
+    }
+
     Ok(claim)
 }
 
@@ -1239,6 +1249,13 @@ pub fn resolve_claim(
         }
     }
 
+    // Best-effort resource event emission.
+    if let Err(e) =
+        crate::redis_bus::emit_resource_event(&mut conn, "resolved", winner_agent, resource)
+    {
+        tracing::warn!("failed to emit resource event for resolve: {e:#}");
+    }
+
     Ok(state)
 }
 
@@ -1274,6 +1291,12 @@ pub fn renew_claim(
     let renewed = renewed.context("no active claim found for agent on resource")?;
     recompute_claim_statuses(&mut claims);
     persist_claims(&mut conn, &key, &claims, now)?;
+
+    // Best-effort resource event emission.
+    if let Err(e) = crate::redis_bus::emit_resource_event(&mut conn, "renewed", agent, resource) {
+        tracing::warn!("failed to emit resource event for renew: {e:#}");
+    }
+
     claims
         .into_iter()
         .find(|claim| claim.agent == agent)
@@ -1299,6 +1322,12 @@ pub fn release_claim(settings: &Settings, resource: &str, agent: &str) -> Result
 
     recompute_claim_statuses(&mut claims);
     persist_claims(&mut conn, &key, &claims, Utc::now())?;
+
+    // Best-effort resource event emission.
+    if let Err(e) = crate::redis_bus::emit_resource_event(&mut conn, "released", agent, resource) {
+        tracing::warn!("failed to emit resource event for release: {e:#}");
+    }
+
     get_arbitration_state(settings, resource)
 }
 

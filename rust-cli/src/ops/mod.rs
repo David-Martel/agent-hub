@@ -17,6 +17,9 @@ pub(crate) mod inbox {
 pub(crate) mod inventory {
     pub(crate) use agent_bus_core::ops::inventory::*;
 }
+pub(crate) mod subscription {
+    pub(crate) use agent_bus_core::ops::subscription::*;
+}
 pub(crate) mod task {
     pub(crate) use agent_bus_core::ops::task::*;
 }

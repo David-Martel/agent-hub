@@ -20,8 +20,9 @@ use crate::ops::claim::{
     resolve_claim as ops_resolve_claim,
 };
 use crate::ops::inbox::{
-    CompactContextRequest, SummarizeSessionRequest, compact_context as compact_context_op,
-    summarize_session as ops_summarize_session,
+    CompactContextRequest, CompactThreadRequest, SummarizeSessionRequest, SummarizeThreadRequest,
+    compact_context as compact_context_op, compact_thread as compact_thread_op,
+    summarize_session as ops_summarize_session, summarize_thread as ops_summarize_thread,
 };
 use crate::ops::task::{
     PushTaskCardRequest, peek_task_cards as ops_peek_task_cards,
@@ -1494,6 +1495,68 @@ pub(crate) fn cmd_compact_context(
 }
 
 // ---------------------------------------------------------------------------
+// Thread summary / compact command implementations
+// ---------------------------------------------------------------------------
+
+/// Summarize all messages within a single thread.
+///
+/// Retrieves messages tagged with the given `thread_id` from durable history
+/// and aggregates them into a [`SessionSummary`].
+///
+/// # Errors
+///
+/// Returns an error if the Redis (or `PostgreSQL`) query fails.
+pub(crate) fn cmd_summarize_thread(
+    settings: &Settings,
+    thread_id: &str,
+    since_minutes: u64,
+    limit: usize,
+    encoding: &Encoding,
+) -> Result<()> {
+    let summary = ops_summarize_thread(
+        settings,
+        &SummarizeThreadRequest {
+            thread_id,
+            since_minutes,
+            limit,
+        },
+    )?;
+    output(&summary, encoding);
+    Ok(())
+}
+
+/// Compact messages within a single thread to fit a token budget.
+///
+/// Fetches recent messages for the given `thread_id` from the live Redis
+/// stream, then trims them to the token budget.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or stream read fails.
+pub(crate) fn cmd_compact_thread(
+    settings: &Settings,
+    thread_id: &str,
+    token_budget: usize,
+    since_minutes: u64,
+    limit: usize,
+    encoding: &Encoding,
+) -> Result<()> {
+    let mut conn = connect(settings)?;
+    let result = compact_thread_op(
+        &mut conn,
+        settings,
+        &CompactThreadRequest {
+            thread_id,
+            token_budget,
+            since_minutes,
+            limit,
+        },
+    )?;
+    output(&result.messages, encoding);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Task queue command implementations
 // ---------------------------------------------------------------------------
 
@@ -1576,6 +1639,98 @@ pub(crate) fn cmd_peek_tasks(
     let count = cards.len();
     output(
         &serde_json::json!({"agent": agent, "tasks": cards, "count": count}),
+        encoding,
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Subscriptions
+// ---------------------------------------------------------------------------
+
+/// Create a subscription for an agent.
+///
+/// # Errors
+///
+/// Returns an error if `agent` is empty, `priority_min` is invalid, or if
+/// the Redis connection fails.
+#[expect(clippy::too_many_arguments)]
+pub(crate) fn cmd_subscribe(
+    settings: &Settings,
+    agent: &str,
+    repos: &[String],
+    sessions: &[String],
+    threads: &[String],
+    tags: &[String],
+    topics: &[String],
+    priority_min: Option<&str>,
+    resources: &[String],
+    ttl: Option<u64>,
+    encoding: &Encoding,
+) -> Result<()> {
+    use crate::ops::subscription::{SubscribeRequest, subscribe as ops_subscribe};
+
+    let scopes = agent_bus_core::models::SubscriptionScopes {
+        repos: repos.to_vec(),
+        sessions: sessions.to_vec(),
+        threads: threads.to_vec(),
+        tags: tags.to_vec(),
+        topics: topics.to_vec(),
+        priority_min: priority_min.map(str::to_owned),
+        resources: resources.to_vec(),
+    };
+
+    let sub = ops_subscribe(
+        settings,
+        &SubscribeRequest {
+            agent,
+            scopes: &scopes,
+            ttl_seconds: ttl,
+        },
+    )?;
+
+    output(&serde_json::to_value(&sub)?, encoding);
+    Ok(())
+}
+
+/// Delete a subscription by ID.
+///
+/// # Errors
+///
+/// Returns an error if `agent` or `id` is empty, or if the Redis
+/// connection fails.
+pub(crate) fn cmd_unsubscribe(
+    settings: &Settings,
+    agent: &str,
+    id: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    use crate::ops::subscription::unsubscribe as ops_unsubscribe;
+
+    let deleted = ops_unsubscribe(settings, agent, id)?;
+    output(
+        &serde_json::json!({"agent": agent, "id": id, "deleted": deleted}),
+        encoding,
+    );
+    Ok(())
+}
+
+/// List all active subscriptions for an agent.
+///
+/// # Errors
+///
+/// Returns an error if `agent` is empty or the Redis connection fails.
+pub(crate) fn cmd_subscriptions(
+    settings: &Settings,
+    agent: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    use crate::ops::subscription::list_subscriptions as ops_list_subscriptions;
+
+    let subs = ops_list_subscriptions(settings, agent)?;
+    let count = subs.len();
+    output(
+        &serde_json::json!({"agent": agent, "subscriptions": subs, "count": count}),
         encoding,
     );
     Ok(())
