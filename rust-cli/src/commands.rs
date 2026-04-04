@@ -19,7 +19,10 @@ use crate::ops::claim::{
     release_claim as ops_release_claim, renew_claim as ops_renew_claim,
     resolve_claim as ops_resolve_claim,
 };
-use crate::ops::inbox::{CompactContextRequest, compact_context as compact_context_op};
+use crate::ops::inbox::{
+    CompactContextRequest, SummarizeSessionRequest, compact_context as compact_context_op,
+    summarize_session as ops_summarize_session,
+};
 use crate::ops::task::{
     PushTaskCardRequest, peek_task_cards as ops_peek_task_cards,
     pull_task_card as ops_pull_task_card, push_task_card as ops_push_task_card,
@@ -1172,73 +1175,16 @@ pub(crate) fn cmd_session_summary(
     session: &str,
     encoding: &Encoding,
 ) -> Result<()> {
-    use std::collections::HashMap;
-
-    let session_filter = Some(session);
-    let filters = MessageFilters {
-        repo: None,
-        session: session_filter,
-        tags: &[],
-        thread_id: None,
-    };
-    let msgs = list_filtered_messages(settings, None, None, 10_080, 10_000, true, &filters)?;
-
-    let mut agents: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut topics: HashMap<String, u64> = HashMap::new();
-    let mut severities: HashMap<&'static str, u64> = HashMap::new();
-    let mut first_ts: Option<&str> = None;
-    let mut last_ts: Option<&str> = None;
-
-    for msg in &msgs {
-        agents.insert(msg.from.clone());
-        *topics.entry(msg.topic.clone()).or_insert(0) += 1;
-
-        // Extract severity from body: look for SEVERITY:<level> pattern.
-        for line in msg.body.lines() {
-            let line_upper = line.to_uppercase();
-            if let Some(rest) = line_upper.strip_prefix("SEVERITY:") {
-                let level = rest.trim();
-                let key: &'static str = if level.starts_with("CRITICAL") {
-                    "CRITICAL"
-                } else if level.starts_with("HIGH") {
-                    "HIGH"
-                } else if level.starts_with("MEDIUM") {
-                    "MEDIUM"
-                } else if level.starts_with("LOW") {
-                    "LOW"
-                } else {
-                    continue;
-                };
-                *severities.entry(key).or_insert(0) += 1;
-            }
-        }
-
-        // Track time range using ISO-8601 string ordering (lexicographic = chronological).
-        let ts = msg.timestamp_utc.as_str();
-        if first_ts.is_none_or(|f| ts < f) {
-            first_ts = Some(ts);
-        }
-        if last_ts.is_none_or(|l| ts > l) {
-            last_ts = Some(ts);
-        }
-    }
-
-    let summary = serde_json::json!({
-        "session": session,
-        "message_count": msgs.len(),
-        "agents": agents.into_iter().collect::<Vec<_>>(),
-        "topics": topics,
-        "severity_counts": {
-            "CRITICAL": severities.get("CRITICAL").copied().unwrap_or(0),
-            "HIGH": severities.get("HIGH").copied().unwrap_or(0),
-            "MEDIUM": severities.get("MEDIUM").copied().unwrap_or(0),
-            "LOW": severities.get("LOW").copied().unwrap_or(0),
+    let summary = ops_summarize_session(
+        settings,
+        &SummarizeSessionRequest {
+            agent: None,
+            repo: None,
+            session: Some(session),
+            since_minutes: 10_080,
+            limit: 10_000,
         },
-        "time_range": {
-            "first": first_ts,
-            "last": last_ts,
-        },
-    });
+    )?;
     output(&summary, encoding);
     Ok(())
 }
@@ -1632,6 +1578,30 @@ pub(crate) fn cmd_peek_tasks(
         &serde_json::json!({"agent": agent, "tasks": cards, "count": count}),
         encoding,
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Inventory
+// ---------------------------------------------------------------------------
+
+pub(crate) fn cmd_inventory(
+    settings: &Settings,
+    repo: Option<&str>,
+    encoding: &Encoding,
+) -> Result<()> {
+    use crate::ops::inventory::{list_active_repos_and_sessions, repo_inventory};
+
+    let mut conn = connect(settings).context("inventory: Redis connection failed")?;
+
+    if let Some(repo_name) = repo {
+        let non_empty_repo = non_empty(repo_name, "--repo")?;
+        let result = repo_inventory(&mut conn, settings, non_empty_repo)?;
+        output(&result, encoding);
+    } else {
+        let result = list_active_repos_and_sessions(&mut conn, settings)?;
+        output(&result, encoding);
+    }
     Ok(())
 }
 

@@ -41,7 +41,10 @@ use crate::ops::claim::{
     release_claim as ops_release_claim, renew_claim as ops_renew_claim,
     resolve_claim as ops_resolve_claim,
 };
-use crate::ops::inbox::{CompactContextRequest, compact_context as ops_compact_context};
+use crate::ops::inbox::{
+    CompactContextRequest, SummarizeSessionRequest, compact_context as ops_compact_context,
+    summarize_session as ops_summarize_session,
+};
 use crate::ops::task::{
     PushTaskCardRequest, peek_task_cards as ops_peek_task_cards,
     pull_task_card as ops_pull_task_card, push_task_card as ops_push_task_card,
@@ -2072,6 +2075,41 @@ async fn http_channel_summary_handler(
 }
 
 // ---------------------------------------------------------------------------
+// Inventory HTTP handler
+// ---------------------------------------------------------------------------
+
+/// Query parameters for `GET /inventory`.
+#[derive(Debug, Deserialize, Default)]
+struct InventoryQuery {
+    /// When set, returns the repo-scoped view (agents + claims).
+    repo: Option<String>,
+}
+
+/// `GET /inventory` — list active repos/sessions, or drill into a specific repo.
+async fn http_inventory_handler(
+    State(state): State<AppState>,
+    Query(params): Query<InventoryQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    use crate::ops::inventory::{list_active_repos_and_sessions, repo_inventory};
+
+    let result = tokio::task::spawn_blocking(move || {
+        let mut conn = state.redis.get_connection()?;
+        if let Some(ref repo_name) = params.repo {
+            let inv = repo_inventory(&mut conn, &state.settings, repo_name)?;
+            serde_json::to_value(&inv).map_err(|e| anyhow::anyhow!("serialize: {e}"))
+        } else {
+            let inv = list_active_repos_and_sessions(&mut conn, &state.settings)?;
+            serde_json::to_value(&inv).map_err(|e| anyhow::anyhow!("serialize: {e}"))
+        }
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(result))
+}
+
+// ---------------------------------------------------------------------------
 // Token estimation and context compaction HTTP handlers
 // ---------------------------------------------------------------------------
 
@@ -2157,6 +2195,63 @@ async fn http_compact_context_handler(
     .map_err(internal_error)?;
 
     Ok(Json(serde_json::Value::Array(result.messages)))
+}
+
+// ---------------------------------------------------------------------------
+// Session summary HTTP handler
+// ---------------------------------------------------------------------------
+
+fn default_summary_limit() -> usize {
+    10_000
+}
+
+fn default_summary_since_minutes() -> u64 {
+    10_080
+}
+
+/// Query parameters for `GET /session-summary`.
+#[derive(Debug, Deserialize)]
+struct HttpSessionSummaryQuery {
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    repo: Option<String>,
+    #[serde(default)]
+    session: Option<String>,
+    #[serde(default = "default_summary_since_minutes")]
+    since_minutes: u64,
+    #[serde(default = "default_summary_limit")]
+    limit: usize,
+}
+
+async fn http_session_summary_handler(
+    State(state): State<AppState>,
+    Query(query): Query<HttpSessionSummaryQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let since = query.since_minutes.min(MAX_HISTORY_MINUTES);
+    let limit = query.limit.min(50_000);
+    let agent = query.agent;
+    let repo = query.repo;
+    let session = query.session;
+    let settings = Arc::clone(&state.settings);
+
+    let summary = tokio::task::spawn_blocking(move || {
+        ops_summarize_session(
+            &settings,
+            &SummarizeSessionRequest {
+                agent: agent.as_deref(),
+                repo: repo.as_deref(),
+                session: session.as_deref(),
+                since_minutes: since,
+                limit,
+            },
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(internal_error)?;
+
+    Ok(Json(serde_json::to_value(&summary).unwrap_or_default()))
 }
 
 // ---------------------------------------------------------------------------
@@ -2793,6 +2888,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         .route("/channels/summary", get(http_channel_summary_handler))
         .route("/token-count", post(http_token_count_handler))
         .route("/compact-context", post(http_compact_context_handler))
+        .route("/session-summary", get(http_session_summary_handler))
         // Task queue routes
         .route(
             "/tasks/{agent}",
@@ -2800,6 +2896,8 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
                 .get(http_peek_tasks_handler)
                 .delete(http_pull_task_handler),
         )
+        // Inventory
+        .route("/inventory", get(http_inventory_handler))
         // Monitoring dashboard
         .route("/dashboard", get(http_dashboard_handler))
         .route("/dashboard/data", get(http_dashboard_data_handler))

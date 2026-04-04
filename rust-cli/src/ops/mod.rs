@@ -14,6 +14,9 @@ pub(crate) mod claim {
 pub(crate) mod inbox {
     pub(crate) use agent_bus_core::ops::inbox::*;
 }
+pub(crate) mod inventory {
+    pub(crate) use agent_bus_core::ops::inventory::*;
+}
 pub(crate) mod task {
     pub(crate) use agent_bus_core::ops::task::*;
 }

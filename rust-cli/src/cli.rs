@@ -865,6 +865,28 @@ pub(crate) enum Cmd {
         #[arg(long, default_value = "compact", value_enum, help = "Output format")]
         encoding: Encoding,
     },
+
+    // -----------------------------------------------------------------------
+    // Inventory commands
+    // -----------------------------------------------------------------------
+    /// Show active repos, sessions, and agents on the bus.
+    #[command(
+        long_about = "Scan presence records and recent messages for unique repo:* and session:*\n\
+            tags. Returns a sorted inventory of active repositories and sessions.\n\n\
+            Use --repo <name> to drill into a specific repository: shows agents that\n\
+            have presence or recent messages tagged with that repo, plus any open\n\
+            ownership claims whose resource matches the repo name.\n\n\
+            Examples:\n  \
+            agent-bus inventory                        # list all repos + sessions\n  \
+            agent-bus inventory --repo agent-bus       # agents + claims for a repo\n  \
+            agent-bus inventory --encoding json        # pretty-printed JSON output"
+    )]
+    Inventory {
+        #[arg(long, help = "Drill into a specific repository name")]
+        repo: Option<String>,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
 }
 
 #[cfg(test)]
@@ -1889,5 +1911,37 @@ mod tests {
         } else {
             panic!("expected Cmd::Presence");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // inventory
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn parse_inventory_minimal() {
+        let cli = parse(&["agent-bus", "inventory"]).expect("inventory must parse");
+        if let Cmd::Inventory { repo, .. } = cli.command {
+            assert!(repo.is_none());
+        } else {
+            panic!("expected Cmd::Inventory");
+        }
+    }
+
+    #[test]
+    fn parse_inventory_with_repo() {
+        let cli = parse(&["agent-bus", "inventory", "--repo", "agent-bus"])
+            .expect("inventory --repo must parse");
+        if let Cmd::Inventory { repo, .. } = cli.command {
+            assert_eq!(repo.as_deref(), Some("agent-bus"));
+        } else {
+            panic!("expected Cmd::Inventory");
+        }
+    }
+
+    #[test]
+    fn parse_inventory_with_encoding() {
+        let cli = parse(&["agent-bus", "inventory", "--encoding", "json"])
+            .expect("inventory --encoding must parse");
+        assert!(matches!(cli.command, Cmd::Inventory { .. }));
     }
 }

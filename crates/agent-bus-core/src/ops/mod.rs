@@ -4,6 +4,7 @@ pub mod admin;
 pub mod channel;
 pub mod claim;
 pub mod inbox;
+pub mod inventory;
 pub mod message;
 pub mod task;
 
