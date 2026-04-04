@@ -33,6 +33,7 @@ use clap::Parser;
 use mimalloc::MiMalloc;
 use rmcp::serve_server;
 
+use agent_bus_core::{init_pg_writer, pg_writer};
 use cli::{Cli, Cmd};
 use commands::{
     CompactContextArgs, PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_batch_send, cmd_claim,
@@ -47,7 +48,6 @@ use http::{start_http_server, start_mcp_http_server};
 use mcp::AgentBusMcpServer;
 use models::STARTUP_PRESENCE_TTL;
 use ops::{PostMessageRequest, PresenceRequest, post_message, set_presence};
-use agent_bus_core::{init_pg_writer, pg_writer};
 use postgres_store::{PgWriter, probe_postgres};
 use redis_bus::connect;
 use settings::Settings;

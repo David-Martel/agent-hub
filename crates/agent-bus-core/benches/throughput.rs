@@ -9,9 +9,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use agent_bus_core::models::Message;
-use agent_bus_core::output::{
-    decode_msgpack, encode_msgpack, format_message_toon, minimize_value,
-};
+use agent_bus_core::output::{decode_msgpack, encode_msgpack, format_message_toon, minimize_value};
 use agent_bus_core::token::estimate_tokens;
 
 // ---------------------------------------------------------------------------

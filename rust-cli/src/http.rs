@@ -20,14 +20,12 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::mcp::AgentBusMcpServer;
 use crate::models::MAX_HISTORY_MINUTES;
-use crate::ops::admin::{ServerControlStatus, ServerMode, current_timestamp};
-use crate::ops::task::{
-    PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
-    push_task as ops_push_task, task_queue_length as ops_task_queue_length,
-};
-use crate::ops::{
-    AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
-    knock_metadata, list_messages_live, post_ack, post_message, set_presence,
+#[cfg(test)]
+use crate::ops::admin::ServerMode;
+use crate::ops::admin::{
+    ServerControlStatus, ServiceAction, ServiceActionRequest, apply_service_action,
+    health as ops_health, list_pending_acks as ops_list_pending_acks,
+    list_presence as ops_list_presence, parse_service_action,
 };
 use crate::ops::channel::{
     CreateGroupRequest, EscalateRequest, PostDirectRequest, PostGroupRequest, ReadDirectRequest,
@@ -38,23 +36,26 @@ use crate::ops::channel::{
 };
 use crate::ops::claim::{
     ClaimResourceRequest, ReleaseClaimRequest, RenewClaimRequest, ResolveClaimRequest,
-    claim_resource as ops_claim_resource,
-    get_arbitration_state as ops_get_arbitration_state,
+    claim_resource as ops_claim_resource, get_arbitration_state as ops_get_arbitration_state,
     release_claim as ops_release_claim, renew_claim as ops_renew_claim,
     resolve_claim as ops_resolve_claim,
 };
+use crate::ops::task::{
+    PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
+    push_task as ops_push_task, task_queue_length as ops_task_queue_length,
+};
+use crate::ops::{
+    AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
+    ValidatedBatchItem, ValidatedSendRequest, knock_metadata, list_messages_live, post_ack,
+    post_message, set_presence, validated_batch_send, validated_post_message,
+};
 use crate::output::{format_health_toon, format_message_toon, format_presence_toon};
-use crate::ops::admin::{health as ops_health, list_pending_acks as ops_list_pending_acks,
-    list_presence as ops_list_presence};
 use crate::redis_bus::{
-    BatchSendPayload, RedisPool, SseSubscriberCount, bus_list_messages_from_redis,
-    bus_post_message_with_notifications,
-    bus_post_messages_batch_with_notifications, list_notifications, list_notifications_since_id,
+    RedisPool, SseSubscriberCount, bus_list_messages_from_redis,
+    bus_post_message_with_notifications, list_notifications, list_notifications_since_id,
 };
 use crate::settings::Settings;
-use crate::validation::{
-    auto_fit_schema, enforce_schema_for_transport, validate_message_schema, validate_priority,
-};
+use crate::validation::validate_priority;
 
 /// Per-agent live SSE subscriber channels.
 ///
@@ -93,7 +94,6 @@ pub(crate) struct AppState {
     /// Cooperative graceful-shutdown trigger for HTTP service maintenance.
     pub(crate) shutdown_signal: Arc<Notify>,
 }
-
 
 async fn ensure_writes_allowed(
     state: &AppState,
@@ -259,84 +259,36 @@ async fn http_control_action_handler(
     payload: Result<Json<HttpControlRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
-    let action = req.action.trim().to_owned();
-    if action.is_empty() {
-        return Err(bad_request("action must not be empty"));
+
+    let action = parse_service_action(&req.action).map_err(|e| bad_request(e.to_string()))?;
+
+    // Pre-action async flush (transport-specific, cannot live in core).
+    let needs_flush = req.flush && action != ServiceAction::Resume;
+    if needs_flush {
+        flush_pg_writer().await.map_err(internal_error)?;
     }
 
-    match action.as_str() {
-        "pause" => {
-            if req.flush {
-                flush_pg_writer().await.map_err(internal_error)?;
-            }
-            let mut control = state.control_status.write().await;
-            control.mode = ServerMode::Maintenance;
-            control.write_blocked = true;
-            control.reason = req.reason.filter(|reason| !reason.trim().is_empty());
-            control.requested_by = req.requested_by.filter(|agent| !agent.trim().is_empty());
-            control.changed_at_utc = current_timestamp();
-            if req.flush {
-                control.last_flush_at_utc = Some(control.changed_at_utc.clone());
-            }
-            let snapshot = control.clone();
-            Ok(Json(serde_json::json!({
-                "ok": true,
-                "action": "pause",
-                "maintenance": snapshot,
-            })))
-        }
-        "resume" => {
-            let mut control = state.control_status.write().await;
-            control.mode = ServerMode::Running;
-            control.write_blocked = false;
-            control.reason = None;
-            control.requested_by = req.requested_by.filter(|agent| !agent.trim().is_empty());
-            control.changed_at_utc = current_timestamp();
-            let snapshot = control.clone();
-            Ok(Json(serde_json::json!({
-                "ok": true,
-                "action": "resume",
-                "maintenance": snapshot,
-            })))
-        }
-        "flush" => {
-            flush_pg_writer().await.map_err(internal_error)?;
-            let mut control = state.control_status.write().await;
-            control.last_flush_at_utc = Some(current_timestamp());
-            let snapshot = control.clone();
-            Ok(Json(serde_json::json!({
-                "ok": true,
-                "action": "flush",
-                "maintenance": snapshot,
-            })))
-        }
-        "stop" => {
-            if req.flush {
-                flush_pg_writer().await.map_err(internal_error)?;
-            }
-            let mut control = state.control_status.write().await;
-            control.mode = ServerMode::Stopping;
-            control.write_blocked = true;
-            control.reason = req.reason.filter(|reason| !reason.trim().is_empty());
-            control.requested_by = req.requested_by.filter(|agent| !agent.trim().is_empty());
-            control.changed_at_utc = current_timestamp();
-            if req.flush {
-                control.last_flush_at_utc = Some(control.changed_at_utc.clone());
-            }
-            let snapshot = control.clone();
-            let shutdown_signal = Arc::clone(&state.shutdown_signal);
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                shutdown_signal.notify_waiters();
-            });
-            Ok(Json(serde_json::json!({
-                "ok": true,
-                "action": "stop",
-                "maintenance": snapshot,
-            })))
-        }
-        _ => Err(bad_request("action must be pause|resume|flush|stop")),
+    // Core state transition (transport-agnostic).
+    let action_req = ServiceActionRequest {
+        action,
+        reason: req.reason.as_deref(),
+        requested_by: req.requested_by.as_deref(),
+        flush: needs_flush,
+    };
+    let mut control = state.control_status.write().await;
+    let response = apply_service_action(&mut control, &action_req).map_err(internal_error)?;
+    drop(control);
+
+    // Post-action transport hook: initiate graceful shutdown for "stop".
+    if action == ServiceAction::Stop {
+        let shutdown_signal = Arc::clone(&state.shutdown_signal);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            shutdown_signal.notify_waiters();
+        });
     }
+
+    Ok(Json(response))
 }
 
 // --- POST /messages --------------------------------------------------------
@@ -370,58 +322,47 @@ pub(crate) async fn http_send_handler(
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let Json(req) = payload.map_err(json_rejection_to_400)?;
     ensure_writes_allowed(&state, "send").await?;
-    // Validate required fields (cheap — stays on the async task).
-    let sender = req.sender.trim().to_owned();
-    let recipient = req.recipient.trim().to_owned();
-    let topic = req.topic.trim().to_owned();
-    let body_text = req.body.trim().to_owned();
-
-    if sender.is_empty() {
+    // Validate required fields cheaply on the async task so validation
+    // failures return 400 rather than 500.
+    validate_priority(&req.priority).map_err(|e| bad_request(format!("{e:#}")))?;
+    if req.sender.trim().is_empty() {
         return Err(bad_request("sender must not be empty"));
     }
-    if recipient.is_empty() {
+    if req.recipient.trim().is_empty() {
         return Err(bad_request("recipient must not be empty"));
     }
-    if topic.is_empty() {
+    if req.topic.trim().is_empty() {
         return Err(bad_request("topic must not be empty"));
     }
-    if body_text.is_empty() {
+    if req.body.trim().is_empty() {
         return Err(bad_request("body must not be empty"));
     }
-    validate_priority(&req.priority).map_err(|e| bad_request(format!("{e:#}")))?;
-    let effective_schema = enforce_schema_for_transport("http", req.schema.as_deref(), &topic);
-    let fitted_body = auto_fit_schema(&body_text, effective_schema);
-    validate_message_schema(&fitted_body, effective_schema)
-        .map_err(|e| bad_request(format!("schema validation failed: {e:#}")))?;
 
     let metadata = req
         .metadata
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-    let thread_id = req.thread_id;
-    let tags = req.tags;
-    let priority = req.priority;
-    let request_ack = req.request_ack;
-    let reply_to = req.reply_to;
 
     // Capture SSE subscriber state before `state` is moved.
     let has_sse_subscribers = state.sse_subscriber_count.any();
 
     let posted = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        post_message(
+        validated_post_message(
             &mut conn,
             &state.settings,
-            &PostMessageRequest {
-                sender: &sender,
-                recipient: &recipient,
-                topic: &topic,
-                body: &fitted_body,
-                thread_id: thread_id.as_deref(),
-                tags: &tags,
-                priority: &priority,
-                request_ack,
-                reply_to: reply_to.as_deref(),
+            &ValidatedSendRequest {
+                sender: &req.sender,
+                recipient: &req.recipient,
+                topic: &req.topic,
+                body: &req.body,
+                priority: &req.priority,
+                schema: req.schema.as_deref(),
+                tags: &req.tags,
+                thread_id: req.thread_id.as_deref(),
+                reply_to: req.reply_to.as_deref(),
+                request_ack: req.request_ack,
                 metadata: &metadata,
+                transport: "http",
                 has_sse_subscribers,
             },
         )
@@ -1348,49 +1289,28 @@ pub(crate) async fn http_batch_send_handler(
         return Err(bad_request("batch size limit is 100 messages"));
     }
 
-    // Validate all messages eagerly on the async task (cheap, no I/O) and
-    // collect into typed `BatchSendPayload` structs that `bus_post_messages_batch`
-    // consumes directly.  This removes the unwieldy 10-tuple from the old path.
-    let mut payloads: Vec<BatchSendPayload> = Vec::with_capacity(req.messages.len());
-    for m in &req.messages {
-        let sender = m.sender.trim().to_owned();
-        let recipient = m.recipient.trim().to_owned();
-        let topic = m.topic.trim().to_owned();
-        let body_text = m.body.trim().to_owned();
-        if sender.is_empty() {
-            return Err(bad_request("sender must not be empty"));
-        }
-        if recipient.is_empty() {
-            return Err(bad_request("recipient must not be empty"));
-        }
-        if topic.is_empty() {
-            return Err(bad_request("topic must not be empty"));
-        }
-        if body_text.is_empty() {
-            return Err(bad_request("body must not be empty"));
-        }
-        validate_priority(&m.priority).map_err(|e| bad_request(format!("{e:#}")))?;
-        let effective_schema = enforce_schema_for_transport("http", m.schema.as_deref(), &topic);
-        let fitted_body = auto_fit_schema(&body_text, effective_schema);
-        validate_message_schema(&fitted_body, effective_schema)
-            .map_err(|e| bad_request(format!("schema validation failed: {e:#}")))?;
-        let metadata = m
-            .metadata
-            .clone()
-            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-        payloads.push(BatchSendPayload {
-            from: sender,
-            to: recipient,
-            topic,
-            body: fitted_body,
-            thread_id: m.thread_id.clone(),
-            tags: m.tags.clone(),
-            priority: m.priority.clone(),
+    // Convert the HTTP request items into transport-agnostic batch items.
+    // Validation + schema enforcement + Redis pipeline write all happen inside
+    // `validated_batch_send` in the core ops layer.
+    let items: Vec<ValidatedBatchItem> = req
+        .messages
+        .into_iter()
+        .map(|m| ValidatedBatchItem {
+            sender: m.sender,
+            recipient: m.recipient,
+            topic: m.topic,
+            body: m.body,
+            priority: m.priority,
+            schema: m.schema,
+            tags: m.tags,
+            thread_id: m.thread_id,
+            reply_to: m.reply_to,
             request_ack: m.request_ack,
-            reply_to: m.reply_to.clone(),
-            metadata,
-        });
-    }
+            metadata: m
+                .metadata
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
+        })
+        .collect();
 
     // Snapshot the SSE subscriber flag before moving `state` into the blocking
     // task to avoid a cross-thread Arc dance inside spawn_blocking.
@@ -1398,18 +1318,11 @@ pub(crate) async fn http_batch_send_handler(
 
     let posted = tokio::task::spawn_blocking(move || {
         let mut conn = state.redis.get_connection()?;
-        // Single Redis pipeline round-trip for all XADD + PUBLISH + pending-ack.
-        bus_post_messages_batch_with_notifications(
-            &mut conn,
-            &state.settings,
-            payloads,
-            crate::pg_writer(),
-            has_sse,
-        )
+        validated_batch_send(&mut conn, &state.settings, &items, "http", has_sse)
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(|e| bad_request(format!("{e:#}")))?;
 
     let ids: Vec<String> = posted.iter().map(|m| m.message.id.clone()).collect();
     let count = ids.len();
@@ -1644,7 +1557,11 @@ async fn http_direct_read_handler(
     let msgs = tokio::task::spawn_blocking(move || {
         ops_read_direct(
             &state.settings,
-            &ReadDirectRequest { agent_a: &agent_a, agent_b: &other, limit },
+            &ReadDirectRequest {
+                agent_a: &agent_a,
+                agent_b: &other,
+                limit,
+            },
         )
     })
     .await
@@ -1681,7 +1598,11 @@ async fn http_create_group_handler(
     let info = tokio::task::spawn_blocking(move || {
         ops_create_group(
             &state.settings,
-            &CreateGroupRequest { name: &name, members: &members, created_by: &created_by },
+            &CreateGroupRequest {
+                name: &name,
+                members: &members,
+                created_by: &created_by,
+            },
         )
     })
     .await
@@ -1697,11 +1618,10 @@ async fn http_create_group_handler(
 async fn http_list_groups_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let groups =
-        tokio::task::spawn_blocking(move || ops_list_groups(&state.settings))
-            .await
-            .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-            .map_err(internal_error)?;
+    let groups = tokio::task::spawn_blocking(move || ops_list_groups(&state.settings))
+        .await
+        .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+        .map_err(internal_error)?;
 
     Ok(Json(serde_json::to_value(&groups).unwrap_or_default()))
 }
@@ -1777,7 +1697,13 @@ async fn http_group_read_handler(
     let limit = params.limit.clamp(1, 500);
 
     let msgs = tokio::task::spawn_blocking(move || {
-        ops_read_group(&state.settings, &ReadGroupRequest { group: &group_name, limit })
+        ops_read_group(
+            &state.settings,
+            &ReadGroupRequest {
+                group: &group_name,
+                limit,
+            },
+        )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1943,7 +1869,11 @@ async fn http_renew_claim_handler(
     let claim = tokio::task::spawn_blocking(move || {
         ops_renew_claim(
             &state.settings,
-            &RenewClaimRequest { resource: &resource, agent: &agent, lease_ttl_seconds },
+            &RenewClaimRequest {
+                resource: &resource,
+                agent: &agent,
+                lease_ttl_seconds,
+            },
         )
     })
     .await
@@ -1971,7 +1901,13 @@ async fn http_release_claim_handler(
     }
 
     let arbitration = tokio::task::spawn_blocking(move || {
-        ops_release_claim(&state.settings, &ReleaseClaimRequest { resource: &resource, agent: &agent })
+        ops_release_claim(
+            &state.settings,
+            &ReleaseClaimRequest {
+                resource: &resource,
+                agent: &agent,
+            },
+        )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1984,12 +1920,11 @@ async fn http_arbitration_state_handler(
     State(state): State<AppState>,
     Path(resource): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let state_data = tokio::task::spawn_blocking(move || {
-        ops_get_arbitration_state(&state.settings, &resource)
-    })
-    .await
-    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    let state_data =
+        tokio::task::spawn_blocking(move || ops_get_arbitration_state(&state.settings, &resource))
+            .await
+            .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+            .map_err(internal_error)?;
 
     Ok(Json(serde_json::to_value(&state_data).unwrap_or_default()))
 }
@@ -2122,11 +2057,10 @@ async fn http_resolve_handler(
 async fn http_channel_summary_handler(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
-    let summary =
-        tokio::task::spawn_blocking(move || ops_channel_summary(&state.settings))
-            .await
-            .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-            .map_err(internal_error)?;
+    let summary = tokio::task::spawn_blocking(move || ops_channel_summary(&state.settings))
+        .await
+        .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+        .map_err(internal_error)?;
 
     Ok(Json(serde_json::to_value(&summary).unwrap_or_default()))
 }
@@ -2264,7 +2198,13 @@ async fn http_push_task_handler(
     }
 
     let len = tokio::task::spawn_blocking(move || {
-        ops_push_task(&state.settings, &PushTaskRequest { agent: &agent, task: &task })
+        ops_push_task(
+            &state.settings,
+            &PushTaskRequest {
+                agent: &agent,
+                task: &task,
+            },
+        )
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -2327,12 +2267,10 @@ async fn http_pull_task_handler(
     }
     let agent_clone = agent.clone();
 
-    let task = tokio::task::spawn_blocking(move || {
-        ops_pull_task(&state.settings, &agent_clone)
-    })
-    .await
-    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    let task = tokio::task::spawn_blocking(move || ops_pull_task(&state.settings, &agent_clone))
+        .await
+        .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+        .map_err(internal_error)?;
 
     Ok(Json(
         serde_json::to_value(serde_json::json!({"agent": agent, "task": task})).unwrap_or_default(),

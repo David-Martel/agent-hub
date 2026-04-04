@@ -792,11 +792,7 @@ pub fn post_to_group(
 /// # Errors
 ///
 /// Returns an error if the Redis `XREVRANGE` fails.
-pub fn read_group(
-    settings: &Settings,
-    group_name: &str,
-    limit: usize,
-) -> Result<Vec<Message>> {
+pub fn read_group(settings: &Settings, group_name: &str, limit: usize) -> Result<Vec<Message>> {
     let stream_key = group_stream_key(group_name);
     let mut conn = connect(settings)?;
     xread_from_stream(&mut conn, &stream_key, limit)
@@ -1129,10 +1125,7 @@ pub fn list_claims(
 /// # Errors
 ///
 /// Returns an error if the Redis HGETALL fails.
-pub fn get_arbitration_state(
-    settings: &Settings,
-    resource: &str,
-) -> Result<ArbitrationState> {
+pub fn get_arbitration_state(settings: &Settings, resource: &str) -> Result<ArbitrationState> {
     let key = claims_key(resource);
     let mut conn = connect(settings)?;
 
@@ -1294,11 +1287,7 @@ pub fn renew_claim(
 ///
 /// Returns an error if no active claim exists for `agent` on `resource`,
 /// or if the Redis commands fail.
-pub fn release_claim(
-    settings: &Settings,
-    resource: &str,
-    agent: &str,
-) -> Result<ArbitrationState> {
+pub fn release_claim(settings: &Settings, resource: &str, agent: &str) -> Result<ArbitrationState> {
     let key = claims_key(resource);
     let mut conn = connect(settings)?;
     let mut claims = load_active_claims(&mut conn, &key)?;
@@ -1429,7 +1418,7 @@ impl OwnershipTracker {
     /// Return conflicts: files in `files` that are already owned by a *different* agent.
     ///
     /// A file claimed by the same `agent` is not a conflict (idempotent re-claim).
-    #[must_use] 
+    #[must_use]
     pub fn check_conflicts(&self, agent: &str, files: &[&str]) -> Vec<OwnershipConflict> {
         files
             .iter()
@@ -1473,7 +1462,7 @@ fn file_path_regex() -> &'static Regex {
 /// let paths = extract_claimed_files("editing src/main.rs and tests/lib.rs now");
 /// assert_eq!(paths, vec!["src/main.rs", "tests/lib.rs"]);
 /// ```
-#[must_use] 
+#[must_use]
 pub fn extract_claimed_files(body: &str) -> Vec<String> {
     file_path_regex()
         .find_iter(body)
@@ -1494,7 +1483,7 @@ pub fn global_ownership_tracker() -> &'static Mutex<OwnershipTracker> {
 /// Unlike the in-memory `OwnershipTracker` which only lives within a single
 /// process, this queries the Redis `bus:claims:*` hashes used by `claim_resource`.
 /// Returns conflicts where a different agent has a granted/contested claim.
-#[must_use] 
+#[must_use]
 pub fn check_redis_ownership(
     settings: &Settings,
     agent: &str,

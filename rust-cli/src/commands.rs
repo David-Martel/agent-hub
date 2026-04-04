@@ -4,9 +4,9 @@ use anyhow::{Context as _, Result};
 
 use crate::models::{MAX_HISTORY_MINUTES, Message, Presence};
 pub(crate) use crate::ops::MessageFilters;
-use crate::ops::{
-    AckMessageRequest, PostMessageRequest, PresenceRequest, ReadMessagesRequest, knock_metadata,
-    list_messages_history, post_ack, post_message, set_presence,
+use crate::ops::admin::{
+    health as ops_health, list_pending_acks as ops_list_pending_acks,
+    list_presence as ops_list_presence,
 };
 use crate::ops::channel::{
     PostDirectRequest, PostGroupRequest, ReadDirectRequest, ReadGroupRequest,
@@ -20,13 +20,18 @@ use crate::ops::claim::{
     resolve_claim as ops_resolve_claim,
 };
 use crate::ops::inbox::{CompactContextRequest, compact_context as compact_context_op};
-use crate::ops::task::{PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
-    push_task as ops_push_task};
+use crate::ops::task::{
+    PushTaskRequest, peek_tasks as ops_peek_tasks, pull_task as ops_pull_task,
+    push_task as ops_push_task,
+};
+use crate::ops::{
+    AckMessageRequest, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
+    ValidatedBatchItem, ValidatedSendRequest, knock_metadata, list_messages_history, post_ack,
+    post_message, set_presence, validated_batch_send, validated_post_message,
+};
 use crate::output::{
     Encoding, format_health_toon, output, output_message, output_messages, output_presence,
 };
-use crate::ops::admin::{health as ops_health, list_pending_acks as ops_list_pending_acks,
-    list_presence as ops_list_presence};
 use crate::redis_bus::{bus_list_messages, connect};
 use crate::server_mode::{
     http_get, http_post, http_put, post_service_action, query_windows_service_state,
@@ -41,7 +46,6 @@ use crate::validation::{
 
 #[cfg(test)]
 use crate::ops::{extra_filter_fetch_limit, message_matches_filters};
-
 
 // ---------------------------------------------------------------------------
 // Argument structs (avoid cloning in Cmd match)
@@ -294,18 +298,20 @@ pub(crate) fn cmd_service(
 }
 
 pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
-    validate_priority(args.priority)?;
-    let from = non_empty(args.from_agent, "--from-agent")?;
-    let to = non_empty(args.to_agent, "--to-agent")?;
-    let topic = non_empty(args.topic, "--topic")?;
-    let body = non_empty(args.body, "--body")?;
-    let effective_schema = infer_schema_from_topic(topic, args.schema);
-    let fitted_body = auto_fit_schema(body, effective_schema);
-    validate_message_schema(&fitted_body, effective_schema)?;
     let meta = parse_metadata_arg(args.metadata)?;
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
+        // Server-mode HTTP fallback: validate locally, then forward via HTTP.
+        validate_priority(args.priority)?;
+        let from = non_empty(args.from_agent, "--from-agent")?;
+        let to = non_empty(args.to_agent, "--to-agent")?;
+        let topic = non_empty(args.topic, "--topic")?;
+        let body = non_empty(args.body, "--body")?;
+        let effective_schema = infer_schema_from_topic(topic, args.schema);
+        let fitted_body = auto_fit_schema(body, effective_schema);
+        validate_message_schema(&fitted_body, effective_schema)?;
+
         let url = format!("{}/messages", settings.server_url.as_deref().unwrap_or(""));
         let mut payload = serde_json::json!({
             "sender": from,
@@ -329,20 +335,22 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
     }
 
     let mut conn = connect(settings)?;
-    let msg = post_message(
+    let msg = validated_post_message(
         &mut conn,
         settings,
-        &PostMessageRequest {
-            sender: from,
-            recipient: to,
-            topic,
-            body: &fitted_body,
-            thread_id: args.thread_id.as_deref(),
-            tags: args.tags,
+        &ValidatedSendRequest {
+            sender: args.from_agent,
+            recipient: args.to_agent,
+            topic: args.topic,
+            body: args.body,
             priority: args.priority,
-            request_ack: args.request_ack,
+            schema: args.schema,
+            tags: args.tags,
+            thread_id: args.thread_id.as_deref(),
             reply_to: args.reply_to.as_deref(),
+            request_ack: args.request_ack,
             metadata: &meta,
+            transport: "cli",
             has_sse_subscribers: false,
         },
     )?;
@@ -847,9 +855,8 @@ pub(crate) fn cmd_batch_send(settings: &Settings, file: &str, encoding: &Encodin
             .collect::<std::io::Result<_>>()?
     };
 
-    let mut conn = connect(settings)?;
-    let mut ids: Vec<String> = Vec::new();
-
+    // Parse all lines into batch items, skipping blanks and comments.
+    let mut items: Vec<ValidatedBatchItem> = Vec::new();
     for (line_no, line) in lines.iter().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with("//") {
@@ -857,42 +864,27 @@ pub(crate) fn cmd_batch_send(settings: &Settings, file: &str, encoding: &Encodin
         }
         let entry: BatchLine = serde_json::from_str(line)
             .with_context(|| format!("line {}: JSON parse error", line_no + 1))?;
-
-        validate_priority(&entry.priority)
-            .with_context(|| format!("line {}: invalid priority", line_no + 1))?;
-        let from = non_empty(&entry.sender, "sender")?;
-        let to = non_empty(&entry.recipient, "recipient")?;
-        let topic = non_empty(&entry.topic, "topic")?;
-        let body = non_empty(&entry.body, "body")?;
-        let effective_schema = infer_schema_from_topic(topic, entry.schema.as_deref());
-        let fitted_body = auto_fit_schema(body, effective_schema);
-        validate_message_schema(&fitted_body, effective_schema)
-            .with_context(|| format!("line {}: schema validation failed", line_no + 1))?;
-        let meta = entry
-            .metadata
-            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
-
-        let msg = post_message(
-            &mut conn,
-            settings,
-            &PostMessageRequest {
-                sender: from,
-                recipient: to,
-                topic,
-                body: &fitted_body,
-                thread_id: entry.thread_id.as_deref(),
-                tags: &entry.tags,
-                priority: &entry.priority,
-                request_ack: entry.request_ack,
-                reply_to: entry.reply_to.as_deref(),
-                metadata: &meta,
-                has_sse_subscribers: false,
-            },
-        )
-        .with_context(|| format!("line {}: Redis write failed", line_no + 1))?;
-        ids.push(msg.id);
+        items.push(ValidatedBatchItem {
+            sender: entry.sender,
+            recipient: entry.recipient,
+            topic: entry.topic,
+            body: entry.body,
+            priority: entry.priority,
+            schema: entry.schema,
+            tags: entry.tags,
+            thread_id: entry.thread_id,
+            reply_to: entry.reply_to,
+            request_ack: entry.request_ack,
+            metadata: entry
+                .metadata
+                .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new())),
+        });
     }
 
+    let mut conn = connect(settings)?;
+    let posted = validated_batch_send(&mut conn, settings, &items, "cli", false)?;
+
+    let ids: Vec<String> = posted.iter().map(|m| m.message.id.clone()).collect();
     let result = serde_json::json!({
         "sent": ids.len(),
         "ids": ids,
@@ -956,7 +948,11 @@ pub(crate) fn cmd_read_direct(
 ) -> Result<()> {
     let msgs = ops_read_direct(
         settings,
-        &ReadDirectRequest { agent_a, agent_b, limit },
+        &ReadDirectRequest {
+            agent_a,
+            agent_b,
+            limit,
+        },
     )?;
     output_messages(&msgs, encoding);
     Ok(())
@@ -1097,7 +1093,11 @@ pub(crate) fn cmd_renew_claim(
 
     let claim = ops_renew_claim(
         settings,
-        &RenewClaimRequest { resource, agent, lease_ttl_seconds },
+        &RenewClaimRequest {
+            resource,
+            agent,
+            lease_ttl_seconds,
+        },
     )?;
     output(&claim, encoding);
     Ok(())
@@ -1136,7 +1136,10 @@ pub(crate) fn cmd_claims(
 ) -> Result<()> {
     let claims = ops_list_claims(
         settings,
-        &ListClaimsRequest { resource, status: status_str },
+        &ListClaimsRequest {
+            resource,
+            status: status_str,
+        },
     )?;
     output(
         &serde_json::json!({"claims": claims, "count": claims.len()}),
@@ -1396,7 +1399,12 @@ pub(crate) fn cmd_resolve(
 
     let state = ops_resolve_claim(
         settings,
-        &ResolveClaimRequest { resource, winner, reason, resolved_by },
+        &ResolveClaimRequest {
+            resource,
+            winner,
+            reason,
+            resolved_by,
+        },
     )?;
     output(&state, encoding);
     Ok(())

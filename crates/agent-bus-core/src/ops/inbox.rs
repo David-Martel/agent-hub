@@ -59,8 +59,7 @@ pub fn check_inbox(
     }
 
     let cursor = get_notification_cursor(conn, request.agent)?;
-    let notifications =
-        list_notifications_since_id(conn, request.agent, &cursor, request.limit)?;
+    let notifications = list_notifications_since_id(conn, request.agent, &cursor, request.limit)?;
 
     let thread_id = request.filters.thread_id;
     let agent = request.agent;

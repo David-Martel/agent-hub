@@ -15,8 +15,10 @@ use crate::postgres_store::query_scope_tags;
 // consume from the `crate::ops` namespace to avoid dead-code noise during
 // the incremental migration (Task 2 → Task 4).
 pub use message::{
-    AckMessageRequest, PostMessageRequest, PresenceRequest, ReadMessagesRequest, knock_metadata,
-    list_messages_history, list_messages_live, post_ack, post_message, set_presence,
+    AckMessageRequest, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
+    ValidatedBatchItem, ValidatedSendRequest, knock_metadata, list_messages_history,
+    list_messages_live, post_ack, post_message, set_presence, validated_batch_send,
+    validated_post_message,
 };
 
 #[derive(Debug)]

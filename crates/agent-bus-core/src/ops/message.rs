@@ -4,10 +4,15 @@ use anyhow::Result;
 
 use crate::models::{Message, Presence};
 use crate::redis_bus::{
-    bus_list_messages_from_redis_with_filters, bus_list_messages_with_filters, bus_post_message,
+    BatchSendPayload, PostedMessage, bus_list_messages_from_redis_with_filters,
+    bus_list_messages_with_filters, bus_post_message, bus_post_messages_batch_with_notifications,
     bus_set_presence, clear_pending_ack,
 };
 use crate::settings::Settings;
+use crate::validation::{
+    auto_fit_schema, enforce_schema_for_transport, non_empty, validate_message_schema,
+    validate_priority,
+};
 
 use super::{MessageFilters, scoped_required_tags};
 
@@ -60,7 +65,7 @@ pub struct ReadMessagesRequest<'a> {
     pub filters: MessageFilters<'a>,
 }
 
-#[must_use] 
+#[must_use]
 pub fn knock_metadata(request_ack: bool) -> serde_json::Value {
     serde_json::json!({
         "knock": true,
@@ -95,6 +100,74 @@ pub fn post_message(
         request.metadata,
         crate::pg_writer(),
         request.has_sse_subscribers,
+    )
+}
+
+/// Raw inputs for [`validated_post_message`], before validation and schema
+/// enforcement.
+///
+/// All string fields are validated (trimmed, non-empty) inside the function.
+/// The `transport` field controls schema inference: `"mcp"` and `"http"`
+/// default to the `status` schema for unknown topics, while `"cli"` (and any
+/// other value) leaves the schema optional.
+#[derive(Debug)]
+pub struct ValidatedSendRequest<'a> {
+    pub sender: &'a str,
+    pub recipient: &'a str,
+    pub topic: &'a str,
+    pub body: &'a str,
+    pub priority: &'a str,
+    pub schema: Option<&'a str>,
+    pub tags: &'a [String],
+    pub thread_id: Option<&'a str>,
+    pub reply_to: Option<&'a str>,
+    pub request_ack: bool,
+    pub metadata: &'a serde_json::Value,
+    pub transport: &'a str,
+    pub has_sse_subscribers: bool,
+}
+
+/// Validate inputs, enforce/infer schema, auto-fit the body, then post the
+/// message to the bus.
+///
+/// This consolidates the send-message orchestration that was previously
+/// duplicated across the CLI, HTTP, and MCP transports.
+///
+/// # Errors
+///
+/// Returns an error if any validation step fails (priority, non-empty fields,
+/// schema) or if the underlying [`post_message`] call fails.
+pub fn validated_post_message(
+    conn: &mut redis::Connection,
+    settings: &Settings,
+    req: &ValidatedSendRequest<'_>,
+) -> Result<Message> {
+    validate_priority(req.priority)?;
+    let sender = non_empty(req.sender, "sender")?;
+    let recipient = non_empty(req.recipient, "recipient")?;
+    let topic = non_empty(req.topic, "topic")?;
+    let body = non_empty(req.body, "body")?;
+
+    let effective_schema = enforce_schema_for_transport(req.transport, req.schema, topic);
+    let fitted_body = auto_fit_schema(body, effective_schema);
+    validate_message_schema(&fitted_body, effective_schema)?;
+
+    post_message(
+        conn,
+        settings,
+        &PostMessageRequest {
+            sender,
+            recipient,
+            topic,
+            body: &fitted_body,
+            thread_id: req.thread_id,
+            tags: req.tags,
+            priority: req.priority,
+            request_ack: req.request_ack,
+            reply_to: req.reply_to,
+            metadata: req.metadata,
+            has_sse_subscribers: req.has_sse_subscribers,
+        },
     )
 }
 
@@ -208,5 +281,96 @@ pub fn list_messages_live(
         request.include_broadcast,
         request.filters.thread_id,
         &required_tag_refs,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Batch send
+// ---------------------------------------------------------------------------
+
+/// A single item in a validated batch send request.
+///
+/// Similar to [`ValidatedSendRequest`] but without the `has_sse_subscribers`
+/// and `transport` fields, which are batch-level concerns passed separately
+/// to [`validated_batch_send`].
+#[derive(Debug)]
+pub struct ValidatedBatchItem {
+    pub sender: String,
+    pub recipient: String,
+    pub topic: String,
+    pub body: String,
+    pub priority: String,
+    pub schema: Option<String>,
+    pub tags: Vec<String>,
+    pub thread_id: Option<String>,
+    pub reply_to: Option<String>,
+    pub request_ack: bool,
+    pub metadata: serde_json::Value,
+}
+
+/// Validate a batch of messages and post them in a single Redis pipeline
+/// round-trip.
+///
+/// Each item is validated (priority, non-empty fields, schema
+/// enforcement/fitting) and the first failing item causes the entire batch to
+/// be rejected.  On success the messages are posted atomically via
+/// [`bus_post_messages_batch_with_notifications`].
+///
+/// # Errors
+///
+/// Returns an error naming the first invalid item (by index) or if the
+/// underlying Redis pipeline write fails.
+pub fn validated_batch_send(
+    conn: &mut redis::Connection,
+    settings: &Settings,
+    items: &[ValidatedBatchItem],
+    transport: &str,
+    has_sse_subscribers: bool,
+) -> Result<Vec<PostedMessage>> {
+    use anyhow::Context as _;
+
+    let mut payloads: Vec<BatchSendPayload> = Vec::with_capacity(items.len());
+
+    for (idx, item) in items.iter().enumerate() {
+        let ctx = || format!("item {idx}");
+
+        validate_priority(&item.priority).with_context(ctx)?;
+        let sender = non_empty(&item.sender, "sender").with_context(ctx)?;
+        let recipient = non_empty(&item.recipient, "recipient").with_context(ctx)?;
+        let topic = non_empty(&item.topic, "topic").with_context(ctx)?;
+        let body = non_empty(&item.body, "body").with_context(ctx)?;
+
+        let effective_schema =
+            enforce_schema_for_transport(transport, item.schema.as_deref(), topic);
+        let fitted_body = auto_fit_schema(body, effective_schema);
+        validate_message_schema(&fitted_body, effective_schema)
+            .with_context(|| format!("item {idx}: schema validation failed"))?;
+
+        let metadata = if item.metadata.is_null() {
+            serde_json::Value::Object(serde_json::Map::new())
+        } else {
+            item.metadata.clone()
+        };
+
+        payloads.push(BatchSendPayload {
+            from: sender.to_owned(),
+            to: recipient.to_owned(),
+            topic: topic.to_owned(),
+            body: fitted_body,
+            thread_id: item.thread_id.clone(),
+            tags: item.tags.clone(),
+            priority: item.priority.clone(),
+            request_ack: item.request_ack,
+            reply_to: item.reply_to.clone(),
+            metadata,
+        });
+    }
+
+    bus_post_messages_batch_with_notifications(
+        conn,
+        settings,
+        payloads,
+        crate::pg_writer(),
+        has_sse_subscribers,
     )
 }

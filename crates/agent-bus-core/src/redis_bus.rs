@@ -170,7 +170,7 @@ impl RedisPool {
     /// Pool metrics snapshot: `(connections_acquired, connection_errors)`.
     ///
     /// Suitable for embedding in the health endpoint response.
-    #[must_use] 
+    #[must_use]
     pub fn metrics(&self) -> (u64, u64) {
         (
             self.metrics.connections_acquired.load(Ordering::Relaxed),
@@ -179,7 +179,7 @@ impl RedisPool {
     }
 
     /// Current r2d2 pool state: idle connections and pool size.
-    #[must_use] 
+    #[must_use]
     pub fn pool_state(&self) -> r2d2::State {
         self.inner.state()
     }
@@ -245,12 +245,12 @@ fn should_publish_message_event(msg: &Message, has_sse_subscribers: bool) -> boo
     has_sse_subscribers || (!msg.to.is_empty() && msg.to != "all")
 }
 
-#[must_use] 
+#[must_use]
 pub fn notification_stream_key(agent: &str) -> String {
     format!("{NOTIFICATION_STREAM_PREFIX}{agent}")
 }
 
-#[must_use] 
+#[must_use]
 pub fn notification_cursor_key(agent: &str) -> String {
     format!("{NOTIFICATION_CURSOR_PREFIX}{agent}")
 }
@@ -453,7 +453,9 @@ pub fn set_notification_cursor(
     Ok(())
 }
 
-pub fn decode_stream_entry<S: std::hash::BuildHasher>(fields: &HashMap<String, redis::Value, S>) -> Message {
+pub fn decode_stream_entry<S: std::hash::BuildHasher>(
+    fields: &HashMap<String, redis::Value, S>,
+) -> Message {
     // Extract a field as an owned String. For BulkString we attempt zero-copy
     // UTF-8 conversion; only lossy-converts on invalid bytes (rare in practice).
     let get = |k: &str| -> String {
@@ -539,7 +541,7 @@ pub fn decode_stream_entry<S: std::hash::BuildHasher>(fields: &HashMap<String, r
     }
 }
 
-#[must_use] 
+#[must_use]
 pub fn message_matches_filters(
     msg: &Message,
     agent: Option<&str>,
@@ -569,10 +571,8 @@ pub fn message_matches_filters(
 }
 
 /// Parse stream results from XRANGE / XREVRANGE.
-#[must_use] 
-pub fn parse_xrange_result(
-    raw: &[redis::Value],
-) -> Vec<(String, HashMap<String, redis::Value>)> {
+#[must_use]
+pub fn parse_xrange_result(raw: &[redis::Value]) -> Vec<(String, HashMap<String, redis::Value>)> {
     let mut out = Vec::new();
     for entry in raw {
         let redis::Value::Array(parts) = entry else {
@@ -1892,11 +1892,7 @@ pub fn get_inbox_cursor(conn: &mut redis::Connection, agent: &str) -> Result<Str
     dead_code,
     reason = "legacy cursor retained for compatibility during notification migration"
 )]
-pub fn set_inbox_cursor(
-    conn: &mut redis::Connection,
-    agent: &str,
-    stream_id: &str,
-) -> Result<()> {
+pub fn set_inbox_cursor(conn: &mut redis::Connection, agent: &str, stream_id: &str) -> Result<()> {
     let key = inbox_cursor_key(agent);
     let _: () = redis::Commands::set(conn, &key, stream_id).context("SET inbox cursor")?;
     Ok(())
@@ -1909,7 +1905,7 @@ pub fn set_inbox_cursor(
     dead_code,
     reason = "legacy cursor retained for compatibility during notification migration"
 )]
-#[must_use] 
+#[must_use]
 pub fn inbox_cursor_key(agent: &str) -> String {
     format!("bus:cursor:{agent}")
 }
@@ -2094,7 +2090,7 @@ pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
 /// Used by the dashboard handler as the `unwrap_or_else` fallback when the
 /// `spawn_blocking` task join fails (which only happens on task panic, not on
 /// Redis/PG errors — those are handled inside [`bus_health`] itself).
-#[must_use] 
+#[must_use]
 pub fn health_error_fallback() -> Health {
     Health {
         ok: false,

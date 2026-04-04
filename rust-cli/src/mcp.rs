@@ -9,10 +9,7 @@ use rmcp::model::{
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
 };
 
-use crate::ops::{
-    AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
-    knock_metadata, list_messages_history, post_ack, post_message, set_presence,
-};
+use crate::ops::admin::{health as ops_health, list_presence as ops_list_presence};
 use crate::ops::channel::{
     CreateGroupRequest, EscalateRequest, PostDirectRequest, PostGroupRequest, ReadDirectRequest,
     ReadGroupRequest, create_group as ops_create_group, post_direct as ops_post_direct,
@@ -25,12 +22,13 @@ use crate::ops::claim::{
     renew_claim as ops_renew_claim, resolve_claim as ops_resolve_claim,
 };
 use crate::ops::inbox::{CheckInboxRequest, check_inbox};
-use crate::ops::admin::{health as ops_health, list_presence as ops_list_presence};
+use crate::ops::{
+    AckMessageRequest, MessageFilters, PostMessageRequest, PresenceRequest, ReadMessagesRequest,
+    ValidatedSendRequest, knock_metadata, list_messages_history, post_ack, post_message,
+    set_presence, validated_post_message,
+};
 use crate::redis_bus::connect;
 use crate::settings::Settings;
-use crate::validation::{
-    auto_fit_schema, enforce_schema_for_transport, validate_message_schema, validate_priority,
-};
 
 /// Tool input schemas, separated from execution logic.
 mod schemas {
@@ -532,26 +530,24 @@ impl AgentBusMcpServer {
                 let reply_to = Self::get_str(args, "reply_to");
                 let metadata = Self::get_object_or_empty(args, "metadata");
                 let schema = Self::get_str(args, "schema");
-                let effective_schema = enforce_schema_for_transport("mcp", schema, topic);
 
-                validate_priority(priority)?;
-                let fitted_body = auto_fit_schema(body, effective_schema);
-                validate_message_schema(&fitted_body, effective_schema)?;
                 let mut conn = connect(settings)?;
-                let msg = post_message(
+                let msg = validated_post_message(
                     &mut conn,
                     settings,
-                    &PostMessageRequest {
+                    &ValidatedSendRequest {
                         sender,
                         recipient,
                         topic,
-                        body: &fitted_body,
-                        thread_id,
-                        tags: &tags,
+                        body,
                         priority,
-                        request_ack,
+                        schema,
+                        tags: &tags,
+                        thread_id,
                         reply_to,
+                        request_ack,
                         metadata: &metadata,
+                        transport: "mcp",
                         has_sse_subscribers: false,
                     },
                 )?;
@@ -694,7 +690,11 @@ impl AgentBusMcpServer {
                         let members = Self::get_string_array(args, "members");
                         let info = ops_create_group(
                             settings,
-                            &CreateGroupRequest { name, members: &members, created_by },
+                            &CreateGroupRequest {
+                                name,
+                                members: &members,
+                                created_by,
+                            },
                         )?;
                         Ok(serde_json::to_value(&info)?)
                     }
@@ -751,7 +751,12 @@ impl AgentBusMcpServer {
                     "escalate" => {
                         let msg = ops_post_escalation(
                             settings,
-                            &EscalateRequest { from_agent: sender, body, thread_id, tags: &tags },
+                            &EscalateRequest {
+                                from_agent: sender,
+                                body,
+                                thread_id,
+                                tags: &tags,
+                            },
                         )?;
                         Ok(serde_json::to_value(&msg)?)
                     }
@@ -774,15 +779,24 @@ impl AgentBusMcpServer {
                             .ok_or_else(|| anyhow!("agent_b is required for direct channels"))?;
                         let msgs = ops_read_direct(
                             settings,
-                            &ReadDirectRequest { agent_a, agent_b, limit },
+                            &ReadDirectRequest {
+                                agent_a,
+                                agent_b,
+                                limit,
+                            },
                         )?;
                         Ok(serde_json::to_value(&msgs)?)
                     }
                     "group" => {
                         let group_name = Self::get_str(args, "group_name")
                             .ok_or_else(|| anyhow!("group_name is required for group channels"))?;
-                        let msgs =
-                            ops_read_group(settings, &ReadGroupRequest { group: group_name, limit })?;
+                        let msgs = ops_read_group(
+                            settings,
+                            &ReadGroupRequest {
+                                group: group_name,
+                                limit,
+                            },
+                        )?;
                         Ok(serde_json::to_value(&msgs)?)
                     }
                     other => Err(anyhow!(
@@ -831,7 +845,11 @@ impl AgentBusMcpServer {
                 let lease_ttl_seconds = Self::get_u64_or(args, "lease_ttl_seconds", 3600);
                 let claim = ops_renew_claim(
                     settings,
-                    &RenewClaimRequest { resource, agent, lease_ttl_seconds },
+                    &RenewClaimRequest {
+                        resource,
+                        agent,
+                        lease_ttl_seconds,
+                    },
                 )?;
                 Ok(serde_json::to_value(&claim)?)
             }
@@ -841,10 +859,7 @@ impl AgentBusMcpServer {
                     .ok_or_else(|| anyhow!("resource is required"))?;
                 let agent =
                     Self::get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
-                let state = ops_release_claim(
-                    settings,
-                    &ReleaseClaimRequest { resource, agent },
-                )?;
+                let state = ops_release_claim(settings, &ReleaseClaimRequest { resource, agent })?;
                 Ok(serde_json::to_value(&state)?)
             }
 
@@ -858,7 +873,12 @@ impl AgentBusMcpServer {
 
                 let state = ops_resolve_claim(
                     settings,
-                    &ResolveClaimRequest { resource, winner, reason, resolved_by },
+                    &ResolveClaimRequest {
+                        resource,
+                        winner,
+                        reason,
+                        resolved_by,
+                    },
                 )?;
                 Ok(serde_json::to_value(&state)?)
             }

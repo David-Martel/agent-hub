@@ -285,9 +285,7 @@ pub fn minimize_value(value: &serde_json::Value) -> serde_json::Value {
 /// Returns an error if the value cannot be serialized as `MessagePack`.
 // allow: pub API for future HTTP/MCP binary wire protocol; currently used in tests only.
 #[allow(dead_code)]
-pub fn encode_msgpack(
-    value: &serde_json::Value,
-) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+pub fn encode_msgpack(value: &serde_json::Value) -> Result<Vec<u8>, rmp_serde::encode::Error> {
     rmp_serde::to_vec_named(value)
 }
 

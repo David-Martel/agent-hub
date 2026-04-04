@@ -34,10 +34,7 @@ pub struct PostDirectRequest<'a> {
 ///
 /// Returns an error if either agent ID or the body is empty, or if the Redis
 /// `XADD` fails.
-pub fn post_direct(
-    settings: &Settings,
-    request: &PostDirectRequest<'_>,
-) -> Result<Message> {
+pub fn post_direct(settings: &Settings, request: &PostDirectRequest<'_>) -> Result<Message> {
     crate::channels::post_direct(
         settings,
         request.from_agent,
@@ -64,10 +61,7 @@ pub struct ReadDirectRequest<'a> {
 /// # Errors
 ///
 /// Returns an error if the Redis `XREVRANGE` fails.
-pub fn read_direct(
-    settings: &Settings,
-    request: &ReadDirectRequest<'_>,
-) -> Result<Vec<Message>> {
+pub fn read_direct(settings: &Settings, request: &ReadDirectRequest<'_>) -> Result<Vec<Message>> {
     crate::channels::read_direct(settings, request.agent_a, request.agent_b, request.limit)
 }
 
@@ -94,12 +88,7 @@ pub fn create_group(
     settings: &Settings,
     request: &CreateGroupRequest<'_>,
 ) -> Result<crate::channels::GroupInfo> {
-    crate::channels::create_group(
-        settings,
-        request.name,
-        request.members,
-        request.created_by,
-    )
+    crate::channels::create_group(settings, request.name, request.members, request.created_by)
 }
 
 /// Typed request for posting a message to a named group channel.
@@ -119,10 +108,7 @@ pub struct PostGroupRequest<'a> {
 /// # Errors
 ///
 /// Returns an error if the group does not exist or the Redis `XADD` fails.
-pub fn post_group(
-    settings: &Settings,
-    request: &PostGroupRequest<'_>,
-) -> Result<Message> {
+pub fn post_group(settings: &Settings, request: &PostGroupRequest<'_>) -> Result<Message> {
     crate::channels::post_to_group(
         settings,
         request.group,
@@ -147,10 +133,7 @@ pub struct ReadGroupRequest<'a> {
 /// # Errors
 ///
 /// Returns an error if the Redis `XREVRANGE` fails.
-pub fn read_group(
-    settings: &Settings,
-    request: &ReadGroupRequest<'_>,
-) -> Result<Vec<Message>> {
+pub fn read_group(settings: &Settings, request: &ReadGroupRequest<'_>) -> Result<Vec<Message>> {
     crate::channels::read_group(settings, request.group, request.limit)
 }
 
@@ -185,10 +168,7 @@ pub struct EscalateRequest<'a> {
 /// # Errors
 ///
 /// Returns an error if the body is empty or the Redis `XADD` fails.
-pub fn post_escalation(
-    settings: &Settings,
-    request: &EscalateRequest<'_>,
-) -> Result<Message> {
+pub fn post_escalation(settings: &Settings, request: &EscalateRequest<'_>) -> Result<Message> {
     crate::channels::post_escalation(
         settings,
         request.from_agent,
@@ -209,8 +189,6 @@ pub fn post_escalation(
 /// # Errors
 ///
 /// Returns an error if Redis `SCAN` commands fail.
-pub fn channel_summary(
-    settings: &Settings,
-) -> Result<crate::channels::ChannelSummary> {
+pub fn channel_summary(settings: &Settings) -> Result<crate::channels::ChannelSummary> {
     crate::channels::channel_summary(settings)
 }

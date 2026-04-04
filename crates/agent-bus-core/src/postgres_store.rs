@@ -473,10 +473,7 @@ pub fn persist_presence_postgres(settings: &Settings, presence: &Presence) -> Re
 /// # Errors
 ///
 /// Returns an error if the database connection or any `INSERT` fails.
-pub fn sync_redis_to_postgres(
-    settings: &Settings,
-    messages: &[Message],
-) -> Result<(usize, usize)> {
+pub fn sync_redis_to_postgres(settings: &Settings, messages: &[Message]) -> Result<(usize, usize)> {
     run_postgres_blocking(|| {
         let Some(mut client) = get_pg_client(settings)? else {
             return Ok((0, 0));
@@ -588,11 +585,7 @@ pub fn row_to_message(row: &postgres::Row) -> Message {
 ///
 /// Callers can pass `repo:<name>` and `session:<id>` through this helper so the
 /// query functions only need to reason about tags.
-pub fn query_scope_tags(
-    repo: Option<&str>,
-    session: Option<&str>,
-    tags: &[&str],
-) -> Vec<String> {
+pub fn query_scope_tags(repo: Option<&str>, session: Option<&str>, tags: &[&str]) -> Vec<String> {
     let mut scoped = Vec::with_capacity(tags.len() + 2);
     let mut seen = HashSet::new();
 

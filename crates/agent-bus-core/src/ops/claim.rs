@@ -27,7 +27,9 @@ pub fn parse_lease_mode(mode: &str) -> Result<ResourceLeaseMode> {
         "shared" => Ok(ResourceLeaseMode::Shared),
         "shared_namespaced" => Ok(ResourceLeaseMode::SharedNamespaced),
         "exclusive" => Ok(ResourceLeaseMode::Exclusive),
-        other => anyhow::bail!("invalid lease mode '{other}'; expected shared|shared_namespaced|exclusive"),
+        other => anyhow::bail!(
+            "invalid lease mode '{other}'; expected shared|shared_namespaced|exclusive"
+        ),
     }
 }
 
@@ -102,10 +104,7 @@ pub struct RenewClaimRequest<'a> {
 ///
 /// Returns an error if no active claim exists for the agent, or if Redis
 /// commands fail.
-pub fn renew_claim(
-    settings: &Settings,
-    request: &RenewClaimRequest<'_>,
-) -> Result<OwnershipClaim> {
+pub fn renew_claim(settings: &Settings, request: &RenewClaimRequest<'_>) -> Result<OwnershipClaim> {
     crate::channels::renew_claim(
         settings,
         request.resource,
@@ -220,9 +219,6 @@ pub fn list_claims(
 /// # Errors
 ///
 /// Returns an error if the Redis `HGETALL` fails.
-pub fn get_arbitration_state(
-    settings: &Settings,
-    resource: &str,
-) -> Result<ArbitrationState> {
+pub fn get_arbitration_state(settings: &Settings, resource: &str) -> Result<ArbitrationState> {
     crate::channels::get_arbitration_state(settings, resource)
 }
