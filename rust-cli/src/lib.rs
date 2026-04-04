@@ -33,7 +33,7 @@ use clap::Parser;
 use mimalloc::MiMalloc;
 use rmcp::serve_server;
 
-use agent_bus_core::{init_pg_writer, pg_writer};
+use agent_bus_core::{init_pg_writer, maybe_announce_startup, pg_writer};
 use cli::{Cli, Cmd};
 use commands::{
     CompactContextArgs, PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_batch_send, cmd_claim,
@@ -46,64 +46,13 @@ use commands::{
 };
 use http::{start_http_server, start_mcp_http_server};
 use mcp::AgentBusMcpServer;
-use models::STARTUP_PRESENCE_TTL;
-use ops::{PostMessageRequest, PresenceRequest, post_message, set_presence};
-use postgres_store::{PgWriter, probe_postgres};
-use redis_bus::connect;
+use postgres_store::PgWriter;
 use settings::Settings;
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 const MAIN_THREAD_STACK_BYTES: usize = 8 * 1024 * 1024;
-
-fn maybe_announce_startup(settings: &Settings) {
-    if !settings.startup_enabled {
-        return;
-    }
-    let Ok(mut conn) = connect(settings) else {
-        return;
-    };
-    let meta = serde_json::json!({"service": "agent-bus", "startup": true});
-    let mut caps = vec!["mcp".to_owned(), "redis".to_owned()];
-    if probe_postgres(settings).0 == Some(true) {
-        caps.push("postgres".to_owned());
-    }
-    let _ = set_presence(
-        &mut conn,
-        settings,
-        &PresenceRequest {
-            agent: &settings.service_agent_id,
-            status: "online",
-            session_id: None,
-            capabilities: &caps,
-            ttl_seconds: STARTUP_PRESENCE_TTL,
-            metadata: &meta,
-        },
-    );
-    let startup_tags = [
-        "startup".to_owned(),
-        "system".to_owned(),
-        "health".to_owned(),
-    ];
-    let _ = post_message(
-        &mut conn,
-        settings,
-        &PostMessageRequest {
-            sender: &settings.service_agent_id,
-            recipient: &settings.startup_recipient,
-            topic: &settings.startup_topic,
-            body: &settings.startup_body,
-            thread_id: None,
-            tags: &startup_tags,
-            priority: "normal",
-            request_ack: false,
-            reply_to: None,
-            metadata: &meta,
-            has_sse_subscribers: false,
-        },
-    );
-}
 
 /// Run the full compatibility CLI entrypoint.
 ///
@@ -654,8 +603,25 @@ async fn run(args: Vec<OsString>) -> Result<()> {
             ref agent,
             ref task,
             ref encoding,
+            ref repo,
+            ref priority,
+            ref tags,
+            ref depends_on,
+            ref reply_to,
+            ref created_by,
         } => {
-            cmd_push_task(&settings, agent, task, encoding)?;
+            cmd_push_task(
+                &settings,
+                agent,
+                task,
+                encoding,
+                repo.as_deref(),
+                priority,
+                tags,
+                depends_on,
+                reply_to.as_deref(),
+                created_by,
+            )?;
         }
 
         Cmd::PullTask {

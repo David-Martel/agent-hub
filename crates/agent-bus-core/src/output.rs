@@ -31,7 +31,6 @@
 
 use std::fmt::Write as _;
 
-use clap::ValueEnum;
 use serde::Serialize;
 
 use crate::models::{Health, Message, Presence};
@@ -49,7 +48,8 @@ use crate::models::{Health, Message, Presence};
 /// - `Minimal`: Short field names, defaults stripped (~50% fewer tokens vs JSON)
 /// - `Human`: Table format for terminal reading
 /// - `Toon`: Token-Optimized Object Notation — ultra-compact for LLM consumption (~70% fewer tokens vs JSON)
-#[derive(Clone, Debug, ValueEnum)]
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "cli", derive(clap::ValueEnum))]
 pub enum Encoding {
     Json,
     Compact,
