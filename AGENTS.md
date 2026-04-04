@@ -6,15 +6,18 @@ The repo now has a top-level Cargo workspace with `rust-cli/` plus
 `crates/agent-bus-core`, `crates/agent-bus-cli`, `crates/agent-bus-http`, and
 `crates/agent-bus-mcp`.
 
-Current code-grounded split status:
-- `agent-bus-core` owns extracted shared logic such as storage adapters,
-  validation, token helpers, channels, and typed ops.
+Current code-grounded split status (2026-04-04):
+- `agent-bus-core` owns extracted shared logic: storage adapters, validation,
+  token helpers, channels, and typed ops (1,205 lines across 7 ops modules).
 - `rust-cli/` remains the primary runtime crate and still owns `lib.rs`,
-  `cli.rs`, `commands.rs`, `http.rs`, `mcp.rs`, `server_mode.rs`, benches, and
-  integration tests.
+  `cli.rs`, `commands.rs` (1,685 lines), `http.rs` (2,836 lines),
+  `mcp.rs` (1,471 lines), `server_mode.rs`, `mcp_discovery.rs`,
+  `codex_bridge.rs`, benches, and integration tests.
 - The surface crates currently wrap `rust-cli`; they are not yet fully
   independent implementations.
 - `scripts/` still builds and deploys through `rust-cli/`.
+- ~4,400 lines of business logic remain duplicated across transport surfaces;
+  Phase 1 of `agents.TODO.md` targets consolidation into core ops.
 
 Supporting material remains split across `scripts/` for PowerShell automation,
 `examples/mcp/` for client configs, and `docs/` for design notes, assessments,
@@ -45,6 +48,9 @@ Use Rust 2024 edition defaults with `rustfmt` width 100 and field init shorthand
 
 Place integration coverage in `rust-cli/tests/*_test.rs`. Shared unit coverage
 for extracted logic now primarily lives under `crates/agent-bus-core/src/*`.
+Current test inventory: 304 unit tests in `agent-bus-core`, 10 integration tests
+in `rust-cli/tests/` (314 total). `http_integration_test.rs` is a skeleton
+needing test functions.
 No fixed coverage percentage is enforced, but every feature change should add
 or update tests in the affected runtime. Prefer focused unit tests first, then
 integration coverage for Redis/PostgreSQL behavior, HTTP endpoints, and MCP

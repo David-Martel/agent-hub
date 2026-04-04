@@ -20,7 +20,7 @@ Already complete:
 - The local build pipeline is centralized and now uses checked-in cargo
   configuration, `sccache` auto-detection, and stable Windows linker defaults.
 
-Code-grounded checkpoint (2026-04-03):
+Code-grounded checkpoint (2026-04-04):
 
 - A top-level Cargo workspace now exists with:
   - `rust-cli`
@@ -32,33 +32,49 @@ Code-grounded checkpoint (2026-04-03):
   - storage adapters (`redis_bus`, `postgres_store`)
   - shared models/settings/token/validation helpers
   - channel logic
-  - typed `ops`
+  - typed `ops` (1,205 lines across 7 files: mod, admin, channel, claim,
+    message, inbox, task)
 - `rust-cli/src/channels.rs`, `rust-cli/src/redis_bus.rs`,
   `rust-cli/src/postgres_store.rs`, and `rust-cli/src/ops/mod.rs` are now
-  compatibility shims into `agent-bus-core`.
+  pure re-export compatibility shims into `agent-bus-core` (2-3 lines each).
 - `rust-cli` still owns the main runtime and transport-heavy files:
   - `lib.rs`
   - `cli.rs`
-  - `commands.rs`
-  - `http.rs`
-  - `mcp.rs`
-  - `server_mode.rs`
+  - `commands.rs` (1,685 lines, 34 cmd_* functions)
+  - `http.rs` (2,836 lines, 57 async handlers)
+  - `mcp.rs` (1,471 lines, 17 tool dispatches)
+  - `server_mode.rs`, `monitor.rs`, `mcp_discovery.rs`, `codex_bridge.rs`
 - `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` are currently wrapper
-  crates whose binaries call into `rust-cli`.
+  crates whose binaries call into `rust-cli` (3 lines each).
 - Build, validate, and deploy scripts still target `rust-cli` as the
   authoritative crate root.
 
+Test inventory (2026-04-04):
+
+- 304 unit tests in `crates/agent-bus-core/src/` (channels=77, redis_bus=40,
+  validation=44, settings=38, token=29, postgres_store=22, codex_bridge=22,
+  models=13, output=11, journal=5, ops/admin=2, ops/task=1)
+- 10 integration tests in `rust-cli/tests/` (integration=4, channels=6)
+- `http_integration_test.rs` exists but has 0 `#[test]` functions (skeleton)
+- 314 total tests
+
 Still structurally incomplete:
 
-- The shared service layer is still too small. Large parts of `commands.rs`,
-  `http.rs`, and `mcp.rs` still duplicate orchestration, validation glue, and
-  output shaping.
+- The shared service layer covers only ~28% of transport logic. Core ops are
+  mostly thin delegation wrappers; ~4,400 lines of business logic remain
+  duplicated across the three transport modules.
+- Validation logic (`auto_fit_schema`, `validate_message_schema`, priority
+  checks) is reimplemented independently in `commands.rs`, `http.rs`, and
+  `mcp.rs`.
+- Batch-send orchestration (170+ lines) lives only in `http.rs` with no core
+  abstraction.
+- Service lifecycle control (120+ lines) is duplicated between `commands.rs`
+  and `http.rs`.
+- SSE infrastructure (250+ lines) lives entirely in `http.rs` with no core
+  abstraction.
 - The repo is now a workspace, but the runtime is not yet operationally split:
   the surface crates still depend on `rust-cli`, so the transport surfaces
   still pay for the `rust-cli` compile graph and dependency set.
-- Some transport-facing logic is stranded in the wrong layer, especially inbox
-  cursor handling, channel orchestration, claim flows, and maintenance/admin
-  behavior.
 
 ## Primary Goals
 
@@ -132,6 +148,9 @@ Target shape:
 ### Phase 1A: Message and inbox completion
 
 - Move notification cursor logic out of `mcp.rs` and into `ops/inbox`.
+- Consolidate validation functions (`auto_fit_schema`, `validate_message_schema`,
+  `validate_priority`) that are currently reimplemented independently in
+  `commands.rs`, `http.rs`, and `mcp.rs` into shared ops helpers.
 - Add typed request/response structs for:
   - list inbox
   - check inbox
@@ -145,13 +164,18 @@ Target shape:
 - Move direct/group/escalation/arbitration orchestration behind typed channel
   operations.
 - Move claim/renew/release/resolve/list logic behind typed claim operations.
+- Move batch-send orchestration (currently 170+ lines in `http.rs` only) into
+  a shared ops function so CLI and MCP can also batch-send.
 - Keep low-level Redis stream/hash logic in `channels.rs` initially, but route
   all transport entrypoints through typed ops requests.
 
 ### Phase 1C: Tasks and admin control
 
 - Move task queue reads/writes behind typed task operations.
-- Extract service-control/maintenance orchestration into `ops/admin`.
+- Extract service-control/maintenance orchestration (120+ lines duplicated
+  between `commands.rs` and `http.rs`) into `ops/admin`.
+- Extract `ServerControlStatus` management and maintenance pause/resume logic
+  into core so both transports share one implementation.
 - Keep `server_mode.rs` transport-only. It should remain an HTTP client wrapper,
   not a home for business logic.
 

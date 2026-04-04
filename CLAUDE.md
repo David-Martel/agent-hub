@@ -77,7 +77,8 @@ Current workspace layout:
 - `rust-cli`
   - primary runtime crate
   - owns `lib.rs`, `cli.rs`, `commands.rs`, `http.rs`, `mcp.rs`,
-    `server_mode.rs`, `monitor.rs`, and integration tests
+    `mcp_discovery.rs`, `codex_bridge.rs`, `server_mode.rs`, `monitor.rs`,
+    and integration tests
 - `crates/agent-bus-core`
   - shared storage adapters (`redis_bus`, `postgres_store`)
   - channels, settings, models, token helpers, validation, and typed ops
@@ -153,13 +154,18 @@ All 3 platforms configured identically at:
 - Codex: `~/.codex/config.toml` (key: `agent_bus`)
 - Gemini: `~/.gemini/settings.json` (key: `agent-bus`)
 
+Example configs for all platforms live in `examples/mcp/`.
+
 ## Git Hooks
 
-Lefthook pre-push: `rust-clippy` + `rust-audit` (both blocking).
+Lefthook (install with `lefthook install`):
+- **pre-commit** (parallel): `cargo fmt --check`, `cargo clippy`, `ast-grep scan`
+- **pre-push** (parallel): `cargo test`, `cargo audit`
+- **commit-msg**: conventional commit format advisory
 
 ## Rust Conventions
 
 - **Allocator**: mimalloc per M-MIMALLOC-APPS
 - **Error handling**: `anyhow::Result` with `.context()` — no unwrap in business logic
-- **Lints**: Clippy pedantic + restriction subset in `Cargo.toml [lints]`
+- **Lints**: Clippy pedantic + restriction subset in workspace root `Cargo.toml [workspace.lints]`
 - **Edition**: 2024

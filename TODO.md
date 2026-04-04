@@ -8,10 +8,12 @@ Structural execution plan:
 
 - Rust-only runtime: deprecated Python package, pytest suite, and PyO3 codec crate removed from the repo.
 - Cargo workspace exists and `agent-bus-core` now owns shared storage, validation, token, and typed ops logic, but the runtime split is still incomplete.
-- Current transport surface: CLI, HTTP, MCP stdio, MCP Streamable HTTP, channels, ownership claims, task queue, session summary, dedup, dashboard, TOON/minimal encodings.
+- Current transport surface: CLI (35 subcommands), HTTP (30 routes), MCP stdio + Streamable HTTP (17 tools), channels, ownership claims, task queue, session summary, dedup, dashboard, TOON/minimal encodings.
 - Validation now includes local deploy health checks plus an SSE notification smoke test.
 - Durable notification streams now back direct HTTP replay and the MCP `check_inbox` cursor path.
 - Direct-recipient Pub/Sub now bridges back into `/events/{agent}` so live SSE listeners can be nudged by messages posted from other processes, not only by the HTTP handler that accepted the request.
+- Structural split is ~60% complete: core ops layer (1,205 lines) covers typed wrappers but ~4,400 lines of business logic remain duplicated across `commands.rs` (1,685), `http.rs` (2,836), and `mcp.rs` (1,471).
+- 314 tests total (304 unit in agent-bus-core, 10 integration); `http_integration_test.rs` is a skeleton with 0 test functions.
 
 ## P0 Direct Signaling
 
