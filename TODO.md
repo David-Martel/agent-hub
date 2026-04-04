@@ -31,7 +31,7 @@ Structural execution plan:
 ## P1 Query Model And Cross-Repo Awareness
 
 - [x] Add first-class `repo`, `session`, `tag`, and `thread_id` filters to CLI, HTTP, and MCP read paths.
-- [ ] Stop over-fetching for `session-summary`, `dedup`, and related commands; route tagged queries through PostgreSQL indexes when available.
+- [x] Stop over-fetching for `session-summary`, `dedup`, and related commands; route tagged queries through PostgreSQL indexes when available. `query_messages_by_tags()` added; `bus_list_messages_with_filters()` now prefers PG GIN path when tags/thread present.
 - [x] Add repo/session-scoped inbox cursors instead of one global cursor per agent. `check_inbox` now uses `bus:notify_cursor:<agent>:repo:<repo>` or `:session:<session>` keys when filters are set; backward compatible.
 - [x] Add repo/session inventory commands: active repos, active sessions, agents by repo, open claims by repo. CLI `inventory` + HTTP `GET /inventory` with `?repo=` drill-down.
 - [x] Add first-class thread summaries/compaction for `thread_id` and direct channels. `summarize_thread()` + `compact_thread()` in core ops; CLI `summarize-thread` + `compact-thread` commands; HTTP `GET /thread-summary` + `POST /compact-thread` endpoints.
@@ -41,7 +41,7 @@ Structural execution plan:
 - [x] Replace opaque task queue strings with validated task cards: `repo`, `paths`, `priority`, `depends_on`, `reply_to`, `tags`, `status`. Core types added (`TaskCard`, `TaskStatus`, `push_task_card`, `pull_task_card`, `peek_task_cards`); transport wiring pending.
 - [x] Add first-class lease-backed claims with `shared`, `shared_namespaced`, and `exclusive` modes so `RESOURCE_START` / `RESOURCE_DONE` stops living only in free-text messages.
 - [x] Add durable resource-event notifications and subscriptions over `resource_id`, repo, path prefix, scope kind, and `thread_id`. `ResourceEvent` model + Redis streams (`agent_bus:resource_events:<id>`, MAXLEN 1000); events emitted on claim/renew/release/resolve; HTTP `GET /resource-events/<id>`.
-- [ ] Add server-assisted reroute suggestions for namespaced resources (`cargo target`, coverage, bench output, temp install validation) so agents can isolate instead of wait.
+- [x] Add server-assisted reroute suggestions for namespaced resources (`cargo target`, coverage, bench output, temp install validation) so agents can isolate instead of wait. `RerouteSuggestion` struct + pattern matching for 7 known resource types; enriches contested claim responses.
 - [x] Add TTL-based resource renewal/expiry for lease-backed claims.
 - [ ] Add ack deadlines for high-risk resources such as `~/bin` installs, user config, services, and repo-default artifact roots.
 - [ ] Add cross-repo resource scopes for machine-global paths and services so one repo view can still see contention caused by another repo.
@@ -52,9 +52,9 @@ Structural execution plan:
 ## P3 Token Efficiency
 
 - [x] Add `summarize-session` and `summarize-inbox` APIs that emit compact rollups for LLM consumers. `summarize_session()` + `summarize_inbox()` + `aggregate_messages()` in core ops; CLI refactored to delegate; HTTP `GET /session-summary`.
-- [ ] Extend compact/minimal encodings to shorten repeated tag prefixes and schema markers.
-- [ ] Add excerpt mode for long findings so reads can return short bodies plus metadata pointers.
-- [ ] Benchmark token and byte reduction across JSON, compact, minimal, TOON, and MessagePack for realistic multi-agent sessions.
+- [x] Extend compact/minimal encodings to shorten repeated tag prefixes and schema markers. `shorten_tags()` applied in compact/minimal modes: `repo:X→r:X`, `session:X→s:X`, `thread_id:X→t:X`, `severity:X→!X`.
+- [x] Add excerpt mode for long findings so reads can return short bodies plus metadata pointers. `excerpt_body()` + CLI `--excerpt N` + HTTP `?excerpt=N`.
+- [x] Benchmark token and byte reduction across JSON, compact, minimal, TOON, and MessagePack for realistic multi-agent sessions. Criterion benchmark with 50-message corpus; TOON at 32.9% of JSON, tag shortening at 33.8% byte reduction.
 - [x] Add a `compact-thread` / `summarize-thread` flow for direct-channel work so agents can resume a single coordination thread without replaying unrelated repo traffic. `compact_thread()` + `summarize_thread()` in core ops; CLI + HTTP endpoints.
 - [x] Add a machine-safe mode for machine-readable encodings (`toon`, `compact`, `minimal`, JSON) that suppresses non-fatal warnings from stdout/stderr mixing; current PostgreSQL fallback warnings pollute shell-captured LLM context.
 
@@ -99,3 +99,10 @@ Structural execution plan:
 - [x] Remove tracked binary artifacts and empty/stale top-level directories (`bin/agent-bus.exe`, top-level `rust/`, top-level `src/`, top-level `tests/`) before the public release.
 - [x] Record the structural refactor sequence in `docs/structural-refactor-plan-2026-03-25.md` so the repo has an explicit path from today’s library-backed package to a future multi-bin and multi-crate layout.
 - [ ] Execute the remaining structural steps captured in [`agents.TODO.md`](./agents.TODO.md) until the workspace split is operationally complete and the shared service layer leaves CLI, HTTP, and MCP as thin surfaces.
+
+## P7 Storage Optimization (from POSTGRES-REDIS.md)
+
+- [ ] Switch message IDs from UUIDv4 to UUIDv7 for timestamp-ordered B-tree inserts. Add `v7` feature to uuid crate, change `Uuid::new_v4()` to `Uuid::now_v7()` in message construction.
+- [ ] Add `MAXLEN ~ 1000` stream trimming to all XADD calls so Redis streams don't grow unbounded. Search for all XADD sites in `redis_bus.rs`.
+- [ ] Add TTL/EXPIRE to Redis keys by purpose: direct channels (7d), notification streams (3d), cursors (7d), group members (30d), task queues (3d), test artifacts (1h).
+- [ ] Clean up 193+ stale test keys matching `bus:direct:orchestrator:resolve-*` and `bus:direct:test-*`.
