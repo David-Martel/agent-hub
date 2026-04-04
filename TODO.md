@@ -23,7 +23,7 @@ Structural execution plan:
 
 - [x] Add durable per-agent notification streams alongside the canonical message stream.
 - [x] Add a first-class `knock` / attention signal over the durable direct-notification path.
-- [ ] Add explicit subscription records for recipient, repo, session, thread, tag, topic, priority, and resource scopes.
+- [x] Add explicit subscription records for recipient, repo, session, thread, tag, topic, priority, and resource scopes. `Subscription` + `SubscriptionScopes` models; Redis storage with optional TTL; CLI subscribe/unsubscribe/subscriptions commands; HTTP CRUD endpoints; `message_matches_subscription` filter.
 - [ ] Promote `thread_id` to a joinable conversation scope with explicit membership.
 - [ ] Add ack deadlines, reminder delivery, and escalation for `request_ack=true` messages.
 - [x] Add notification replay for reconnecting SSE and MCP clients.
@@ -32,21 +32,21 @@ Structural execution plan:
 
 - [x] Add first-class `repo`, `session`, `tag`, and `thread_id` filters to CLI, HTTP, and MCP read paths.
 - [ ] Stop over-fetching for `session-summary`, `dedup`, and related commands; route tagged queries through PostgreSQL indexes when available.
-- [ ] Add repo/session-scoped inbox cursors instead of one global cursor per agent.
+- [x] Add repo/session-scoped inbox cursors instead of one global cursor per agent. `check_inbox` now uses `bus:notify_cursor:<agent>:repo:<repo>` or `:session:<session>` keys when filters are set; backward compatible.
 - [x] Add repo/session inventory commands: active repos, active sessions, agents by repo, open claims by repo. CLI `inventory` + HTTP `GET /inventory` with `?repo=` drill-down.
-- [ ] Add first-class thread summaries/compaction for `thread_id` and direct channels; current `session-summary` is useful only when `session:<id>` tags are present, but live coordination often centers on `thread_id` (`wezterm-joint-plan-*`, resource threads) instead.
+- [x] Add first-class thread summaries/compaction for `thread_id` and direct channels. `summarize_thread()` + `compact_thread()` in core ops; CLI `summarize-thread` + `compact-thread` commands; HTTP `GET /thread-summary` + `POST /compact-thread` endpoints.
 
 ## P2 Cross-Agent Orchestration
 
 - [x] Replace opaque task queue strings with validated task cards: `repo`, `paths`, `priority`, `depends_on`, `reply_to`, `tags`, `status`. Core types added (`TaskCard`, `TaskStatus`, `push_task_card`, `pull_task_card`, `peek_task_cards`); transport wiring pending.
 - [x] Add first-class lease-backed claims with `shared`, `shared_namespaced`, and `exclusive` modes so `RESOURCE_START` / `RESOURCE_DONE` stops living only in free-text messages.
-- [ ] Add durable resource-event notifications and subscriptions over `resource_id`, repo, path prefix, scope kind, and `thread_id`.
+- [x] Add durable resource-event notifications and subscriptions over `resource_id`, repo, path prefix, scope kind, and `thread_id`. `ResourceEvent` model + Redis streams (`agent_bus:resource_events:<id>`, MAXLEN 1000); events emitted on claim/renew/release/resolve; HTTP `GET /resource-events/<id>`.
 - [ ] Add server-assisted reroute suggestions for namespaced resources (`cargo target`, coverage, bench output, temp install validation) so agents can isolate instead of wait.
 - [x] Add TTL-based resource renewal/expiry for lease-backed claims.
 - [ ] Add ack deadlines for high-risk resources such as `~/bin` installs, user config, services, and repo-default artifact roots.
 - [ ] Add cross-repo resource scopes for machine-global paths and services so one repo view can still see contention caused by another repo.
 - [x] Surface claims, task queues, pending ACKs, and contested ownership directly in the dashboard. `/dashboard/data` now returns health, presence, claims (total + contested resources), pending ACKs, and per-agent task queue depths.
-- [ ] Add server-side orchestrator summaries for "what changed since last poll" instead of forcing agents to replay raw history.
+- [x] Add server-side orchestrator summaries for "what changed since last poll" instead of forcing agents to replay raw history. `OrchestratorSummary` with categorized notification counts; HTTP `GET /orchestrator-summary`.
 - [x] Generalize `codex_bridge.rs` into agent profiles/adapters so sync workflows are not Codex-specific. `AgentProfile` trait added with `Codex`, `Claude`, `Gemini`, `Custom` variants; `codex_bridge.rs` refactored to use it.
 
 ## P3 Token Efficiency
