@@ -4,22 +4,33 @@
 //! consumption, and provides bidirectional finding sync between Claude and
 //! Codex sessions via the agent bus.
 //!
+//! This module is now a backward-compatible facade over the generic
+//! [`agent_profile`](crate::agent_profile) system.  All Codex-specific logic
+//! delegates to [`CodexProfile`](crate::agent_profile::CodexProfile) while
+//! preserving the existing public API so that the `codex-sync` CLI command
+//! continues to work without changes.
+//!
 //! # Example
 //!
 //! ```no_run
-//! let config = discover_codex().expect("Codex config not found");
+//! let config = agent_bus_core::codex_bridge::discover_codex()
+//!     .expect("Codex config not found");
 //! println!("Codex model: {}", config.model);
 //! ```
-
-use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
 use serde::Deserialize;
 
+use crate::agent_profile::{
+    self, AgentProfile as _, CodexProfile, NormalizedFinding, format_markdown_finding,
+};
 use crate::models::Message;
 
+// Re-export NormalizedFinding so callers that import from codex_bridge still work.
+pub use crate::agent_profile::NormalizedFinding as Finding;
+
 // ---------------------------------------------------------------------------
-// Codex config types
+// Codex config types (backward-compatible)
 // ---------------------------------------------------------------------------
 
 /// Parsed representation of `~/.codex/config.toml`.
@@ -51,19 +62,22 @@ impl CodexConfig {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Discovery
-// ---------------------------------------------------------------------------
-
-/// Resolve the path to `~/.codex/config.toml`.
-///
-/// Prefers `USERPROFILE` on Windows, then `HOME`.
-fn codex_config_path() -> Result<PathBuf> {
-    let home = std::env::var("USERPROFILE")
-        .or_else(|_| std::env::var("HOME"))
-        .context("cannot determine home directory (neither USERPROFILE nor HOME set)")?;
-    Ok(PathBuf::from(home).join(".codex").join("config.toml"))
+/// Convert a generic [`AgentConfig`](agent_profile::AgentConfig) into the
+/// legacy [`CodexConfig`] type.
+impl From<agent_profile::AgentConfig> for CodexConfig {
+    fn from(cfg: agent_profile::AgentConfig) -> Self {
+        Self {
+            model: cfg.model,
+            approval_mode: cfg.mode,
+            agent_id: cfg.agent_id,
+            max_tokens: cfg.max_tokens,
+        }
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Discovery (delegates to CodexProfile)
+// ---------------------------------------------------------------------------
 
 /// Discover Codex configuration and capabilities.
 ///
@@ -78,87 +92,19 @@ fn codex_config_path() -> Result<PathBuf> {
 /// # Examples
 ///
 /// ```no_run
-/// let config = discover_codex().expect("home dir missing");
+/// let config = agent_bus_core::codex_bridge::discover_codex()
+///     .expect("home dir missing");
 /// assert!(!config.effective_agent_id().is_empty());
 /// ```
 pub fn discover_codex() -> Result<CodexConfig> {
-    let path = codex_config_path()?;
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        // Config file absent — return defaults so the bridge can still run.
-        return Ok(CodexConfig::default());
-    };
-
-    // toml crate is not in dependencies; parse the subset we care about by
-    // looking for `key = "value"` lines.  This keeps the dep tree clean while
-    // covering the fields we actually use.
-    Ok(parse_codex_toml_simple(&text))
-}
-
-/// Minimal TOML parser for flat `key = "value"` pairs.
-///
-/// Codex config is a simple flat TOML file.  Rather than pulling in the full
-/// `toml` crate, we extract only the four fields we care about using a
-/// line-by-line scan.  This is intentionally narrow — if Codex adds nested
-/// tables we can add the `toml` dep then.
-fn parse_codex_toml_simple(text: &str) -> CodexConfig {
-    let mut cfg = CodexConfig::default();
-    for line in text.lines() {
-        let line = line.trim();
-        if let Some(value) = extract_string_value(line, "model") {
-            cfg.model = value;
-        } else if let Some(value) = extract_string_value(line, "approval_mode") {
-            cfg.approval_mode = value;
-        } else if let Some(value) = extract_string_value(line, "agent_id") {
-            cfg.agent_id = value;
-        } else if let Some(value) = extract_u32_value(line, "max_tokens") {
-            cfg.max_tokens = Some(value);
-        }
-    }
-    cfg
-}
-
-/// Extract `"value"` from a line like `key = "value"`.
-fn extract_string_value(line: &str, key: &str) -> Option<String> {
-    let prefix = format!("{key} =");
-    let line = line.strip_prefix(&prefix)?.trim();
-    // Handle both `"value"` and `'value'`
-    ((line.starts_with('"') && line.ends_with('"'))
-        || (line.starts_with('\'') && line.ends_with('\'')))
-    .then(|| line[1..line.len() - 1].to_owned())
-}
-
-/// Extract an integer value from a line like `key = 1234`.
-fn extract_u32_value(line: &str, key: &str) -> Option<u32> {
-    let prefix = format!("{key} =");
-    let line = line.strip_prefix(&prefix)?.trim();
-    line.parse().ok()
+    let profile = CodexProfile;
+    let agent_config = profile.discover().context("failed to read Codex config")?;
+    Ok(CodexConfig::from(agent_config))
 }
 
 // ---------------------------------------------------------------------------
-// Message formatting
+// Message formatting (delegates to shared helper)
 // ---------------------------------------------------------------------------
-
-/// Extract a SEVERITY level from a bus message body.
-///
-/// Scans for `SEVERITY: <LEVEL>` patterns (case-insensitive) and returns the
-/// first match, or `"UNKNOWN"` if none is found.
-fn extract_severity(body: &str) -> &'static str {
-    for line in body.lines() {
-        let upper = line.to_uppercase();
-        if upper.contains("SEVERITY:") {
-            if upper.contains("CRITICAL") {
-                return "CRITICAL";
-            } else if upper.contains("HIGH") {
-                return "HIGH";
-            } else if upper.contains("MEDIUM") {
-                return "MEDIUM";
-            } else if upper.contains("LOW") {
-                return "LOW";
-            }
-        }
-    }
-    "UNKNOWN"
-}
 
 /// Format a bus message for Codex CLI consumption.
 ///
@@ -175,51 +121,12 @@ fn extract_severity(body: &str) -> &'static str {
 #[allow(dead_code)]
 #[must_use]
 pub fn format_for_codex(msg: &Message) -> String {
-    let severity = extract_severity(&msg.body);
-    let tags = msg.tags.join(", ");
-    let thread = msg
-        .thread_id
-        .as_deref()
-        .map(|t| format!("\n**Thread:** {t}"))
-        .unwrap_or_default();
-
-    format!(
-        "## Finding from {from}\n\
-         **Topic:** {topic}\n\
-         **Severity:** {severity}\n\
-         **Priority:** {priority}{thread}\n\n\
-         {body}\n\n\
-         ---\n\
-         Tags: {tags}",
-        from = msg.from,
-        topic = msg.topic,
-        priority = msg.priority,
-        body = msg.body,
-    )
+    format_markdown_finding(msg)
 }
 
 // ---------------------------------------------------------------------------
-// Finding normalization
+// Finding normalization (delegates to agent_profile)
 // ---------------------------------------------------------------------------
-
-/// A normalized finding extracted from a raw bus message.
-#[derive(Debug, Clone)]
-pub struct NormalizedFinding {
-    /// Original message ID.
-    pub message_id: String,
-    /// Sender agent.
-    pub from_agent: String,
-    /// Topic the finding was posted under.
-    pub topic: String,
-    /// Full message body.
-    pub body: String,
-    /// Extracted severity level.
-    pub severity: String,
-    /// Message tags.
-    pub tags: Vec<String>,
-    /// UTC timestamp.
-    pub timestamp: String,
-}
 
 /// Normalize a list of raw bus messages into [`NormalizedFinding`] records.
 ///
@@ -235,26 +142,11 @@ pub struct NormalizedFinding {
 /// ```
 #[must_use]
 pub fn normalize_findings(messages: &[Message]) -> Vec<NormalizedFinding> {
-    messages
-        .iter()
-        .filter(|m| {
-            let t = m.topic.as_str();
-            t.contains("finding") || t.starts_with("review")
-        })
-        .map(|m| NormalizedFinding {
-            message_id: m.id.clone(),
-            from_agent: m.from.clone(),
-            topic: m.topic.clone(),
-            body: m.body.clone(),
-            severity: extract_severity(&m.body).to_owned(),
-            tags: m.tags.to_vec(),
-            timestamp: m.timestamp_utc.clone(),
-        })
-        .collect()
+    agent_profile::normalize_findings(messages)
 }
 
 // ---------------------------------------------------------------------------
-// Sync summary
+// Sync summary (backward-compatible)
 // ---------------------------------------------------------------------------
 
 /// Result of a bidirectional Codex sync operation.
@@ -272,6 +164,20 @@ pub struct CodexSyncResult {
     pub config_found: bool,
 }
 
+/// Convert from the generic [`AgentSyncResult`](agent_profile::AgentSyncResult)
+/// into the Codex-specific legacy result type.
+impl From<agent_profile::AgentSyncResult> for CodexSyncResult {
+    fn from(r: agent_profile::AgentSyncResult) -> Self {
+        Self {
+            messages_read: r.messages_read,
+            findings_normalized: r.findings_normalized,
+            codex_agent_id: r.agent_id,
+            codex_model: r.model,
+            config_found: r.config_found,
+        }
+    }
+}
+
 /// Run a bidirectional sync between Claude and Codex sessions.
 ///
 /// 1. Discovers Codex configuration from `~/.codex/config.toml`.
@@ -279,7 +185,7 @@ pub struct CodexSyncResult {
 /// 3. Normalizes finding-type messages.
 /// 4. Returns a summary suitable for display or JSON output.
 ///
-/// This function does not post any messages itself — callers are responsible
+/// This function does not post any messages itself -- callers are responsible
 /// for routing the formatted findings to Codex via the bus.
 ///
 /// # Errors
@@ -290,31 +196,9 @@ pub fn run_codex_sync(
     settings: &crate::settings::Settings,
     limit: usize,
 ) -> Result<(CodexSyncResult, Vec<NormalizedFinding>)> {
-    let codex_cfg = discover_codex().context("failed to read Codex config")?;
-    let config_found = !codex_cfg.model.is_empty() || !codex_cfg.approval_mode.is_empty();
-    let agent_id = codex_cfg.effective_agent_id().to_owned();
-
-    let messages = crate::redis_bus::bus_list_messages(
-        settings,
-        Some(&agent_id),
-        None,
-        crate::models::MAX_HISTORY_MINUTES,
-        limit,
-        true,
-    )
-    .context("failed to read messages from bus")?;
-
-    let findings = normalize_findings(&messages);
-
-    let result = CodexSyncResult {
-        messages_read: messages.len(),
-        findings_normalized: findings.len(),
-        codex_agent_id: agent_id,
-        codex_model: codex_cfg.model,
-        config_found,
-    };
-
-    Ok((result, findings))
+    let profile = CodexProfile;
+    let (generic_result, findings) = agent_profile::run_agent_sync(&profile, settings, limit)?;
+    Ok((CodexSyncResult::from(generic_result), findings))
 }
 
 // ---------------------------------------------------------------------------
@@ -324,90 +208,6 @@ pub fn run_codex_sync(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // -----------------------------------------------------------------------
-    // extract_string_value
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn extract_string_value_parses_double_quoted() {
-        let result = extract_string_value(r#"model = "o3""#, "model");
-        assert_eq!(result.as_deref(), Some("o3"));
-    }
-
-    #[test]
-    fn extract_string_value_parses_single_quoted() {
-        let result = extract_string_value("model = 'gpt-4o'", "model");
-        assert_eq!(result.as_deref(), Some("gpt-4o"));
-    }
-
-    #[test]
-    fn extract_string_value_returns_none_for_wrong_key() {
-        let result = extract_string_value(r#"model = "o3""#, "approval_mode");
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn extract_string_value_returns_none_for_unquoted_value() {
-        // Bare values (e.g. integers) should not match the string extractor.
-        let result = extract_string_value("max_tokens = 4096", "max_tokens");
-        assert!(result.is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // extract_u32_value
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn extract_u32_value_parses_integer() {
-        let result = extract_u32_value("max_tokens = 4096", "max_tokens");
-        assert_eq!(result, Some(4096));
-    }
-
-    #[test]
-    fn extract_u32_value_returns_none_for_string_value() {
-        let result = extract_u32_value(r#"model = "o3""#, "model");
-        assert!(result.is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // parse_codex_toml_simple
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn parse_codex_toml_extracts_known_fields() {
-        let toml = r#"
-model = "o3"
-approval_mode = "full-auto"
-agent_id = "codex"
-max_tokens = 8192
-"#;
-        let cfg = parse_codex_toml_simple(toml);
-        assert_eq!(cfg.model, "o3");
-        assert_eq!(cfg.approval_mode, "full-auto");
-        assert_eq!(cfg.agent_id, "codex");
-        assert_eq!(cfg.max_tokens, Some(8192));
-    }
-
-    #[test]
-    fn parse_codex_toml_returns_defaults_for_empty_input() {
-        let cfg = parse_codex_toml_simple("");
-        assert!(cfg.model.is_empty());
-        assert!(cfg.approval_mode.is_empty());
-        assert!(cfg.agent_id.is_empty());
-        assert!(cfg.max_tokens.is_none());
-    }
-
-    #[test]
-    fn parse_codex_toml_ignores_unknown_keys() {
-        let toml = r#"
-model = "o3"
-some_future_key = "value"
-"#;
-        let cfg = parse_codex_toml_simple(toml);
-        assert_eq!(cfg.model, "o3");
-        // Should not panic or error on unknown keys.
-    }
 
     // -----------------------------------------------------------------------
     // CodexConfig::effective_agent_id
@@ -429,7 +229,20 @@ some_future_key = "value"
     }
 
     // -----------------------------------------------------------------------
-    // extract_severity
+    // discover_codex
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn discover_codex_returns_config() {
+        // On CI or machines without Codex config, this returns defaults.
+        let config = discover_codex().expect("discover should succeed");
+        assert!(!config.effective_agent_id().is_empty());
+    }
+
+    use crate::agent_profile::extract_severity;
+
+    // -----------------------------------------------------------------------
+    // extract_severity (via shared helper)
     // -----------------------------------------------------------------------
 
     #[test]
@@ -447,7 +260,6 @@ some_future_key = "value"
 
     #[test]
     fn extract_severity_prefers_critical_over_high_on_same_line() {
-        // Critical check comes first in the chain, so CRITICAL wins.
         assert_eq!(extract_severity("SEVERITY: CRITICAL HIGH\n"), "CRITICAL");
     }
 
@@ -587,5 +399,48 @@ some_future_key = "value"
         let json = serde_json::to_string(&result).expect("serialize");
         assert!(json.contains("\"messages_read\":5"));
         assert!(json.contains("\"codex_model\":\"o3\""));
+    }
+
+    // -----------------------------------------------------------------------
+    // Conversion roundtrip: AgentConfig -> CodexConfig
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn agent_config_converts_to_codex_config() {
+        let agent_cfg = agent_profile::AgentConfig {
+            agent_kind: "codex".to_owned(),
+            model: "o3".to_owned(),
+            mode: "full-auto".to_owned(),
+            agent_id: "codex-v2".to_owned(),
+            max_tokens: Some(4096),
+            config_found: true,
+        };
+        let codex_cfg = CodexConfig::from(agent_cfg);
+        assert_eq!(codex_cfg.model, "o3");
+        assert_eq!(codex_cfg.approval_mode, "full-auto");
+        assert_eq!(codex_cfg.agent_id, "codex-v2");
+        assert_eq!(codex_cfg.max_tokens, Some(4096));
+    }
+
+    // -----------------------------------------------------------------------
+    // Conversion roundtrip: AgentSyncResult -> CodexSyncResult
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn agent_sync_result_converts_to_codex_sync_result() {
+        let generic = agent_profile::AgentSyncResult {
+            profile_name: "Codex".to_owned(),
+            messages_read: 10,
+            findings_normalized: 3,
+            agent_id: "codex".to_owned(),
+            model: "gpt-4o".to_owned(),
+            config_found: true,
+        };
+        let codex = CodexSyncResult::from(generic);
+        assert_eq!(codex.messages_read, 10);
+        assert_eq!(codex.findings_normalized, 3);
+        assert_eq!(codex.codex_agent_id, "codex");
+        assert_eq!(codex.codex_model, "gpt-4o");
+        assert!(codex.config_found);
     }
 }

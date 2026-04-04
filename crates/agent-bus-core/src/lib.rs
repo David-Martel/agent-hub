@@ -2,6 +2,7 @@
 
 use std::sync::OnceLock;
 
+pub mod agent_profile;
 pub mod channels;
 pub mod codex_bridge;
 pub mod journal;
