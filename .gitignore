@@ -12,6 +12,7 @@ bin/
 # Rust
 rust/target/
 rust-cli/target/
+$target/
 T:/RustCache/
 
 # IDE
