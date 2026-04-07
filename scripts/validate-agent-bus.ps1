@@ -75,17 +75,7 @@ $useNextest = (-not $DisableNextest) -and [bool](Get-AgentBusCommandPath -Name "
 
 try {
     if (-not $SkipBuild) {
-        Write-Host "Building native agent-bus binaries (fast-release profile)..."
-        Push-Location $rustCliDir
-        try {
-            & cargo build --profile fast-release --bins
-            if ($LASTEXITCODE -ne 0) {
-                throw "cargo build --profile fast-release --bins failed."
-            }
-        }
-        finally {
-            Pop-Location
-        }
+        Invoke-AgentBusCargo -Label "cargo build --profile fast-release --bins" -Command "build" -AdditionalArgs @("--profile", "fast-release", "--bins") -WorkDir $rustCliDir
 
         foreach ($binaryName in @("agent-bus", "agent-bus-http", "agent-bus-mcp")) {
             $binaryPath = Find-AgentBusBuiltBinary -RustCliDir $rustCliDir -TargetDir $resolvedTargetDir -BinaryName $binaryName -Profile "fast-release"
@@ -96,29 +86,17 @@ try {
     }
 
     if (-not $SkipTests) {
-        Write-Host "Running native test suite..."
-        if ($useNextest) {
-            & cargo nextest run --manifest-path $workspaceManifest --target-dir $resolvedTargetDir --workspace --lib --bins
-            if ($LASTEXITCODE -ne 0) {
-                throw "cargo nextest run --workspace --lib --bins failed."
-            }
+        Invoke-AgentBusCargoTest `
+            -Label "cargo test --workspace --lib --bins" `
+            -CargoArgs @("--manifest-path", $workspaceManifest, "--workspace", "--lib", "--bins") `
+            -NextestArgs @("run", "--manifest-path", $workspaceManifest, "--target-dir", $resolvedTargetDir, "--workspace", "--lib", "--bins") `
+            -AllowNextest -UseNextest $useNextest
 
-            & cargo nextest run --manifest-path $workspaceManifest --target-dir $resolvedTargetDir --test integration_test --test http_integration_test --test channel_integration_test -j 1
-            if ($LASTEXITCODE -ne 0) {
-                throw "cargo nextest run integration targets failed."
-            }
-        }
-        else {
-            & cargo test --manifest-path $workspaceManifest --workspace --lib --bins
-            if ($LASTEXITCODE -ne 0) {
-                throw "cargo test --workspace --lib --bins failed."
-            }
-
-            & cargo test --manifest-path $workspaceManifest --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1
-            if ($LASTEXITCODE -ne 0) {
-                throw "cargo test integration targets failed."
-            }
-        }
+        Invoke-AgentBusCargoTest `
+            -Label "cargo test integration (serial)" `
+            -CargoArgs @("--manifest-path", $workspaceManifest, "--test", "integration_test", "--test", "http_integration_test", "--test", "channel_integration_test", "--", "--test-threads=1") `
+            -NextestArgs @("run", "--manifest-path", $workspaceManifest, "--target-dir", $resolvedTargetDir, "--test", "integration_test", "--test", "http_integration_test", "--test", "channel_integration_test", "-j", "1") `
+            -AllowNextest -UseNextest $useNextest
     }
 
     if (-not $SkipHealth) {

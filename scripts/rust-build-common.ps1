@@ -267,6 +267,53 @@ function Write-AgentBusSccacheStats {
     }
 }
 
+function Invoke-AgentBusCargo {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+        [Parameter(Mandatory = $true)]
+        [string]$Command,
+        [string[]]$AdditionalArgs = @(),
+        [string]$WorkDir
+    )
+
+    Write-Host "`n==> $Label"
+    if ($WorkDir) {
+        Push-Location $WorkDir
+    }
+    try {
+        & cargo $Command @AdditionalArgs
+        $exitCode = $LASTEXITCODE
+        if ($exitCode -ne 0) {
+            throw "Cargo step failed: $Label (exit code $exitCode)"
+        }
+    }
+    finally {
+        if ($WorkDir) {
+            Pop-Location
+        }
+    }
+}
+
+function Invoke-AgentBusCargoTest {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Label,
+        [string[]]$CargoArgs,
+        [string[]]$NextestArgs,
+        [switch]$AllowNextest,
+        [bool]$UseNextest = $false,
+        [string]$WorkDir
+    )
+
+    if ($AllowNextest -and $UseNextest) {
+        Invoke-AgentBusCargo -Label "$Label (nextest)" -Command "nextest" -AdditionalArgs $NextestArgs -WorkDir $WorkDir
+    }
+    else {
+        Invoke-AgentBusCargo -Label $Label -Command "test" -AdditionalArgs $CargoArgs -WorkDir $WorkDir
+    }
+}
+
 function Find-AgentBusBinary {
     param(
         [Parameter(Mandatory = $true)]

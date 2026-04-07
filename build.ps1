@@ -78,21 +78,9 @@ function Invoke-CargoStep {
         [Parameter(Mandatory = $true)]
         [string]$Command,
         [string[]]$AdditionalArgs = @(),
-        [string]$WorkDir = $repoRoot
+        [string]$WorkDir
     )
-
-    Write-Host "`n==> $Label"
-    Push-Location $WorkDir
-    try {
-        & cargo $Command @AdditionalArgs
-        $exitCode = $LASTEXITCODE
-        if ($exitCode -ne 0) {
-            throw "Cargo step failed: $Label (exit code $exitCode)"
-        }
-    }
-    finally {
-        Pop-Location
-    }
+    Invoke-AgentBusCargo -Label $Label -Command $Command -AdditionalArgs $AdditionalArgs -WorkDir $WorkDir
 }
 
 function Invoke-TestStep {
@@ -103,13 +91,7 @@ function Invoke-TestStep {
         [string[]]$NextestArgs,
         [switch]$AllowNextest
     )
-
-    if ($AllowNextest -and $useNextest) {
-        Invoke-CargoStep -Label "$Label (nextest)" -Command "nextest" -AdditionalArgs $NextestArgs
-    }
-    else {
-        Invoke-CargoStep -Label $Label -Command "test" -AdditionalArgs $CargoArgs
-    }
+    Invoke-AgentBusCargoTest -Label $Label -CargoArgs $CargoArgs -NextestArgs $NextestArgs -AllowNextest:$AllowNextest -UseNextest $useNextest
 }
 
 try {
