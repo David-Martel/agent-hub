@@ -77,11 +77,12 @@ function Invoke-CargoStep {
         [string]$Label,
         [Parameter(Mandatory = $true)]
         [string]$Command,
-        [string[]]$AdditionalArgs = @()
+        [string[]]$AdditionalArgs = @(),
+        [string]$WorkDir = $repoRoot
     )
 
     Write-Host "`n==> $Label"
-    Push-Location $rustCliDir
+    Push-Location $WorkDir
     try {
         & cargo $Command @AdditionalArgs
         $exitCode = $LASTEXITCODE
@@ -113,7 +114,7 @@ function Invoke-TestStep {
 
 try {
     if (-not $SkipFormat) {
-        Invoke-CargoStep -Label "cargo fmt --all --check" -Command "fmt" -AdditionalArgs @("--all", "--check")
+        Invoke-CargoStep -Label "cargo fmt --all --check" -Command "fmt" -AdditionalArgs @("--manifest-path", $workspaceManifest, "--all", "--check")
     }
 
     if (-not $SkipClippy) {
@@ -130,24 +131,19 @@ try {
 
     if (-not $SkipIntegrationTests) {
         Invoke-TestStep `
-            -Label "cargo test --test http_integration_test -- --test-threads=1" `
-            -CargoArgs @("--manifest-path", $workspaceManifest, "--test", "http_integration_test", "--", "--test-threads=1") `
-            -NextestArgs @("run", "--manifest-path", $workspaceManifest, "--target-dir", $resolvedTargetDir, "--test", "http_integration_test", "-j", "1") `
-            -AllowNextest
-        Invoke-TestStep `
-            -Label "cargo test --test integration_test --test channel_integration_test -- --test-threads=1" `
-            -CargoArgs @("--manifest-path", $workspaceManifest, "--test", "integration_test", "--test", "channel_integration_test", "--", "--test-threads=1") `
-            -NextestArgs @("run", "--manifest-path", $workspaceManifest, "--target-dir", $resolvedTargetDir, "--test", "integration_test", "--test", "channel_integration_test", "-j", "1") `
+            -Label "cargo test integration (serial)" `
+            -CargoArgs @("--manifest-path", $workspaceManifest, "--test", "http_integration_test", "--test", "integration_test", "--test", "channel_integration_test", "--", "--test-threads=1") `
+            -NextestArgs @("run", "--manifest-path", $workspaceManifest, "--target-dir", $resolvedTargetDir, "--test", "http_integration_test", "--test", "integration_test", "--test", "channel_integration_test", "-j", "1") `
             -AllowNextest
     }
 
     if ($Release -or $FastRelease) {
         if ($FastRelease) {
-            Invoke-CargoStep -Label "cargo build --profile fast-release --bins" -Command "build" -AdditionalArgs @("--profile", "fast-release", "--bins")
+            Invoke-CargoStep -Label "cargo build --profile fast-release --bins" -Command "build" -AdditionalArgs @("--profile", "fast-release", "--bins") -WorkDir $rustCliDir
             $releaseTarget = Join-Path $resolvedTargetDir "fast-release"
         }
         else {
-            Invoke-CargoStep -Label "cargo build --release --bins" -Command "build" -AdditionalArgs @("--release", "--bins")
+            Invoke-CargoStep -Label "cargo build --release --bins" -Command "build" -AdditionalArgs @("--release", "--bins") -WorkDir $rustCliDir
             $releaseTarget = Join-Path $resolvedTargetDir "release"
         }
         foreach ($binaryName in @("agent-bus", "agent-bus-http", "agent-bus-mcp")) {

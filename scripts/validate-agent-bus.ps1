@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$rustCliRoot = Join-Path $repoRoot "rust-cli"
+$rustCliDir = Join-Path $repoRoot "rust-cli"
 $workspaceManifest = Join-Path $repoRoot "Cargo.toml"
 $invokeScript = Join-Path $PSScriptRoot "invoke-agent-bus-cli.ps1"
 $functionalSmokeScript = Join-Path $PSScriptRoot "test-agent-bus-functional.ps1"
@@ -76,7 +76,7 @@ $useNextest = (-not $DisableNextest) -and [bool](Get-AgentBusCommandPath -Name "
 try {
     if (-not $SkipBuild) {
         Write-Host "Building native agent-bus binaries (fast-release profile)..."
-        Push-Location $rustCliRoot
+        Push-Location $rustCliDir
         try {
             & cargo build --profile fast-release --bins
             if ($LASTEXITCODE -ne 0) {
@@ -88,7 +88,7 @@ try {
         }
 
         foreach ($binaryName in @("agent-bus", "agent-bus-http", "agent-bus-mcp")) {
-            $binaryPath = Find-AgentBusBuiltBinary -RustCliDir $rustCliRoot -TargetDir $resolvedTargetDir -BinaryName $binaryName -Profile "fast-release"
+            $binaryPath = Find-AgentBusBuiltBinary -RustCliDir $rustCliDir -TargetDir $resolvedTargetDir -BinaryName $binaryName -Profile "fast-release"
             if (-not $binaryPath) {
                 throw "Expected built binary '$binaryName' was not found in the fast-release target dir."
             }
@@ -97,36 +97,29 @@ try {
 
     if (-not $SkipTests) {
         Write-Host "Running native test suite..."
-        Push-Location $rustCliRoot
-        try {
-            if ($useNextest) {
-                & cargo nextest run --manifest-path $workspaceManifest --target-dir $resolvedTargetDir --workspace --lib --bins
-                if ($LASTEXITCODE -ne 0) {
-                    throw "cargo nextest run --workspace --lib --bins failed."
-                }
-
-                & cargo nextest run --manifest-path $workspaceManifest --target-dir $resolvedTargetDir --test integration_test --test http_integration_test --test channel_integration_test -j 1
-                if ($LASTEXITCODE -ne 0) {
-                    throw "cargo nextest run integration targets failed."
-                }
+        if ($useNextest) {
+            & cargo nextest run --manifest-path $workspaceManifest --target-dir $resolvedTargetDir --workspace --lib --bins
+            if ($LASTEXITCODE -ne 0) {
+                throw "cargo nextest run --workspace --lib --bins failed."
             }
-            else {
-                & cargo test --manifest-path $workspaceManifest --workspace --lib --bins
-                if ($LASTEXITCODE -ne 0) {
-                    throw "cargo test --workspace --lib --bins failed."
-                }
 
-                & cargo test --manifest-path $workspaceManifest --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1
-                if ($LASTEXITCODE -ne 0) {
-                    throw "cargo test integration targets failed."
-                }
+            & cargo nextest run --manifest-path $workspaceManifest --target-dir $resolvedTargetDir --test integration_test --test http_integration_test --test channel_integration_test -j 1
+            if ($LASTEXITCODE -ne 0) {
+                throw "cargo nextest run integration targets failed."
             }
         }
-        finally {
-            Pop-Location
+        else {
+            & cargo test --manifest-path $workspaceManifest --workspace --lib --bins
+            if ($LASTEXITCODE -ne 0) {
+                throw "cargo test --workspace --lib --bins failed."
+            }
+
+            & cargo test --manifest-path $workspaceManifest --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1
+            if ($LASTEXITCODE -ne 0) {
+                throw "cargo test integration targets failed."
+            }
         }
     }
-
 
     if (-not $SkipHealth) {
         Write-Host "Running live Redis/PostgreSQL health check..."
