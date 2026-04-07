@@ -12,6 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $rustCliRoot = Join-Path $repoRoot "rust-cli"
+$workspaceManifest = Join-Path $repoRoot "Cargo.toml"
 $invokeScript = Join-Path $PSScriptRoot "invoke-agent-bus-cli.ps1"
 $functionalSmokeScript = Join-Path $PSScriptRoot "test-agent-bus-functional.ps1"
 $commonBuildScript = Join-Path $PSScriptRoot "rust-build-common.ps1"
@@ -99,20 +100,25 @@ try {
         Push-Location $rustCliRoot
         try {
             if ($useNextest) {
-                & cargo nextest run --manifest-path (Join-Path $rustCliRoot "Cargo.toml") --target-dir $resolvedTargetDir --bin agent-bus
+                & cargo nextest run --manifest-path $workspaceManifest --target-dir $resolvedTargetDir --workspace --lib --bins
                 if ($LASTEXITCODE -ne 0) {
-                    throw "cargo nextest run --bin agent-bus failed."
+                    throw "cargo nextest run --workspace --lib --bins failed."
                 }
 
-                & cargo nextest run --manifest-path (Join-Path $rustCliRoot "Cargo.toml") --target-dir $resolvedTargetDir --test integration_test --test http_integration_test --test channel_integration_test -j 1
+                & cargo nextest run --manifest-path $workspaceManifest --target-dir $resolvedTargetDir --test integration_test --test http_integration_test --test channel_integration_test -j 1
                 if ($LASTEXITCODE -ne 0) {
                     throw "cargo nextest run integration targets failed."
                 }
             }
             else {
-                & cargo test
+                & cargo test --manifest-path $workspaceManifest --workspace --lib --bins
                 if ($LASTEXITCODE -ne 0) {
-                    throw "cargo test failed."
+                    throw "cargo test --workspace --lib --bins failed."
+                }
+
+                & cargo test --manifest-path $workspaceManifest --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1
+                if ($LASTEXITCODE -ne 0) {
+                    throw "cargo test integration targets failed."
                 }
             }
         }

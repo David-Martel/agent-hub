@@ -19,6 +19,7 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rustCliDir = Join-Path $repoRoot "rust-cli"
+$workspaceManifest = Join-Path $repoRoot "Cargo.toml"
 $validateScript = Join-Path $repoRoot "scripts\validate-agent-bus.ps1"
 $commonBuildScript = Join-Path $repoRoot "scripts\rust-build-common.ps1"
 $originalCargoToolsEnforceQuality = $env:CARGOTOOLS_ENFORCE_QUALITY
@@ -112,31 +113,31 @@ function Invoke-TestStep {
 
 try {
     if (-not $SkipFormat) {
-        Invoke-CargoStep -Label "cargo fmt --all" -Command "fmt" -AdditionalArgs @("--all")
+        Invoke-CargoStep -Label "cargo fmt --all --check" -Command "fmt" -AdditionalArgs @("--all", "--check")
     }
 
     if (-not $SkipClippy) {
-        Invoke-CargoStep -Label "cargo clippy --all-targets -- -D warnings" -Command "clippy" -AdditionalArgs @("--all-targets", "--", "-D", "warnings")
+        Invoke-CargoStep -Label "cargo clippy --workspace --all-targets -- -D warnings" -Command "clippy" -AdditionalArgs @("--manifest-path", $workspaceManifest, "--workspace", "--all-targets", "--", "-D", "warnings")
     }
 
     if (-not $SkipUnitTests) {
         Invoke-TestStep `
-            -Label "cargo test --bin agent-bus" `
-            -CargoArgs @("--bin", "agent-bus") `
-            -NextestArgs @("run", "--manifest-path", (Join-Path $rustCliDir "Cargo.toml"), "--target-dir", $resolvedTargetDir, "--bin", "agent-bus") `
+            -Label "cargo test --workspace --lib --bins" `
+            -CargoArgs @("--manifest-path", $workspaceManifest, "--workspace", "--lib", "--bins") `
+            -NextestArgs @("run", "--manifest-path", $workspaceManifest, "--target-dir", $resolvedTargetDir, "--workspace", "--lib", "--bins") `
             -AllowNextest
     }
 
     if (-not $SkipIntegrationTests) {
         Invoke-TestStep `
             -Label "cargo test --test http_integration_test -- --test-threads=1" `
-            -CargoArgs @("--test", "http_integration_test", "--", "--test-threads=1") `
-            -NextestArgs @("run", "--manifest-path", (Join-Path $rustCliDir "Cargo.toml"), "--target-dir", $resolvedTargetDir, "--test", "http_integration_test", "-j", "1") `
+            -CargoArgs @("--manifest-path", $workspaceManifest, "--test", "http_integration_test", "--", "--test-threads=1") `
+            -NextestArgs @("run", "--manifest-path", $workspaceManifest, "--target-dir", $resolvedTargetDir, "--test", "http_integration_test", "-j", "1") `
             -AllowNextest
         Invoke-TestStep `
             -Label "cargo test --test integration_test --test channel_integration_test -- --test-threads=1" `
-            -CargoArgs @("--test", "integration_test", "--test", "channel_integration_test", "--", "--test-threads=1") `
-            -NextestArgs @("run", "--manifest-path", (Join-Path $rustCliDir "Cargo.toml"), "--target-dir", $resolvedTargetDir, "--test", "integration_test", "--test", "channel_integration_test", "-j", "1") `
+            -CargoArgs @("--manifest-path", $workspaceManifest, "--test", "integration_test", "--test", "channel_integration_test", "--", "--test-threads=1") `
+            -NextestArgs @("run", "--manifest-path", $workspaceManifest, "--target-dir", $resolvedTargetDir, "--test", "integration_test", "--test", "channel_integration_test", "-j", "1") `
             -AllowNextest
     }
 
