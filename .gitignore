@@ -10,6 +10,7 @@ bin/
 *.pyd
 
 # Rust
+**/target/
 rust/target/
 rust-cli/target/
 $target/

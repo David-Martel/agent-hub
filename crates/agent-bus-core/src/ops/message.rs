@@ -1,6 +1,6 @@
 //! Message posting, acking, presence, and list operations.
 
-use anyhow::Result;
+use crate::error::Result;
 
 use crate::models::{Message, Presence};
 use crate::redis_bus::{
@@ -337,24 +337,24 @@ pub fn validated_batch_send(
     transport: &str,
     has_sse_subscribers: bool,
 ) -> Result<Vec<PostedMessage>> {
-    use anyhow::Context as _;
+    
 
     let mut payloads: Vec<BatchSendPayload> = Vec::with_capacity(items.len());
 
     for (idx, item) in items.iter().enumerate() {
         let ctx = || format!("item {idx}");
 
-        validate_priority(&item.priority).with_context(ctx)?;
-        let sender = non_empty(&item.sender, "sender").with_context(ctx)?;
-        let recipient = non_empty(&item.recipient, "recipient").with_context(ctx)?;
-        let topic = non_empty(&item.topic, "topic").with_context(ctx)?;
-        let body = non_empty(&item.body, "body").with_context(ctx)?;
+        validate_priority(&item.priority)?;
+        let sender = non_empty(&item.sender, "sender")?;
+        let recipient = non_empty(&item.recipient, "recipient")?;
+        let topic = non_empty(&item.topic, "topic")?;
+        let body = non_empty(&item.body, "body")?;
 
         let effective_schema =
             enforce_schema_for_transport(transport, item.schema.as_deref(), topic);
         let fitted_body = auto_fit_schema(body, effective_schema);
         validate_message_schema(&fitted_body, effective_schema)
-            .with_context(|| format!("item {idx}: schema validation failed"))?;
+            .map_err(|_| crate::error::AgentBusError::Internal(format!("item {idx}: schema validation failed")))?;
 
         let metadata = if item.metadata.is_null() {
             serde_json::Value::Object(serde_json::Map::new())

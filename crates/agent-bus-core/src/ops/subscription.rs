@@ -4,7 +4,7 @@
 //! transport layers (CLI, HTTP, MCP) share a single typed interface for
 //! creating, listing, and deleting subscriptions.
 
-use anyhow::Result;
+use crate::error::Result;
 use chrono::Utc;
 use uuid::Uuid;
 
@@ -50,10 +50,9 @@ pub fn subscribe(settings: &Settings, request: &SubscribeRequest<'_>) -> Result<
     if let Some(ref pmin) = request.scopes.priority_min
         && !VALID_SUBSCRIPTION_PRIORITIES.contains(&pmin.as_str())
     {
-        anyhow::bail!(
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
             "invalid priority_min '{pmin}'; must be one of: {}",
-            VALID_SUBSCRIPTION_PRIORITIES.join(", ")
-        );
+            VALID_SUBSCRIPTION_PRIORITIES.join(", "))));
     }
 
     let now = Utc::now();

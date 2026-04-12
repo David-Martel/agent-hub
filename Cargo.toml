@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "rust-cli",
     "crates/agent-bus-core",
     "crates/agent-bus-cli",
     "crates/agent-bus-http",

@@ -12,8 +12,12 @@ name = "agent-bus-mcp"
 path = "src/main.rs"
 
 [dependencies]
-agent-bus = { path = "../../rust-cli", default-features = true }
+agent-bus-core = { path = "../../crates/agent-bus-core" }
 anyhow = "1"
+tokio = { version = "1.0", features = ["full"] }
+rmcp = { version = "1", features = ["server", "transport-async-rw"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 
 [lints]
 workspace = true

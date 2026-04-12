@@ -6,7 +6,7 @@
 //!
 //! All functions are pure wrappers — no business logic lives here.
 
-use anyhow::Result;
+use crate::error::Result;
 
 use crate::models::Message;
 use crate::settings::Settings;

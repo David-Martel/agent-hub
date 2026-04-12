@@ -12,7 +12,7 @@
 use std::fmt;
 use std::str::FromStr;
 
-use anyhow::{Result, anyhow};
+use crate::error::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -61,7 +61,7 @@ impl fmt::Display for TaskStatus {
 }
 
 impl FromStr for TaskStatus {
-    type Err = anyhow::Error;
+    type Err = crate::error::AgentBusError;
 
     /// Parse a status string into a [`TaskStatus`].
     ///
@@ -74,10 +74,10 @@ impl FromStr for TaskStatus {
             "completed" => Ok(Self::Completed),
             "failed" => Ok(Self::Failed),
             "cancelled" => Ok(Self::Cancelled),
-            other => Err(anyhow!(
+            other => Err(crate::error::AgentBusError::Internal(format!(
                 "invalid task status '{other}'; expected one of: \
                  pending, in_progress, completed, failed, cancelled"
-            )),
+            ))),
         }
     }
 }
@@ -165,9 +165,9 @@ fn validate_task_priority(priority: &str) -> Result<()> {
     if VALID_TASK_PRIORITIES.contains(&priority) {
         Ok(())
     } else {
-        Err(anyhow!(
+        Err(crate::error::AgentBusError::Internal(format!(
             "invalid task priority '{priority}'; must be one of: {}",
-            VALID_TASK_PRIORITIES.join(", ")
+            VALID_TASK_PRIORITIES.join(", "))
         ))
     }
 }

@@ -4,7 +4,7 @@
 //! transport layers (CLI, HTTP, MCP) share a single typed interface for
 //! creating, joining, leaving, listing, and closing threads.
 
-use anyhow::Result;
+use crate::error::Result;
 use chrono::Utc;
 use uuid::Uuid;
 

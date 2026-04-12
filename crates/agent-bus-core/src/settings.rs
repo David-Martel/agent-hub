@@ -5,7 +5,7 @@
 //! 2. Config file (`AGENT_BUS_CONFIG` env var path, or `~/.config/agent-bus/config.json`)
 //! 3. Hardcoded defaults
 
-use anyhow::{Result, bail};
+use crate::error::Result;
 use serde::Deserialize;
 
 // ---------------------------------------------------------------------------
@@ -343,10 +343,10 @@ impl Settings {
             validate_localhost_url(db_url, "AGENT_BUS_DATABASE_URL")?;
         }
         if !is_localhost(&self.server_host) {
-            bail!(
+            return Err(crate::error::AgentBusError::InvalidParams(format!(
                 "AGENT_BUS_SERVER_HOST must be localhost or 127.0.0.1, got '{}'",
                 self.server_host
-            );
+            )));
         }
         validate_identifier(&self.stream_key, "AGENT_BUS_STREAM_KEY")?;
         validate_identifier(&self.channel_key, "AGENT_BUS_CHANNEL")?;
@@ -378,7 +378,7 @@ fn validate_localhost_url(url: &str, env_var: &str) -> Result<()> {
     let host_port = authority.rsplit('@').next().unwrap_or(authority);
     let host = host_port.split(':').next().unwrap_or("");
     if !is_localhost(host) {
-        bail!("{env_var} must use localhost, got host '{host}' in '{url}'");
+        return Err(crate::error::AgentBusError::InvalidParams(format!("{env_var} must use localhost, got host '{host}' in '{url}'")));
     }
     Ok(())
 }
@@ -386,10 +386,10 @@ fn validate_localhost_url(url: &str, env_var: &str) -> Result<()> {
 /// Verify an identifier is non-empty and contains no whitespace.
 fn validate_identifier(value: &str, env_var: &str) -> Result<()> {
     if value.is_empty() {
-        bail!("{env_var} must not be empty");
+        return Err(crate::error::AgentBusError::InvalidParams(format!("{env_var} must not be empty")));
     }
     if value.contains(' ') || value.contains('\n') || value.contains('\t') {
-        bail!("{env_var} must not contain whitespace, got '{value}'");
+        return Err(crate::error::AgentBusError::InvalidParams(format!("{env_var} must not contain whitespace, got '{value}'")));
     }
     Ok(())
 }

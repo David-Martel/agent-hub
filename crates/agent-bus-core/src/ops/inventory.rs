@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use anyhow::Result;
+use crate::error::Result;
 
 use crate::channels::{self, OwnershipClaim};
 use crate::models::Presence;

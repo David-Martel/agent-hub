@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use anyhow::Result;
+use crate::error::Result;
 use serde::Serialize;
 
 use crate::models::Message;

@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write as _};
 use std::path::Path;
 
-use anyhow::{Context as _, Result};
+use crate::error::Result;
 
 use crate::models::Message;
 use crate::postgres_store;
@@ -57,7 +57,7 @@ fn load_existing_ids(path: &Path) -> HashSet<String> {
     let Ok(file) = std::fs::File::open(path) else {
         return ids;
     };
-    for line in BufReader::new(file).lines().map_while(Result::ok) {
+    for line in BufReader::new(file).lines().map_while(std::result::Result::ok) {
         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
             && let Some(id) = msg.get("id").and_then(|v| v.as_str())
         {
@@ -81,7 +81,7 @@ pub fn export_journal(messages: &[Message], output_path: &Path) -> Result<usize>
     if let Some(parent) = output_path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).context("failed to create journal directory")?;
+        std::fs::create_dir_all(parent).map_err(|_| crate::error::AgentBusError::Internal("failed to create journal directory".to_string()))?;
     }
 
     let existing = load_existing_ids(output_path);
@@ -98,11 +98,11 @@ pub fn export_journal(messages: &[Message], output_path: &Path) -> Result<usize>
         .create(true)
         .append(true)
         .open(output_path)
-        .context("failed to open journal file")?;
+        .map_err(|_| crate::error::AgentBusError::Internal("failed to open journal file".to_string()))?;
 
     for msg in &new_msgs {
         let line = serde_json::to_string(msg).unwrap_or_default();
-        writeln!(file, "{line}").context("failed to write journal entry")?;
+        writeln!(file, "{line}").map_err(|_| crate::error::AgentBusError::Internal("failed to write journal entry".to_string()))?;
     }
 
     maybe_deploy_protocol_doc(output_path);

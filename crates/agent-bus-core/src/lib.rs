@@ -3,8 +3,10 @@
 use std::sync::OnceLock;
 
 pub mod agent_profile;
+pub mod bootstrap;
 pub mod channels;
 pub mod codex_bridge;
+pub mod error;
 pub mod journal;
 pub mod mcp_dispatch;
 pub mod models;
@@ -21,6 +23,8 @@ use ops::{PostMessageRequest, PresenceRequest, post_message, set_presence};
 use postgres_store::{PgWriter, probe_postgres};
 use redis_bus::connect;
 use settings::Settings;
+
+pub use bootstrap::{BootstrapGuard, bootstrap};
 
 static PG_WRITER: OnceLock<PgWriter> = OnceLock::new();
 

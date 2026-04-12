@@ -110,16 +110,16 @@ impl std::fmt::Display for ThreadStatus {
 }
 
 impl std::str::FromStr for ThreadStatus {
-    type Err = anyhow::Error;
+    type Err = crate::error::AgentBusError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "open" => Ok(Self::Open),
             "closed" => Ok(Self::Closed),
             "archived" => Ok(Self::Archived),
-            other => Err(anyhow::anyhow!(
+            other => Err(crate::error::AgentBusError::Internal(format!(
                 "invalid thread status '{other}'; expected open|closed|archived"
-            )),
+            ))),
         }
     }
 }

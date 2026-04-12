@@ -4,7 +4,7 @@
 //! stored in Redis with a priority-dependent TTL.  This module provides the
 //! ops-layer interface for creating, clearing, and querying those deadlines.
 
-use anyhow::Result;
+use crate::error::Result;
 use chrono::Utc;
 
 use crate::models::{AckDeadline, ack_deadline_seconds};

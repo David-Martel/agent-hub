@@ -1,8 +1,11 @@
 //! Input validation helpers.
 
-use anyhow::{Context as _, Result, anyhow, bail};
+use crate::error::{AgentBusError, Result};
+
 
 pub const VALID_PRIORITIES: &[&str] = &["low", "normal", "high", "urgent"];
+pub const MAX_TOPIC_LEN: usize = 256;
+pub const MAX_BODY_LEN: usize = 10_485_760; // 10MB
 
 /// # Errors
 /// Returns an error if `p` is not one of the valid priority values.
@@ -10,10 +13,10 @@ pub fn validate_priority(p: &str) -> Result<()> {
     if VALID_PRIORITIES.contains(&p) {
         Ok(())
     } else {
-        Err(anyhow!(
+        Err(AgentBusError::InvalidParams(format!(
             "invalid priority '{p}'; must be one of: {}",
             VALID_PRIORITIES.join(", ")
-        ))
+        )))
     }
 }
 
@@ -22,7 +25,11 @@ pub fn validate_priority(p: &str) -> Result<()> {
 pub fn non_empty<'a>(val: &'a str, name: &str) -> Result<&'a str> {
     let trimmed = val.trim();
     if trimmed.is_empty() {
-        Err(anyhow!("{name} must not be empty"))
+        Err(AgentBusError::InvalidParams(format!("{name} must not be empty")))
+    } else if name == "topic" && trimmed.len() > MAX_TOPIC_LEN {
+        Err(AgentBusError::InvalidParams(format!("{name} exceeds maximum length of {MAX_TOPIC_LEN}")))
+    } else if name == "body" && trimmed.len() > MAX_BODY_LEN {
+        Err(AgentBusError::InvalidParams(format!("{name} exceeds maximum length of {MAX_BODY_LEN}")))
     } else {
         Ok(trimmed)
     }
@@ -33,7 +40,7 @@ pub fn non_empty<'a>(val: &'a str, name: &str) -> Result<&'a str> {
 pub fn parse_metadata_arg(metadata: Option<&str>) -> Result<serde_json::Value> {
     match metadata {
         None => Ok(serde_json::Value::Object(serde_json::Map::new())),
-        Some(s) => serde_json::from_str(s).context("--metadata must be valid JSON object"),
+        Some(s) => serde_json::from_str(s).map_err(|e| AgentBusError::InvalidParams(format!("--metadata must be valid JSON object: {e}"))),
     }
 }
 
@@ -209,32 +216,32 @@ pub fn validate_message_schema(body: &str, schema: Option<&str>) -> Result<()> {
                 && !body.contains("TAGGED:")
                 && !body.contains("COMPLETE")
             {
-                bail!("Schema 'finding' requires FINDING:, FIX, TAGGED:, or COMPLETE in body");
+                return Err(AgentBusError::InvalidParams("Schema 'finding' requires FINDING:, FIX, TAGGED:, or COMPLETE in body".to_owned()));
             }
             // When a FINDING: is declared, SEVERITY: must also be present.
             if body.contains("FINDING:") && !body.contains("SEVERITY:") {
-                bail!("Schema 'finding' requires SEVERITY: when FINDING: is present");
+                return Err(AgentBusError::InvalidParams("Schema 'finding' requires SEVERITY: when FINDING: is present".to_owned()));
             }
             Ok(())
         }
         SCHEMA_STATUS => {
             // Status messages are free-form but must be non-empty.
             if body.trim().is_empty() {
-                bail!("Schema 'status' requires non-empty body");
+                return Err(AgentBusError::InvalidParams("Schema 'status' requires non-empty body".to_owned()));
             }
             Ok(())
         }
         SCHEMA_BENCHMARK => {
             // Must contain key=value metrics (any key, not just agents/msgs/duration).
             if !body.contains('=') {
-                bail!("Schema 'benchmark' requires key=value metrics in body");
+                return Err(AgentBusError::InvalidParams("Schema 'benchmark' requires key=value metrics in body".to_owned()));
             }
             Ok(())
         }
         other => {
-            bail!(
+            Err(AgentBusError::InvalidParams(format!(
                 "Unknown message schema: '{other}'. Valid: {SCHEMA_FINDING}, {SCHEMA_STATUS}, {SCHEMA_BENCHMARK}"
-            );
+            )))
         }
     }
 }

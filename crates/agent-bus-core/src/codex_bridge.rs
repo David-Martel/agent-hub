@@ -18,7 +18,7 @@
 //! println!("Codex model: {}", config.model);
 //! ```
 
-use anyhow::{Context as _, Result};
+use crate::error::Result;
 use serde::Deserialize;
 
 use crate::agent_profile::{
@@ -98,7 +98,7 @@ impl From<agent_profile::AgentConfig> for CodexConfig {
 /// ```
 pub fn discover_codex() -> Result<CodexConfig> {
     let profile = CodexProfile;
-    let agent_config = profile.discover().context("failed to read Codex config")?;
+    let agent_config = profile.discover().map_err(|_| crate::error::AgentBusError::Internal("failed to read Codex config".to_string()))?;
     Ok(CodexConfig::from(agent_config))
 }
 

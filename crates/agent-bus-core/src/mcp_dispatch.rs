@@ -8,7 +8,7 @@
 //! Transport adapters (stdio via `rmcp`, Streamable HTTP, etc.) convert their
 //! native request types to a `(name, args)` pair and delegate here.
 
-use anyhow::{Result, anyhow};
+use crate::error::Result;
 use serde_json::Value;
 
 /// Number of MCP tools exposed by [`tool_definitions`].
@@ -530,11 +530,11 @@ impl<'a> McpToolDispatch<'a> {
 
             "post_message" => {
                 let sender =
-                    get_str(args, "sender").ok_or_else(|| anyhow!("sender is required"))?;
+                    get_str(args, "sender").ok_or_else(|| crate::error::AgentBusError::Internal(format!("sender is required")))?;
                 let recipient =
-                    get_str(args, "recipient").ok_or_else(|| anyhow!("recipient is required"))?;
-                let topic = get_str(args, "topic").ok_or_else(|| anyhow!("topic is required"))?;
-                let body = get_str(args, "body").ok_or_else(|| anyhow!("body is required"))?;
+                    get_str(args, "recipient").ok_or_else(|| crate::error::AgentBusError::Internal(format!("recipient is required")))?;
+                let topic = get_str(args, "topic").ok_or_else(|| crate::error::AgentBusError::Internal(format!("topic is required")))?;
+                let body = get_str(args, "body").ok_or_else(|| crate::error::AgentBusError::Internal(format!("body is required")))?;
                 let tags = get_string_array(args, "tags");
                 let thread_id = get_str(args, "thread_id");
                 let priority = get_str_or(args, "priority", "normal");
@@ -597,9 +597,9 @@ impl<'a> McpToolDispatch<'a> {
             }
 
             "ack_message" => {
-                let agent = get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
+                let agent = get_str(args, "agent").ok_or_else(|| crate::error::AgentBusError::Internal(format!("agent is required")))?;
                 let message_id =
-                    get_str(args, "message_id").ok_or_else(|| anyhow!("message_id is required"))?;
+                    get_str(args, "message_id").ok_or_else(|| crate::error::AgentBusError::Internal(format!("message_id is required")))?;
                 let body = get_str_or(args, "body", "ack");
 
                 let mut conn = connect(settings)?;
@@ -623,7 +623,7 @@ impl<'a> McpToolDispatch<'a> {
             }
 
             "set_presence" => {
-                let agent = get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
+                let agent = get_str(args, "agent").ok_or_else(|| crate::error::AgentBusError::Internal(format!("agent is required")))?;
                 let status = get_str_or(args, "status", "online");
                 let session_id = get_str(args, "session_id");
                 let capabilities = get_string_array(args, "capabilities");
@@ -693,14 +693,14 @@ impl<'a> McpToolDispatch<'a> {
 
             "create_channel" => {
                 let channel_type = get_str(args, "channel_type")
-                    .ok_or_else(|| anyhow!("channel_type is required"))?;
+                    .ok_or_else(|| crate::error::AgentBusError::Internal(format!("channel_type is required")))?;
                 let created_by =
-                    get_str(args, "created_by").ok_or_else(|| anyhow!("created_by is required"))?;
+                    get_str(args, "created_by").ok_or_else(|| crate::error::AgentBusError::Internal(format!("created_by is required")))?;
 
                 match channel_type {
                     "group" => {
                         let name = get_str(args, "name")
-                            .ok_or_else(|| anyhow!("name is required for group channels"))?;
+                            .ok_or_else(|| crate::error::AgentBusError::Internal(format!("name is required for group channels")))?;
                         let members = get_string_array(args, "members");
                         let info = ops_create_group(
                             settings,
@@ -712,18 +712,18 @@ impl<'a> McpToolDispatch<'a> {
                         )?;
                         Ok(serde_json::to_value(&info)?)
                     }
-                    other => Err(anyhow!(
+                    other => Err(crate::error::AgentBusError::Internal(format!(
                         "unsupported channel_type '{other}' for create_channel; supported: group"
-                    )),
+                    ))),
                 }
             }
 
             "post_to_channel" => {
                 let channel_type = get_str(args, "channel_type")
-                    .ok_or_else(|| anyhow!("channel_type is required"))?;
+                    .ok_or_else(|| crate::error::AgentBusError::Internal(format!("channel_type is required")))?;
                 let sender =
-                    get_str(args, "sender").ok_or_else(|| anyhow!("sender is required"))?;
-                let body = get_str(args, "body").ok_or_else(|| anyhow!("body is required"))?;
+                    get_str(args, "sender").ok_or_else(|| crate::error::AgentBusError::Internal(format!("sender is required")))?;
+                let body = get_str(args, "body").ok_or_else(|| crate::error::AgentBusError::Internal(format!("body is required")))?;
                 let topic = get_str_or(args, "topic", channel_type);
                 let thread_id = get_str(args, "thread_id");
                 let tags = get_string_array(args, "tags");
@@ -731,7 +731,7 @@ impl<'a> McpToolDispatch<'a> {
                 match channel_type {
                     "direct" => {
                         let recipient = get_str(args, "recipient")
-                            .ok_or_else(|| anyhow!("recipient is required for direct channels"))?;
+                            .ok_or_else(|| crate::error::AgentBusError::Internal(format!("recipient is required for direct channels")))?;
                         let msg = ops_post_direct(
                             settings,
                             &PostDirectRequest {
@@ -747,7 +747,7 @@ impl<'a> McpToolDispatch<'a> {
                     }
                     "group" => {
                         let group_name = get_str(args, "recipient").ok_or_else(|| {
-                            anyhow!("recipient (group name) is required for group channels")
+                            crate::error::AgentBusError::Internal(format!("recipient (group name) is required for group channels"))
                         })?;
                         let msg = ops_post_group(
                             settings,
@@ -773,23 +773,23 @@ impl<'a> McpToolDispatch<'a> {
                         )?;
                         Ok(serde_json::to_value(&msg)?)
                     }
-                    other => Err(anyhow!(
+                    other => Err(crate::error::AgentBusError::Internal(format!(
                         "unsupported channel_type '{other}'; supported: direct, group, escalate"
-                    )),
+                    ))),
                 }
             }
 
             "read_channel" => {
                 let channel_type = get_str(args, "channel_type")
-                    .ok_or_else(|| anyhow!("channel_type is required"))?;
+                    .ok_or_else(|| crate::error::AgentBusError::Internal(format!("channel_type is required")))?;
                 let limit = get_usize_or(args, "limit", 50);
 
                 match channel_type {
                     "direct" => {
                         let agent_a = get_str(args, "agent_a")
-                            .ok_or_else(|| anyhow!("agent_a is required for direct channels"))?;
+                            .ok_or_else(|| crate::error::AgentBusError::Internal(format!("agent_a is required for direct channels")))?;
                         let agent_b = get_str(args, "agent_b")
-                            .ok_or_else(|| anyhow!("agent_b is required for direct channels"))?;
+                            .ok_or_else(|| crate::error::AgentBusError::Internal(format!("agent_b is required for direct channels")))?;
                         let msgs = ops_read_direct(
                             settings,
                             &ReadDirectRequest {
@@ -802,7 +802,7 @@ impl<'a> McpToolDispatch<'a> {
                     }
                     "group" => {
                         let group_name = get_str(args, "group_name")
-                            .ok_or_else(|| anyhow!("group_name is required for group channels"))?;
+                            .ok_or_else(|| crate::error::AgentBusError::Internal(format!("group_name is required for group channels")))?;
                         let msgs = ops_read_group(
                             settings,
                             &ReadGroupRequest {
@@ -812,16 +812,16 @@ impl<'a> McpToolDispatch<'a> {
                         )?;
                         Ok(serde_json::to_value(&msgs)?)
                     }
-                    other => Err(anyhow!(
+                    other => Err(crate::error::AgentBusError::Internal(format!(
                         "unsupported channel_type '{other}' for read_channel; supported: direct, group"
-                    )),
+                    ))),
                 }
             }
 
             "claim_resource" => {
                 let resource =
-                    get_str(args, "resource").ok_or_else(|| anyhow!("resource is required"))?;
-                let agent = get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
+                    get_str(args, "resource").ok_or_else(|| crate::error::AgentBusError::Internal(format!("resource is required")))?;
+                let agent = get_str(args, "agent").ok_or_else(|| crate::error::AgentBusError::Internal(format!("agent is required")))?;
                 let reason = get_str_or(args, "reason", "first-edit required");
                 let mode = get_str_or(args, "mode", "exclusive");
                 let namespace = get_str(args, "namespace").map(str::to_owned);
@@ -855,8 +855,8 @@ impl<'a> McpToolDispatch<'a> {
 
             "renew_claim" => {
                 let resource =
-                    get_str(args, "resource").ok_or_else(|| anyhow!("resource is required"))?;
-                let agent = get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
+                    get_str(args, "resource").ok_or_else(|| crate::error::AgentBusError::Internal(format!("resource is required")))?;
+                let agent = get_str(args, "agent").ok_or_else(|| crate::error::AgentBusError::Internal(format!("agent is required")))?;
                 let lease_ttl_seconds = get_u64_or(args, "lease_ttl_seconds", 3600);
                 let claim = ops_renew_claim(
                     settings,
@@ -871,17 +871,17 @@ impl<'a> McpToolDispatch<'a> {
 
             "release_claim" => {
                 let resource =
-                    get_str(args, "resource").ok_or_else(|| anyhow!("resource is required"))?;
-                let agent = get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
+                    get_str(args, "resource").ok_or_else(|| crate::error::AgentBusError::Internal(format!("resource is required")))?;
+                let agent = get_str(args, "agent").ok_or_else(|| crate::error::AgentBusError::Internal(format!("agent is required")))?;
                 let state = ops_release_claim(settings, &ReleaseClaimRequest { resource, agent })?;
                 Ok(serde_json::to_value(&state)?)
             }
 
             "resolve_claim" => {
                 let resource =
-                    get_str(args, "resource").ok_or_else(|| anyhow!("resource is required"))?;
+                    get_str(args, "resource").ok_or_else(|| crate::error::AgentBusError::Internal(format!("resource is required")))?;
                 let winner =
-                    get_str(args, "winner").ok_or_else(|| anyhow!("winner is required"))?;
+                    get_str(args, "winner").ok_or_else(|| crate::error::AgentBusError::Internal(format!("winner is required")))?;
                 let reason = get_str_or(args, "reason", "resolved by orchestrator");
                 let resolved_by = get_str_or(args, "resolved_by", "orchestrator");
 
@@ -899,9 +899,9 @@ impl<'a> McpToolDispatch<'a> {
 
             "knock_agent" => {
                 let sender =
-                    get_str(args, "sender").ok_or_else(|| anyhow!("sender is required"))?;
+                    get_str(args, "sender").ok_or_else(|| crate::error::AgentBusError::Internal(format!("sender is required")))?;
                 let recipient =
-                    get_str(args, "recipient").ok_or_else(|| anyhow!("recipient is required"))?;
+                    get_str(args, "recipient").ok_or_else(|| crate::error::AgentBusError::Internal(format!("recipient is required")))?;
                 let body = get_str_or(args, "body", "check the bus");
                 let thread_id = get_str(args, "thread_id");
                 let tags = get_string_array(args, "tags");
@@ -930,7 +930,7 @@ impl<'a> McpToolDispatch<'a> {
             }
 
             "check_inbox" => {
-                let agent = get_str(args, "agent").ok_or_else(|| anyhow!("agent is required"))?;
+                let agent = get_str(args, "agent").ok_or_else(|| crate::error::AgentBusError::Internal(format!("agent is required")))?;
                 let repo = get_str(args, "repo");
                 let session = get_str(args, "session");
                 let tags = get_string_array(args, "tag");
@@ -964,7 +964,7 @@ impl<'a> McpToolDispatch<'a> {
                 }))
             }
 
-            other => Err(anyhow!("unknown tool: {other}")),
+            other => Err(crate::error::AgentBusError::Internal(format!("unknown tool: {other}"))),
         }
     }
 }

@@ -18,7 +18,7 @@
 //! `redis_bus` directly, so that the import surface of CLI/HTTP/MCP remains
 //! bounded to transport-specific concerns.
 
-use anyhow::Result;
+use crate::error::Result;
 use chrono::Utc;
 
 use crate::models::{Health, Presence};
@@ -152,7 +152,7 @@ pub fn parse_service_action(s: &str) -> Result<ServiceAction> {
         "flush" => Ok(ServiceAction::Flush),
         "stop" => Ok(ServiceAction::Stop),
         other => {
-            anyhow::bail!("unknown service action '{other}': expected pause|resume|flush|stop")
+            return Err(crate::error::AgentBusError::InvalidParams(format!("unknown service action '{other}': expected pause|resume|flush|stop")))
         }
     }
 }
