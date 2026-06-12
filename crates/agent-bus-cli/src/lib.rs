@@ -115,7 +115,14 @@ fn main_entry_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> 
                 .enable_all()
                 .build()
                 .context("failed to build Tokio runtime")?;
-            runtime.block_on(run(args))
+            // `run` is synchronous, but `bootstrap()` spawns the background
+            // PgWriter via `tokio::spawn`, which requires an entered runtime
+            // context. Hold the EnterGuard for the whole call (and keep
+            // `runtime` alive) so spawn/Handle::current work. Dropping the
+            // runtime here (the previous `let _ = runtime;`) panicked every
+            // command at startup with "no reactor running".
+            let _guard = runtime.enter();
+            run(args)
         })
         .context("failed to spawn agent-bus main thread")?;
 
@@ -129,7 +136,7 @@ fn main_entry_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> 
     clippy::too_many_lines,
     reason = "main command dispatch — extracting further would obscure flow"
 )]
-async fn run(args: Vec<OsString>) -> Result<()> {
+fn run(args: Vec<OsString>) -> Result<()> {
     let (settings, guard) = bootstrap()?;
     // Attach the bearer token (if any) to all server-mode HTTP requests before
     // the first call routes through the shared client.

@@ -463,33 +463,33 @@ fn persist_claims(
         let _: () = redis::cmd("DEL")
             .arg(key)
             .query(conn)
-            .map_err(|_| crate::error::AgentBusError::Internal("DEL empty claims key failed".to_string()))?;
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("DEL empty claims key failed: {e}")))?;
         let _: () = redis::cmd("DEL")
             .arg(claim_resolution_key(key))
             .query(conn)
-            .map_err(|_| crate::error::AgentBusError::Internal("DEL empty resolution key failed".to_string()))?;
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("DEL empty resolution key failed: {e}")))?;
         return Ok(());
     }
 
     let _: () = redis::cmd("DEL")
         .arg(key)
         .query(conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("DEL existing claims key failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("DEL existing claims key failed: {e}")))?;
     for claim in claims {
-        let claim_json = serde_json::to_string(claim).map_err(|_| crate::error::AgentBusError::Internal("serialize claim".to_string()))?;
+        let claim_json = serde_json::to_string(claim).map_err(|e| crate::error::AgentBusError::Internal(format!("serialize claim: {e}")))?;
         let _: () = redis::cmd("HSET")
             .arg(key)
             .arg(claim.agent.as_str())
             .arg(&claim_json)
             .query(conn)
-            .map_err(|_| crate::error::AgentBusError::Internal("HSET claim failed".to_string()))?;
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("HSET claim failed: {e}")))?;
     }
 
     let _: () = redis::cmd("EXPIRE")
         .arg(key)
         .arg(claims_hash_ttl_seconds(claims, now))
         .query(conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("EXPIRE claims key failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("EXPIRE claims key failed: {e}")))?;
 
     Ok(())
 }
@@ -499,7 +499,7 @@ fn load_active_claims(conn: &mut redis::Connection, key: &str) -> Result<Vec<Own
     let all: Vec<(String, String)> = redis::cmd("HGETALL")
         .arg(key)
         .query(conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("HGETALL claims failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("HGETALL claims failed: {e}")))?;
 
     if all.is_empty() {
         return Ok(Vec::new());
@@ -525,18 +525,18 @@ fn load_active_claims(conn: &mut redis::Connection, key: &str) -> Result<Vec<Own
         for agent in &expired_agents {
             cmd.arg(agent);
         }
-        let _: usize = cmd.query(conn).map_err(|_| crate::error::AgentBusError::Internal("HDEL expired claims failed".to_string()))?;
+        let _: usize = cmd.query(conn).map_err(|e| crate::error::AgentBusError::Internal(format!("HDEL expired claims failed: {e}")))?;
     }
 
     if claims.is_empty() {
         let _: () = redis::cmd("DEL")
             .arg(key)
             .query(conn)
-            .map_err(|_| crate::error::AgentBusError::Internal("DEL empty claims key after prune failed".to_string()))?;
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("DEL empty claims key after prune failed: {e}")))?;
         let _: () = redis::cmd("DEL")
             .arg(claim_resolution_key(key))
             .query(conn)
-            .map_err(|_| crate::error::AgentBusError::Internal("DEL empty resolution key after prune failed".to_string()))?;
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("DEL empty resolution key after prune failed: {e}")))?;
         return Ok(Vec::new());
     }
 
@@ -546,7 +546,7 @@ fn load_active_claims(conn: &mut redis::Connection, key: &str) -> Result<Vec<Own
         .arg(key)
         .arg(ttl)
         .query(conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("EXPIRE refreshed claims key failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("EXPIRE refreshed claims key failed: {e}")))?;
     Ok(claims)
 }
 
@@ -698,7 +698,7 @@ fn xadd_to_stream(
         .arg("*")
         .arg(&fields)
         .query(conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("XADD to channel stream failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("XADD to channel stream failed: {e}")))?;
 
     // Refresh TTL on channel streams: direct = 7 days, group = 30 days.
     let ttl = if stream_key.starts_with(DIRECT_PREFIX) {
@@ -710,7 +710,7 @@ fn xadd_to_stream(
         .arg(stream_key)
         .arg(ttl)
         .query(conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("EXPIRE channel stream failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("EXPIRE channel stream failed: {e}")))?;
 
     Ok(Message {
         id: id.clone(),
@@ -744,7 +744,7 @@ fn xread_from_stream(
         .arg("COUNT")
         .arg(fetch)
         .query(conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("XREVRANGE on channel stream failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("XREVRANGE on channel stream failed: {e}")))?;
 
     let mut msgs: Vec<Message> = parse_channel_xrange(&raw)
         .into_iter()
@@ -777,13 +777,13 @@ pub fn post_direct(
     tags: &[String],
 ) -> Result<Message> {
     if sender.is_empty() {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("sender must not be empty")));
+        return Err(crate::error::AgentBusError::InvalidParams("sender must not be empty".to_string()));
     }
     if recipient.is_empty() {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("recipient must not be empty")));
+        return Err(crate::error::AgentBusError::InvalidParams("recipient must not be empty".to_string()));
     }
     if body.is_empty() {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("body must not be empty")));
+        return Err(crate::error::AgentBusError::InvalidParams("body must not be empty".to_string()));
     }
 
     let key = direct_key(sender, recipient);
@@ -830,13 +830,13 @@ pub fn create_group(
     created_by: &str,
 ) -> Result<GroupInfo> {
     if name.is_empty() {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("group name must not be empty")));
+        return Err(crate::error::AgentBusError::InvalidParams("group name must not be empty".to_string()));
     }
     let valid_name = name
         .chars()
         .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
     if !valid_name {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("group name may only contain alphanumerics, hyphens, and underscores")));
+        return Err(crate::error::AgentBusError::InvalidParams("group name may only contain alphanumerics, hyphens, and underscores".to_string()));
     }
 
     let mut conn = connect(settings)?;
@@ -847,7 +847,7 @@ pub fn create_group(
     for m in members {
         let _: u32 = conn
             .sadd(&members_key, m.as_str())
-            .map_err(|_| crate::error::AgentBusError::Internal("SADD group members failed".to_string()))?;
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("SADD group members failed: {e}")))?;
     }
 
     // Store creation metadata only when the group is new (NX on one field).
@@ -857,20 +857,20 @@ pub fn create_group(
         .arg("created_at")
         .arg(&ts)
         .query(&mut conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("HSETNX group meta created_at failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("HSETNX group meta created_at failed: {e}")))?;
     let _: () = redis::cmd("HSETNX")
         .arg(&meta_key)
         .arg("created_by")
         .arg(created_by)
         .query(&mut conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("HSETNX group meta created_by failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("HSETNX group meta created_by failed: {e}")))?;
 
     // Set / refresh TTL on the members set (30 days).
     let _: () = redis::cmd("EXPIRE")
         .arg(&members_key)
         .arg(GROUP_MEMBERS_TTL_SECS)
         .query(&mut conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("EXPIRE group members failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("EXPIRE group members failed: {e}")))?;
 
     // Return the current state of the group.
     list_group_info(&mut conn, name)
@@ -890,7 +890,7 @@ pub fn post_to_group(
     thread_id: Option<&str>,
 ) -> Result<Message> {
     if body.is_empty() {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("body must not be empty")));
+        return Err(crate::error::AgentBusError::InvalidParams("body must not be empty".to_string()));
     }
     let stream_key = group_stream_key(group_name);
     let mut conn = connect(settings)?;
@@ -899,7 +899,7 @@ pub fn post_to_group(
     let members_key = group_members_key(group_name);
     let exists: bool = conn
         .exists(&members_key)
-        .map_err(|_| crate::error::AgentBusError::Internal("EXISTS group members check failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("EXISTS group members check failed: {e}")))?;
     if !exists {
         return Err(crate::error::AgentBusError::InvalidParams(format!("group '{group_name}' does not exist")));
     }
@@ -949,7 +949,7 @@ pub fn list_groups(settings: &Settings) -> Result<Vec<GroupInfo>> {
             .arg("COUNT")
             .arg(100)
             .query(&mut conn)
-            .map_err(|_| crate::error::AgentBusError::Internal("SCAN group members keys failed".to_string()))?;
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("SCAN group members keys failed: {e}")))?;
         keys.extend(batch);
         cursor = next_cursor;
         if cursor == 0 {
@@ -981,7 +981,7 @@ fn list_group_info(conn: &mut redis::Connection, name: &str) -> Result<GroupInfo
 
     let raw_members: Vec<String> = conn
         .smembers(&members_key)
-        .map_err(|_| crate::error::AgentBusError::Internal("SMEMBERS group members failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("SMEMBERS group members failed: {e}")))?;
     let mut members = raw_members;
     members.sort();
 
@@ -989,12 +989,12 @@ fn list_group_info(conn: &mut redis::Connection, name: &str) -> Result<GroupInfo
         .arg(&meta_key)
         .arg("created_at")
         .query(conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("HGET group meta created_at failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("HGET group meta created_at failed: {e}")))?;
     let created_by: Option<String> = redis::cmd("HGET")
         .arg(&meta_key)
         .arg("created_by")
         .query(conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("HGET group meta created_by failed".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("HGET group meta created_by failed: {e}")))?;
 
     let message_count: u64 = redis::cmd("XLEN").arg(&stream_key).query(conn).unwrap_or(0);
 
@@ -1032,7 +1032,7 @@ pub fn post_escalation(
     tags: &[String],
 ) -> Result<Message> {
     if body.is_empty() {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("escalation body must not be empty")));
+        return Err(crate::error::AgentBusError::InvalidParams("escalation body must not be empty".to_string()));
     }
 
     // Find orchestrator: scan presence for "orchestration" capability.
@@ -1222,20 +1222,19 @@ pub fn claim_resource_with_options(
     options: &ClaimOptions,
 ) -> Result<OwnershipClaim> {
     if resource.is_empty() {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("resource must not be empty")));
+        return Err(crate::error::AgentBusError::InvalidParams("resource must not be empty".to_string()));
     }
     if agent.is_empty() {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("agent must not be empty")));
+        return Err(crate::error::AgentBusError::InvalidParams("agent must not be empty".to_string()));
     }
     if matches!(options.mode, ResourceLeaseMode::SharedNamespaced)
         && options
             .namespace
             .as_deref()
             .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_none()
+            .is_none_or(str::is_empty)
     {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("shared_namespaced claims require --namespace")));
+        return Err(crate::error::AgentBusError::InvalidParams("shared_namespaced claims require --namespace".to_string()));
     }
 
     let key = claims_key(resource);
@@ -1345,7 +1344,7 @@ pub fn list_claims(
             .arg("COUNT")
             .arg(100)
             .query(&mut conn)
-            .map_err(|_| crate::error::AgentBusError::Internal("SCAN claims keys failed".to_string()))?;
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("SCAN claims keys failed: {e}")))?;
         keys.extend(batch);
         cursor = next_cursor;
         if cursor == 0 {
@@ -1449,12 +1448,12 @@ pub fn resolve_claim(
         .arg("resolved_at")
         .arg(Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string())
         .query(&mut conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("HSET resolution metadata".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("HSET resolution metadata: {e}")))?;
     let _: () = redis::cmd("EXPIRE")
         .arg(&resolution_key)
         .arg(CLAIM_TTL_SECS)
         .query(&mut conn)
-        .map_err(|_| crate::error::AgentBusError::Internal("EXPIRE resolution key".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("EXPIRE resolution key: {e}")))?;
 
     // Notify all participants via direct messages (best-effort).
     let state = get_arbitration_state(settings, resource)?;
@@ -1556,7 +1555,7 @@ pub fn release_claim(settings: &Settings, resource: &str, agent: &str) -> Result
     let initial_len = claims.len();
     claims.retain(|claim| claim.agent != agent);
     if claims.len() == initial_len {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("no active claim found for agent on resource")));
+        return Err(crate::error::AgentBusError::InvalidParams("no active claim found for agent on resource".to_string()));
     }
 
     recompute_claim_statuses(&mut claims);
@@ -1607,7 +1606,7 @@ pub fn channel_summary(settings: &Settings) -> Result<ChannelSummary> {
             .arg("COUNT")
             .arg(100)
             .query(&mut conn)
-            .map_err(|_| crate::error::AgentBusError::Internal("SCAN direct streams failed".to_string()))?;
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("SCAN direct streams failed: {e}")))?;
         direct_count += batch.len();
         cursor = next_cursor;
         if cursor == 0 {

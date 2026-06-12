@@ -98,7 +98,7 @@ impl From<agent_profile::AgentConfig> for CodexConfig {
 /// ```
 pub fn discover_codex() -> Result<CodexConfig> {
     let profile = CodexProfile;
-    let agent_config = profile.discover().map_err(|_| crate::error::AgentBusError::Internal("failed to read Codex config".to_string()))?;
+    let agent_config = profile.discover().map_err(|e| crate::error::AgentBusError::Internal(format!("failed to read Codex config: {e}")))?;
     Ok(CodexConfig::from(agent_config))
 }
 

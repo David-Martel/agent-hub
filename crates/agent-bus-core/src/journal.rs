@@ -81,7 +81,7 @@ pub fn export_journal(messages: &[Message], output_path: &Path) -> Result<usize>
     if let Some(parent) = output_path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).map_err(|_| crate::error::AgentBusError::Internal("failed to create journal directory".to_string()))?;
+        std::fs::create_dir_all(parent).map_err(|e| crate::error::AgentBusError::Internal(format!("failed to create journal directory: {e}")))?;
     }
 
     let existing = load_existing_ids(output_path);
@@ -98,11 +98,11 @@ pub fn export_journal(messages: &[Message], output_path: &Path) -> Result<usize>
         .create(true)
         .append(true)
         .open(output_path)
-        .map_err(|_| crate::error::AgentBusError::Internal("failed to open journal file".to_string()))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("failed to open journal file: {e}")))?;
 
     for msg in &new_msgs {
         let line = serde_json::to_string(msg).unwrap_or_default();
-        writeln!(file, "{line}").map_err(|_| crate::error::AgentBusError::Internal("failed to write journal entry".to_string()))?;
+        writeln!(file, "{line}").map_err(|e| crate::error::AgentBusError::Internal(format!("failed to write journal entry: {e}")))?;
     }
 
     maybe_deploy_protocol_doc(output_path);
