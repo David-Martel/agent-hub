@@ -10,9 +10,38 @@ use crate::settings::Settings;
 #[cfg(feature = "server-mode")]
 static SERVER_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+/// Bearer token for cross-machine server-mode requests, resolved once from
+/// [`Settings`] (env `AGENT_BUS_AUTH_TOKEN` → `config.json` → `None`).
+#[cfg(feature = "server-mode")]
+static SERVER_AUTH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+
+/// Record the configured auth token so server-mode requests can attach
+/// `Authorization: Bearer <token>`. Call once after settings are loaded and
+/// before any server-mode HTTP call. No-op if the HTTP client was already
+/// built.
+#[cfg(feature = "server-mode")]
+pub(crate) fn init_server_auth(settings: &Settings) {
+    let _ = SERVER_AUTH_TOKEN.set(settings.auth_token.clone());
+}
+
+#[cfg(not(feature = "server-mode"))]
+pub(crate) fn init_server_auth(_settings: &Settings) {}
+
 #[cfg(feature = "server-mode")]
 fn server_client() -> &'static reqwest::Client {
-    SERVER_CLIENT.get_or_init(reqwest::Client::new)
+    SERVER_CLIENT.get_or_init(|| {
+        let mut builder = reqwest::Client::builder();
+        if let Some(Some(token)) = SERVER_AUTH_TOKEN.get()
+            && let Ok(mut header) =
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+        {
+            header.set_sensitive(true);
+            let mut headers = reqwest::header::HeaderMap::new();
+            headers.insert(reqwest::header::AUTHORIZATION, header);
+            builder = builder.default_headers(headers);
+        }
+        builder.build().unwrap_or_else(|_| reqwest::Client::new())
+    })
 }
 
 #[cfg(feature = "server-mode")]
