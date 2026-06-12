@@ -2291,7 +2291,7 @@ pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
     let (pg_message_count, pg_presence_count) = count_both_postgres(settings);
 
     // Populate write-through metrics when PG is configured.
-    let (pg_writes_queued, pg_writes_completed, pg_batches, pg_write_errors) =
+    let (pg_writes_queued, pg_writes_completed, pg_batches, pg_write_errors, pg_dropped_writes) =
         if settings.database_url.is_some() {
             let m = pg_metrics();
             (
@@ -2299,9 +2299,11 @@ pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
                 Some(m.messages_written.load(Ordering::Relaxed)),
                 Some(m.batches_flushed.load(Ordering::Relaxed)),
                 Some(m.write_errors.load(Ordering::Relaxed)),
+                // F1: expose dropped-write count so operators see backfill debt.
+                Some(m.dropped_writes.load(Ordering::Relaxed)),
             )
         } else {
-            (None, None, None, None)
+            (None, None, None, None, None)
         };
 
     Health {
@@ -2321,6 +2323,7 @@ pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
         pg_writes_completed,
         pg_batches,
         pg_write_errors,
+        pg_dropped_writes,
     }
 }
 
@@ -2348,6 +2351,7 @@ pub fn health_error_fallback() -> Health {
         pg_writes_completed: None,
         pg_batches: None,
         pg_write_errors: None,
+        pg_dropped_writes: None,
     }
 }
 

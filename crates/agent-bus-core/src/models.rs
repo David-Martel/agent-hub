@@ -216,6 +216,12 @@ pub struct Health {
     /// Total write failures logged by the background `PgWriter` task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pg_write_errors: Option<u64>,
+    /// Total writes dropped because the circuit breaker was open at flush time.
+    ///
+    /// Non-zero values indicate messages written to Redis during a PG outage
+    /// that have not yet been backfilled.  Use `agent-bus sync` to replay them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pg_dropped_writes: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -651,6 +657,7 @@ mod tests {
             pg_writes_completed: None,
             pg_batches: None,
             pg_write_errors: None,
+            pg_dropped_writes: None,
         }
     }
 
@@ -685,6 +692,10 @@ mod tests {
         assert!(
             !obj.contains_key("pg_write_errors"),
             "pg_write_errors must be absent"
+        );
+        assert!(
+            !obj.contains_key("pg_dropped_writes"),
+            "pg_dropped_writes must be absent"
         );
 
         // Mandatory fields must be present.

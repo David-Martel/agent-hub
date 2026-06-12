@@ -86,9 +86,12 @@ pub fn output<T: Serialize + ?Sized>(data: &T, encoding: &Encoding) {
 pub fn output_message(msg: &Message, encoding: &Encoding) {
     match encoding {
         Encoding::Human => {
+            // F3: sanitize body before printing to guard against terminal-escape injections
+            // from NUL bytes or raw control characters in stored message bodies.
+            let safe_body = crate::validation::sanitize_for_human_display(&msg.body);
             println!(
                 "[{}] {} -> {} | {} | {} | {}",
-                msg.timestamp_utc, msg.from, msg.to, msg.topic, msg.priority, msg.body,
+                msg.timestamp_utc, msg.from, msg.to, msg.topic, msg.priority, safe_body,
             );
         }
         Encoding::Toon => {
@@ -505,6 +508,7 @@ mod tests {
             pg_writes_completed: None,
             pg_batches: None,
             pg_write_errors: None,
+            pg_dropped_writes: None,
         };
         let toon = format_health_toon(&h);
         assert_eq!(toon, "ok=true r=561 p=492 v=1.0");
@@ -529,6 +533,7 @@ mod tests {
             pg_writes_completed: None,
             pg_batches: None,
             pg_write_errors: None,
+            pg_dropped_writes: None,
         };
         let toon = format_health_toon(&h);
         assert_eq!(toon, "ok=false r=? p=? v=1.0");

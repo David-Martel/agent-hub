@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use axum::{
     Json, Router,
+    extract::DefaultBodyLimit,
     extract::rejection::JsonRejection,
     extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
@@ -196,6 +197,9 @@ pub(crate) async fn http_health_handler(
 ) -> impl IntoResponse {
     let pool = state.redis.clone();
     let pool_for_health = pool.clone();
+    // F5: capture the auth state before `state` is moved into the blocking task
+    // so we can decide whether to redact topology fields from the response.
+    let has_auth_token = state.settings.auth_token.is_some();
     let control = state.control_status.read().await.clone();
     let result =
         tokio::task::spawn_blocking(move || ops_health(&state.settings, Some(&pool_for_health)))
@@ -220,6 +224,14 @@ pub(crate) async fn http_health_handler(
             "maintenance".to_owned(),
             serde_json::to_value(&control).unwrap_or_default(),
         );
+
+        // F5: strip backend topology from unauthenticated health responses.
+        // When no auth token is configured, /health is public — do not disclose
+        // redis_url or database_url to potential attackers enumerating services.
+        if !has_auth_token {
+            map.remove("redis_url");
+            map.remove("database_url");
+        }
     }
 
     if enc.is_toon() {
@@ -3449,7 +3461,13 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         // Monitoring dashboard
         .route("/dashboard", get(http_dashboard_handler))
         .route("/dashboard/data", get(http_dashboard_data_handler))
-        .with_state(state);
+        .with_state(state)
+        // F2: enforce an explicit body limit that aligns with validation::MAX_BODY_LEN.
+        // 4 KiB of headroom covers JSON framing overhead for the largest payloads.
+        // Axum's default (2 MB) is undocumented; we set it explicitly here.
+        .layer(DefaultBodyLimit::max(
+            agent_bus_core::validation::MAX_BODY_LEN + 4096,
+        ));
 
     // Cross-machine access control: when a bearer token is configured, gate the
     // whole API behind it (except `/health`, kept open for liveness probes).
@@ -3515,6 +3533,7 @@ mod tests {
             pg_writes_completed: Some(99),
             pg_batches: Some(20),
             pg_write_errors: Some(1),
+            pg_dropped_writes: Some(0),
         }
     }
 
