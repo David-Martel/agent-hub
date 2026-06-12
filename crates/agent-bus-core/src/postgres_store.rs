@@ -60,6 +60,12 @@ pub struct PgWriteMetrics {
     pub batches_flushed: AtomicU64,
     /// Total write failures (one per failed `persist_*` call inside a batch).
     pub write_errors: AtomicU64,
+    /// Total writes dropped because the circuit breaker was open at flush time.
+    ///
+    /// This counter is a lower bound on the number of messages that may need
+    /// backfilling into `PostgreSQL` after a reconnect.  Use `agent-bus sync`
+    /// to replay the Redis stream into PG after an outage.
+    pub dropped_writes: AtomicU64,
 }
 
 impl PgWriteMetrics {
@@ -69,6 +75,7 @@ impl PgWriteMetrics {
             messages_written: AtomicU64::new(0),
             batches_flushed: AtomicU64::new(0),
             write_errors: AtomicU64::new(0),
+            dropped_writes: AtomicU64::new(0),
         }
     }
 }
@@ -1023,6 +1030,16 @@ pub fn spawn_pg_health_monitor(settings: Settings, interval_secs: u64) {
                     let (ok, _err, _ready) = probe_postgres(&settings);
                     if ok == Some(true) {
                         mark_pg_up();
+                        // F1: Warn with the accumulated write-error count so operators
+                        // know whether a backfill is needed.  Auto-backfill is not
+                        // possible here because this thread has no Redis handle; use
+                        // `agent-bus sync` to replay Redis messages into PostgreSQL.
+                        let write_errors = pg_metrics().write_errors.load(Ordering::Relaxed);
+                        tracing::warn!(
+                            "pg-health-monitor: PG reconnected after outage — \
+                             {write_errors} write error(s) occurred; \
+                             call 'agent-bus sync' to backfill any dropped messages"
+                        );
                         tracing::info!(
                             "pg-health-monitor: probe succeeded — circuit closed, writes resumed"
                         );
@@ -1239,23 +1256,34 @@ async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWr
 /// do not prevent remaining items from being processed.
 ///
 /// Increments [`PgWriteMetrics`] counters for written items, errors, and
-/// completed batch cycles.
+/// completed batch cycles.  When the circuit breaker is open at the time a
+/// write is attempted, `dropped_writes` is incremented to track backfill debt.
 fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>) {
     let metrics = pg_metrics();
     for req in batch.drain(..) {
         match req {
             PgWriteRequest::Message(msg) => {
-                if let Err(error) = persist_message_postgres(settings, &msg) {
+                let err = persist_message_postgres(settings, &msg);
+                if let Err(ref error) = err {
                     tracing::warn!("PgWriter: failed to persist message: {error:#}");
                     metrics.write_errors.fetch_add(1, Ordering::Relaxed);
+                    // F1: count writes dropped while the circuit breaker was open.
+                    if is_pg_circuit_open() {
+                        metrics.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                    }
                 } else {
                     metrics.messages_written.fetch_add(1, Ordering::Relaxed);
                 }
             }
             PgWriteRequest::Presence(presence) => {
-                if let Err(error) = persist_presence_postgres(settings, &presence) {
+                let err = persist_presence_postgres(settings, &presence);
+                if let Err(ref error) = err {
                     tracing::warn!("PgWriter: failed to persist presence: {error:#}");
                     metrics.write_errors.fetch_add(1, Ordering::Relaxed);
+                    // F1: count writes dropped while the circuit breaker was open.
+                    if is_pg_circuit_open() {
+                        metrics.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                    }
                 } else {
                     metrics.messages_written.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1892,5 +1920,35 @@ mod tests {
         // This test exists to verify the function's public visibility.
         // If this compiles, the function is accessible from outside the module.
         let _ = is_pg_circuit_open();
+    }
+
+    // -----------------------------------------------------------------------
+    // F1 — dropped_writes counter is present on PgWriteMetrics
+    // -----------------------------------------------------------------------
+
+    /// `PgWriteMetrics` must expose a `dropped_writes` counter.
+    #[test]
+    fn pg_metrics_has_dropped_writes_field() {
+        // The singleton must be readable without panicking.
+        let _count = pg_metrics().dropped_writes.load(Ordering::Relaxed);
+    }
+
+    /// `pg_metrics()` returns the same singleton; `dropped_writes` is shared
+    /// across all callers.
+    #[test]
+    fn pg_metrics_dropped_writes_is_stable_singleton() {
+        let a = std::ptr::from_ref::<PgWriteMetrics>(pg_metrics());
+        let b = std::ptr::from_ref::<PgWriteMetrics>(pg_metrics());
+        assert_eq!(a, b, "pg_metrics() must be a stable singleton");
+        // Both refs point to the same dropped_writes counter.
+        let before = pg_metrics().dropped_writes.load(Ordering::Relaxed);
+        pg_metrics().dropped_writes.fetch_add(1, Ordering::Relaxed);
+        let after = pg_metrics().dropped_writes.load(Ordering::Relaxed);
+        assert!(
+            after > before,
+            "dropped_writes must be atomically incrementable (before={before}, after={after})"
+        );
+        // Restore — decrement so we don't perturb other tests.
+        pg_metrics().dropped_writes.fetch_sub(1, Ordering::Relaxed);
     }
 }

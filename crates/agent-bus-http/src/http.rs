@@ -7,6 +7,7 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use axum::{
     Json, Router,
+    extract::DefaultBodyLimit,
     extract::rejection::JsonRejection,
     extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
@@ -153,6 +154,22 @@ fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) 
     )
 }
 
+/// Classify a core error from a blocking storage operation: input-validation
+/// failures (`InvalidParams` — NUL bytes, body/topic length, schema, empty
+/// fields) are CLIENT errors → 400; everything else (Redis/serialization/etc.)
+/// is a server fault → 500. Without this, validation that runs inside the
+/// `spawn_blocking` task (rather than the cheap up-front checks) wrongly
+/// returned 500 for bad client input.
+fn classify_core_error<E: Into<anyhow::Error>>(e: E) -> (StatusCode, Json<serde_json::Value>) {
+    let err = e.into();
+    if let Some(agent_bus_core::error::AgentBusError::InvalidParams(msg)) =
+        err.downcast_ref::<agent_bus_core::error::AgentBusError>()
+    {
+        return bad_request(msg.clone());
+    }
+    internal_error(err)
+}
+
 /// Map an Axum [`JsonRejection`] (deserialization failure) to an HTTP 400
 /// response so clients receive a consistent error code whether a field is
 /// missing from the payload or present but invalid.
@@ -196,6 +213,15 @@ pub(crate) async fn http_health_handler(
 ) -> impl IntoResponse {
     let pool = state.redis.clone();
     let pool_for_health = pool.clone();
+    // F5: /health is always unauthenticated (the auth middleware exempts it).
+    // The topology leak therefore matters exactly when the server is bound to a
+    // routable (non-loopback) interface, where any network party can read it —
+    // NOT based on whether a token is set (a token gates the OTHER routes, and a
+    // remote bind always has one anyway). Redact for exposed binds; keep the
+    // detail for loopback-only deployments. Captured before `state` moves into
+    // the blocking task below.
+    let bind_host = state.settings.server_host.trim().to_ascii_lowercase();
+    let exposed_bind = !(bind_host == "localhost" || bind_host == "127.0.0.1" || bind_host == "::1");
     let control = state.control_status.read().await.clone();
     let result =
         tokio::task::spawn_blocking(move || ops_health(&state.settings, Some(&pool_for_health)))
@@ -220,6 +246,12 @@ pub(crate) async fn http_health_handler(
             "maintenance".to_owned(),
             serde_json::to_value(&control).unwrap_or_default(),
         );
+
+        // F5: strip backend topology when the server is network-exposed (see above).
+        if exposed_bind {
+            map.remove("redis_url");
+            map.remove("database_url");
+        }
     }
 
     if enc.is_toon() {
@@ -382,7 +414,7 @@ pub(crate) async fn http_send_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok((
         StatusCode::OK,
@@ -473,7 +505,7 @@ pub(crate) async fn http_read_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     // Apply excerpt truncation when requested.
     if let Some(max_chars) = excerpt {
@@ -543,7 +575,7 @@ pub(crate) async fn http_ack_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
     let response = serde_json::json!({
         "ack_sent": true,
         "ack_message_id": posted.message.id,
@@ -616,7 +648,7 @@ pub(crate) async fn http_presence_set_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&presence).unwrap_or_default()))
 }
@@ -633,7 +665,7 @@ pub(crate) async fn http_presence_list_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     if enc.is_toon() {
         let lines: Vec<String> = results.iter().map(format_presence_toon).collect();
@@ -773,7 +805,7 @@ async fn http_presence_history_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }
@@ -1203,7 +1235,7 @@ async fn http_notifications_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(
         serde_json::to_value(&notifications).unwrap_or_default(),
@@ -1233,7 +1265,7 @@ async fn http_pending_acks_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&pending).unwrap_or_default()))
 }
@@ -1375,7 +1407,7 @@ pub(crate) async fn http_batch_read_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&result).unwrap_or_default()))
 }
@@ -1439,7 +1471,7 @@ pub(crate) async fn http_batch_ack_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     let acked_ids: Vec<String> = posted
         .into_iter()
@@ -1515,7 +1547,7 @@ async fn http_direct_send_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok((
         StatusCode::OK,
@@ -1550,7 +1582,7 @@ async fn http_direct_read_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&msgs).unwrap_or_default()))
 }
@@ -1591,7 +1623,7 @@ async fn http_create_group_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok((
         StatusCode::OK,
@@ -1659,7 +1691,7 @@ async fn http_group_send_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok((
         StatusCode::OK,
@@ -1691,7 +1723,7 @@ async fn http_group_read_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&msgs).unwrap_or_default()))
 }
@@ -1739,7 +1771,7 @@ async fn http_escalate_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok((
         StatusCode::OK,
@@ -1833,7 +1865,7 @@ async fn http_claim_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok((
         StatusCode::OK,
@@ -1873,7 +1905,7 @@ async fn http_renew_claim_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&claim).unwrap_or_default()))
 }
@@ -1906,7 +1938,7 @@ async fn http_release_claim_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&arbitration).unwrap_or_default()))
 }
@@ -1999,7 +2031,7 @@ async fn http_knock_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok((
         StatusCode::OK,
@@ -2042,7 +2074,7 @@ async fn http_resolve_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&arbitration).unwrap_or_default()))
 }
@@ -2090,7 +2122,7 @@ async fn http_inventory_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(result))
 }
@@ -2178,7 +2210,7 @@ async fn http_compact_context_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::Value::Array(result.messages)))
 }
@@ -2235,7 +2267,7 @@ async fn http_session_summary_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&summary).unwrap_or_default()))
 }
@@ -2275,7 +2307,7 @@ async fn http_thread_summary_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&summary).unwrap_or_default()))
 }
@@ -2326,7 +2358,7 @@ async fn http_compact_thread_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::json!({
         "messages": result.messages,
@@ -2370,7 +2402,7 @@ async fn http_orchestrator_summary_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&summary).unwrap_or_default()))
 }
@@ -2410,7 +2442,7 @@ async fn http_resource_events_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&events).unwrap_or_default()))
 }
@@ -2500,7 +2532,7 @@ async fn http_push_task_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&card).unwrap_or_default()))
 }
@@ -2531,7 +2563,7 @@ async fn http_peek_tasks_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     let count = cards.len();
     Ok(Json(
@@ -3025,7 +3057,7 @@ async fn http_subscribe_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok((
         StatusCode::CREATED,
@@ -3049,7 +3081,7 @@ async fn http_list_subscriptions_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     let count = subs.len();
     Ok(Json(serde_json::json!({
@@ -3077,7 +3109,7 @@ async fn http_delete_subscription_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::json!({
         "agent": params.agent,
@@ -3132,7 +3164,7 @@ async fn http_create_thread_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok((
         StatusCode::CREATED,
@@ -3150,7 +3182,7 @@ async fn http_list_threads_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     let count = threads.len();
     Ok(Json(serde_json::json!({
@@ -3174,7 +3206,7 @@ async fn http_get_thread_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     match thread {
         Some(t) => Ok(Json(serde_json::to_value(&t).unwrap_or_default())),
@@ -3208,7 +3240,7 @@ async fn http_join_thread_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&thread).unwrap_or_default()))
 }
@@ -3236,7 +3268,7 @@ async fn http_leave_thread_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&thread).unwrap_or_default()))
 }
@@ -3256,7 +3288,7 @@ async fn http_close_thread_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     Ok(Json(serde_json::to_value(&thread).unwrap_or_default()))
 }
@@ -3275,7 +3307,7 @@ async fn http_overdue_acks_handler(
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
-    .map_err(internal_error)?;
+    .map_err(classify_core_error)?;
 
     let count = overdue.len();
     Ok(Json(serde_json::json!({
@@ -3449,7 +3481,13 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         // Monitoring dashboard
         .route("/dashboard", get(http_dashboard_handler))
         .route("/dashboard/data", get(http_dashboard_data_handler))
-        .with_state(state);
+        .with_state(state)
+        // F2: enforce an explicit body limit that aligns with validation::MAX_BODY_LEN.
+        // 4 KiB of headroom covers JSON framing overhead for the largest payloads.
+        // Axum's default (2 MB) is undocumented; we set it explicitly here.
+        .layer(DefaultBodyLimit::max(
+            agent_bus_core::validation::MAX_BODY_LEN + 4096,
+        ));
 
     // Cross-machine access control: when a bearer token is configured, gate the
     // whole API behind it (except `/health`, kept open for liveness probes).
@@ -3515,6 +3553,7 @@ mod tests {
             pg_writes_completed: Some(99),
             pg_batches: Some(20),
             pg_write_errors: Some(1),
+            pg_dropped_writes: Some(0),
         }
     }
 

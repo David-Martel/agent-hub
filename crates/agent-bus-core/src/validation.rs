@@ -5,7 +5,10 @@ use crate::error::{AgentBusError, Result};
 
 pub const VALID_PRIORITIES: &[&str] = &["low", "normal", "high", "urgent"];
 pub const MAX_TOPIC_LEN: usize = 256;
-pub const MAX_BODY_LEN: usize = 10_485_760; // 10MB
+/// Maximum message body size (256 KB). Coordination messages are small;
+/// compact-context/session-summary are the largest legitimate payloads.
+/// Configurable via `AGENT_BUS_MAX_BODY_BYTES` env var at startup (max 1 MB).
+pub const MAX_BODY_LEN: usize = 262_144; // 256 KB
 
 /// # Errors
 /// Returns an error if `p` is not one of the valid priority values.
@@ -20,6 +23,47 @@ pub fn validate_priority(p: &str) -> Result<()> {
     }
 }
 
+/// Reject strings that contain NUL bytes (`\x00`).
+///
+/// NUL bytes are never valid in coordination-bus messages and can cause
+/// silent truncation in C-backed libraries (`PostgreSQL`, Redis C client).
+///
+/// # Errors
+///
+/// Returns an error if `val` contains a NUL byte.
+pub fn reject_nul_bytes(val: &str, name: &str) -> Result<()> {
+    if val.contains('\x00') {
+        Err(AgentBusError::InvalidParams(format!(
+            "{name} must not contain NUL bytes (\\x00)"
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+/// Replace NUL and other dangerous control characters in a string so that it
+/// is safe to display in a terminal without corrupting the output stream.
+///
+/// - `\x00` (NUL) → `<NUL>`
+/// - Other C0 control chars (except `\n` and `\t`) → `<0xXX>`
+/// - All other bytes are passed through unchanged.
+#[must_use]
+pub fn sanitize_for_human_display(s: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\x00' => out.push_str("<NUL>"),
+            '\n' | '\t' => out.push(ch),
+            c if c.is_control() && (c as u32) < 0x20 => {
+                let _ = write!(out, "<0x{:02X}>", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// # Errors
 /// Returns an error if `val` is empty or only whitespace.
 pub fn non_empty<'a>(val: &'a str, name: &str) -> Result<&'a str> {
@@ -31,6 +75,10 @@ pub fn non_empty<'a>(val: &'a str, name: &str) -> Result<&'a str> {
     } else if name == "body" && trimmed.len() > MAX_BODY_LEN {
         Err(AgentBusError::InvalidParams(format!("{name} exceeds maximum length of {MAX_BODY_LEN}")))
     } else {
+        // F3: Reject NUL bytes in topic and body fields.
+        if name == "topic" || name == "body" {
+            reject_nul_bytes(trimmed, name)?;
+        }
         Ok(trimmed)
     }
 }
@@ -178,6 +226,11 @@ fn auto_fit_finding(body: &str) -> String {
     if body.contains("FINDING:") || body.contains("FIX") || body.contains("COMPLETE") {
         return body.to_owned();
     }
+    // F4: Body did not satisfy 'finding' schema constraints — warn so operators notice.
+    tracing::warn!(
+        "auto_fit_schema: body did not satisfy 'finding' schema constraints; \
+         auto-fitted to comply — inspect the original body for correctness"
+    );
     // Detect severity from content keywords.
     let severity = if body.to_uppercase().contains("CRITICAL") {
         "CRITICAL"
@@ -199,6 +252,11 @@ fn auto_fit_benchmark(body: &str) -> String {
     if body.contains('=') {
         return body.to_owned();
     }
+    // F4: Body did not satisfy 'benchmark' schema constraints — warn so operators notice.
+    tracing::warn!(
+        "auto_fit_schema: body did not satisfy 'benchmark' schema constraints; \
+         auto-fitted to comply — inspect the original body for correctness"
+    );
     format!("summary={body}")
 }
 
@@ -560,5 +618,125 @@ mod tests {
             enforce_schema_for_transport("mcp", Some("bogus"), "chat"),
             Some("status")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // F2 — body size limit reduced to 256 KB
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn non_empty_body_rejects_over_256kb() {
+        let big_body = "x".repeat(MAX_BODY_LEN + 1);
+        assert!(
+            non_empty(&big_body, "body").is_err(),
+            "body exceeding 256 KB must be rejected"
+        );
+    }
+
+    #[test]
+    fn non_empty_body_accepts_exactly_256kb() {
+        let body = "x".repeat(MAX_BODY_LEN);
+        assert!(
+            non_empty(&body, "body").is_ok(),
+            "body of exactly 256 KB must be accepted"
+        );
+    }
+
+    #[test]
+    fn max_body_len_is_256_kb() {
+        assert_eq!(MAX_BODY_LEN, 262_144, "MAX_BODY_LEN must be 256 KB (262 144 bytes)");
+    }
+
+    // -----------------------------------------------------------------------
+    // F3 — NUL byte rejection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn reject_nul_bytes_rejects_nul_in_body() {
+        assert!(
+            reject_nul_bytes("hello\x00world", "body").is_err(),
+            "NUL byte in body must be rejected"
+        );
+    }
+
+    #[test]
+    fn reject_nul_bytes_accepts_clean_string() {
+        assert!(
+            reject_nul_bytes("hello world", "body").is_ok(),
+            "clean string must be accepted"
+        );
+    }
+
+    #[test]
+    fn non_empty_body_rejects_nul_byte() {
+        assert!(
+            non_empty("hello\x00world", "body").is_err(),
+            "non_empty must reject body containing NUL byte"
+        );
+    }
+
+    #[test]
+    fn non_empty_topic_rejects_nul_byte() {
+        assert!(
+            non_empty("top\x00ic", "topic").is_err(),
+            "non_empty must reject topic containing NUL byte"
+        );
+    }
+
+    #[test]
+    fn sanitize_for_human_display_replaces_nul() {
+        let result = sanitize_for_human_display("hello\x00world");
+        assert_eq!(result, "hello<NUL>world");
+    }
+
+    #[test]
+    fn sanitize_for_human_display_replaces_control_chars() {
+        let result = sanitize_for_human_display("a\x01b\x1fc");
+        assert!(result.contains("<0x01>"), "SOH must be replaced");
+        assert!(result.contains("<0x1F>"), "US must be replaced");
+    }
+
+    #[test]
+    fn sanitize_for_human_display_preserves_newline_and_tab() {
+        let result = sanitize_for_human_display("a\nb\tc");
+        assert_eq!(result, "a\nb\tc", "newline and tab must be preserved");
+    }
+
+    #[test]
+    fn sanitize_for_human_display_passthrough_normal_text() {
+        let s = "hello world 123 !@#";
+        assert_eq!(sanitize_for_human_display(s), s);
+    }
+
+    // -----------------------------------------------------------------------
+    // F4 — auto_fit_schema warns on non-conforming bodies
+    // (tracing::warn! is a side-effect; tests verify the fitted result is valid)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn auto_fit_finding_plain_body_produces_valid_finding() {
+        let result = auto_fit_finding("memory leak in allocator");
+        assert!(result.contains("FINDING:"), "must inject FINDING:");
+        assert!(result.contains("SEVERITY:"), "must inject SEVERITY:");
+        assert!(validate_message_schema(&result, Some("finding")).is_ok());
+    }
+
+    #[test]
+    fn auto_fit_benchmark_plain_body_produces_valid_benchmark() {
+        let result = auto_fit_benchmark("test run complete");
+        assert!(result.contains('='), "must inject key=value pair");
+        assert!(validate_message_schema(&result, Some("benchmark")).is_ok());
+    }
+
+    #[test]
+    fn auto_fit_finding_already_valid_no_mutation() {
+        let body = "FINDING: test\nSEVERITY: LOW";
+        assert_eq!(auto_fit_finding(body), body, "already-valid body must not be mutated");
+    }
+
+    #[test]
+    fn auto_fit_benchmark_already_valid_no_mutation() {
+        let body = "duration=5.2s msgs=100";
+        assert_eq!(auto_fit_benchmark(body), body, "already-valid body must not be mutated");
     }
 }

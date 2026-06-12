@@ -165,6 +165,7 @@ fn make_health() -> Health {
         pg_writes_completed: Some(4890),
         pg_batches: Some(48),
         pg_write_errors: Some(0),
+        pg_dropped_writes: Some(0),
     }
 }
 
