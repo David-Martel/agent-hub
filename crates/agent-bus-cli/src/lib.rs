@@ -134,8 +134,11 @@ async fn run(args: Vec<OsString>) -> Result<()> {
 
     let cli = Cli::parse_from(args);
     match cli.command {
-        Cmd::Health { ref encoding } => {
-            cmd_health(&settings, encoding);
+        Cmd::Health {
+            ref encoding,
+            require_storage,
+        } => {
+            cmd_health(&settings, encoding, require_storage);
         }
 
         Cmd::Send {
