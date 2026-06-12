@@ -342,19 +342,24 @@ pub fn validated_batch_send(
     let mut payloads: Vec<BatchSendPayload> = Vec::with_capacity(items.len());
 
     for (idx, item) in items.iter().enumerate() {
-        let ctx = || format!("item {idx}");
+        // Tag every per-item validation failure with its batch index *and* the
+        // underlying cause, so a rejected batch names which item failed and why
+        // (errors must be captured, never silently collapsed to "batch failed").
+        let at = |e: crate::error::AgentBusError| {
+            crate::error::AgentBusError::InvalidParams(format!("item {idx}: {e}"))
+        };
 
-        validate_priority(&item.priority)?;
-        let sender = non_empty(&item.sender, "sender")?;
-        let recipient = non_empty(&item.recipient, "recipient")?;
-        let topic = non_empty(&item.topic, "topic")?;
-        let body = non_empty(&item.body, "body")?;
+        validate_priority(&item.priority).map_err(at)?;
+        let sender = non_empty(&item.sender, "sender").map_err(at)?;
+        let recipient = non_empty(&item.recipient, "recipient").map_err(at)?;
+        let topic = non_empty(&item.topic, "topic").map_err(at)?;
+        let body = non_empty(&item.body, "body").map_err(at)?;
 
         let effective_schema =
             enforce_schema_for_transport(transport, item.schema.as_deref(), topic);
         let fitted_body = auto_fit_schema(body, effective_schema);
         validate_message_schema(&fitted_body, effective_schema)
-            .map_err(|_| crate::error::AgentBusError::Internal(format!("item {idx}: schema validation failed")))?;
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("item {idx}: schema validation failed: {e}")))?;
 
         let metadata = if item.metadata.is_null() {
             serde_json::Value::Object(serde_json::Map::new())

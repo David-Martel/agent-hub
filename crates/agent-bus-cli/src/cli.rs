@@ -77,6 +77,13 @@ pub(crate) enum Cmd {
     Health {
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
+        #[arg(
+            long,
+            help = "Exit non-zero when PostgreSQL/durable storage is unavailable \
+                    (storage_ready=false), not just when Redis is down. Use in CI/deploy \
+                    gates that require full durability."
+        )]
+        require_storage: bool,
     },
 
     /// Post a message to the coordination bus.

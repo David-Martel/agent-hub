@@ -152,13 +152,24 @@ pub(crate) struct CompactContextArgs<'a> {
 // Command implementations
 // ---------------------------------------------------------------------------
 
-pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding) {
+pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_storage: bool) {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
         let url = format!("{}/health", settings.server_url.as_deref().unwrap_or(""));
         match http_get(&url) {
             Ok(val) => {
                 output(&val, encoding);
+                // Never exit 0 on an unhealthy bus: a probe that prints ok=false
+                // but returns success is a silent failure for any
+                // `agent-bus health && <deploy>` gate.
+                let ok = val.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                let storage_ready = val
+                    .get("storage_ready")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if !ok || (require_storage && !storage_ready) {
+                    std::process::exit(1);
+                }
                 return;
             }
             Err(e) => {
@@ -173,6 +184,12 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding) {
         println!("{}", format_health_toon(&health));
     } else {
         output(&health, encoding);
+    }
+    // Exit code mirrors bus health so scripts/CI can gate on it. Redis-down
+    // (ok=false) always fails; PostgreSQL-down (storage_ready=false) fails only
+    // under --require-storage, preserving the degraded-live default.
+    if !health.ok || (require_storage && !health.storage_ready) {
+        std::process::exit(1);
     }
 }
 
