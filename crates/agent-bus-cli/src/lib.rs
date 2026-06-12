@@ -131,6 +131,9 @@ fn main_entry_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> 
 )]
 async fn run(args: Vec<OsString>) -> Result<()> {
     let (settings, guard) = bootstrap()?;
+    // Attach the bearer token (if any) to all server-mode HTTP requests before
+    // the first call routes through the shared client.
+    server_mode::init_server_auth(&settings);
 
     let cli = Cli::parse_from(args);
     match cli.command {
