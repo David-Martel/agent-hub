@@ -115,7 +115,13 @@ fn main_entry_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> 
                 .enable_all()
                 .build()
                 .context("failed to build Tokio runtime")?;
-            let _ = runtime; // Tokio runtime kept alive for any spawned tasks
+            // `run` is synchronous, but `bootstrap()` spawns the background
+            // PgWriter via `tokio::spawn`, which requires an entered runtime
+            // context. Hold the EnterGuard for the whole call (and keep
+            // `runtime` alive) so spawn/Handle::current work. Dropping the
+            // runtime here (the previous `let _ = runtime;`) panicked every
+            // command at startup with "no reactor running".
+            let _guard = runtime.enter();
             run(args)
         })
         .context("failed to spawn agent-bus main thread")?;
