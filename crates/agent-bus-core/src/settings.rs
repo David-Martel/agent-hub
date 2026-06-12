@@ -44,6 +44,12 @@ pub struct ConfigFile {
     /// Suppress non-fatal degraded-mode warnings that would otherwise mix into
     /// machine-readable stdout/stderr captures.
     pub machine_safe: Option<bool>,
+    /// Optional bearer token required by the HTTP server. When set, every HTTP
+    /// route except `/health` requires `Authorization: Bearer <token>`.
+    pub auth_token: Option<String>,
+    /// Opt-in to bind the HTTP server to a non-localhost interface for
+    /// cross-machine access. Requires `auth_token` to also be set.
+    pub allow_remote: Option<bool>,
 }
 
 /// Resolve the path for the config file.
@@ -213,6 +219,22 @@ pub struct Settings {
     /// Suppress non-fatal warnings that otherwise pollute machine-readable
     /// output captures during degraded-mode fallbacks.
     pub machine_safe: bool,
+    /// Bearer token required by the HTTP server for cross-machine access. When
+    /// `Some`, every HTTP route except `/health` requires
+    /// `Authorization: Bearer <token>`; `None` leaves the server open (the
+    /// historical localhost-only behaviour).
+    ///
+    /// Resolution order: `AGENT_BUS_AUTH_TOKEN` env var → `auth_token` in
+    /// config.json → `None` (no auth).
+    pub auth_token: Option<String>,
+    /// When `true`, the HTTP server may bind to a non-localhost `server_host`
+    /// (e.g. `0.0.0.0`) for cross-machine access. Binding off-localhost also
+    /// requires `auth_token` to be set; `validate()` rejects an unauthenticated
+    /// remote bind. Redis/PostgreSQL remain localhost-only regardless.
+    ///
+    /// Resolution order: `AGENT_BUS_ALLOW_REMOTE` env var → `allow_remote` in
+    /// config.json → `false`.
+    pub allow_remote: bool,
 }
 
 impl Settings {
@@ -316,6 +338,13 @@ impl Settings {
                 .filter(|s| !s.is_empty())
                 .or_else(|| cfg.server_url.filter(|s| !s.is_empty())),
             machine_safe: resolve_parse("AGENT_BUS_MACHINE_SAFE", cfg.machine_safe, false),
+            // Bearer token for the HTTP server: env var overrides config file;
+            // empty string treated as absent (no auth required).
+            auth_token: std::env::var("AGENT_BUS_AUTH_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .or_else(|| cfg.auth_token.filter(|s| !s.is_empty())),
+            allow_remote: resolve_parse("AGENT_BUS_ALLOW_REMOTE", cfg.allow_remote, false),
         }
     }
 
@@ -343,10 +372,23 @@ impl Settings {
             validate_localhost_url(db_url, "AGENT_BUS_DATABASE_URL")?;
         }
         if !is_localhost(&self.server_host) {
-            return Err(crate::error::AgentBusError::InvalidParams(format!(
-                "AGENT_BUS_SERVER_HOST must be localhost or 127.0.0.1, got '{}'",
-                self.server_host
-            )));
+            // Off-localhost binding is opt-in (cross-machine access) and may
+            // never be unauthenticated.
+            if !self.allow_remote {
+                return Err(crate::error::AgentBusError::InvalidParams(format!(
+                    "AGENT_BUS_SERVER_HOST '{}' is not localhost. Set \
+                     AGENT_BUS_ALLOW_REMOTE=true to bind the HTTP server to a routable \
+                     interface for cross-machine access.",
+                    self.server_host
+                )));
+            }
+            if self.auth_token.is_none() {
+                return Err(crate::error::AgentBusError::InvalidParams(format!(
+                    "refusing to expose the bus on non-localhost interface '{}' without \
+                     authentication: set AGENT_BUS_AUTH_TOKEN",
+                    self.server_host
+                )));
+            }
         }
         validate_identifier(&self.stream_key, "AGENT_BUS_STREAM_KEY")?;
         validate_identifier(&self.channel_key, "AGENT_BUS_CHANNEL")?;
@@ -541,6 +583,28 @@ mod tests {
         let mut s = Settings::from_env();
         s.server_host = "0.0.0.0".to_owned();
         assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_rejects_remote_bind_without_auth_token() {
+        let mut s = Settings::from_env();
+        s.server_host = "0.0.0.0".to_owned();
+        s.allow_remote = true;
+        s.auth_token = None;
+        // allow_remote alone is not enough — an unauthenticated remote bind
+        // must be refused.
+        assert!(s.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_remote_bind_with_allow_and_token() {
+        let mut s = Settings::from_env();
+        s.redis_url = "redis://localhost:6380/0".to_owned();
+        s.database_url = Some("postgresql://postgres@localhost:5432/db".to_owned());
+        s.server_host = "0.0.0.0".to_owned();
+        s.allow_remote = true;
+        s.auth_token = Some("secret-token".to_owned());
+        assert!(s.validate().is_ok());
     }
 
     #[test]

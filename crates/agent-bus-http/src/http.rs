@@ -8,9 +8,11 @@ use anyhow::{Context as _, Result};
 use axum::{
     Json, Router,
     extract::rejection::JsonRejection,
-    extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    extract::{Path, Query, Request, State},
+    http::{HeaderMap, StatusCode, header},
+    middleware::Next,
     response::IntoResponse,
+    response::Response,
     response::sse::{Event, Sse},
     routing::{get, post, put},
 };
@@ -3288,6 +3290,47 @@ async fn http_overdue_acks_handler(
 
 // ---------------------------------------------------------------------------
 
+/// Constant-time byte comparison so bearer-token validation does not leak the
+/// token length-prefix via early-return timing.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Bearer-token gate for the HTTP API. `/health` is exempt so liveness probes
+/// and monitoring can run unauthenticated; every other route requires a
+/// matching `Authorization: Bearer <token>` header or gets `401 Unauthorized`.
+async fn require_bearer_auth(
+    State(expected): State<Arc<String>>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if request.uri().path() == "/health" {
+        return next.run(request).await;
+    }
+    let provided = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    match provided {
+        Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
+            next.run(request).await
+        }
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            "unauthorized: missing or invalid bearer token\n",
+        )
+            .into_response(),
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "route registration table is large but flat — splitting it would hurt readability"
@@ -3309,6 +3352,8 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         shutdown_signal: Arc::clone(&shutdown_signal),
     };
     spawn_agent_notification_bridge(&state);
+    // Capture before `state` is moved into the router.
+    let auth_token = state.settings.auth_token.clone();
     let app = Router::new()
         .route("/mcp", post(handle_mcp_http).get(handle_mcp_sse))
         .route("/health", get(http_health_handler))
@@ -3409,6 +3454,25 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         .route("/dashboard", get(http_dashboard_handler))
         .route("/dashboard/data", get(http_dashboard_data_handler))
         .with_state(state);
+
+    // Cross-machine access control: when a bearer token is configured, gate the
+    // whole API behind it (except `/health`, kept open for liveness probes).
+    // Without a token the server stays open — the historical localhost default.
+    let app = if let Some(token) = auth_token {
+        tracing::info!("HTTP server: bearer-token auth ENABLED");
+        app.layer(axum::middleware::from_fn_with_state(
+            Arc::new(token),
+            require_bearer_auth,
+        ))
+    } else {
+        if bind_host != "localhost" && bind_host != "127.0.0.1" && bind_host != "::1" {
+            tracing::warn!(
+                "HTTP server bound to {bind_host} with NO auth token \
+                 (AGENT_BUS_AUTH_TOKEN unset) — exposed to the network unauthenticated"
+            );
+        }
+        app
+    };
 
     let addr = format!("{bind_host}:{port}");
     tracing::info!("HTTP server listening on {addr}");
