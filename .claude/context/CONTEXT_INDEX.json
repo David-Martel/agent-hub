@@ -1,0 +1,23 @@
+{
+  "contexts": [
+    {
+      "id": "ctx-agent-bus-20260612-1828",
+      "file": "agent-bus-context-2026-06-12.md",
+      "created": "2026-06-12T22:28:16Z",
+      "project": "agent-bus",
+      "git_branch": "main",
+      "git_commit": "356acdc",
+      "agents_involved": ["main"],
+      "summary": "Synced local repo with origin/main (FF 427d2ab->356acdc, 7 commits); stash/pull/pop preserved uncommitted WIP; resolved 3 merge conflicts favoring upstream; workspace compiles clean. WIP intentionally uncommitted."
+    },
+    {
+      "id": "ctx-agent-bus-refactor-20260325",
+      "file": "agent-bus-refactor-2026-03-25.md",
+      "created": "2026-03-25T00:00:00Z",
+      "project": "agent-bus",
+      "agents_involved": [],
+      "summary": "Earlier structural refactor context (crate split planning)."
+    }
+  ],
+  "latest": "ctx-agent-bus-20260612-1828"
+}

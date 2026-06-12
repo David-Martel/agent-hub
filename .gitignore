@@ -32,9 +32,12 @@ Thumbs.db
 .DS_Store
 
 # Local agent state / publish hygiene
-.claude/
-.codex/
-.serena/
+# Agent config, context checkpoints, and plans ARE tracked (portable across clones).
+# Only genuinely machine-local / secret agent artifacts stay ignored:
+.claude/worktrees/
+.claude/settings.local.json
+.codex/sessions/
+.serena/cache/
 build/
 *.sqlite
 *.sqlite-shm
