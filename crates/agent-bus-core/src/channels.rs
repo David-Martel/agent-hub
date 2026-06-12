@@ -666,6 +666,25 @@ fn xadd_to_stream(
     priority: &str,
     metadata: &serde_json::Value,
 ) -> Result<Message> {
+    // Defense in depth: every channel path (direct / group / knock / escalate /
+    // arbitrate) funnels through here, so enforce the SAME NUL/length limits as
+    // the main send path. Without this, those paths bypassed the F2/F3 checks
+    // that live in `validation::non_empty` (which the main path uses but the
+    // channel helpers' inline `is_empty()` checks do not).
+    crate::validation::reject_nul_bytes(topic, "topic")?;
+    crate::validation::reject_nul_bytes(body, "body")?;
+    if topic.len() > crate::validation::MAX_TOPIC_LEN {
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "topic exceeds maximum length of {}",
+            crate::validation::MAX_TOPIC_LEN
+        )));
+    }
+    if body.len() > crate::validation::MAX_BODY_LEN {
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "body exceeds maximum length of {}",
+            crate::validation::MAX_BODY_LEN
+        )));
+    }
     let id = Uuid::now_v7().to_string();
     let ts = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
     let tags_json = serde_json::to_string(tags).unwrap_or_else(|_| "[]".to_owned());
