@@ -113,7 +113,6 @@ impl ServerHandler for AgentBusMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_bus_core::mcp_dispatch::tool_definitions;
     use agent_bus_core::redis_bus::notification_cursor_key;
 
     /// Helper: create a dispatch instance for tests that do not need Redis/PG.

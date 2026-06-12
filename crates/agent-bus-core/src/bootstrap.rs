@@ -30,17 +30,16 @@ impl BootstrapGuard {
 /// # Errors
 /// Returns an error if settings validation fails or tracing fails to initialize.
 pub fn bootstrap() -> Result<(Settings, BootstrapGuard)> {
-    tracing_subscriber::fmt()
+    let _ = tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive(tracing::Level::WARN.into()),
         )
         .with_writer(std::io::stderr)
-        .try_init()
-        .ok(); // Ignore if it's already initialized by another module/test
+        .try_init(); // Ignore if it's already initialized by another module/test
 
     let settings = Settings::from_env();
-    settings.validate().map_err(|_| crate::error::AgentBusError::Internal("Settings validation failed".to_string()))?;
+    settings.validate().map_err(|e| crate::error::AgentBusError::Internal(format!("Settings validation failed: {e}")))?;
 
     let (writer, pg_handle) = PgWriter::spawn(settings.clone());
     let _ = crate::init_pg_writer(writer);

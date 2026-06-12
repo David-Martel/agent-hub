@@ -137,10 +137,6 @@ fn write_guard_response(
 }
 
 /// Map an `anyhow::Error` to an HTTP 500 response with a JSON body.
-#[expect(
-    clippy::needless_pass_by_value,
-    reason = "used as map_err(internal_error) — fn pointer requires by-value"
-)]
 fn internal_error<E: Into<anyhow::Error>>(e: E) -> (StatusCode, Json<serde_json::Value>) {
     let err = e.into();
     (

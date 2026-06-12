@@ -115,7 +115,8 @@ fn main_entry_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> 
                 .enable_all()
                 .build()
                 .context("failed to build Tokio runtime")?;
-            runtime.block_on(run(args))
+            let _ = runtime; // Tokio runtime kept alive for any spawned tasks
+            run(args)
         })
         .context("failed to spawn agent-bus main thread")?;
 
@@ -129,7 +130,7 @@ fn main_entry_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> 
     clippy::too_many_lines,
     reason = "main command dispatch — extracting further would obscure flow"
 )]
-async fn run(args: Vec<OsString>) -> Result<()> {
+fn run(args: Vec<OsString>) -> Result<()> {
     let (settings, guard) = bootstrap()?;
     // Attach the bearer token (if any) to all server-mode HTTP requests before
     // the first call routes through the shared client.

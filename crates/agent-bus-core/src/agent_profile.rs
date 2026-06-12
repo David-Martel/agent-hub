@@ -355,7 +355,7 @@ pub fn run_agent_sync(
 ) -> Result<(AgentSyncResult, Vec<NormalizedFinding>)> {
     let config = profile
         .discover()
-        .map_err(|_| crate::error::AgentBusError::Internal(format!("failed to discover {} config", profile.name())))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("failed to discover {} config: {e}", profile.name())))?;
 
     let agent_id = config.effective_agent_id(profile.default_agent_id());
 
@@ -367,7 +367,7 @@ pub fn run_agent_sync(
         limit,
         true,
     )
-    .map_err(|_| crate::error::AgentBusError::Internal(format!("failed to read messages for agent {agent_id}")))?;
+    .map_err(|e| crate::error::AgentBusError::Internal(format!("failed to read messages for agent {agent_id}: {e}")))?;
 
     let findings = normalize_findings(&messages);
 
@@ -400,7 +400,7 @@ pub fn run_agent_sync(
 pub(crate) fn agent_config_path(subdir: &str, filename: &str) -> Result<PathBuf> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
-        .map_err(|_| crate::error::AgentBusError::Internal("cannot determine home directory (neither USERPROFILE nor HOME set)".to_string()))?;
+        .map_err(|_e| crate::error::AgentBusError::Internal("cannot determine home directory (neither USERPROFILE nor HOME set)".to_string()))?;
     let mut path = PathBuf::from(home);
     if !subdir.is_empty() {
         path.push(subdir);

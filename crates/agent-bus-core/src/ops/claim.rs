@@ -29,7 +29,7 @@ pub fn parse_resource_scope(scope: &str) -> Result<ResourceScope> {
     match scope {
         "repo" => Ok(ResourceScope::Repo),
         "machine" => Ok(ResourceScope::Machine),
-        other => return Err(crate::error::AgentBusError::InvalidParams(format!("invalid scope '{other}'; expected repo|machine"))),
+        other => Err(crate::error::AgentBusError::InvalidParams(format!("invalid scope '{other}'; expected repo|machine"))),
     }
 }
 
@@ -45,7 +45,7 @@ pub fn parse_lease_mode(mode: &str) -> Result<ResourceLeaseMode> {
         "shared" => Ok(ResourceLeaseMode::Shared),
         "shared_namespaced" => Ok(ResourceLeaseMode::SharedNamespaced),
         "exclusive" => Ok(ResourceLeaseMode::Exclusive),
-        other => return Err(crate::error::AgentBusError::InvalidParams(format!(
+        other => Err(crate::error::AgentBusError::InvalidParams(format!(
             "invalid lease mode '{other}'; expected shared|shared_namespaced|exclusive"
         ))),
     }
@@ -241,7 +241,7 @@ pub fn list_claims(
             "granted" => Ok(ClaimStatus::Granted),
             "contested" => Ok(ClaimStatus::Contested),
             "review_assigned" => Ok(ClaimStatus::ReviewAssigned),
-            other => return Err(crate::error::AgentBusError::InvalidParams(format!(
+            other => Err(crate::error::AgentBusError::InvalidParams(format!(
                 "unknown claim status '{other}'; expected pending|granted|contested|review_assigned"
             ))),
         })

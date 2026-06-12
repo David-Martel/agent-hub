@@ -4,11 +4,11 @@ use thiserror::Error;
 /// where applicable.
 #[derive(Error, Debug)]
 pub enum AgentBusError {
-    /// Maps to MCP InvalidParams (-32602): Schema mismatches, empty fields, bad priorities
+    /// Maps to MCP `InvalidParams` (-32602): Schema mismatches, empty fields, bad priorities
     #[error("Invalid parameters: {0}")]
     InvalidParams(String),
 
-    /// Maps to MCP MethodNotFound (-32601) or ResourceNotFound: e.g. thread or channel does not exist
+    /// Maps to MCP `MethodNotFound` (-32601) or `ResourceNotFound`: e.g. thread or channel does not exist
     #[error("Not found: {0}")]
     NotFound(String),
 

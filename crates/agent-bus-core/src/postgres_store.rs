@@ -133,9 +133,9 @@ fn mark_pg_up() {
 /// ```
 fn with_pg_retry<T>(mut operation: impl FnMut() -> Result<T>) -> Result<T> {
     if is_pg_circuit_open() {
-        return Err(crate::error::AgentBusError::Internal(format!(
-            "PostgreSQL circuit breaker open — skipping retry"
-        )));
+        return Err(crate::error::AgentBusError::Internal(
+            "PostgreSQL circuit breaker open — skipping retry".to_string()
+        ));
     }
 
     let mut last_error: Option<crate::error::AgentBusError> = None;
@@ -161,7 +161,7 @@ fn with_pg_retry<T>(mut operation: impl FnMut() -> Result<T>) -> Result<T> {
         }
     }
     mark_pg_down();
-    Err(last_error.unwrap_or_else(|| crate::error::AgentBusError::Internal(format!("PostgreSQL operation failed after retries"))))
+    Err(last_error.unwrap_or_else(|| crate::error::AgentBusError::Internal("PostgreSQL operation failed after retries".to_string())))
 }
 
 /// # Errors
@@ -185,7 +185,7 @@ pub fn connect_postgres(settings: &Settings) -> Result<Option<PgClient>> {
     let Some(database_url) = settings.database_url.as_deref() else {
         return Ok(None);
     };
-    let client = PgClient::connect(database_url, NoTls).map_err(|_| crate::error::AgentBusError::Internal("PostgreSQL connection failed".to_string()))?;
+    let client = PgClient::connect(database_url, NoTls).map_err(|e| crate::error::AgentBusError::Internal(format!("PostgreSQL connection failed: {e}")))?;
     Ok(Some(client))
 }
 
@@ -222,7 +222,7 @@ fn get_pg_client(settings: &Settings) -> Result<Option<PgClient>> {
 
     let mut guard = shared_pg_client()
         .lock()
-        .map_err(|_e| crate::error::AgentBusError::Internal(format!("PostgreSQL shared-client mutex poisoned")))?;
+        .map_err(|_e| crate::error::AgentBusError::Internal("PostgreSQL shared-client mutex poisoned".to_string()))?;
 
     // Try to reuse the existing connection with a lightweight health ping.
     if let Some(ref mut client) = *guard {
@@ -237,7 +237,7 @@ fn get_pg_client(settings: &Settings) -> Result<Option<PgClient>> {
     // Open a new connection and hand it directly to the caller (not back into
     // the slot) so we do not hold the mutex during connect.
     drop(guard); // release lock before the blocking TCP handshake
-    let client = PgClient::connect(database_url, NoTls).map_err(|_| crate::error::AgentBusError::Internal("PostgreSQL connection failed".to_string()))?;
+    let client = PgClient::connect(database_url, NoTls).map_err(|e| crate::error::AgentBusError::Internal(format!("PostgreSQL connection failed: {e}")))?;
     Ok(Some(client))
 }
 
@@ -273,8 +273,7 @@ pub fn storage_ready(settings: &Settings) -> bool {
     };
     storage_cache()
         .lock()
-        .map(|guard| guard.contains(&cache_key))
-        .unwrap_or(false)
+        .is_ok_and(|guard| guard.contains(&cache_key))
 }
 
 /// # Errors
@@ -362,7 +361,7 @@ pub fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings) -> Re
 /// Returns an error if the timestamp string is not valid RFC 3339.
 pub fn parse_timestamp_utc(timestamp_utc: &str) -> Result<DateTime<Utc>> {
     let parsed = DateTime::parse_from_rfc3339(&timestamp_utc.replace('Z', "+00:00"))
-        .map_err(|_| crate::error::AgentBusError::Internal(format!("invalid timestamp_utc: {timestamp_utc}")))?;
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("invalid timestamp_utc {timestamp_utc}: {e}")))?;
     Ok(parsed.with_timezone(&Utc))
 }
 
@@ -377,7 +376,7 @@ pub fn persist_message_postgres(settings: &Settings, message: &Message) -> Resul
             ensure_postgres_storage(&mut client, settings)?;
 
             let message_id = Uuid::parse_str(&message.id)
-                .map_err(|_| crate::error::AgentBusError::Internal(format!("invalid message id: {}", message.id)))?;
+                .map_err(|e| crate::error::AgentBusError::Internal(format!("invalid message id {}: {e}", message.id)))?;
             let timestamp_utc = parse_timestamp_utc(&message.timestamp_utc)?;
             let tags = serde_json::Value::Array(
                 message
@@ -441,7 +440,7 @@ pub fn persist_presence_postgres(settings: &Settings, presence: &Presence) -> Re
                     .collect(),
             );
             let ttl_seconds =
-                i64::try_from(presence.ttl_seconds).map_err(|_| crate::error::AgentBusError::Internal("ttl_seconds exceeds i64".to_string()))?;
+                i64::try_from(presence.ttl_seconds).map_err(|e| crate::error::AgentBusError::Internal(format!("ttl_seconds exceeds i64: {e}")))?;
 
             client.execute(
                 &format!(
@@ -640,8 +639,8 @@ pub fn list_messages_postgres_with_filters(
         };
         ensure_postgres_storage(&mut client, settings)?;
 
-        let since_minutes = i64::try_from(since_minutes).map_err(|_| crate::error::AgentBusError::Internal("since_minutes exceeds i64".to_string()))?;
-        let limit = i64::try_from(limit).map_err(|_| crate::error::AgentBusError::Internal("limit exceeds i64".to_string()))?;
+        let since_minutes = i64::try_from(since_minutes).map_err(|e| crate::error::AgentBusError::Internal(format!("since_minutes exceeds i64: {e}")))?;
+        let limit = i64::try_from(limit).map_err(|e| crate::error::AgentBusError::Internal(format!("limit exceeds i64: {e}")))?;
         let agent_filter = agent.map(str::to_owned);
         let sender_filter = from_agent.map(str::to_owned);
         let thread_filter = thread_id.map(str::to_owned);
@@ -794,15 +793,15 @@ pub fn query_messages_by_tags(
     limit: usize,
 ) -> Result<Vec<Message>> {
     if tags.is_empty() && thread_id.is_none() {
-        return Err(crate::error::AgentBusError::Internal(format!(
-            "query_messages_by_tags requires at least one tag or a thread_id"
-        )));
+        return Err(crate::error::AgentBusError::Internal(
+            "query_messages_by_tags requires at least one tag or a thread_id".to_string()
+        ));
     }
 
     if is_pg_circuit_open() {
-        return Err(crate::error::AgentBusError::Internal(format!(
-            "PostgreSQL circuit breaker open — skipping tag query"
-        )));
+        return Err(crate::error::AgentBusError::Internal(
+            "PostgreSQL circuit breaker open — skipping tag query".to_string()
+        ));
     }
 
     // Delegate to the full filter function with agent/sender set to None
@@ -864,7 +863,7 @@ pub fn prune_old_messages(settings: &Settings, older_than_days: u64) -> Result<u
             return Ok(0);
         };
         ensure_postgres_storage(&mut client, settings)?;
-        let days = i64::try_from(older_than_days).map_err(|_| crate::error::AgentBusError::Internal("days exceeds i64".to_string()))?;
+        let days = i64::try_from(older_than_days).map_err(|e| crate::error::AgentBusError::Internal(format!("days exceeds i64: {e}")))?;
         let rows = client.execute(
             &format!(
                 "delete from {} where timestamp_utc < now() - ($1::bigint * interval '1 day')",
@@ -890,7 +889,7 @@ pub fn prune_old_presence(settings: &Settings, older_than_days: u64) -> Result<u
             return Ok(0);
         };
         ensure_postgres_storage(&mut client, settings)?;
-        let days = i64::try_from(older_than_days).map_err(|_| crate::error::AgentBusError::Internal("days exceeds i64".to_string()))?;
+        let days = i64::try_from(older_than_days).map_err(|e| crate::error::AgentBusError::Internal(format!("days exceeds i64: {e}")))?;
         let rows = client.execute(
             &format!(
                 "delete from {} where timestamp_utc < now() - ($1::bigint * interval '1 day')",
@@ -942,8 +941,8 @@ pub fn list_presence_history_postgres(
             return Ok(Vec::new());
         };
         ensure_postgres_storage(&mut client, settings)?;
-        let since_minutes = i64::try_from(since_minutes).map_err(|_| crate::error::AgentBusError::Internal("since_minutes exceeds i64".to_string()))?;
-        let limit = i64::try_from(limit).map_err(|_| crate::error::AgentBusError::Internal("limit exceeds i64".to_string()))?;
+        let since_minutes = i64::try_from(since_minutes).map_err(|e| crate::error::AgentBusError::Internal(format!("since_minutes exceeds i64: {e}")))?;
+        let limit = i64::try_from(limit).map_err(|e| crate::error::AgentBusError::Internal(format!("limit exceeds i64: {e}")))?;
         let agent_filter = agent.map(str::to_owned);
         let rows = client.query(
             &format!(
@@ -1564,7 +1563,7 @@ mod tests {
         let result: Result<&str> = with_pg_retry(|| {
             attempt += 1;
             if attempt == 1 {
-                Err(crate::error::AgentBusError::Internal(format!("transient error")))
+                Err(crate::error::AgentBusError::Internal("transient error".to_string()))
             } else {
                 Ok("done")
             }
