@@ -11,7 +11,8 @@ param(
     [switch]$DisableSccache,
     [switch]$DisableNextest,
     [string]$TargetDir,
-    [string]$TargetNamespace
+    [string]$TargetNamespace,
+    [switch]$DryRun
 )
 
 Set-StrictMode -Version Latest
@@ -35,6 +36,41 @@ if (-not (Test-Path $commonBuildScript)) {
 }
 . $commonBuildScript
 
+$resolvedTargetDir = Resolve-AgentBusTargetDir -RepoRoot $repoRoot -ExplicitTargetDir $TargetDir -ExplicitNamespace $TargetNamespace
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Build orchestration plan:" -ForegroundColor Cyan
+    Write-Host "  - Workspace manifest: $workspaceManifest"
+    Write-Host "  - Target dir: $resolvedTargetDir"
+    Write-Host "  - Sccache preference: $(-not $DisableSccache)"
+    Write-Host "  - Nextest preference: $(-not $DisableNextest)"
+    if (-not $SkipEnvironmentCheck) {
+        Write-Host "  - Check Rust build environment$(if ($DetailedEnvironment) { ' (detailed)' } else { '' })"
+    }
+    if (-not $SkipFormat) {
+        Write-Host "  - Run: cargo fmt --manifest-path $workspaceManifest --all --check"
+    }
+    if (-not $SkipClippy) {
+        Write-Host "  - Run: cargo clippy --manifest-path $workspaceManifest --workspace --all-targets -- -D warnings"
+    }
+    if (-not $SkipUnitTests) {
+        Write-Host "  - Run unit/bin tests across workspace"
+    }
+    if (-not $SkipIntegrationTests) {
+        Write-Host "  - Run serial integration tests: http_integration_test, integration_test, channel_integration_test"
+    }
+    if ($FastRelease) {
+        Write-Host "  - Run: cargo build --profile fast-release --workspace --bins"
+    }
+    elseif ($Release) {
+        Write-Host "  - Run: cargo build --release --workspace --bins"
+    }
+    if (-not $SkipSmoke) {
+        Write-Host "  - Run local functional smoke through: $validateScript"
+    }
+    Write-Host "  No CargoTools environment, target directory, sccache server, binaries, or smoke services were changed."
+    exit 0
+}
+
 try {
     Import-Module CargoTools -ErrorAction Stop
     $null = Initialize-CargoEnv
@@ -47,7 +83,6 @@ catch {
     Write-Warning "CargoTools module unavailable; continuing with plain cargo environment."
 }
 
-$resolvedTargetDir = Resolve-AgentBusTargetDir -RepoRoot $repoRoot -ExplicitTargetDir $TargetDir -ExplicitNamespace $TargetNamespace
 $buildEnvState = Use-AgentBusRustBuildEnv `
     -RepoRoot $repoRoot `
     -TargetDir $resolvedTargetDir `

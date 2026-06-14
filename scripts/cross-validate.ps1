@@ -10,12 +10,14 @@
 #   pwsh -NoLogo -NoProfile -File scripts/cross-validate.ps1
 #   pwsh -NoLogo -NoProfile -File scripts/cross-validate.ps1 -Musl
 #   pwsh -NoLogo -NoProfile -File scripts/cross-validate.ps1 -Strict   # fail if Docker absent
+#   pwsh -NoLogo -NoProfile -File scripts/cross-validate.ps1 -DryRun
 
 [CmdletBinding()]
 param(
     [switch]$Musl,
     [string]$Tag = "agent-bus-linux-validate",
-    [switch]$Strict
+    [switch]$Strict,
+    [switch]$DryRun
 )
 
 Set-StrictMode -Version Latest
@@ -27,6 +29,18 @@ $dockerfile = Join-Path $repoRoot "docker/Dockerfile.linux"
 if (-not (Test-Path $dockerfile)) {
     Write-Error "Dockerfile not found at $dockerfile"
     exit 1
+}
+
+$buildArgs = @("build", "-f", $dockerfile, "-t", $Tag)
+if ($Musl) {
+    $buildArgs += @("--target", "musl")
+}
+$buildArgs += $repoRoot
+
+Write-Host "==> docker $($buildArgs -join ' ')"
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Docker cross-validation command was not executed."
+    exit 0
 }
 
 $docker = Get-Command docker -ErrorAction SilentlyContinue
@@ -52,13 +66,6 @@ if ($LASTEXITCODE -ne 0) {
     exit 0
 }
 
-$buildArgs = @("build", "-f", $dockerfile, "-t", $Tag)
-if ($Musl) {
-    $buildArgs += @("--target", "musl")
-}
-$buildArgs += $repoRoot
-
-Write-Host "==> docker $($buildArgs -join ' ')"
 & docker @buildArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Linux Docker build/test validation failed (exit $LASTEXITCODE)."

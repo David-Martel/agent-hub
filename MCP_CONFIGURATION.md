@@ -94,6 +94,10 @@ Install local client entries with:
 
 `pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1`
 
+Preview client changes before writing configs with:
+
+`pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1 -DryRun`
+
 Validate installed client entries without editing them with:
 
 `pwsh -NoLogo -NoProfile -File scripts\validate-agent-client-configs.ps1`
@@ -121,6 +125,12 @@ stable once a client is configured so prompts and habits do not drift.
 2. `set_presence`
 3. `list_presence`
 4. `list_messages`
+
+## HTTP support page
+
+The long-running HTTP service serves `GET /support` from the binary. The page is
+self-contained for offline recovery and documents health probes, IPv4/IPv6
+loopback behavior, service restart commands, and remote-bearer-token rules.
 
 ## Prompt snippet
 

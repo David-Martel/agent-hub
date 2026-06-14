@@ -1,9 +1,9 @@
 # Agent Bus - Active Roadmap
 
 Structural execution plan:
-- See [`agents.TODO.md`](./agents.TODO.md) for the canonical completion plan for the remaining package/crate refactor work.
-- Code-grounded status snapshot: [`docs/current-status-2026-04-03.md`](./docs/current-status-2026-04-03.md).
-- Phase 3 crate split plan: [`docs/phase3-crate-split-plan-2026-04-04.md`](./docs/phase3-crate-split-plan-2026-04-04.md).
+- See [`agents.TODO.md`](./agents.TODO.md) for remaining surface-thinning work.
+- Code-grounded status snapshot: [`docs/current-status-2026-06-13.md`](./docs/current-status-2026-06-13.md).
+- Phase 3 crate split plan: [`docs/phase3-crate-split-plan-2026-04-04.md`](./docs/phase3-crate-split-plan-2026-04-04.md) is complete.
 
 ## Current Baseline
 
@@ -17,8 +17,8 @@ Structural execution plan:
 - Agent profile abstraction added (`AgentProfile` trait with `Codex`, `Claude`, `Gemini`, `Custom` variants) replacing Codex-specific bridge logic.
 - Validated task cards added (`TaskCard`, `TaskStatus`, `push_task_card`, `pull_task_card`, `peek_task_cards`) alongside existing opaque string API for backward compat.
 - Integration tests now live under `crates/agent-bus-cli/tests/`: `http_integration_test.rs` (47 test fns, no longer a skeleton), `channel_integration_test.rs` (6), `integration_test.rs` (5), plus the large unit suite in `agent-bus-core`.
-- Phase 3 crate split plan documented in `docs/phase3-crate-split-plan-2026-04-04.md` (now superseded — the split is done; doc text still describes `rust-cli` as authoritative and needs a refresh).
-- **Known breakage from the split**: `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and `build.ps1` still reference the removed `rust-cli` working-directory/crate — CI, release, and the documented `build.ps1` entrypoint are broken until re-anchored (see P8).
+- Phase 3 crate split plan documented in `docs/phase3-crate-split-plan-2026-04-04.md` and marked complete.
+- Post-split CI, release, build, examples, installer, and MCP client remediation merged in PR #11 (2026-06-14).
 
 ## P0 Direct Signaling
 
@@ -89,7 +89,7 @@ Structural execution plan:
 - [x] Centralize Rust build environment setup across `build.ps1`, `validate-agent-bus.ps1`, `build-deploy.ps1`, `bootstrap.ps1`, and `setup-agent-hub-local.ps1` so target-dir policy, `sccache`, and linker selection stop drifting.
 - [x] Add a fast local iteration profile (`fast-release`) for compile validation and local binary refreshes that do not need full release link cost.
 - [x] Prefer `cargo nextest` for local validation when available, with `cargo test` fallback and serialized integration runs for the shared Redis/PostgreSQL suite.
-- [x] Check in a repo-scoped `.cargo/config.toml` with cargo aliases for the active `rust-cli/` crate plus stable Windows linker defaults so repo-local `cargo` use matches the wrapper scripts more closely.
+- [x] Check in a repo-scoped `.cargo/config.toml` with cargo aliases for the active `agent-bus` package plus stable Windows linker defaults so repo-local `cargo` use matches the wrapper scripts more closely.
 - [x] Introduce a library-backed crate root with a thin `main.rs` wrapper so future CLI/HTTP/MCP surface splits can reuse one runtime entry implementation.
 - [x] Extend the checked-in cargo config to automate `sccache` defaults once that behavior is validated across clean Windows machines and non-operator shells.
 - [x] Add dedicated `agent-bus-http` and `agent-bus-mcp` bin targets on top of the shared library runtime so the deploy surface no longer depends on copying one CLI executable under multiple names.
@@ -108,11 +108,11 @@ Structural execution plan:
 - [x] Add TTL/EXPIRE to Redis keys by purpose: notifications (3d), cursors (7d), tasks (3d), resource events (3d), direct channels (7d), groups (30d).
 - [x] Clean up 193+ stale test keys matching `bus:direct:orchestrator:resolve-*` and `bus:direct:test-*`. (Requires live Redis connection.)
 
-## P8 Post-Split Remediation (NEW — discovered 2026-06-13)
+## P8 Post-Split Remediation (closed 2026-06-14)
 
 The `rust-cli` crate was removed and its contents redistributed into the four
-workspace crates. Most remediation landed on branch `chore/post-split-remediation`
-(2026-06-13); the remaining open item is the CLI thin-surface cleanup.
+workspace crates. Remediation merged in PR #11; the remaining structural item
+is tracked in `agents.TODO.md` as CLI thin-surface cleanup.
 
 - [x] **CRITICAL** — Re-anchor `.github/workflows/ci.yml` onto the workspace root (`cargo fmt/clippy/test --workspace`; integration via `-p agent-bus`). Added a gated `cross-platform` Docker job.
 - [x] **CRITICAL** — Re-anchor `.github/workflows/release.yml`; version-match step now reads `crates/agent-bus-cli/Cargo.toml`.
@@ -134,5 +134,19 @@ workspace crates. Most remediation landed on branch `chore/post-split-remediatio
 
 - [x] Cross-platform validation via system Docker: `docker/Dockerfile.linux` (glibc + optional musl), `.dockerignore`, `scripts/cross-validate.{ps1,sh}` (local-first, no-op-with-message if Docker absent). Linux build verified: workspace compiles + 590 lib tests pass.
 - [x] Rust acceleration tooling: `[profile.profiling]` added; `.cargo/config.toml` aliases fixed (`-p agent-bus-cli` → `-p agent-bus`) + new `ab-cov`/`ab-bench`/`ab-audit`/`ab-machete`/`ab-flame`; `docs/rust-acceleration.md` operator guide; `scripts/install-rust-tooling.{ps1,sh}` idempotent installers (nextest, llvm-cov, flamegraph, samply, machete, audit, tokio-console).
-- [ ] Wire the `cross-platform` Docker CI job into the required-checks set once it has run green on the self-hosted runner a few times.
+- [x] Add a native Ubuntu CI job for workspace format and lib/bin unit tests.
+- [ ] Wire the `cross-platform` Docker and Ubuntu jobs into the required-checks set once they have run green a few times.
 - [ ] Optional: add a musl static-binary release artifact to `release.yml` for Linux distribution (Dockerfile already supports the musl target).
+
+## P11 Security, Installers, Networking, And Offline Ops (NEW — 2026-06-14)
+
+- [x] Apply Dependabot security updates for `rmcp`, `openssl`, and `rustls-webpki` to close GitHub alerts GHSA-89vp-x53w-74fx, GHSA-82j2-j2ch-gfr8, GHSA-965h-392x-2mh5, GHSA-xgp8-3hg3-c2mh, and related OpenSSL alerts.
+- [x] Add `.github/dependabot.yml` so Cargo and GitHub Actions updates are scheduled and grouped explicitly.
+- [x] Add `--dry-run` / `-DryRun` previews for high-risk installers, build/deploy validation, Docker cross-validation, MCP client config installation, service removal/log rotation, and bus write smoke helpers.
+- [x] Extend Redis pub/sub consumers to use deterministic loopback URL candidates so `localhost` works with IPv4-only or IPv6-only loopback backends.
+- [x] Make HTTP bind address formatting IPv6-literal safe and add an offline `/support` page with health, loopback, recovery, and remote-auth guidance.
+- [ ] Make `cargo audit` blocking once CI has proven the fresh `cargo-audit` install handles current RustSec CVSS data reliably. Workstation note: `cargo-audit 0.21.2` cannot parse CVSS 4.0 RustSec advisories; `cargo-audit 0.22.2` install also exposed global `sccache` transport failures and a failed final binary move, so keep audit best-effort until the tool install path is reliable.
+- [ ] Add token rotation support: multiple accepted bearer tokens or token-file input while preserving `AGENT_BUS_AUTH_TOKEN`.
+- [ ] Split unauthenticated liveness from authenticated readiness/full health without breaking existing `/health` clients.
+- [ ] Add native Linux install/service docs and scripts for systemd-managed `agent-bus-http`.
+- [ ] Add offline installation profile: preinstalled Rust/Cargo cache, Redis/PostgreSQL prerequisites, and no-internet runtime support statement.

@@ -13,6 +13,9 @@
     Skip service restart (build and copy only)
 .PARAMETER SkipSmoke
     Skip the live HTTP/SSE notification smoke test
+.PARAMETER DryRun
+    Print the deployment plan without building, copying binaries, changing
+    services, or running smoke tests.
 #>
 param(
     [switch]$SkipBuild,
@@ -23,7 +26,8 @@ param(
     [string]$McpDeployPath = (Join-Path $HOME "bin/agent-bus-mcp.exe"),
     [string]$TargetDir,
     [string]$TargetNamespace,
-    [switch]$DisableSccache
+    [switch]$DisableSccache,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -41,6 +45,37 @@ if (-not (Test-Path $commonBuildScript)) {
 . $commonBuildScript
 
 $resolvedTargetDir = Resolve-AgentBusTargetDir -RepoRoot $repoRoot -ExplicitTargetDir $TargetDir -ExplicitNamespace $TargetNamespace
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Build/deploy plan:" -ForegroundColor Cyan
+    if ($SkipBuild) {
+        Write-Host "  - Skip cargo build and use binaries from: $resolvedTargetDir"
+    }
+    else {
+        Write-Host "  - Run: cargo build --release --bins"
+        Write-Host "  - Build target dir: $resolvedTargetDir"
+        Write-Host "  - Sccache preference: $(-not $DisableSccache)"
+    }
+    Write-Host "  - Resolve built binaries: agent-bus, agent-bus-http, agent-bus-mcp"
+    Write-Host "  - Deploy CLI binary to: $CliDeployPath"
+    Write-Host "  - Deploy HTTP/service binary to: $DeployPath"
+    Write-Host "  - Deploy MCP binary to: $McpDeployPath"
+    if ($SkipService) {
+        Write-Host "  - Skip service pause/stop/reinstall/start"
+    }
+    else {
+        Write-Host "  - Pause/stop service through maintenance controls, reinstall $serviceName, start service"
+        Write-Host "  - Health check: $healthUrl"
+    }
+    if ($SkipSmoke -or $SkipService) {
+        Write-Host "  - Skip live SSE smoke test"
+    }
+    else {
+        Write-Host "  - Run live SSE smoke script: $smokeScript"
+    }
+    Write-Host "  No binaries, services, or logs were changed."
+    exit 0
+}
+
 $buildEnvState = Use-AgentBusRustBuildEnv `
     -RepoRoot $repoRoot `
     -TargetDir $resolvedTargetDir `

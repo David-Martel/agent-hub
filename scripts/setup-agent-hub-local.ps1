@@ -5,7 +5,8 @@ param(
     [switch]$SkipHealth,
     [string]$TargetDir,
     [string]$TargetNamespace,
-    [switch]$DisableSccache
+    [switch]$DisableSccache,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,17 +22,49 @@ $psql = (Get-Command psql.exe -ErrorAction SilentlyContinue).Source
 $createdb = (Get-Command createdb.exe -ErrorAction SilentlyContinue).Source
 $queryDatabaseName = $DatabaseName.Replace("'", "''")
 
+if (-not (Test-Path $commonBuildScript)) {
+    throw "Common Rust build helper not found at $commonBuildScript"
+}
+. $commonBuildScript
+
+$resolvedTargetDir = Resolve-AgentBusTargetDir -RepoRoot $repoRoot -ExplicitTargetDir $TargetDir -ExplicitNamespace $TargetNamespace
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Local setup plan:" -ForegroundColor Cyan
+    Write-Host "  - Start or verify Windows services: Redis, postgresql-x64-18"
+    Write-Host "  - Query/create PostgreSQL database: $DatabaseName on port $DatabasePort"
+    Write-Host "  - Set process env:"
+    Write-Host "      AGENT_BUS_REDIS_URL=redis://127.0.0.1:6380/0"
+    Write-Host "      AGENT_BUS_DATABASE_URL=postgresql://postgres@127.0.0.1:$DatabasePort/$DatabaseName"
+    Write-Host "      AGENT_BUS_SERVER_HOST=localhost"
+    if ($SkipBuild) {
+        Write-Host "  - Skip cargo build and use existing binaries under: $resolvedTargetDir"
+    }
+    else {
+        Write-Host "  - Run: cargo build --release --bins"
+        Write-Host "  - Build target dir: $resolvedTargetDir"
+    }
+    Write-Host "  - Install binaries to:"
+    Write-Host "      $installedBinary"
+    Write-Host "      $installedHttpBinary"
+    Write-Host "      $installedMcpBinary"
+    if ($SkipHealth) {
+        Write-Host "  - Skip final agent-bus health check"
+    }
+    else {
+        Write-Host "  - Run final agent-bus health check"
+    }
+    if (-not $psql) { Write-Host "  - Note: psql.exe is not currently on PATH" -ForegroundColor Yellow }
+    if (-not $createdb) { Write-Host "  - Note: createdb.exe is not currently on PATH" -ForegroundColor Yellow }
+    Write-Host "  No services, databases, binaries, or environment variables were changed."
+    exit 0
+}
+
 if (-not $psql) {
     throw "psql.exe was not found on PATH"
 }
 if (-not $createdb) {
     throw "createdb.exe was not found on PATH"
 }
-
-if (-not (Test-Path $commonBuildScript)) {
-    throw "Common Rust build helper not found at $commonBuildScript"
-}
-. $commonBuildScript
 
 foreach ($serviceName in @("Redis", "postgresql-x64-18")) {
     $service = Get-Service -Name $serviceName -ErrorAction Stop
@@ -58,7 +91,6 @@ $env:AGENT_BUS_REDIS_URL = "redis://127.0.0.1:6380/0"
 $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@127.0.0.1:$DatabasePort/$DatabaseName"
 $env:AGENT_BUS_SERVER_HOST = "localhost"
 
-$resolvedTargetDir = Resolve-AgentBusTargetDir -RepoRoot $repoRoot -ExplicitTargetDir $TargetDir -ExplicitNamespace $TargetNamespace
 $buildEnvState = Use-AgentBusRustBuildEnv `
     -RepoRoot $repoRoot `
     -TargetDir $resolvedTargetDir `

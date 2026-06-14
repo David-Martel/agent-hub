@@ -1,4 +1,3 @@
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Bootstrap the Agent Hub on a new Windows machine.
@@ -15,8 +14,13 @@
     Redis port (default: 6380).
 .PARAMETER PgPort
     PostgreSQL port (default: 5300).
+.PARAMETER DryRun
+    Print the bootstrap plan without building, copying binaries, writing config,
+    installing services, or running health checks.
 .EXAMPLE
     pwsh -NoLogo -NoProfile -File scripts\bootstrap.ps1
+.EXAMPLE
+    pwsh -NoLogo -NoProfile -File scripts\bootstrap.ps1 -DryRun
 .EXAMPLE
     pwsh -NoLogo -NoProfile -File scripts\bootstrap.ps1 -SkipBuild -RedisPort 6379 -PgPort 5432
 #>
@@ -26,7 +30,8 @@ param(
     [int]$PgPort = 5300,
     [string]$TargetDir,
     [string]$TargetNamespace,
-    [switch]$DisableSccache
+    [switch]$DisableSccache,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,6 +49,32 @@ Write-Host "  Redis port:  $RedisPort"
 Write-Host "  PG port:     $PgPort"
 
 $resolvedTargetDir = Resolve-AgentBusTargetDir -RepoRoot $repoRoot -ExplicitTargetDir $TargetDir -ExplicitNamespace $TargetNamespace
+if ($DryRun) {
+    $binDir = Join-Path $env:USERPROFILE "bin"
+    $configPath = Join-Path (Join-Path $env:USERPROFILE ".config\agent-bus") "config.json"
+    Write-Host "`n[DRY-RUN] Bootstrap plan:" -ForegroundColor Cyan
+    if ($SkipBuild) {
+        Write-Host "  - Skip cargo build and look for existing binaries under: $resolvedTargetDir"
+    }
+    else {
+        Write-Host "  - Run: cargo build --release --bins"
+        Write-Host "  - Build target dir: $resolvedTargetDir"
+        Write-Host "  - Sccache preference: $(-not $DisableSccache)"
+    }
+    Write-Host "  - Install binaries to:"
+    Write-Host "      $binDir\agent-bus.exe"
+    Write-Host "      $binDir\agent-bus-http.exe"
+    Write-Host "      $binDir\agent-bus-mcp.exe"
+    Write-Host "  - Create config if absent: $configPath"
+    Write-Host "      redis_url    = redis://127.0.0.1:$RedisPort/0"
+    Write-Host "      database_url = postgresql://postgres@127.0.0.1:$PgPort/redis_backend"
+    Write-Host "      server_host  = localhost"
+    Write-Host "  - Install or verify NSSM service: AgentHub"
+    Write-Host "  - Validate health endpoint: http://localhost:8400/health"
+    Write-Host "  No files, services, databases, or binaries were changed."
+    exit 0
+}
+
 $buildEnvState = Use-AgentBusRustBuildEnv `
     -RepoRoot $repoRoot `
     -TargetDir $resolvedTargetDir `
@@ -186,7 +217,7 @@ if (-not (Test-Path $configDir)) {
 $configPath = "$configDir\config.json"
 if (-not (Test-Path $configPath)) {
     $config = [ordered]@{
-        redis_url    = "redis://localhost:$RedisPort/0"
+        redis_url    = "redis://127.0.0.1:$RedisPort/0"
         database_url = "postgresql://postgres@127.0.0.1:$PgPort/redis_backend"
         server_host  = "localhost"
         stream_maxlen = 100000

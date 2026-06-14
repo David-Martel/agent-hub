@@ -1,4 +1,3 @@
-#Requires -RunAsAdministrator
 <#
 .SYNOPSIS
     Configure log rotation for the AgentHub Windows service (nssm).
@@ -13,15 +12,36 @@
     Rotate when log exceeds this size in KB. Default: 10240 (10 MB)
 .PARAMETER RotateSeconds
     Rotate after this many seconds. Default: 86400 (daily)
+.PARAMETER DryRun
+    Print the nssm log-rotation changes without creating directories or
+    changing service settings.
 #>
 param(
     [string]$ServiceName = "AgentHub",
     [string]$LogDir = "C:\ProgramData\AgentHub\logs",
     [int]$MaxFileSizeKB = 10240,
-    [int]$RotateSeconds = 86400
+    [int]$RotateSeconds = 86400,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Log rotation plan:" -ForegroundColor Cyan
+    Write-Host "  - Service name: $ServiceName"
+    Write-Host "  - Ensure log directory exists: $LogDir"
+    Write-Host "  - Set AppStdout: $LogDir\agent-hub-service.log"
+    Write-Host "  - Set AppStderr: $LogDir\agent-hub-service-error.log"
+    Write-Host "  - Set AppRotateFiles: 1"
+    Write-Host "  - Set AppRotateOnline: 1"
+    Write-Host "  - Set AppRotateSeconds: $RotateSeconds"
+    Write-Host "  - Set AppRotateBytes: $($MaxFileSizeKB * 1024)"
+    if (-not (Get-Command nssm -ErrorAction SilentlyContinue)) {
+        Write-Host "  - Note: nssm is not currently on PATH" -ForegroundColor Yellow
+    }
+    Write-Host "  No directories or service settings were changed."
+    exit 0
+}
 
 if (-not (Get-Command nssm -ErrorAction SilentlyContinue)) {
     Write-Error "nssm not found in PATH. Install it first: https://nssm.cc/"

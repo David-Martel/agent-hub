@@ -6,7 +6,8 @@ param(
     [string]$TargetDir,
     [string]$TargetNamespace,
     [switch]$DisableSccache,
-    [switch]$DisableNextest
+    [switch]$DisableNextest,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,6 +51,34 @@ function Write-ServerVersionDiagnostics {
     }
 }
 
+$resolvedTargetDir = Resolve-AgentBusTargetDir -RepoRoot $repoRoot -ExplicitTargetDir $TargetDir -ExplicitNamespace $TargetNamespace
+$effectiveRedisUrl = if ($env:AGENT_BUS_REDIS_URL) { $env:AGENT_BUS_REDIS_URL } else { "redis://127.0.0.1:6380/0" }
+$effectiveDatabaseUrl = if ($env:AGENT_BUS_DATABASE_URL) { $env:AGENT_BUS_DATABASE_URL } else { "postgresql://postgres@127.0.0.1:5300/redis_backend" }
+$effectiveServerHost = if ($env:AGENT_BUS_SERVER_HOST) { $env:AGENT_BUS_SERVER_HOST } else { "localhost" }
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Validation plan:" -ForegroundColor Cyan
+    Write-Host "  - Workspace manifest: $workspaceManifest"
+    Write-Host "  - Target dir: $resolvedTargetDir"
+    Write-Host "  - Effective env defaults if currently absent:"
+    Write-Host "      AGENT_BUS_REDIS_URL=$effectiveRedisUrl"
+    Write-Host "      AGENT_BUS_DATABASE_URL=$effectiveDatabaseUrl"
+    Write-Host "      AGENT_BUS_SERVER_HOST=$effectiveServerHost"
+    if (-not $SkipBuild) {
+        Write-Host "  - Run: cargo build --profile fast-release --bins"
+    }
+    if (-not $SkipTests) {
+        Write-Host "  - Run workspace lib/bin tests and serial integration tests"
+    }
+    if (-not $SkipHealth) {
+        Write-Host "  - Run live health through: $invokeScript"
+    }
+    if (-not $SkipSmoke) {
+        Write-Host "  - Run functional smoke script: $functionalSmokeScript"
+    }
+    Write-Host "  No environment variables, target directories, sccache state, binaries, or services were changed."
+    exit 0
+}
+
 if (-not $env:AGENT_BUS_REDIS_URL) {
     $env:AGENT_BUS_REDIS_URL = "redis://127.0.0.1:6380/0"
 }
@@ -60,7 +89,6 @@ if (-not $env:AGENT_BUS_SERVER_HOST) {
     $env:AGENT_BUS_SERVER_HOST = "localhost"
 }
 
-$resolvedTargetDir = Resolve-AgentBusTargetDir -RepoRoot $repoRoot -ExplicitTargetDir $TargetDir -ExplicitNamespace $TargetNamespace
 $buildEnvState = Use-AgentBusRustBuildEnv `
     -RepoRoot $repoRoot `
     -TargetDir $resolvedTargetDir `

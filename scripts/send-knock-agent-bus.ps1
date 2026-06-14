@@ -6,7 +6,8 @@ param(
     [string]$ThreadId = "",
     [switch]$NoAck,
     [ValidateSet("json", "compact", "human")]
-    [string]$Encoding = "compact"
+    [string]$Encoding = "compact",
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +32,12 @@ if (-not $NoAck) {
 
 if ($ThreadId) {
     $arguments += @("--thread-id", $ThreadId)
+}
+
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Would run: $invokeScript $($arguments -join ' ')" -ForegroundColor Cyan
+    Write-Host "  No knock message was sent."
+    exit 0
 }
 
 Write-Host ("Sending knock from '{0}' to '{1}' ..." -f $From, $To)

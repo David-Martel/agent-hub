@@ -11,7 +11,8 @@ param(
     [string]$Priority = "normal",
     [switch]$RequestAck,
     [string]$ReplyTo = "",
-    [string]$Metadata = "{}"
+    [string]$Metadata = "{}",
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,6 +34,12 @@ foreach ($tag in $Tags) {
 if ($RequestAck) { $arguments += "--request-ack" }
 if ($ReplyTo) { $arguments += @("--reply-to", $ReplyTo) }
 if ($ThreadId) { $arguments += @("--thread-id", $ThreadId) }
+
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Would run: $invokeScript $($arguments -join ' ')" -ForegroundColor Cyan
+    Write-Host "  No agent-bus message was sent."
+    exit 0
+}
 
 & $invokeScript @arguments
 if ($LASTEXITCODE -ne 0) {

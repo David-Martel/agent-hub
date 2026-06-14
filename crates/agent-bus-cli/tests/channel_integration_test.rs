@@ -22,6 +22,12 @@ use std::process::Command;
 fn agent_bus_binary() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
     // Use the test-isolated stream/presence keys so we don't pollute production data.
+    cmd.env_remove("AGENT_BUS_SERVER_URL");
+    cmd.env("AGENT_BUS_REDIS_URL", "redis://127.0.0.1:6380/0");
+    cmd.env(
+        "AGENT_BUS_DATABASE_URL",
+        "postgresql://postgres@127.0.0.1:5300/redis_backend",
+    );
     cmd.env("AGENT_BUS_STREAM_KEY", "agent_bus:test:messages");
     cmd.env("AGENT_BUS_CHANNEL", "agent_bus:test:events");
     cmd.env("AGENT_BUS_PRESENCE_PREFIX", "agent_bus:test:presence:");
