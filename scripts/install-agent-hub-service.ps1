@@ -5,15 +5,43 @@ param(
     [string]$DatabaseName = "redis_backend",
     [string]$BinaryPath = (Join-Path $HOME "bin/agent-bus-http.exe"),
     [switch]$ForceReinstall,
-    [bool]$StartService = $true
+    [bool]$StartService = $true,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
 
-$nssmPath = (Get-Command nssm -ErrorAction Stop).Source
 $logRoot = "C:\ProgramData\AgentHub\logs"
 $stdoutLog = Join-Path $logRoot "agent-hub-stdout.log"
 $stderrLog = Join-Path $logRoot "agent-hub-stderr.log"
+
+if ($DryRun) {
+    Write-Host "[DRY-RUN] Service install plan:" -ForegroundColor Cyan
+    Write-Host "  - Service name: $ServiceName"
+    Write-Host "  - Display name: $DisplayName"
+    Write-Host "  - Binary: $BinaryPath"
+    Write-Host "  - Command: $BinaryPath serve --transport http --port $Port"
+    Write-Host "  - Logs:"
+    Write-Host "      stdout: $stdoutLog"
+    Write-Host "      stderr: $stderrLog"
+    Write-Host "  - Environment:"
+    Write-Host "      AGENT_BUS_REDIS_URL=redis://127.0.0.1:6380/0"
+    Write-Host "      AGENT_BUS_DATABASE_URL=postgresql://postgres@127.0.0.1:5300/$DatabaseName"
+    Write-Host "      AGENT_BUS_SERVER_HOST=localhost"
+    Write-Host "      AGENT_BUS_SERVICE_NAME=$ServiceName"
+    Write-Host "  - Force reinstall: $ForceReinstall"
+    Write-Host "  - Start service after install: $StartService"
+    if (-not (Test-Path $BinaryPath)) {
+        Write-Host "  - Note: binary does not currently exist at $BinaryPath" -ForegroundColor Yellow
+    }
+    if (-not (Get-Command nssm -ErrorAction SilentlyContinue)) {
+        Write-Host "  - Note: nssm is not currently on PATH" -ForegroundColor Yellow
+    }
+    Write-Host "  No service, log directory, or NSSM configuration was changed."
+    exit 0
+}
+
+$nssmPath = (Get-Command nssm -ErrorAction Stop).Source
 
 # Verify binary exists
 if (-not (Test-Path $binaryPath)) {

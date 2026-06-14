@@ -75,6 +75,11 @@ pwsh -NoLogo -NoProfile -File scripts\validate-agent-bus.ps1
 pwsh -NoLogo -NoProfile -File scripts\build-deploy.ps1
 pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1
 pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-functional.ps1
+
+# Preview mutating local workflows first
+pwsh -NoLogo -NoProfile -File build.ps1 -DryRun
+pwsh -NoLogo -NoProfile -File scripts\build-deploy.ps1 -DryRun
+pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1 -DryRun
 ```
 
 ## Binary Roles
@@ -90,12 +95,13 @@ pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-functional.ps1
 - By default it writes to a private `CARGO_TARGET_DIR` namespace under the active machine target root so concurrent repo work does not fight over the same cargo lock. Use `-TargetNamespace <name>` or `-TargetDir <path>` to make that namespace explicit.
 - Local validation prefers `cargo nextest` when available and falls back to `cargo test` otherwise. Integration targets still run serially against the shared Redis/PostgreSQL services.
 - A repo-scoped [`.cargo/config.toml`](./.cargo/config.toml) adds `cargo ab-fast`, `cargo ab-build`, `cargo ab-test`, `cargo ab-itest`, `cargo ab-clippy`, and `cargo ab-nextest` aliases that target the `agent-bus` package (in `crates/agent-bus-cli`).
-- Repo build scripts import `CargoTools` and enable `sccache` only after a health check; plain shell `cargo` stays wrapper-free so Windows command-line limits in wrapper scripts cannot break normal builds.
+- Repo build scripts import `CargoTools` for environment discovery and setup, then run cargo steps in raw mode so clippy/test arguments are not rewritten by the workstation `cargo.ps1` router.
 - The workspace split is complete: `rust-cli` has been removed. `agent-bus-core` owns all shared modules; `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` are independent binary crates.
 - Shared typed ops live in [`crates/agent-bus-core/src/ops/`](./crates/agent-bus-core/src/ops/).
 - The split history and post-split status are documented in [docs/phase3-crate-split-plan-2026-04-04.md](./docs/phase3-crate-split-plan-2026-04-04.md) and [docs/current-status-2026-06-13.md](./docs/current-status-2026-06-13.md).
 - Use `pwsh -NoLogo -NoProfile -File build.ps1 -Release` for a full optimized build, or `pwsh -NoLogo -NoProfile -File build.ps1 -FastRelease` for a faster local iteration binary that avoids the full release link cost.
-- The shared helper restarts stale `sccache` servers and disables `RUSTC_WRAPPER` when the cache server fails health verification, which avoids shipping builds through a broken cache process.
+- The shared helper restarts stale `sccache` servers and enables the cache only after health verification. If the cache server fails mid-compile, the failing cargo step is retried once with Cargo's `build.rustc-wrapper` disabled so a broken cache cannot block validation or produce ambiguous output.
+- Local build, deploy, install, validation, and smoke scripts expose `-DryRun`/`--dry-run` previews for path, binary, environment, service, and client-config changes before mutation.
 - CLI server-mode reads and admin calls now use the async `reqwest` client path internally rather than a separate blocking client plus worker thread bridge.
 - Use `cargo ab-clippy --target-dir <dir> -- -D warnings` when you want strict clippy with an explicit target dir; the alias now leaves room for extra cargo args instead of hard-coding the lint terminator.
 
@@ -188,6 +194,7 @@ Common issues:
 - **Redis not running**: Verify with `redis-cli -p 6380 ping`. If you need a local Redis install, use the maintained [redis-windows](https://github.com/redis-windows/redis-windows) repository.
 - **PostgreSQL connection refused**: Verify with `psql -h localhost -p 5300 -U postgres -c "SELECT 1"`.
 - **Service won't start**: Check error log, ensure `%USERPROFILE%\bin\agent-bus-http.exe` exists.
+- **Loopback family mismatch**: Prefer `redis://127.0.0.1:6380/0` and `postgresql://postgres@127.0.0.1:5300/redis_backend` for local storage. HTTP clients may keep `http://localhost:8400`; IPv6 literal URLs must use brackets, for example `http://[::1]:8400`.
 
 ### MCP launch
 
@@ -200,6 +207,7 @@ agent-bus serve --transport mcp-http --port 8765
 
 - Live message durability and fanout use Redis Streams + Pub/Sub.
 - Direct-recipient attention routing now derives durable per-agent notification streams from the canonical message log.
+- `GET /support` is served directly by `agent-bus-http.exe` and provides offline operator guidance for health checks, loopback/IPv6 handling, service recovery, and remote auth requirements.
 - Durable history and presence events are mirrored into PostgreSQL when configured.
 - Real joint Codex/Claude sessions have converged on narrow scoping: keep `repo:<name>` tags on every message, set `thread_id` for shared planning, and use explicit `RESOURCE_START` / `RESOURCE_DONE` handoffs for shared paths.
 - For token-sensitive recovery, prefer scoped `compact-context` over broad inbox replay.

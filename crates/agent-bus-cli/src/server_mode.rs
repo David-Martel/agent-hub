@@ -10,6 +10,11 @@ use crate::settings::Settings;
 #[cfg(feature = "server-mode")]
 static SERVER_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
+#[cfg(feature = "server-mode")]
+const SERVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(feature = "server-mode")]
+const SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Bearer token for cross-machine server-mode requests, resolved once from
 /// [`Settings`] (env `AGENT_BUS_AUTH_TOKEN` → `config.json` → `None`).
 #[cfg(feature = "server-mode")]
@@ -30,7 +35,9 @@ pub(crate) fn init_server_auth(_settings: &Settings) {}
 #[cfg(feature = "server-mode")]
 fn server_client() -> &'static reqwest::Client {
     SERVER_CLIENT.get_or_init(|| {
-        let mut builder = reqwest::Client::builder();
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(SERVER_CONNECT_TIMEOUT)
+            .timeout(SERVER_REQUEST_TIMEOUT);
         if let Some(Some(token)) = SERVER_AUTH_TOKEN.get()
             && let Ok(mut header) =
                 reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))

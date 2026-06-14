@@ -1,5 +1,7 @@
 Set-StrictMode -Version Latest
 
+$script:AgentBusDisableSccacheForCargoSteps = $false
+
 function Initialize-AgentBusSccacheServer {
     param(
         [Parameter(Mandatory = $true)]
@@ -287,6 +289,62 @@ function Write-AgentBusSccacheStats {
     }
 }
 
+function Test-AgentBusSccacheTransportFailure {
+    param(
+        [object[]]$Output
+    )
+
+    $joinedOutput = ($Output | ForEach-Object { $_.ToString() }) -join "`n"
+    return $joinedOutput -match "sccache: error: failed to execute compile" -or
+        $joinedOutput -match "Failed to send data to or receive data from server" -or
+        $joinedOutput -match "Failed to read response header" -or
+        $joinedOutput -match "Mismatch of client/server versions"
+}
+
+function Restart-AgentBusBuildWithoutSccache {
+    if ($env:RUSTC_WRAPPER) {
+        try {
+            & $env:RUSTC_WRAPPER --stop-server *> $null
+        }
+        catch {
+        }
+    }
+
+    Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+    $script:AgentBusDisableSccacheForCargoSteps = $true
+    Write-Warning "sccache failed during compilation; retrying this cargo step once with Cargo rustc-wrapper disabled."
+}
+
+function Invoke-AgentBusRawCargo {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Command,
+        [string[]]$AdditionalArgs = @(),
+        [switch]$DisableSccache
+    )
+
+    $cargoArgs = @()
+    if ($DisableSccache) {
+        $cargoArgs += @("--config", 'build.rustc-wrapper=""')
+    }
+    $cargoArgs += $Command
+    $cargoArgs += $AdditionalArgs
+
+    $output = & cargo @cargoArgs 2>&1 | Tee-Object -Variable capturedCargoOutput
+    $exitCode = $LASTEXITCODE
+    if (-not $output -and $capturedCargoOutput) {
+        $output = $capturedCargoOutput
+    }
+    if ($output) {
+        $output | ForEach-Object { Write-Host $_ }
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $exitCode
+        Output = @($output)
+    }
+}
+
 function Invoke-AgentBusCargo {
     param(
         [Parameter(Mandatory = $true)]
@@ -301,14 +359,33 @@ function Invoke-AgentBusCargo {
     if ($WorkDir) {
         Push-Location $WorkDir
     }
+    $originalCargoRaw = $env:CARGO_RAW
     try {
-        & cargo $Command @AdditionalArgs
-        $exitCode = $LASTEXITCODE
+        $env:CARGO_RAW = "1"
+        $result = Invoke-AgentBusRawCargo `
+            -Command $Command `
+            -AdditionalArgs $AdditionalArgs `
+            -DisableSccache:$script:AgentBusDisableSccacheForCargoSteps
+        $exitCode = $result.ExitCode
+        if ($exitCode -ne 0 -and (Test-AgentBusSccacheTransportFailure -Output $result.Output)) {
+            Restart-AgentBusBuildWithoutSccache
+            $result = Invoke-AgentBusRawCargo `
+                -Command $Command `
+                -AdditionalArgs $AdditionalArgs `
+                -DisableSccache
+            $exitCode = $result.ExitCode
+        }
         if ($exitCode -ne 0) {
             throw "Cargo step failed: $Label (exit code $exitCode)"
         }
     }
     finally {
+        if ($null -eq $originalCargoRaw -or $originalCargoRaw -eq "") {
+            Remove-Item Env:CARGO_RAW -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:CARGO_RAW = $originalCargoRaw
+        }
         if ($WorkDir) {
             Pop-Location
         }

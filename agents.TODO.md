@@ -11,7 +11,7 @@ structural simplification of the Rust implementation.
 Already complete:
 
 - The runtime is Rust-only.
-- The active package has a library-backed root in `rust-cli/src/lib.rs`.
+- The active workspace has library-backed surface crates under `crates/`.
 - The CLI server-mode bridge is async and no longer relies on
   `reqwest::blocking`.
 - A first shared `ops` layer now owns message send/ack/knock/presence flows.
@@ -68,9 +68,8 @@ Still structurally incomplete:
   `agent-bus-http/src/http.rs` and `agent-bus-cli/src/commands.rs`. The earlier
   ~28%-shared / ~4,400-duplicated-lines estimate predates the crate split and
   must be re-measured.
-- **Committed files still reference the removed `rust-cli`** and break tooling:
-  `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and `build.ps1`.
-  See `TODO.md` P8.
+- Post-split build, CI, release, installer, and MCP client remediation has
+  merged. Remaining work is surface thinning, not workspace bring-up.
 
 ## Primary Goals
 
@@ -152,8 +151,8 @@ Target shape:
 - `crates/agent-bus-core/src/ops/inbox.rs`
 - `crates/agent-bus-core/src/ops/admin.rs`
 - `crates/agent-bus-core/src/ops/mod.rs`
-- `rust-cli/src/ops/mod.rs` retained only as a temporary re-export shim while
-  transport modules continue to migrate
+- Re-export shims should be removed from surface crates as callers move to
+  `agent-bus-core` imports directly.
 
 ### Phase 1A: Message and inbox completion
 
@@ -328,19 +327,15 @@ Exit criteria:
 - Local operator workflows do not need to know internal crate names.
 - Service deploy/update flows keep working during and after the split.
 
-Current status (2026-06-13):
+Current status (2026-06-14):
 
-- The PowerShell scripts under `scripts/` have been modernized in the working
-  tree to use the workspace root (no remaining `rust-cli` references), but
-  those edits are still uncommitted.
-- NOT done — three committed files still target the removed `rust-cli` and break
-  on `main`:
-  - `build.ps1` computes `$rustCliDir` and `throw`s "rust-cli directory not
-    found" before building.
-  - `.github/workflows/ci.yml` — 9 `working-directory: rust-cli` references.
-  - `.github/workflows/release.yml` — 5 `working-directory: rust-cli` references.
-- Tracked in `TODO.md` P8. Phase 4 is not complete until these are re-anchored
-  and the working-tree script changes are committed.
+- PR #11 re-anchored CI, release, build, deploy, install, examples, and MCP
+  client tooling to the workspace root.
+- Dry-run previews now exist for the highest-risk mutating installer and
+  deployment scripts. Follow-up work should make those previews deeper and add
+  Linux-native service installation.
+- Phase 4 is complete for operator-visible workspace split remediation. The
+  remaining structural work is the CLI thin-surface cleanup described above.
 
 ## Phase 5: Validation Matrix
 

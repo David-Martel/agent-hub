@@ -11,7 +11,8 @@ param(
     [string]$ServerHost = "localhost",
     [string]$CommandPath = "",
     [switch]$NoBackup,
-    [switch]$ValidateOnly
+    [switch]$ValidateOnly,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,6 +94,28 @@ if ($ValidateOnly) {
     }
     & $validator -ExpectedServerUrl $ServerUrl -ExpectedRedisUrl $RedisUrl -ExpectedDatabaseUrl $DatabaseUrl
     exit $LASTEXITCODE
+}
+
+if ($DryRun) {
+    Write-Host "[DRY-RUN] MCP client install plan:" -ForegroundColor Cyan
+    Write-Host "  - Command: $command"
+    Write-Host "  - Args: $($stdioArgs -join ' ')"
+    Write-Host "  - Backups: $(if ($NoBackup) { 'disabled' } else { 'enabled when target exists' })"
+    Write-Host "  - Shared environment:"
+    foreach ($entry in $sharedEnv.GetEnumerator()) {
+        Write-Host "      $($entry.Key)=$($entry.Value)"
+    }
+    if ($Claude) {
+        Write-Host "  - Would update Claude MCP config: $ClaudeConfigPath"
+    }
+    if ($Codex) {
+        Write-Host "  - Would update Codex MCP config: $CodexConfigPath"
+    }
+    if ($Gemini) {
+        Write-Host "  - Would update Gemini MCP config: $GeminiConfigPath"
+    }
+    Write-Host "  No client config files were changed."
+    exit 0
 }
 
 if ($Claude) {

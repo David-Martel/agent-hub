@@ -1,7 +1,8 @@
 param(
     [string]$BaseUrl = "http://localhost:8400",
     [int]$TimeoutSeconds = 10,
-    [string]$Agent = $null
+    [string]$Agent = $null,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -26,11 +27,12 @@ $headersFile = New-TempFile -Prefix "agent-bus-sse-headers" -Extension ".txt"
 $bodyFile = New-TempFile -Prefix "agent-bus-sse-body" -Extension ".txt"
 $stderrFile = New-TempFile -Prefix "agent-bus-sse-stderr" -Extension ".txt"
 
-Set-Content -Path $headersFile -Value "" -NoNewline
-Set-Content -Path $bodyFile -Value "" -NoNewline
-Set-Content -Path $stderrFile -Value "" -NoNewline
+$curl = Get-Command curl.exe -ErrorAction SilentlyContinue
+if (-not $curl) {
+    $curl = Get-Command curl -ErrorAction SilentlyContinue
+}
+$curlPath = if ($curl) { $curl.Source } else { "<curl not found>" }
 
-$curl = Get-Command curl.exe -ErrorAction Stop
 $args = @(
     "--silent"
     "--show-error"
@@ -41,6 +43,28 @@ $args = @(
     "--dump-header", $headersFile
     $eventUrl
 )
+
+if ($DryRun) {
+    Write-Host "[DRY-RUN] SSE smoke plan:" -ForegroundColor Cyan
+    Write-Host "  - Open SSE subscription: $curlPath $($args -join ' ')"
+    Write-Host "  - POST probe message to: $messageUrl"
+    Write-Host "  - Probe recipient: $Agent"
+    Write-Host "  - Probe topic: $probeTopic"
+    Write-Host "  - Temp files:"
+    Write-Host "      $headersFile"
+    Write-Host "      $bodyFile"
+    Write-Host "      $stderrFile"
+    Write-Host "  No curl process was started and no HTTP request was sent."
+    exit 0
+}
+
+if (-not $curl) {
+    throw "curl/curl.exe was not found on PATH"
+}
+
+Set-Content -Path $headersFile -Value "" -NoNewline
+Set-Content -Path $bodyFile -Value "" -NoNewline
+Set-Content -Path $stderrFile -Value "" -NoNewline
 
 Write-Host "Opening SSE subscription for $Agent ..."
 $proc = Start-Process -FilePath $curl.Source -ArgumentList $args -PassThru -NoNewWindow -RedirectStandardError $stderrFile

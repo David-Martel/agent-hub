@@ -42,12 +42,14 @@ while keeping MCP client configuration readable.
 Build and deploy binaries:
 
 ```powershell
+pwsh -NoLogo -NoProfile -File scripts\setup-agent-hub-local.ps1 -DryRun
 pwsh -NoLogo -NoProfile -File scripts\setup-agent-hub-local.ps1
 ```
 
 Install MCP client entries:
 
 ```powershell
+pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1 -DryRun
 pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1
 ```
 
@@ -61,6 +63,18 @@ pwsh -NoLogo -NoProfile -File scripts\validate-agent-client-configs.ps1
 The installer prefers `agent-bus-mcp` with no arguments. If only `agent-bus`
 is available, it falls back to `agent-bus serve --transport stdio`.
 
+`-DryRun` previews resolved binary paths, backup paths, target client config
+files, and environment defaults without writing config, creating directories,
+starting services, or touching Cargo caches. Use it before any broad installer
+or client-config run on a shared workstation.
+
+## Offline Support Surface
+
+The HTTP service exposes `GET /support` as a static, self-contained operator
+page. It requires no internet access and summarizes local health checks,
+loopback defaults, IPv4/IPv6 notes, service recovery commands, and bearer-token
+requirements for remote binds.
+
 ## Multi-Agent Operating Practices
 
 The installer and docs follow the same coordination pattern used by modern
@@ -72,6 +86,8 @@ parallel-agent tools such as `rtk-ai/grit`:
 - Agents work in isolated branches or worktrees when merge risk is high.
 - Final merges are serialized by one responsible operator.
 - Installer writes are idempotent and backed up before mutation.
+- Installer dry-runs should be reviewed before mutation when multiple agents
+  are active.
 - Config validation runs after install and before merge/deploy.
 
 Agent-bus implements those practices with Redis-backed claims, presence,

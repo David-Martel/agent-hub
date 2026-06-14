@@ -10,16 +10,19 @@
 #   scripts/cross-validate.sh
 #   scripts/cross-validate.sh --musl
 #   scripts/cross-validate.sh --strict   # fail if Docker absent
+#   scripts/cross-validate.sh --dry-run
 set -euo pipefail
 
 TAG="agent-bus-linux-validate"
 MUSL=0
 STRICT=0
+DRY_RUN=0
 
 for arg in "$@"; do
     case "$arg" in
         --musl) MUSL=1 ;;
         --strict) STRICT=1 ;;
+        --dry-run) DRY_RUN=1 ;;
         --tag=*) TAG="${arg#*=}" ;;
         *) echo "Unknown argument: $arg" >&2; exit 2 ;;
     esac
@@ -32,6 +35,18 @@ DOCKERFILE="$REPO_ROOT/docker/Dockerfile.linux"
 if [ ! -f "$DOCKERFILE" ]; then
     echo "Dockerfile not found at $DOCKERFILE" >&2
     exit 1
+fi
+
+build_args=(build -f "$DOCKERFILE" -t "$TAG")
+if [ "$MUSL" -eq 1 ]; then
+    build_args+=(--target musl)
+fi
+build_args+=("$REPO_ROOT")
+
+echo "==> docker ${build_args[*]}"
+if [ "$DRY_RUN" -eq 1 ]; then
+    echo "[DRY-RUN] Docker cross-validation command was not executed."
+    exit 0
 fi
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -48,13 +63,6 @@ if ! docker info >/dev/null 2>&1; then
     exit 0
 fi
 
-build_args=(build -f "$DOCKERFILE" -t "$TAG")
-if [ "$MUSL" -eq 1 ]; then
-    build_args+=(--target musl)
-fi
-build_args+=("$REPO_ROOT")
-
-echo "==> docker ${build_args[*]}"
 docker "${build_args[@]}"
 
 echo

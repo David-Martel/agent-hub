@@ -1,6 +1,6 @@
 //! CLI command implementations.
 
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 
 use crate::models::{MAX_HISTORY_MINUTES, Message, Presence};
 pub(crate) use crate::ops::MessageFilters;
@@ -42,7 +42,7 @@ use crate::server_mode::{
     resolved_service_base_url, sc_action, service_status_payload, use_server_mode, wait_for_health,
     wait_for_windows_service_state,
 };
-use crate::settings::Settings;
+use crate::settings::{Settings, loopback_url_candidates};
 #[cfg(feature = "server-mode")]
 use crate::validation::{
     auto_fit_schema, infer_schema_from_topic, validate_message_schema, validate_priority,
@@ -468,12 +468,27 @@ pub(crate) fn cmd_watch(
         }
     }
 
-    // Subscribe to pub/sub
-    let client = redis::Client::open(settings.redis_url.as_str())
-        .context("Redis client for watch failed")?;
-    let mut conn = client
-        .get_connection()
-        .context("Redis watch connection failed")?;
+    // Subscribe to pub/sub. Use the same deterministic loopback fallback as
+    // command/pool connections so `localhost` works with IPv4-only Redis.
+    let mut last_error = None;
+    let mut conn = None;
+    for candidate in loopback_url_candidates(&settings.redis_url) {
+        match redis::Client::open(candidate.as_str()).and_then(|client| client.get_connection()) {
+            Ok(connection) => {
+                conn = Some(connection);
+                break;
+            }
+            Err(err) => {
+                last_error = Some(err);
+            }
+        }
+    }
+    let mut conn = conn.ok_or_else(|| {
+        anyhow!(
+            "Redis watch connection failed{}",
+            last_error.map_or_else(String::new, |err| format!(": {err}"))
+        )
+    })?;
     let mut pubsub = conn.as_pubsub();
     pubsub
         .subscribe(&settings.channel_key)

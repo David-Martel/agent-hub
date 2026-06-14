@@ -70,7 +70,7 @@ use agent_bus_core::redis_bus::{
     bus_post_message_with_notifications, list_notifications, list_notifications_since_id,
     list_resource_events as redis_list_resource_events,
 };
-use agent_bus_core::settings::Settings;
+use agent_bus_core::settings::{Settings, loopback_url_candidates};
 use agent_bus_core::validation::validate_priority;
 
 /// Per-agent live SSE subscriber channels.
@@ -84,6 +84,26 @@ type AgentConnections = Arc<
     >,
 >;
 type ControlStatusState = Arc<RwLock<ServerControlStatus>>;
+
+fn open_pubsub_connection(redis_url: &str) -> Option<redis::Connection> {
+    for candidate in loopback_url_candidates(redis_url) {
+        if let Ok(client) = redis::Client::open(candidate.as_str())
+            && let Ok(conn) = client.get_connection()
+        {
+            return Some(conn);
+        }
+    }
+    None
+}
+
+fn format_socket_addr(host: &str, port: u16) -> String {
+    let host = host.trim();
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
 
 /// Shared state injected into every axum handler.
 ///
@@ -736,10 +756,7 @@ async fn http_sse_handler(
         }
         let _count_guard = CountGuard(counter);
 
-        let Ok(client) = redis::Client::open(settings.redis_url.as_str()) else {
-            return;
-        };
-        let Ok(mut conn) = client.get_connection() else {
+        let Some(mut conn) = open_pubsub_connection(&settings.redis_url) else {
             return;
         };
         let mut pubsub = conn.as_pubsub();
@@ -1117,11 +1134,7 @@ fn spawn_agent_notification_bridge(state: &AppState) {
 
     tokio::task::spawn_blocking(move || {
         loop {
-            let Ok(client) = redis::Client::open(settings.redis_url.as_str()) else {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-                continue;
-            };
-            let Ok(mut conn) = client.get_connection() else {
+            let Some(mut conn) = open_pubsub_connection(&settings.redis_url) else {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 continue;
             };
@@ -2777,6 +2790,48 @@ pub(crate) async fn http_dashboard_handler(State(state): State<AppState>) -> imp
     axum::response::Html(generate_dashboard_html(&health))
 }
 
+pub(crate) async fn http_support_handler() -> impl IntoResponse {
+    axum::response::Html(generate_support_html())
+}
+
+fn generate_support_html() -> String {
+    r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>agent-bus support</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; max-width: 960px; line-height: 1.5; }
+    code, pre { background: #f4f4f4; border-radius: 4px; }
+    code { padding: 0.1rem 0.25rem; }
+    pre { padding: 0.75rem; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>agent-bus support</h1>
+  <p>This page is served locally by agent-bus and does not require internet access.</p>
+  <h2>Health checks</h2>
+  <pre>agent-bus health --encoding compact
+curl http://localhost:8400/health</pre>
+  <h2>Loopback defaults</h2>
+  <pre>AGENT_BUS_REDIS_URL=redis://127.0.0.1:6380/0
+AGENT_BUS_DATABASE_URL=postgresql://postgres@127.0.0.1:5300/redis_backend
+AGENT_BUS_SERVER_URL=http://localhost:8400</pre>
+  <p>Use <code>127.0.0.1</code> for Redis/PostgreSQL when those backends are IPv4-only.
+  Use bracketed IPv6 literals such as <code>http://[::1]:8400</code> when testing IPv6.</p>
+  <h2>Recovery</h2>
+  <pre>agent-bus service --action pause --reason "maintenance"
+agent-bus service --action flush --reason "maintenance"
+agent-bus service --action restart --timeout-seconds 30</pre>
+  <h2>Remote access</h2>
+  <p>Remote HTTP access requires <code>AGENT_BUS_ALLOW_REMOTE=true</code> and
+  <code>AGENT_BUS_AUTH_TOKEN</code>. Prefer stable hostnames over numeric LAN IPs.</p>
+</body>
+</html>"#
+        .to_owned()
+}
+
 /// Generate the self-contained dashboard HTML string from a [`Health`] snapshot.
 ///
 /// Static health values (Redis status, PG status, stream length, counts) are
@@ -3637,6 +3692,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         // Monitoring dashboard
         .route("/dashboard", get(http_dashboard_handler))
         .route("/dashboard/data", get(http_dashboard_data_handler))
+        .route("/support", get(http_support_handler))
         .with_state(state)
         // F2: enforce an explicit body limit that aligns with validation::MAX_BODY_LEN.
         // 4 KiB of headroom covers JSON framing overhead for the largest payloads.
@@ -3664,7 +3720,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         app
     };
 
-    let addr = format!("{bind_host}:{port}");
+    let addr = format_socket_addr(&bind_host, port);
     tracing::info!("HTTP server listening on {addr}");
     eprintln!("agent-bus HTTP server listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -3692,6 +3748,30 @@ mod tests {
     use agent_bus_core::models::{Health, PROTOCOL_VERSION};
     use axum::body::to_bytes;
     use axum::http::{HeaderName, HeaderValue};
+
+    #[test]
+    fn format_socket_addr_brackets_ipv6_literals() {
+        assert_eq!(format_socket_addr("::1", 8400), "[::1]:8400");
+        assert_eq!(format_socket_addr("::", 8400), "[::]:8400");
+        assert_eq!(format_socket_addr("[::1]", 8400), "[::1]:8400");
+    }
+
+    #[test]
+    fn format_socket_addr_leaves_ipv4_and_hostnames_unbracketed() {
+        assert_eq!(format_socket_addr("127.0.0.1", 8400), "127.0.0.1:8400");
+        assert_eq!(format_socket_addr("localhost", 8400), "localhost:8400");
+    }
+
+    #[test]
+    fn support_html_is_self_contained_and_mentions_recovery() {
+        let html = generate_support_html();
+        assert!(html.contains("does not require internet access"));
+        assert!(html.contains("AGENT_BUS_AUTH_TOKEN"));
+        assert!(html.contains("http://[::1]:8400"));
+        assert!(html.contains("service --action restart"));
+        assert!(!html.contains("https://"));
+        assert!(!html.contains("http://cdn"));
+    }
 
     fn make_health(redis_ok: bool, pg_ok: bool) -> Health {
         Health {
