@@ -5,27 +5,36 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Use the Rust binary directly (primary entry point)
-$rustBin = Join-Path $HOME "bin/agent-bus.exe"
-$repoRustBin = Join-Path $PSScriptRoot "..\rust-cli\target\release\agent-bus.exe"
+# Use the Rust binary directly (primary entry point).  This workstation installs
+# the active CLI under ~/.local/bin; ~/bin may contain sibling helper binaries.
+$candidateBins = @(
+    (Join-Path $HOME ".local/bin/agent-bus.exe"),
+    (Join-Path $HOME "bin/agent-bus.exe"),
+    (Join-Path $PSScriptRoot "..\target\release\agent-bus.exe")
+)
 
-if (-not (Test-Path $rustBin)) {
-    if (Test-Path $repoRustBin) {
-        $rustBin = (Resolve-Path $repoRustBin).Path
+$rustBin = $null
+foreach ($candidate in $candidateBins) {
+    if (Test-Path $candidate) {
+        $rustBin = (Resolve-Path $candidate).Path
+        break
     }
-    else {
-        throw "agent-bus binary not found at $rustBin or $repoRustBin. Build with: cargo build --release in rust-cli/"
-    }
+}
+if (-not $rustBin) {
+    throw "agent-bus binary not found in: $($candidateBins -join ', '). Build with: cargo build --release"
 }
 
 if (-not $env:AGENT_BUS_REDIS_URL) {
-    $env:AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
+    $env:AGENT_BUS_REDIS_URL = "redis://127.0.0.1:6380/0"
 }
 if (-not $env:AGENT_BUS_DATABASE_URL) {
-    $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5300/redis_backend"
+    $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@127.0.0.1:5300/redis_backend"
 }
 if (-not $env:AGENT_BUS_SERVER_HOST) {
     $env:AGENT_BUS_SERVER_HOST = "localhost"
+}
+if (-not $env:AGENT_BUS_SERVER_URL -or $env:AGENT_BUS_SERVER_URL -eq "http://192.168.50.79:8400") {
+    $env:AGENT_BUS_SERVER_URL = "http://localhost:8400"
 }
 
 & $rustBin @CliArgs

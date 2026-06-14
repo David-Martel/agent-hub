@@ -18,7 +18,6 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$rustCliDir = Join-Path $repoRoot "rust-cli"
 $workspaceManifest = Join-Path $repoRoot "Cargo.toml"
 $validateScript = Join-Path $repoRoot "scripts\validate-agent-bus.ps1"
 $commonBuildScript = Join-Path $repoRoot "scripts\rust-build-common.ps1"
@@ -27,8 +26,8 @@ $originalCargoToolsRunTestsAfterBuild = $env:CARGOTOOLS_RUN_TESTS_AFTER_BUILD
 $originalCargoToolsRunDoctestsAfterBuild = $env:CARGOTOOLS_RUN_DOCTESTS_AFTER_BUILD
 $originalCargoPreflight = $env:CARGO_PREFLIGHT
 
-if (-not (Test-Path $rustCliDir)) {
-    throw "rust-cli directory not found at $rustCliDir"
+if (-not (Test-Path $workspaceManifest)) {
+    throw "Workspace manifest not found at $workspaceManifest"
 }
 
 if (-not (Test-Path $commonBuildScript)) {
@@ -121,15 +120,15 @@ try {
 
     if ($Release -or $FastRelease) {
         if ($FastRelease) {
-            Invoke-CargoStep -Label "cargo build --profile fast-release --bins" -Command "build" -AdditionalArgs @("--profile", "fast-release", "--bins") -WorkDir $rustCliDir
+            Invoke-CargoStep -Label "cargo build --profile fast-release --workspace --bins" -Command "build" -AdditionalArgs @("--manifest-path", $workspaceManifest, "--profile", "fast-release", "--workspace", "--bins")
             $releaseTarget = Join-Path $resolvedTargetDir "fast-release"
         }
         else {
-            Invoke-CargoStep -Label "cargo build --release --bins" -Command "build" -AdditionalArgs @("--release", "--bins") -WorkDir $rustCliDir
+            Invoke-CargoStep -Label "cargo build --release --workspace --bins" -Command "build" -AdditionalArgs @("--manifest-path", $workspaceManifest, "--release", "--workspace", "--bins")
             $releaseTarget = Join-Path $resolvedTargetDir "release"
         }
         foreach ($binaryName in @("agent-bus", "agent-bus-http", "agent-bus-mcp")) {
-            $binaryPath = Find-AgentBusBuiltBinary -RustCliDir $rustCliDir -TargetDir $resolvedTargetDir -BinaryName $binaryName -Profile (Split-Path $releaseTarget -Leaf)
+            $binaryPath = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName $binaryName -Profile (Split-Path $releaseTarget -Leaf)
             if (-not $binaryPath) {
                 throw "Expected built binary '$binaryName' was not found under $releaseTarget"
             }

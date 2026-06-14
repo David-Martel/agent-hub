@@ -14,8 +14,8 @@ if (-not (Test-Path $BinaryPath)) {
     throw "agent-bus binary not found at $BinaryPath"
 }
 
-$env:AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
-$env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5300/$DatabaseName"
+$env:AGENT_BUS_REDIS_URL = "redis://127.0.0.1:6380/0"
+$env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@127.0.0.1:5300/$DatabaseName"
 $env:AGENT_BUS_SERVER_HOST = "localhost"
 $env:AGENT_BUS_STARTUP_ENABLED = "true"
 $env:RUST_LOG = "warn"

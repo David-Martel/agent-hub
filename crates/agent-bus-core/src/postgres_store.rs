@@ -27,7 +27,7 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::models::{Message, Presence};
-use crate::settings::Settings;
+use crate::settings::{Settings, loopback_url_candidates, redact_url};
 
 /// Maximum number of attempts for a transient `PostgreSQL` failure.
 const PG_MAX_RETRIES: u32 = 3;
@@ -60,11 +60,12 @@ pub struct PgWriteMetrics {
     pub batches_flushed: AtomicU64,
     /// Total write failures (one per failed `persist_*` call inside a batch).
     pub write_errors: AtomicU64,
-    /// Total writes dropped because the circuit breaker was open at flush time.
+    /// Total recoverable message writes dropped because the circuit breaker was open.
     ///
     /// This counter is a lower bound on the number of messages that may need
-    /// backfilling into `PostgreSQL` after a reconnect.  Use `agent-bus sync`
-    /// to replay the Redis stream into PG after an outage.
+    /// backfilling into `PostgreSQL` after a reconnect. Presence drops are not
+    /// included because the current Redis presence cache is not an append-only
+    /// replay source.
     pub dropped_writes: AtomicU64,
 }
 
@@ -141,7 +142,7 @@ fn mark_pg_up() {
 fn with_pg_retry<T>(mut operation: impl FnMut() -> Result<T>) -> Result<T> {
     if is_pg_circuit_open() {
         return Err(crate::error::AgentBusError::Internal(
-            "PostgreSQL circuit breaker open — skipping retry".to_string()
+            "PostgreSQL circuit breaker open — skipping retry".to_string(),
         ));
     }
 
@@ -168,7 +169,11 @@ fn with_pg_retry<T>(mut operation: impl FnMut() -> Result<T>) -> Result<T> {
         }
     }
     mark_pg_down();
-    Err(last_error.unwrap_or_else(|| crate::error::AgentBusError::Internal("PostgreSQL operation failed after retries".to_string())))
+    Err(last_error.unwrap_or_else(|| {
+        crate::error::AgentBusError::Internal(
+            "PostgreSQL operation failed after retries".to_string(),
+        )
+    }))
 }
 
 /// # Errors
@@ -192,8 +197,7 @@ pub fn connect_postgres(settings: &Settings) -> Result<Option<PgClient>> {
     let Some(database_url) = settings.database_url.as_deref() else {
         return Ok(None);
     };
-    let client = PgClient::connect(database_url, NoTls).map_err(|e| crate::error::AgentBusError::Internal(format!("PostgreSQL connection failed: {e}")))?;
-    Ok(Some(client))
+    Ok(Some(open_pg_client(database_url)?))
 }
 
 // ---------------------------------------------------------------------------
@@ -227,9 +231,9 @@ fn get_pg_client(settings: &Settings) -> Result<Option<PgClient>> {
         return Ok(None);
     };
 
-    let mut guard = shared_pg_client()
-        .lock()
-        .map_err(|_e| crate::error::AgentBusError::Internal("PostgreSQL shared-client mutex poisoned".to_string()))?;
+    let mut guard = shared_pg_client().lock().map_err(|_e| {
+        crate::error::AgentBusError::Internal("PostgreSQL shared-client mutex poisoned".to_string())
+    })?;
 
     // Try to reuse the existing connection with a lightweight health ping.
     if let Some(ref mut client) = *guard {
@@ -244,8 +248,25 @@ fn get_pg_client(settings: &Settings) -> Result<Option<PgClient>> {
     // Open a new connection and hand it directly to the caller (not back into
     // the slot) so we do not hold the mutex during connect.
     drop(guard); // release lock before the blocking TCP handshake
-    let client = PgClient::connect(database_url, NoTls).map_err(|e| crate::error::AgentBusError::Internal(format!("PostgreSQL connection failed: {e}")))?;
+    let client = open_pg_client(database_url)?;
     Ok(Some(client))
+}
+
+fn open_pg_client(database_url: &str) -> Result<PgClient> {
+    let mut errors = Vec::new();
+    for candidate in loopback_url_candidates(database_url) {
+        match PgClient::connect(candidate.as_str(), NoTls) {
+            Ok(client) => return Ok(client),
+            Err(e) => errors.push(format!(
+                "{}: connection failed: {e}",
+                redact_url(&candidate)
+            )),
+        }
+    }
+    Err(crate::error::AgentBusError::Internal(format!(
+        "PostgreSQL connection failed for all loopback candidates: {}",
+        errors.join("; ")
+    )))
 }
 
 /// Return a healthy client back to the shared pool after successful use.
@@ -367,8 +388,12 @@ pub fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings) -> Re
 /// # Errors
 /// Returns an error if the timestamp string is not valid RFC 3339.
 pub fn parse_timestamp_utc(timestamp_utc: &str) -> Result<DateTime<Utc>> {
-    let parsed = DateTime::parse_from_rfc3339(&timestamp_utc.replace('Z', "+00:00"))
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("invalid timestamp_utc {timestamp_utc}: {e}")))?;
+    let parsed =
+        DateTime::parse_from_rfc3339(&timestamp_utc.replace('Z', "+00:00")).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!(
+                "invalid timestamp_utc {timestamp_utc}: {e}"
+            ))
+        })?;
     Ok(parsed.with_timezone(&Utc))
 }
 
@@ -382,8 +407,12 @@ pub fn persist_message_postgres(settings: &Settings, message: &Message) -> Resul
             };
             ensure_postgres_storage(&mut client, settings)?;
 
-            let message_id = Uuid::parse_str(&message.id)
-                .map_err(|e| crate::error::AgentBusError::Internal(format!("invalid message id {}: {e}", message.id)))?;
+            let message_id = Uuid::parse_str(&message.id).map_err(|e| {
+                crate::error::AgentBusError::Internal(format!(
+                    "invalid message id {}: {e}",
+                    message.id
+                ))
+            })?;
             let timestamp_utc = parse_timestamp_utc(&message.timestamp_utc)?;
             let tags = serde_json::Value::Array(
                 message
@@ -446,8 +475,9 @@ pub fn persist_presence_postgres(settings: &Settings, presence: &Presence) -> Re
                     .map(serde_json::Value::String)
                     .collect(),
             );
-            let ttl_seconds =
-                i64::try_from(presence.ttl_seconds).map_err(|e| crate::error::AgentBusError::Internal(format!("ttl_seconds exceeds i64: {e}")))?;
+            let ttl_seconds = i64::try_from(presence.ttl_seconds).map_err(|e| {
+                crate::error::AgentBusError::Internal(format!("ttl_seconds exceeds i64: {e}"))
+            })?;
 
             client.execute(
                 &format!(
@@ -548,6 +578,56 @@ pub fn sync_redis_to_postgres(settings: &Settings, messages: &[Message]) -> Resu
     })
 }
 
+/// Backfill dropped writes into `PostgreSQL` after a circuit-breaker recovery.
+///
+/// This is the storage-layer half of the F1 auto-backfill: it replays the
+/// supplied Redis `messages` into `PostgreSQL` via [`sync_redis_to_postgres`]
+/// (idempotent `ON CONFLICT (id) DO NOTHING`) and then clears the
+/// [`PgWriteMetrics::dropped_writes`] backfill-debt gauge by the number of rows
+/// that were actually recovered.
+///
+/// ## Why the caller passes `messages`
+///
+/// The storage layer deliberately has no Redis handle (the two storage adapters
+/// stay decoupled — this is the explicit reason the original F1 auto-backfill
+/// was deferred). The caller (the HTTP bootstrap layer, which holds both a
+/// Redis pool and the PG settings) reads the Redis stream and hands the decoded
+/// messages in here, so this function never reaches across the storage boundary.
+///
+/// ## Idempotency
+///
+/// Safe to call repeatedly. Re-running with the same `messages` inserts nothing
+/// new (every row already exists) and therefore decrements `dropped_writes` by
+/// zero on subsequent passes. The counter is saturated at zero so a stale or
+/// over-counted gauge can never underflow.
+///
+/// Returns `(total_checked, newly_inserted)` exactly like [`sync_redis_to_postgres`].
+///
+/// # Errors
+///
+/// Returns an error if the database connection or any `INSERT` fails.
+pub fn backfill_dropped_writes(
+    settings: &Settings,
+    messages: &[Message],
+) -> Result<(usize, usize)> {
+    let (checked, inserted) = sync_redis_to_postgres(settings, messages)?;
+
+    // Clear the backfill-debt gauge by however many rows we actually recovered.
+    // `fetch_update` with a saturating subtraction keeps the counter from
+    // underflowing if `dropped_writes` was a lower bound smaller than the number
+    // of rows we re-inserted (e.g. some rows had already been written).
+    if inserted > 0 {
+        let recovered = inserted as u64;
+        let _ = pg_metrics().dropped_writes.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.saturating_sub(recovered)),
+        );
+    }
+
+    Ok((checked, inserted))
+}
+
 #[must_use]
 pub fn parse_tags(value: &serde_json::Value) -> Vec<String> {
     value
@@ -646,8 +726,12 @@ pub fn list_messages_postgres_with_filters(
         };
         ensure_postgres_storage(&mut client, settings)?;
 
-        let since_minutes = i64::try_from(since_minutes).map_err(|e| crate::error::AgentBusError::Internal(format!("since_minutes exceeds i64: {e}")))?;
-        let limit = i64::try_from(limit).map_err(|e| crate::error::AgentBusError::Internal(format!("limit exceeds i64: {e}")))?;
+        let since_minutes = i64::try_from(since_minutes).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("since_minutes exceeds i64: {e}"))
+        })?;
+        let limit = i64::try_from(limit).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("limit exceeds i64: {e}"))
+        })?;
         let agent_filter = agent.map(str::to_owned);
         let sender_filter = from_agent.map(str::to_owned);
         let thread_filter = thread_id.map(str::to_owned);
@@ -801,13 +885,13 @@ pub fn query_messages_by_tags(
 ) -> Result<Vec<Message>> {
     if tags.is_empty() && thread_id.is_none() {
         return Err(crate::error::AgentBusError::Internal(
-            "query_messages_by_tags requires at least one tag or a thread_id".to_string()
+            "query_messages_by_tags requires at least one tag or a thread_id".to_string(),
         ));
     }
 
     if is_pg_circuit_open() {
         return Err(crate::error::AgentBusError::Internal(
-            "PostgreSQL circuit breaker open — skipping tag query".to_string()
+            "PostgreSQL circuit breaker open — skipping tag query".to_string(),
         ));
     }
 
@@ -870,7 +954,8 @@ pub fn prune_old_messages(settings: &Settings, older_than_days: u64) -> Result<u
             return Ok(0);
         };
         ensure_postgres_storage(&mut client, settings)?;
-        let days = i64::try_from(older_than_days).map_err(|e| crate::error::AgentBusError::Internal(format!("days exceeds i64: {e}")))?;
+        let days = i64::try_from(older_than_days)
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("days exceeds i64: {e}")))?;
         let rows = client.execute(
             &format!(
                 "delete from {} where timestamp_utc < now() - ($1::bigint * interval '1 day')",
@@ -896,7 +981,8 @@ pub fn prune_old_presence(settings: &Settings, older_than_days: u64) -> Result<u
             return Ok(0);
         };
         ensure_postgres_storage(&mut client, settings)?;
-        let days = i64::try_from(older_than_days).map_err(|e| crate::error::AgentBusError::Internal(format!("days exceeds i64: {e}")))?;
+        let days = i64::try_from(older_than_days)
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("days exceeds i64: {e}")))?;
         let rows = client.execute(
             &format!(
                 "delete from {} where timestamp_utc < now() - ($1::bigint * interval '1 day')",
@@ -948,8 +1034,12 @@ pub fn list_presence_history_postgres(
             return Ok(Vec::new());
         };
         ensure_postgres_storage(&mut client, settings)?;
-        let since_minutes = i64::try_from(since_minutes).map_err(|e| crate::error::AgentBusError::Internal(format!("since_minutes exceeds i64: {e}")))?;
-        let limit = i64::try_from(limit).map_err(|e| crate::error::AgentBusError::Internal(format!("limit exceeds i64: {e}")))?;
+        let since_minutes = i64::try_from(since_minutes).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("since_minutes exceeds i64: {e}"))
+        })?;
+        let limit = i64::try_from(limit).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("limit exceeds i64: {e}"))
+        })?;
         let agent_filter = agent.map(str::to_owned);
         let rows = client.query(
             &format!(
@@ -1257,7 +1347,8 @@ async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWr
 ///
 /// Increments [`PgWriteMetrics`] counters for written items, errors, and
 /// completed batch cycles.  When the circuit breaker is open at the time a
-/// write is attempted, `dropped_writes` is incremented to track backfill debt.
+/// message write is attempted, `dropped_writes` is incremented to track
+/// recoverable message backfill debt.
 fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>) {
     let metrics = pg_metrics();
     for req in batch.drain(..) {
@@ -1280,10 +1371,6 @@ fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>) {
                 if let Err(ref error) = err {
                     tracing::warn!("PgWriter: failed to persist presence: {error:#}");
                     metrics.write_errors.fetch_add(1, Ordering::Relaxed);
-                    // F1: count writes dropped while the circuit breaker was open.
-                    if is_pg_circuit_open() {
-                        metrics.dropped_writes.fetch_add(1, Ordering::Relaxed);
-                    }
                 } else {
                     metrics.messages_written.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1591,7 +1678,9 @@ mod tests {
         let result: Result<&str> = with_pg_retry(|| {
             attempt += 1;
             if attempt == 1 {
-                Err(crate::error::AgentBusError::Internal("transient error".to_string()))
+                Err(crate::error::AgentBusError::Internal(
+                    "transient error".to_string(),
+                ))
             } else {
                 Ok("done")
             }
@@ -1616,7 +1705,9 @@ mod tests {
         let mut attempt = 0_u32;
         let result: Result<()> = with_pg_retry(|| {
             attempt += 1;
-            Err(crate::error::AgentBusError::Internal(format!("persistent failure #{attempt}")))
+            Err(crate::error::AgentBusError::Internal(format!(
+                "persistent failure #{attempt}"
+            )))
         });
 
         assert!(result.is_err(), "expected Err after all retries exhausted");
@@ -1950,5 +2041,184 @@ mod tests {
         );
         // Restore — decrement so we don't perturb other tests.
         pg_metrics().dropped_writes.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    // -----------------------------------------------------------------------
+    // F1 (P9) — dropped-writes increment + backfill recovery regression test
+    // -----------------------------------------------------------------------
+
+    /// Serialises the tests below that mutate the process-wide circuit breaker
+    /// and `dropped_writes` gauge so they cannot interleave with each other (or
+    /// with `pg_circuit_breaker_skips_when_open`) under the parallel test runner.
+    fn global_state_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    /// REGRESSION (dropped-writes path): a `PostgreSQL` write attempted while the
+    /// circuit breaker is open must increment `dropped_writes`, and the
+    /// gauge-clearing arithmetic in `backfill_dropped_writes` must zero the gap
+    /// by the recovered count.
+    ///
+    /// ## What this covers deterministically (no live services required)
+    /// - `flush_pg_batch` increments `dropped_writes` when a message persist
+    ///   fails while `is_pg_circuit_open()` is true (PG unconfigured → persist
+    ///   fails immediately, and we force the breaker open).
+    /// - The saturating decrement contract that `backfill_dropped_writes` applies
+    ///   after a successful replay (modelled here against the same atomic gauge),
+    ///   including the underflow-safety guarantee.
+    ///
+    /// ## What it does NOT cover
+    /// - The end-to-end Redis→PG replay inside `backfill_dropped_writes` (that
+    ///   needs live Redis + PG; exercised by the `agent-bus sync` integration
+    ///   path and the HTTP backfill monitor at runtime). Here PG is deliberately
+    ///   unconfigured so the test is hermetic.
+    #[test]
+    fn dropped_writes_increments_while_breaker_open_then_backfill_clears_gap() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let metrics = pg_metrics();
+        let baseline = metrics.dropped_writes.load(Ordering::Relaxed);
+
+        // PG unconfigured so persist_message_postgres fails fast; breaker open so
+        // flush_pg_batch attributes the failure to a dropped write.
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+        mark_pg_down();
+        assert!(is_pg_circuit_open(), "precondition: breaker must be open");
+
+        let mut batch: Vec<PgWriteRequest> =
+            vec![PgWriteRequest::Message(Box::new(sample_test_message()))];
+        flush_pg_batch(&settings, &mut batch);
+
+        let after_drop = metrics.dropped_writes.load(Ordering::Relaxed);
+        assert!(
+            after_drop > baseline,
+            "dropped_writes must increment when a write is attempted while the \
+             circuit breaker is open (baseline={baseline}, after={after_drop})"
+        );
+        let gap = after_drop - baseline;
+        assert_eq!(gap, 1, "exactly one message was dropped");
+
+        // Model the recovery: a successful backfill recovers `gap` rows and clears
+        // the gauge by that count via the same saturating arithmetic that
+        // `backfill_dropped_writes` uses.
+        let recovered = gap;
+        let _ =
+            metrics
+                .dropped_writes
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(current.saturating_sub(recovered))
+                });
+        let after_backfill = metrics.dropped_writes.load(Ordering::Relaxed);
+        assert_eq!(
+            after_backfill, baseline,
+            "backfill must zero the dropped-writes gap (back to baseline={baseline})"
+        );
+
+        // Underflow safety: clearing more than remains saturates at zero.
+        metrics.dropped_writes.store(0, Ordering::Relaxed);
+        let _ =
+            metrics
+                .dropped_writes
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    Some(current.saturating_sub(1_000))
+                });
+        assert_eq!(
+            metrics.dropped_writes.load(Ordering::Relaxed),
+            0,
+            "saturating decrement must never underflow the gauge"
+        );
+
+        // Restore global state for other tests.
+        metrics.dropped_writes.store(baseline, Ordering::Relaxed);
+        mark_pg_up();
+    }
+
+    #[test]
+    fn dropped_writes_ignores_unreplayable_presence_failures() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let metrics = pg_metrics();
+        let baseline = metrics.dropped_writes.load(Ordering::Relaxed);
+
+        let mut settings = Settings::from_env();
+        settings.database_url = None;
+        mark_pg_down();
+        assert!(is_pg_circuit_open(), "precondition: breaker must be open");
+
+        let mut batch: Vec<PgWriteRequest> =
+            vec![PgWriteRequest::Presence(Box::new(sample_test_presence()))];
+        flush_pg_batch(&settings, &mut batch);
+
+        assert_eq!(
+            metrics.dropped_writes.load(Ordering::Relaxed),
+            baseline,
+            "presence writes are not recoverable from the Redis message stream"
+        );
+
+        metrics.dropped_writes.store(baseline, Ordering::Relaxed);
+        mark_pg_up();
+    }
+
+    /// `backfill_dropped_writes` is idempotent and leaves the gauge untouched
+    /// when there is nothing to recover (empty Redis stream / PG unconfigured).
+    #[test]
+    fn backfill_dropped_writes_is_a_noop_with_no_messages() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        let metrics = pg_metrics();
+        let baseline = metrics.dropped_writes.load(Ordering::Relaxed);
+
+        let mut settings = Settings::from_env();
+        settings.database_url = None; // get_pg_client → Ok(None) → (0, 0)
+        mark_pg_up();
+
+        let (checked, inserted) =
+            backfill_dropped_writes(&settings, &[]).expect("empty backfill must succeed");
+        assert_eq!((checked, inserted), (0, 0));
+        assert_eq!(
+            metrics.dropped_writes.load(Ordering::Relaxed),
+            baseline,
+            "a no-op backfill must not perturb the dropped-writes gauge"
+        );
+    }
+
+    fn sample_test_message() -> Message {
+        Message {
+            id: Uuid::now_v7().to_string(),
+            timestamp_utc: "2026-06-13T00:00:00.000000Z".to_owned(),
+            protocol_version: crate::models::PROTOCOL_VERSION.to_owned(),
+            from: "claude".to_owned(),
+            to: "codex".to_owned(),
+            topic: "status".to_owned(),
+            body: "regression".to_owned(),
+            thread_id: None,
+            tags: smallvec::SmallVec::new(),
+            priority: "normal".to_owned(),
+            request_ack: false,
+            reply_to: None,
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+            stream_id: None,
+        }
+    }
+
+    fn sample_test_presence() -> Presence {
+        Presence {
+            agent: "claude".to_owned(),
+            status: "online".to_owned(),
+            protocol_version: crate::models::PROTOCOL_VERSION.to_owned(),
+            timestamp_utc: "2026-06-13T00:00:00.000000Z".to_owned(),
+            session_id: Uuid::now_v7().to_string(),
+            capabilities: Vec::new(),
+            metadata: serde_json::Value::Object(serde_json::Map::new()),
+            ttl_seconds: 300,
+        }
     }
 }

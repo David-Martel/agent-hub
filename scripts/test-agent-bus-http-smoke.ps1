@@ -20,10 +20,10 @@ if (-not (Test-Path $BinaryPath)) {
 }
 
 if (-not $env:AGENT_BUS_REDIS_URL) {
-    $env:AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
+    $env:AGENT_BUS_REDIS_URL = "redis://127.0.0.1:6380/0"
 }
 if (-not $env:AGENT_BUS_DATABASE_URL) {
-    $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5300/redis_backend"
+    $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@127.0.0.1:5300/redis_backend"
 }
 if (-not $env:AGENT_BUS_SERVER_HOST) {
     $env:AGENT_BUS_SERVER_HOST = "localhost"

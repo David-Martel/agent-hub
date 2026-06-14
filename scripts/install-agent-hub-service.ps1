@@ -5,7 +5,7 @@ param(
     [string]$DatabaseName = "redis_backend",
     [string]$BinaryPath = (Join-Path $HOME "bin/agent-bus-http.exe"),
     [switch]$ForceReinstall,
-    [switch]$StartService = $true
+    [bool]$StartService = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -17,7 +17,7 @@ $stderrLog = Join-Path $logRoot "agent-hub-stderr.log"
 
 # Verify binary exists
 if (-not (Test-Path $binaryPath)) {
-    throw "agent-bus binary not found at $binaryPath. Build with: cd rust-cli && cargo build --release"
+    throw "agent-bus binary not found at $binaryPath. Build with: cargo build --release"
 }
 
 # Create log directory
@@ -48,8 +48,8 @@ Write-Host "Installing $ServiceName service..."
 
 # Environment variables
 & $nssmPath set $ServiceName AppEnvironmentExtra `
-    "AGENT_BUS_REDIS_URL=redis://localhost:6380/0" `
-    "AGENT_BUS_DATABASE_URL=postgresql://postgres@localhost:5300/$DatabaseName" `
+    "AGENT_BUS_REDIS_URL=redis://127.0.0.1:6380/0" `
+    "AGENT_BUS_DATABASE_URL=postgresql://postgres@127.0.0.1:5300/$DatabaseName" `
     "AGENT_BUS_SERVER_HOST=localhost" `
     "AGENT_BUS_SERVICE_NAME=$ServiceName" `
     "AGENT_BUS_STARTUP_ENABLED=true" `

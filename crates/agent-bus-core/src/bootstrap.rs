@@ -1,6 +1,6 @@
+use crate::error::Result;
 use crate::postgres_store::{PgWriter, spawn_pg_health_monitor};
 use crate::settings::Settings;
-use crate::error::Result;
 
 /// A guard that manages the lifetime of background tasks started during bootstrap.
 /// When this guard is dropped or explicitly shutdown, it ensures clean termination
@@ -39,7 +39,9 @@ pub fn bootstrap() -> Result<(Settings, BootstrapGuard)> {
         .try_init(); // Ignore if it's already initialized by another module/test
 
     let settings = Settings::from_env();
-    settings.validate().map_err(|e| crate::error::AgentBusError::Internal(format!("Settings validation failed: {e}")))?;
+    settings.validate().map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("Settings validation failed: {e}"))
+    })?;
 
     let (writer, pg_handle) = PgWriter::spawn(settings.clone());
     let _ = crate::init_pg_writer(writer);

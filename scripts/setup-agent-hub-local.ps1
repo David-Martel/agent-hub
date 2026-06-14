@@ -11,8 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$rustCliRoot = Join-Path $repoRoot "rust-cli"
-$invokeScript = Join-Path $PSScriptRoot "invoke-agent-bus-cli.ps1"
+
 $commonBuildScript = Join-Path $PSScriptRoot "rust-build-common.ps1"
 $homeBin = Join-Path $HOME "bin"
 $installedBinary = Join-Path $homeBin "agent-bus.exe"
@@ -55,8 +54,8 @@ if ($databaseExists.Trim() -ne "1") {
     }
 }
 
-$env:AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
-$env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:$DatabasePort/$DatabaseName"
+$env:AGENT_BUS_REDIS_URL = "redis://127.0.0.1:6380/0"
+$env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@127.0.0.1:$DatabasePort/$DatabaseName"
 $env:AGENT_BUS_SERVER_HOST = "localhost"
 
 $resolvedTargetDir = Resolve-AgentBusTargetDir -RepoRoot $repoRoot -ExplicitTargetDir $TargetDir -ExplicitNamespace $TargetNamespace
@@ -70,7 +69,7 @@ $buildEnvState = Use-AgentBusRustBuildEnv `
 try {
     if (-not $SkipBuild) {
         Write-Host "Building native agent-bus binaries ..."
-        Push-Location $rustCliRoot
+        Push-Location $repoRoot
         try {
             & cargo build --release --bins
             if ($LASTEXITCODE -ne 0) {
@@ -82,9 +81,9 @@ try {
         }
     }
 
-    $repoCliBinary = Find-AgentBusBuiltBinary -RustCliDir $rustCliRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus"
-    $repoHttpBinary = Find-AgentBusBuiltBinary -RustCliDir $rustCliRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-http"
-    $repoMcpBinary = Find-AgentBusBuiltBinary -RustCliDir $rustCliRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-mcp"
+    $repoCliBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus"
+    $repoHttpBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-http"
+    $repoMcpBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-mcp"
     if (-not $repoCliBinary) {
         throw "Built agent-bus CLI binary was not found."
     }

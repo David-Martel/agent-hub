@@ -8,19 +8,19 @@ pre-commit:
   parallel: true
   commands:
     rust-fmt:
-      root: "rust-cli"
+      root: "."
       glob: "*.rs"
       run: cargo fmt -- --check
 
     rust-clippy:
-      root: "rust-cli"
+      root: "."
       glob: "*.rs"
       env:
         RUSTC_WRAPPER: ""
       run: cargo clippy --all-targets --quiet -- -D warnings
 
     ast-grep-rust:
-      root: "rust-cli"
+      root: "."
       glob: "*.rs"
       run: sg scan --config ~/.claude/sgconfig.yml {staged_files} 2>/dev/null; exit 0
 
@@ -28,14 +28,14 @@ pre-push:
   parallel: true
   commands:
     rust-test:
-      root: "rust-cli"
+      root: "."
       glob: "*.rs"
       env:
         RUSTC_WRAPPER: ""
       run: cargo test --quiet
 
     rust-audit:
-      root: "rust-cli"
+      root: "."
       run: cargo audit --quiet 2>/dev/null; exit 0
 
 commit-msg:

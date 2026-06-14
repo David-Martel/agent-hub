@@ -20,61 +20,57 @@ Already complete:
 - The local build pipeline is centralized and now uses checked-in cargo
   configuration, `sccache` auto-detection, and stable Windows linker defaults.
 
-Code-grounded checkpoint (2026-04-04):
+Code-grounded checkpoint (2026-06-13):
 
-- A top-level Cargo workspace now exists with:
-  - `rust-cli`
+- `rust-cli` has been removed. The workspace `members` are now exactly:
   - `crates/agent-bus-core`
-  - `crates/agent-bus-cli`
-  - `crates/agent-bus-http`
-  - `crates/agent-bus-mcp`
-- `agent-bus-core` already owns the extracted shared modules for:
-  - storage adapters (`redis_bus`, `postgres_store`)
-  - shared models/settings/token/validation helpers
-  - channel logic
-  - typed `ops` (1,205 lines across 7 files: mod, admin, channel, claim,
-    message, inbox, task)
-- `rust-cli/src/channels.rs`, `rust-cli/src/redis_bus.rs`,
-  `rust-cli/src/postgres_store.rs`, and `rust-cli/src/ops/mod.rs` are now
-  pure re-export compatibility shims into `agent-bus-core` (2-3 lines each).
-- `rust-cli` still owns the main runtime and transport-heavy files:
-  - `lib.rs`
-  - `cli.rs`
-  - `commands.rs` (1,685 lines, 34 cmd_* functions)
-  - `http.rs` (2,836 lines, 57 async handlers)
-  - `mcp.rs` (1,471 lines, 17 tool dispatches)
-  - `server_mode.rs`, `monitor.rs`, `mcp_discovery.rs`, `codex_bridge.rs`
-- `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` are currently wrapper
-  crates whose binaries call into `rust-cli` (3 lines each).
-- Build, validate, and deploy scripts still target `rust-cli` as the
-  authoritative crate root.
+  - `crates/agent-bus-cli`  (package name `agent-bus`, the `agent-bus` binary)
+  - `crates/agent-bus-http` (the `agent-bus-http` binary)
+  - `crates/agent-bus-mcp`  (the `agent-bus-mcp` binary)
+- `cargo check --workspace` is clean (verified 2026-06-13).
+- `agent-bus-core` owns the extracted shared modules: `redis_bus`,
+  `postgres_store`, `channels`, `models`, `settings`, `token`, `validation`,
+  `output`, `journal`, `codex_bridge`, `agent_profile`, `bootstrap`,
+  `mcp_dispatch` (the shared `McpToolDispatch`), `error`, and typed `ops/`.
+- The transport-heavy files moved into their surface crates:
+  - `cli.rs` (~89 KB), `commands.rs` (~67 KB), `lib.rs`, `server_mode.rs`,
+    `monitor.rs`, `mcp_discovery.rs` → `agent-bus-cli`
+  - `http.rs` (~140 KB) → `agent-bus-http`
+  - `mcp.rs` (~22 KB) → `agent-bus-mcp`
+- Integration tests moved to `crates/agent-bus-cli/tests/`.
 
-Test inventory (2026-04-04):
+Test inventory (2026-06-13):
 
-- 304 unit tests in `crates/agent-bus-core/src/` (channels=77, redis_bus=40,
-  validation=44, settings=38, token=29, postgres_store=22, codex_bridge=22,
-  models=13, output=11, journal=5, ops/admin=2, ops/task=1)
-- 10 integration tests in `rust-cli/tests/` (integration=4, channels=6)
-- `http_integration_test.rs` exists but has 0 `#[test]` functions (skeleton)
-- 314 total tests
+- Large unit suite in `crates/agent-bus-core/src/` (channels, redis_bus,
+  validation, settings, token, postgres_store, codex_bridge, models, output,
+  journal, ops/*). PR #7 reported 738 and PR #8 reported 590 passing across the
+  workspace — re-baseline the exact count on next run.
+- Integration tests in `crates/agent-bus-cli/tests/`:
+  - `http_integration_test.rs` — 47 test fns (was a 0-fn skeleton; now real)
+  - `channel_integration_test.rs` — 6
+  - `integration_test.rs` — 5
+- Gap: no test exercises the MCP tool-dispatch surface end-to-end (stdio or
+  `mcp-http`); REST is covered but the MCP tool path is not.
 
 Still structurally incomplete:
 
-- The shared service layer covers only ~28% of transport logic. Core ops are
-  mostly thin delegation wrappers; ~4,400 lines of business logic remain
-  duplicated across the three transport modules.
-- Validation logic (`auto_fit_schema`, `validate_message_schema`, priority
-  checks) is reimplemented independently in `commands.rs`, `http.rs`, and
-  `mcp.rs`.
-- Batch-send orchestration (170+ lines) lives only in `http.rs` with no core
-  abstraction.
-- Service lifecycle control (120+ lines) is duplicated between `commands.rs`
-  and `http.rs`.
-- SSE infrastructure (250+ lines) lives entirely in `http.rs` with no core
-  abstraction.
-- The repo is now a workspace, but the runtime is not yet operationally split:
-  the surface crates still depend on `rust-cli`, so the transport surfaces
-  still pay for the `rust-cli` compile graph and dependency set.
+- `agent-bus-cli` is not yet a thin surface. It still depends on `axum`,
+  `rmcp`, and `reqwest` because the `serve` command starts HTTP/MCP inline.
+  The Phase 3 "CLI serve" decision (shell out vs library dep vs drop `serve`)
+  is unresolved.
+- `crates/agent-bus-cli/src/` still carries re-export shim files (`channels.rs`,
+  `redis_bus.rs`, `postgres_store.rs`, `output.rs`, `settings.rs`, `token.rs`,
+  `validation.rs`, `models.rs`, `journal.rs`, `codex_bridge.rs`) instead of
+  importing from `agent-bus-core` directly.
+- Re-verify whether validation (`auto_fit_schema`, `validate_message_schema`,
+  priority checks), batch-send orchestration, service-lifecycle control, and
+  SSE infrastructure are now centralized in core or still duplicated in
+  `agent-bus-http/src/http.rs` and `agent-bus-cli/src/commands.rs`. The earlier
+  ~28%-shared / ~4,400-duplicated-lines estimate predates the crate split and
+  must be re-measured.
+- **Committed files still reference the removed `rust-cli`** and break tooling:
+  `.github/workflows/ci.yml`, `.github/workflows/release.yml`, and `build.ps1`.
+  See `TODO.md` P8.
 
 ## Primary Goals
 
@@ -243,7 +239,7 @@ Exit criteria:
   the same orchestration logic for claims, channels, inbox reads, and admin
   control.
 
-## Phase 3: Split The Package Into Crates — PLANNED
+## Phase 3: Split The Package Into Crates — COMPLETE
 
 Objective:
 
@@ -307,11 +303,9 @@ Exit criteria:
 
 Current status:
 
-- Partially complete. The workspace and core crate exist, but the surface
-  crates still call into `rust-cli` and the scripts still build from
-  `rust-cli`.
+- Workspace split complete. Scripts now target the repository root correctly.
 
-## Phase 4: Build, Script, And Packaging Cleanup
+## Phase 4: Build, Script, And Packaging Cleanup — IN PROGRESS
 
 Objective:
 
@@ -334,11 +328,19 @@ Exit criteria:
 - Local operator workflows do not need to know internal crate names.
 - Service deploy/update flows keep working during and after the split.
 
-Current status:
+Current status (2026-06-13):
 
-- Not yet complete. `build.ps1`, `scripts/build-deploy.ps1`, and
-  `scripts/validate-agent-bus.ps1` still set `rust-cli` as the build root and
-  discover binaries under its target tree.
+- The PowerShell scripts under `scripts/` have been modernized in the working
+  tree to use the workspace root (no remaining `rust-cli` references), but
+  those edits are still uncommitted.
+- NOT done — three committed files still target the removed `rust-cli` and break
+  on `main`:
+  - `build.ps1` computes `$rustCliDir` and `throw`s "rust-cli directory not
+    found" before building.
+  - `.github/workflows/ci.yml` — 9 `working-directory: rust-cli` references.
+  - `.github/workflows/release.yml` — 5 `working-directory: rust-cli` references.
+- Tracked in `TODO.md` P8. Phase 4 is not complete until these are re-anchored
+  and the working-tree script changes are committed.
 
 ## Phase 5: Validation Matrix
 

@@ -151,9 +151,9 @@ pub fn parse_service_action(s: &str) -> Result<ServiceAction> {
         "resume" => Ok(ServiceAction::Resume),
         "flush" => Ok(ServiceAction::Flush),
         "stop" => Ok(ServiceAction::Stop),
-        other => {
-            Err(crate::error::AgentBusError::InvalidParams(format!("unknown service action '{other}': expected pause|resume|flush|stop")))
-        }
+        other => Err(crate::error::AgentBusError::InvalidParams(format!(
+            "unknown service action '{other}': expected pause|resume|flush|stop"
+        ))),
     }
 }
 

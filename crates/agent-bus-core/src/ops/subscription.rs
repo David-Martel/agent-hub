@@ -52,7 +52,8 @@ pub fn subscribe(settings: &Settings, request: &SubscribeRequest<'_>) -> Result<
     {
         return Err(crate::error::AgentBusError::InvalidParams(format!(
             "invalid priority_min '{pmin}'; must be one of: {}",
-            VALID_SUBSCRIPTION_PRIORITIES.join(", "))));
+            VALID_SUBSCRIPTION_PRIORITIES.join(", ")
+        )));
     }
 
     let now = Utc::now();

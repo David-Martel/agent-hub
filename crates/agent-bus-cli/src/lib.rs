@@ -30,7 +30,6 @@ use anyhow::{Context as _, Result};
 use clap::Parser;
 use mimalloc::MiMalloc;
 
-
 use agent_bus_core::bootstrap;
 use cli::{Cli, Cmd};
 use commands::{

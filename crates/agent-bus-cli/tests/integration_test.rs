@@ -121,3 +121,58 @@ fn invalid_settings_rejected() {
         "should reject non-localhost Redis URL"
     );
 }
+
+#[test]
+fn cli_server_mode_send_and_read_round_trip() {
+    if !redis_available() {
+        eprintln!("SKIP: Redis not available");
+        return;
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+
+    let send = agent_bus_binary()
+        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .args([
+            "send",
+            "--from-agent",
+            &format!("cli-svr-snd-{ts}"),
+            "--to-agent",
+            &format!("cli-svr-recv-{ts}"),
+            "--topic",
+            "server-mode-test",
+            "--body",
+            "hello-via-server-mode",
+            "--encoding",
+            "compact",
+        ])
+        .output()
+        .expect("send failed");
+
+    assert!(
+        send.status.success(),
+        "server-mode send failed: {}",
+        String::from_utf8_lossy(&send.stderr)
+    );
+
+    let read = agent_bus_binary()
+        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .args([
+            "read",
+            "--agent",
+            &format!("cli-svr-recv-{ts}"),
+            "--since-minutes",
+            "1",
+            "--encoding",
+            "compact",
+        ])
+        .output()
+        .expect("read failed");
+
+    assert!(read.status.success());
+    let stdout = String::from_utf8_lossy(&read.stdout);
+    assert!(stdout.contains("hello-via-server-mode"));
+}

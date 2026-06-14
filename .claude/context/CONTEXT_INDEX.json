@@ -1,6 +1,16 @@
 {
   "contexts": [
     {
+      "id": "ctx-agent-bus-20260613",
+      "file": "agent-bus-context-2026-06-13.md",
+      "created": "2026-06-13T00:00:00Z",
+      "project": "agent-bus",
+      "git_branch": "main",
+      "git_commit": "a151397",
+      "agents_involved": ["main"],
+      "summary": "Audited TODOs vs code: rust-cli already removed (split done, cargo check clean) but ci.yml/release.yml/build.ps1/sgconfig.yml still ref it (broken). Added TODO.md P8 (post-split remediation) + P9 (robustness) and refreshed agents.TODO.md checkpoint/test inventory. Next: land CI/build fixes + in-flight migration, then deploy parallel fleet."
+    },
+    {
       "id": "ctx-agent-bus-20260612-1828",
       "file": "agent-bus-context-2026-06-12.md",
       "created": "2026-06-12T22:28:16Z",
@@ -19,5 +29,5 @@
       "summary": "Earlier structural refactor context (crate split planning)."
     }
   ],
-  "latest": "ctx-agent-bus-20260612-1828"
+  "latest": "ctx-agent-bus-20260613"
 }

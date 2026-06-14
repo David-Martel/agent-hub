@@ -41,7 +41,10 @@ fn resolve_port() -> u16 {
             if let Some(p) = args.next().and_then(|v| v.parse::<u16>().ok()) {
                 return p;
             }
-        } else if let Some(p) = arg.strip_prefix("--port=").and_then(|v| v.parse::<u16>().ok()) {
+        } else if let Some(p) = arg
+            .strip_prefix("--port=")
+            .and_then(|v| v.parse::<u16>().ok())
+        {
             return p;
         }
     }

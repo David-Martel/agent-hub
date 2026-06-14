@@ -1,16 +1,33 @@
 [alias]
-ab-build = "build -p agent-bus-cli -p agent-bus-http -p agent-bus-mcp"
-ab-fast = "build -p agent-bus-cli -p agent-bus-http -p agent-bus-mcp --profile fast-release"
-ab-test = "test --workspace --lib"
-ab-itest = "test -p agent-bus --test http_integration_test --test channel_integration_test -- --test-threads=1"
+# Core build aliases
+# NOTE: crates/agent-bus-cli has package name "agent-bus" (not "agent-bus-cli")
+ab-build = "build -p agent-bus -p agent-bus-http -p agent-bus-mcp"
+ab-fast  = "build -p agent-bus -p agent-bus-http -p agent-bus-mcp --profile fast-release"
+
+# Test aliases
+ab-test   = "test --workspace --lib"
+ab-itest  = "test -p agent-bus --test http_integration_test --test channel_integration_test -- --test-threads=1"
 ab-clippy = "clippy --workspace --all-targets"
 ab-nextest = "nextest run --workspace"
 
+# Coverage (requires: cargo install cargo-llvm-cov --locked)
+ab-cov = "llvm-cov --workspace --lcov --output-path lcov.info"
+
+# Benchmarks
+ab-bench = "bench -p agent-bus"
+
+# Dependency hygiene (requires: cargo install cargo-machete --locked)
+ab-machete = "machete"
+
+# Security audit (requires: cargo install cargo-audit --locked)
+ab-audit = "audit"
+
+# Flamegraph profiling (requires: cargo install flamegraph --locked)
+# Builds with [profile.profiling] — debug symbols on, strip off
+ab-flame = "flamegraph --profile profiling -p agent-bus --"
+
 [future-incompat-report]
 frequency = "never"
-
-[build]
-rustc-wrapper = "scripts/rustc-wrapper.cmd"
 
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link"

@@ -57,7 +57,10 @@ fn load_existing_ids(path: &Path) -> HashSet<String> {
     let Ok(file) = std::fs::File::open(path) else {
         return ids;
     };
-    for line in BufReader::new(file).lines().map_while(std::result::Result::ok) {
+    for line in BufReader::new(file)
+        .lines()
+        .map_while(std::result::Result::ok)
+    {
         if let Ok(msg) = serde_json::from_str::<serde_json::Value>(&line)
             && let Some(id) = msg.get("id").and_then(|v| v.as_str())
         {
@@ -81,7 +84,11 @@ pub fn export_journal(messages: &[Message], output_path: &Path) -> Result<usize>
     if let Some(parent) = output_path.parent()
         && !parent.as_os_str().is_empty()
     {
-        std::fs::create_dir_all(parent).map_err(|e| crate::error::AgentBusError::Internal(format!("failed to create journal directory: {e}")))?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!(
+                "failed to create journal directory: {e}"
+            ))
+        })?;
     }
 
     let existing = load_existing_ids(output_path);
@@ -98,11 +105,15 @@ pub fn export_journal(messages: &[Message], output_path: &Path) -> Result<usize>
         .create(true)
         .append(true)
         .open(output_path)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("failed to open journal file: {e}")))?;
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("failed to open journal file: {e}"))
+        })?;
 
     for msg in &new_msgs {
         let line = serde_json::to_string(msg).unwrap_or_default();
-        writeln!(file, "{line}").map_err(|e| crate::error::AgentBusError::Internal(format!("failed to write journal entry: {e}")))?;
+        writeln!(file, "{line}").map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("failed to write journal entry: {e}"))
+        })?;
     }
 
     maybe_deploy_protocol_doc(output_path);

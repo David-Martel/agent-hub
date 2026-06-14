@@ -58,3 +58,13 @@ codegen-units = 16
 incremental = true
 debug = 1
 strip = "debuginfo"
+
+# Profile for flamegraph / samply profiling work.
+# Inherits release optimisations so hotpaths are realistic, but keeps full
+# debug symbols (DWARF) and disables stripping so profilers can resolve frames.
+# Use: cargo ab-flame -- <agent-bus args>
+#      samply record cargo run --profile profiling -p agent-bus -- <args>
+[profile.profiling]
+inherits = "release"
+debug = true
+strip = false

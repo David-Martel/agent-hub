@@ -1,0 +1,78 @@
+# syntax=docker/dockerfile:1
+#
+# Cross-platform validation image for the agent-bus Cargo workspace.
+#
+# Purpose: confirm the workspace compiles and its library unit tests pass on
+# Linux glibc, independent of the Windows-primary development environment. The
+# code is portable (redis/postgres clients, axum, tokio), so a clean Linux build
+# is a meaningful portability gate.
+#
+# This image deliberately does NOT carry a Windows-specific cargo config: it
+# relies on the default host target (x86_64-unknown-linux-gnu). The repo-local
+# .cargo/config.toml pins an msvc linker and sccache wrapper which are
+# Windows-only, so we neutralize RUSTC_WRAPPER and avoid copying that file into
+# a location cargo would pick up for Linux builds.
+#
+# Build/validate locally:
+#   docker build -f docker/Dockerfile.linux .
+#
+# Optional musl static target (uncomment the musl stage usage below):
+#   docker build -f docker/Dockerfile.linux --target musl .
+
+# ---------------------------------------------------------------------------
+# Stage 1: glibc build + library unit tests
+# ---------------------------------------------------------------------------
+FROM rust:1-bookworm AS build
+
+# Avoid the Windows-only rustc wrapper (scripts/rustc-wrapper.cmd) on Linux.
+ENV RUSTC_WRAPPER="" \
+    CARGO_TERM_COLOR=always \
+    CARGO_INCREMENTAL=0 \
+    RUST_BACKTRACE=1
+
+WORKDIR /workspace
+
+# Copy the whole workspace. .dockerignore (if present) trims target/ etc.
+COPY . .
+
+# Drop the repo-local .cargo/config.toml: it pins the msvc linker + sccache
+# wrapper which do not exist in this Linux image and would break the build.
+RUN rm -f .cargo/config.toml .cargo/config
+
+# Compile the entire workspace in release mode (all bins + libs).
+RUN cargo build --workspace --release
+
+# Run the library unit tests. These are pure unit tests that do not require a
+# live Redis or PostgreSQL instance (integration tests are excluded by --lib).
+RUN cargo test --workspace --lib
+
+# ---------------------------------------------------------------------------
+# Stage 2 (optional): musl static build for x86_64-unknown-linux-musl
+# ---------------------------------------------------------------------------
+FROM rust:1-bookworm AS musl
+
+ENV RUSTC_WRAPPER="" \
+    CARGO_TERM_COLOR=always \
+    CARGO_INCREMENTAL=0
+
+RUN rustup target add x86_64-unknown-linux-musl \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends musl-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+COPY . .
+RUN rm -f .cargo/config.toml .cargo/config
+RUN cargo build --workspace --release --target x86_64-unknown-linux-musl
+
+# ---------------------------------------------------------------------------
+# Default stage: the glibc build/test result. Keep a tiny final image so the
+# validation `docker build` succeeds end-to-end and is cache-friendly.
+# ---------------------------------------------------------------------------
+FROM debian:bookworm-slim AS final
+COPY --from=build /workspace/target/release/agent-bus /usr/local/bin/agent-bus
+COPY --from=build /workspace/target/release/agent-bus-http /usr/local/bin/agent-bus-http
+COPY --from=build /workspace/target/release/agent-bus-mcp /usr/local/bin/agent-bus-mcp
+LABEL org.opencontainers.image.title="agent-bus-linux-validate" \
+      org.opencontainers.image.description="Linux glibc build+test validation for the agent-bus workspace"
+CMD ["agent-bus", "--help"]

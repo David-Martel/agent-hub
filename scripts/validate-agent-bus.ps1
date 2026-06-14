@@ -11,7 +11,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$rustCliDir = Join-Path $repoRoot "rust-cli"
 $workspaceManifest = Join-Path $repoRoot "Cargo.toml"
 $invokeScript = Join-Path $PSScriptRoot "invoke-agent-bus-cli.ps1"
 $functionalSmokeScript = Join-Path $PSScriptRoot "test-agent-bus-functional.ps1"
@@ -52,10 +51,10 @@ function Write-ServerVersionDiagnostics {
 }
 
 if (-not $env:AGENT_BUS_REDIS_URL) {
-    $env:AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
+    $env:AGENT_BUS_REDIS_URL = "redis://127.0.0.1:6380/0"
 }
 if (-not $env:AGENT_BUS_DATABASE_URL) {
-    $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5300/redis_backend"
+    $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres@127.0.0.1:5300/redis_backend"
 }
 if (-not $env:AGENT_BUS_SERVER_HOST) {
     $env:AGENT_BUS_SERVER_HOST = "localhost"
@@ -75,10 +74,10 @@ $useNextest = (-not $DisableNextest) -and [bool](Get-AgentBusCommandPath -Name "
 
 try {
     if (-not $SkipBuild) {
-        Invoke-AgentBusCargo -Label "cargo build --profile fast-release --bins" -Command "build" -AdditionalArgs @("--profile", "fast-release", "--bins") -WorkDir $rustCliDir
+        Invoke-AgentBusCargo -Label "cargo build --profile fast-release --bins" -Command "build" -AdditionalArgs @("--profile", "fast-release", "--bins") -WorkDir $repoRoot
 
         foreach ($binaryName in @("agent-bus", "agent-bus-http", "agent-bus-mcp")) {
-            $binaryPath = Find-AgentBusBuiltBinary -RustCliDir $rustCliDir -TargetDir $resolvedTargetDir -BinaryName $binaryName -Profile "fast-release"
+            $binaryPath = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName $binaryName -Profile "fast-release"
             if (-not $binaryPath) {
                 throw "Expected built binary '$binaryName' was not found in the fast-release target dir."
             }

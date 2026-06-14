@@ -29,7 +29,9 @@ pub fn parse_resource_scope(scope: &str) -> Result<ResourceScope> {
     match scope {
         "repo" => Ok(ResourceScope::Repo),
         "machine" => Ok(ResourceScope::Machine),
-        other => Err(crate::error::AgentBusError::InvalidParams(format!("invalid scope '{other}'; expected repo|machine"))),
+        other => Err(crate::error::AgentBusError::InvalidParams(format!(
+            "invalid scope '{other}'; expected repo|machine"
+        ))),
     }
 }
 

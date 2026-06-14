@@ -337,8 +337,6 @@ pub fn validated_batch_send(
     transport: &str,
     has_sse_subscribers: bool,
 ) -> Result<Vec<PostedMessage>> {
-    
-
     let mut payloads: Vec<BatchSendPayload> = Vec::with_capacity(items.len());
 
     for (idx, item) in items.iter().enumerate() {
@@ -358,8 +356,11 @@ pub fn validated_batch_send(
         let effective_schema =
             enforce_schema_for_transport(transport, item.schema.as_deref(), topic);
         let fitted_body = auto_fit_schema(body, effective_schema);
-        validate_message_schema(&fitted_body, effective_schema)
-            .map_err(|e| crate::error::AgentBusError::Internal(format!("item {idx}: schema validation failed: {e}")))?;
+        validate_message_schema(&fitted_body, effective_schema).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!(
+                "item {idx}: schema validation failed: {e}"
+            ))
+        })?;
 
         let metadata = if item.metadata.is_null() {
             serde_json::Value::Object(serde_json::Map::new())
