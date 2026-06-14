@@ -28,7 +28,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$rustCliDir = Join-Path $repoRoot "rust-cli"
 $scriptsDir = Join-Path $repoRoot "scripts"
 $commonBuildScript = Join-Path $scriptsDir "rust-build-common.ps1"
 $serviceName = "AgentHub"
@@ -50,9 +49,9 @@ $buildEnvState = Use-AgentBusRustBuildEnv `
     -ResetSccacheStats `
     -ShowSummary
 
-$cliTargetBinary = Find-AgentBusBuiltBinary -RustCliDir $rustCliDir -TargetDir $resolvedTargetDir -BinaryName "agent-bus"
-$httpTargetBinary = Find-AgentBusBuiltBinary -RustCliDir $rustCliDir -TargetDir $resolvedTargetDir -BinaryName "agent-bus-http"
-$mcpTargetBinary = Find-AgentBusBuiltBinary -RustCliDir $rustCliDir -TargetDir $resolvedTargetDir -BinaryName "agent-bus-mcp"
+$cliTargetBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus"
+$httpTargetBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-http"
+$mcpTargetBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-mcp"
 
 function Get-HealthSummary {
     param([Parameter(Mandatory = $true)]$Health)
@@ -60,9 +59,9 @@ function Get-HealthSummary {
     $protocol = if ($Health.protocol_version) { $Health.protocol_version } else { "n/a" }
     $runtime = if ($Health.runtime) { $Health.runtime } else { "n/a" }
     $codec = if ($Health.codec) { $Health.codec } else { "n/a" }
-    $redisCount = if ($Health.stream_length -ne $null) { $Health.stream_length } else { "n/a" }
-    $pgMessages = if ($Health.pg_message_count -ne $null) { $Health.pg_message_count } else { "n/a" }
-    $pgPresence = if ($Health.pg_presence_count -ne $null) { $Health.pg_presence_count } else { "n/a" }
+    $redisCount = if ($null -ne $Health.stream_length) { $Health.stream_length } else { "n/a" }
+    $pgMessages = if ($null -ne $Health.pg_message_count) { $Health.pg_message_count } else { "n/a" }
+    $pgPresence = if ($null -ne $Health.pg_presence_count) { $Health.pg_presence_count } else { "n/a" }
 
     return @(
         "  Protocol: $protocol"
@@ -77,7 +76,7 @@ function Get-HealthSummary {
 function Write-ServerVersionDiagnostics {
     if (Get-Command redis-cli -ErrorAction SilentlyContinue) {
         try {
-            $redisVersion = & redis-cli -u "redis://localhost:6380/0" INFO server 2>$null |
+            $redisVersion = & redis-cli -u "redis://127.0.0.1:6380/0" INFO server 2>$null |
                 Select-String -Pattern '^redis_version:' |
                 ForEach-Object { $_.ToString().Split(':', 2)[1].Trim() } |
                 Select-Object -First 1
@@ -91,7 +90,7 @@ function Write-ServerVersionDiagnostics {
 
     if (Get-Command psql -ErrorAction SilentlyContinue) {
         try {
-            $pgVersion = & psql "postgresql://postgres@localhost:5300/redis_backend" -Atqc "SHOW server_version;" 2>$null
+            $pgVersion = & psql "postgresql://postgres@127.0.0.1:5300/redis_backend" -Atqc "SHOW server_version;" 2>$null
             if ($pgVersion) {
                 Write-Host "  PostgreSQL server version: $pgVersion"
             }
@@ -105,7 +104,7 @@ function Write-ServerVersionDiagnostics {
 try {
     if (-not $SkipBuild) {
         Write-Host "Building release binary..."
-        Push-Location $rustCliDir
+        Push-Location $repoRoot
         try {
             & cargo build --release --bins
             if ($LASTEXITCODE -ne 0) { throw "cargo build --release --bins failed" }
@@ -117,9 +116,9 @@ try {
     }
 
     # Step 2: Verify binaries exist
-    $cliTargetBinary = Find-AgentBusBuiltBinary -RustCliDir $rustCliDir -TargetDir $resolvedTargetDir -BinaryName "agent-bus"
-    $httpTargetBinary = Find-AgentBusBuiltBinary -RustCliDir $rustCliDir -TargetDir $resolvedTargetDir -BinaryName "agent-bus-http"
-    $mcpTargetBinary = Find-AgentBusBuiltBinary -RustCliDir $rustCliDir -TargetDir $resolvedTargetDir -BinaryName "agent-bus-mcp"
+    $cliTargetBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus"
+    $httpTargetBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-http"
+    $mcpTargetBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-mcp"
     if (-not (Test-Path $cliTargetBinary)) {
         throw "CLI binary not found after build."
     }
@@ -173,8 +172,14 @@ try {
     }
 
     Write-Host "Deploying HTTP/service binary to $deployPath..."
-    Copy-Item -Path $httpTargetBinary -Destination $deployPath -Force
-    Write-Host "HTTP/service deploy complete."
+    try {
+        Copy-Item -Path $httpTargetBinary -Destination $deployPath -Force
+        Write-Host "HTTP/service deploy complete."
+    }
+    catch {
+        Write-Warning "Could not replace $deployPath. Keeping the existing HTTP binary because it is likely in use."
+        Write-Warning $_.Exception.Message
+    }
 
     if ($McpDeployPath) {
         Write-Host "Deploying MCP binary to $McpDeployPath..."
@@ -221,7 +226,7 @@ try {
                 catch { Start-Sleep -Seconds 1 }
             } while ((Get-Date) -lt $deadline)
 
-            if ($health -eq $null -or $health.ok -ne $true) {
+            if ($null -eq $health -or $health.ok -ne $true) {
                 Write-Warning "Service started but health check timed out"
             }
         }

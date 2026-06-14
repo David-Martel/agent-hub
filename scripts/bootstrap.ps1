@@ -105,7 +105,7 @@ try {
     # ---------------------------------------------------------------------------
     if (-not $SkipBuild) {
         Write-Host "`n[2/6] Building release binaries..." -ForegroundColor Yellow
-        Push-Location "$repoRoot\rust-cli"
+        Push-Location $repoRoot
         try {
             cargo build --release --bins
             if ($LASTEXITCODE -ne 0) { throw "cargo build --release --bins failed (exit $LASTEXITCODE)" }
@@ -130,9 +130,9 @@ try {
     }
 
     # Probe candidate paths in preference order
-    $cliBin = Find-AgentBusBuiltBinary -RustCliDir "$repoRoot\rust-cli" -TargetDir $resolvedTargetDir -BinaryName "agent-bus"
-    $httpBin = Find-AgentBusBuiltBinary -RustCliDir "$repoRoot\rust-cli" -TargetDir $resolvedTargetDir -BinaryName "agent-bus-http"
-    $mcpBin = Find-AgentBusBuiltBinary -RustCliDir "$repoRoot\rust-cli" -TargetDir $resolvedTargetDir -BinaryName "agent-bus-mcp"
+    $cliBin = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus"
+    $httpBin = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-http"
+    $mcpBin = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-mcp"
 
     if (-not $cliBin) {
         throw "agent-bus.exe was not found after the build. Run without -SkipBuild or build manually."
@@ -187,7 +187,7 @@ $configPath = "$configDir\config.json"
 if (-not (Test-Path $configPath)) {
     $config = [ordered]@{
         redis_url    = "redis://localhost:$RedisPort/0"
-        database_url = "postgresql://postgres@localhost:$PgPort/redis_backend"
+        database_url = "postgresql://postgres@127.0.0.1:$PgPort/redis_backend"
         server_host  = "localhost"
         stream_maxlen = 100000
     } | ConvertTo-Json -Depth 3
@@ -229,7 +229,7 @@ else {
         nssm set $svcName AppRotateBytes      10485760   # 10 MB
         nssm set $svcName AppEnvironmentExtra `
             "AGENT_BUS_REDIS_URL=redis://localhost:$RedisPort/0" `
-            "AGENT_BUS_DATABASE_URL=postgresql://postgres@localhost:$PgPort/redis_backend" `
+            "AGENT_BUS_DATABASE_URL=postgresql://postgres@127.0.0.1:$PgPort/redis_backend" `
             "RUST_LOG=error"
         nssm set $svcName Description "Agent Hub — Redis-backed multi-agent coordination bus"
         nssm set $svcName Start SERVICE_AUTO_START

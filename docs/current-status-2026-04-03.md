@@ -1,3 +1,9 @@
+> **SUPERSEDED** — This snapshot describes the _in-progress_ split as of
+> 2026-04-03. The split has since landed: `rust-cli` has been removed and the
+> workspace now contains exactly four crates. See
+> [`docs/current-status-2026-06-13.md`](./current-status-2026-06-13.md) for
+> the current authoritative status.
+
 # Current Status (2026-04-03)
 
 This document is the code-grounded status snapshot for the repository as of

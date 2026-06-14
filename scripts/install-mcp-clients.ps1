@@ -1,13 +1,17 @@
 param(
     [switch]$Claude = $true,
     [switch]$Codex = $true,
-    [string]$ClaudeConfigPath = (Join-Path $HOME ".claude.json"),
-    [string]$CodexConfigPath = (Join-Path $HOME ".codex\config.toml"),
-    [string]$RedisUrl = "redis://localhost:6380/0",
-    [string]$DatabaseUrl = "postgresql://postgres@localhost:5300/redis_backend",
+    [switch]$Gemini = $true,
+    [string]$ClaudeConfigPath = (Join-Path (Join-Path $HOME ".claude") "mcp.json"),
+    [string]$CodexConfigPath = (Join-Path (Join-Path $HOME ".codex") "config.toml"),
+    [string]$GeminiConfigPath = (Join-Path (Join-Path $HOME ".gemini") "settings.json"),
+    [string]$RedisUrl = "redis://127.0.0.1:6380/0",
+    [string]$DatabaseUrl = "postgresql://postgres@127.0.0.1:5300/redis_backend",
+    [string]$ServerUrl = "http://localhost:8400",
     [string]$ServerHost = "localhost",
     [string]$CommandPath = "",
-    [switch]$NoBackup
+    [switch]$NoBackup,
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,40 +20,37 @@ function Resolve-AgentBusCommand {
     param([string]$Requested)
 
     if ($Requested) {
-        return $Requested
+        return [pscustomobject]@{ Command = $Requested; Args = @() }
     }
 
-    $homeMcpBinary = Join-Path $HOME "bin\agent-bus-mcp.exe"
+    $exeSuffix = if ($IsWindows) { ".exe" } else { "" }
+    $homeMcpBinary = Join-Path (Join-Path $HOME "bin") "agent-bus-mcp$exeSuffix"
     if (Test-Path $homeMcpBinary) {
-        return $homeMcpBinary
+        return [pscustomobject]@{ Command = $homeMcpBinary; Args = @() }
     }
 
-    $homeHttpBinary = Join-Path $HOME "bin\agent-bus-http.exe"
-    if (Test-Path $homeHttpBinary) {
-        return $homeHttpBinary
-    }
-
-    $homeBinary = Join-Path $HOME "bin\agent-bus.exe"
+    $homeBinary = Join-Path (Join-Path $HOME "bin") "agent-bus$exeSuffix"
     if (Test-Path $homeBinary) {
-        return $homeBinary
+        return [pscustomobject]@{ Command = $homeBinary; Args = @("serve", "--transport", "stdio") }
     }
 
-    $resolvedMcp = Get-Command agent-bus-mcp.exe -ErrorAction SilentlyContinue
+    $resolvedMcp = Get-Command "agent-bus-mcp$exeSuffix" -ErrorAction SilentlyContinue
+    if (-not $resolvedMcp) {
+        $resolvedMcp = Get-Command "agent-bus-mcp" -ErrorAction SilentlyContinue
+    }
     if ($resolvedMcp) {
-        return $resolvedMcp.Source
+        return [pscustomobject]@{ Command = $resolvedMcp.Source; Args = @() }
     }
 
-    $resolvedHttp = Get-Command agent-bus-http.exe -ErrorAction SilentlyContinue
-    if ($resolvedHttp) {
-        return $resolvedHttp.Source
+    $resolved = Get-Command "agent-bus$exeSuffix" -ErrorAction SilentlyContinue
+    if (-not $resolved) {
+        $resolved = Get-Command "agent-bus" -ErrorAction SilentlyContinue
     }
-
-    $resolved = Get-Command agent-bus.exe -ErrorAction SilentlyContinue
     if ($resolved) {
-        return $resolved.Source
+        return [pscustomobject]@{ Command = $resolved.Source; Args = @("serve", "--transport", "stdio") }
     }
 
-    throw "agent-bus-mcp.exe / agent-bus-http.exe / agent-bus.exe was not found in ~/bin or PATH. Run scripts/setup-agent-hub-local.ps1 first."
+    throw "agent-bus-mcp.exe / agent-bus.exe was not found in ~/bin or PATH. Run scripts/setup-agent-hub-local.ps1 first."
 }
 
 function Backup-File {
@@ -72,14 +73,26 @@ function Escape-Toml {
     return $Value.Replace('\', '\\').Replace('"', '\"')
 }
 
-$command = Resolve-AgentBusCommand -Requested $CommandPath
+$resolvedCommand = Resolve-AgentBusCommand -Requested $CommandPath
+$command = $resolvedCommand.Command
+$stdioArgs = @($resolvedCommand.Args)
 $sharedEnv = [ordered]@{
     AGENT_BUS_REDIS_URL       = $RedisUrl
     AGENT_BUS_DATABASE_URL    = $DatabaseUrl
     AGENT_BUS_SERVER_HOST     = $ServerHost
+    AGENT_BUS_SERVER_URL      = $ServerUrl
     AGENT_BUS_SERVICE_AGENT_ID = "agent-bus"
     AGENT_BUS_STARTUP_ENABLED = "false"
     RUST_LOG                  = "error"
+}
+
+if ($ValidateOnly) {
+    $validator = Join-Path $PSScriptRoot "validate-agent-client-configs.ps1"
+    if (-not (Test-Path $validator)) {
+        throw "Validator not found at $validator"
+    }
+    & $validator -ExpectedServerUrl $ServerUrl -ExpectedRedisUrl $RedisUrl -ExpectedDatabaseUrl $DatabaseUrl
+    exit $LASTEXITCODE
 }
 
 if ($Claude) {
@@ -97,7 +110,7 @@ if ($Claude) {
     $json.mcpServers["agent-bus"] = [ordered]@{
         type = "stdio"
         command = $command
-        args = @("serve", "--transport", "stdio")
+        args = $stdioArgs
         env = $sharedEnv
     }
 
@@ -114,7 +127,7 @@ if ($Codex) {
 # BEGIN agent-bus MCP (managed by scripts/install-mcp-clients.ps1)
 [mcp_servers.agent_bus]
 command = "$(Escape-Toml $command)"
-args = ["serve", "--transport", "stdio"]
+args = [$(($stdioArgs | ForEach-Object { '"' + (Escape-Toml $_) + '"' }) -join ", ")]
 startup_timeout_sec = 10
 tool_timeout_sec = 30
 
@@ -122,6 +135,7 @@ tool_timeout_sec = 30
 AGENT_BUS_REDIS_URL = "$(Escape-Toml $RedisUrl)"
 AGENT_BUS_DATABASE_URL = "$(Escape-Toml $DatabaseUrl)"
 AGENT_BUS_SERVER_HOST = "$(Escape-Toml $ServerHost)"
+AGENT_BUS_SERVER_URL = "$(Escape-Toml $ServerUrl)"
 AGENT_BUS_SERVICE_AGENT_ID = "agent-bus"
 AGENT_BUS_STARTUP_ENABLED = "false"
 RUST_LOG = "error"
@@ -148,4 +162,32 @@ RUST_LOG = "error"
 
     Set-Content -Path $CodexConfigPath -Value $content -Encoding UTF8
     Write-Host "Updated Codex MCP config at $CodexConfigPath"
+}
+
+if ($Gemini) {
+    $geminiDir = Split-Path -Parent $GeminiConfigPath
+    New-Item -ItemType Directory -Path $geminiDir -Force | Out-Null
+    if (Test-Path $GeminiConfigPath) {
+        Backup-File -Path $GeminiConfigPath -Skip:$NoBackup
+        $json = (Get-Content $GeminiConfigPath -Raw) | ConvertFrom-Json -AsHashtable -Depth 100
+    }
+    else {
+        $json = [ordered]@{}
+    }
+    if (-not $json.ContainsKey("mcpServers") -or $null -eq $json.mcpServers) {
+        $json.mcpServers = [ordered]@{}
+    }
+    $json.mcpServers["agent-bus"] = [ordered]@{
+        command = $command
+        args = $stdioArgs
+        timeout = 30000
+        env = $sharedEnv
+    }
+    $json | ConvertTo-Json -Depth 100 | Set-Content -Path $GeminiConfigPath -Encoding UTF8
+    Write-Host "Updated Gemini MCP config at $GeminiConfigPath"
+}
+
+$validator = Join-Path $PSScriptRoot "validate-agent-client-configs.ps1"
+if (Test-Path $validator) {
+    & $validator -ExpectedServerUrl $ServerUrl -ExpectedRedisUrl $RedisUrl -ExpectedDatabaseUrl $DatabaseUrl
 }

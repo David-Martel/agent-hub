@@ -167,8 +167,8 @@ fn validate_task_priority(priority: &str) -> Result<()> {
     } else {
         Err(crate::error::AgentBusError::Internal(format!(
             "invalid task priority '{priority}'; must be one of: {}",
-            VALID_TASK_PRIORITIES.join(", "))
-        ))
+            VALID_TASK_PRIORITIES.join(", ")
+        )))
     }
 }
 

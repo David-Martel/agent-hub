@@ -23,7 +23,7 @@ use crate::postgres_store::{
     list_messages_postgres_with_filters, persist_presence_postgres, pg_metrics, probe_postgres,
     query_messages_by_tags,
 };
-use crate::settings::{Settings, redact_url};
+use crate::settings::{Settings, loopback_url_candidates, redact_url};
 use crate::validation::infer_schema_from_topic;
 
 /// Open a new synchronous Redis connection using the URL from `settings`.
@@ -32,9 +32,30 @@ use crate::validation::infer_schema_from_topic;
 ///
 /// Returns an error if the Redis URL is invalid or the TCP connection fails.
 pub fn connect(settings: &Settings) -> Result<redis::Connection> {
-    let client =
-        redis::Client::open(settings.redis_url.as_str()).map_err(|e| crate::error::AgentBusError::Internal(format!("Redis client creation failed: {e}")))?;
-    client.get_connection().map_err(|e| crate::error::AgentBusError::Internal(format!("{}: {}", "Redis connection failed", e)))
+    let mut errors = Vec::new();
+    for redis_url in loopback_url_candidates(&settings.redis_url) {
+        let client = match redis::Client::open(redis_url.as_str()) {
+            Ok(client) => client,
+            Err(e) => {
+                errors.push(format!(
+                    "{}: client creation failed: {e}",
+                    redact_url(&redis_url)
+                ));
+                continue;
+            }
+        };
+        match client.get_connection() {
+            Ok(conn) => return Ok(conn),
+            Err(e) => errors.push(format!(
+                "{}: connection failed: {e}",
+                redact_url(&redis_url)
+            )),
+        }
+    }
+    Err(crate::error::AgentBusError::Internal(format!(
+        "Redis connection failed for all loopback candidates: {}",
+        errors.join("; ")
+    )))
 }
 
 /// Shared atomic counter of active `/events` SSE subscribers.
@@ -99,7 +120,7 @@ pub struct PoolMetrics {
 ///   exhausting Redis's default `maxclients` limit.
 /// - `min_idle = 1`   — keeps at least one warm connection to avoid cold-start
 ///   latency on the first request after an idle period.
-/// - `connection_timeout = 500 ms` — fast-fail rather than queuing requests
+/// - `connection_timeout = 750 ms` — fast-fail rather than queuing requests
 ///   behind a stalled Redis.
 ///
 /// # Examples
@@ -128,23 +149,45 @@ impl RedisPool {
     /// Returns an error if the Redis URL is malformed or the initial connection
     /// required to verify pool health fails.
     pub fn new(settings: &Settings) -> Result<Self> {
-        let manager = redis::Client::open(settings.redis_url.as_str())
-            .map_err(|e| crate::error::AgentBusError::Internal(format!("Redis client creation failed: {e}")))?;
-        let inner = r2d2::Pool::builder()
-            .max_size(5)
-            .min_idle(Some(1))
-            .connection_timeout(std::time::Duration::from_secs(5))
-            .build(manager)
-            .map_err(|e| crate::error::AgentBusError::Internal(format!("Redis r2d2 pool creation failed: {e}")))?;
-        Ok(Self {
-            inner,
-            metrics: Arc::new(PoolMetrics::default()),
-        })
+        let mut errors = Vec::new();
+        for redis_url in loopback_url_candidates(&settings.redis_url) {
+            let manager = match redis::Client::open(redis_url.as_str()) {
+                Ok(manager) => manager,
+                Err(e) => {
+                    errors.push(format!(
+                        "{}: client creation failed: {e}",
+                        redact_url(&redis_url)
+                    ));
+                    continue;
+                }
+            };
+            match r2d2::Pool::builder()
+                .max_size(5)
+                .min_idle(Some(1))
+                .connection_timeout(std::time::Duration::from_millis(750))
+                .build(manager)
+            {
+                Ok(inner) => {
+                    return Ok(Self {
+                        inner,
+                        metrics: Arc::new(PoolMetrics::default()),
+                    });
+                }
+                Err(e) => errors.push(format!(
+                    "{}: r2d2 pool creation failed: {e}",
+                    redact_url(&redis_url)
+                )),
+            }
+        }
+        Err(crate::error::AgentBusError::Internal(format!(
+            "Redis r2d2 pool creation failed for all loopback candidates: {}",
+            errors.join("; ")
+        )))
     }
 
     /// Obtain a pooled Redis connection.
     ///
-    /// Blocks for up to 500 ms waiting for a free slot in the pool.  The
+    /// Blocks for up to 750 ms waiting for a free slot in the pool.  The
     /// connection is automatically returned when the guard drops.
     ///
     /// # Errors
@@ -163,7 +206,9 @@ impl RedisPool {
                 self.metrics
                     .connection_errors
                     .fetch_add(1, Ordering::Relaxed);
-                Err(crate::error::AgentBusError::Internal(format!("Redis pool: get_connection failed: {e}")))
+                Err(crate::error::AgentBusError::Internal(format!(
+                    "Redis pool: get_connection failed: {e}"
+                )))
             }
         }
     }
@@ -308,8 +353,9 @@ pub fn get_scoped_notification_cursor(
     session: Option<&str>,
 ) -> Result<String> {
     let key = scoped_notification_cursor_key(agent, repo, session);
-    let val: Option<String> =
-        redis::Commands::get(conn, &key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET scoped notification cursor: {e}")))?;
+    let val: Option<String> = redis::Commands::get(conn, &key).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("GET scoped notification cursor: {e}"))
+    })?;
     Ok(val.unwrap_or_else(|| "0-0".to_owned()))
 }
 
@@ -330,8 +376,11 @@ pub fn set_scoped_notification_cursor(
     let mut pipe = redis::pipe();
     pipe.cmd("SET").arg(&key).arg(stream_id);
     pipe.cmd("EXPIRE").arg(&key).arg(CURSOR_TTL_SECS);
-    pipe.query::<((), ())>(conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("SET + EXPIRE scoped notification cursor: {e}")))?;
+    pipe.query::<((), ())>(conn).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!(
+            "SET + EXPIRE scoped notification cursor: {e}"
+        ))
+    })?;
     Ok(())
 }
 
@@ -354,56 +403,59 @@ fn decode_notification_entry(
         v == "true" || v == "True"
     };
 
-    let message = match fields.get("message") {
-        Some(redis::Value::BulkString(b)) => serde_json::from_slice::<Message>(b).unwrap_or_else(|_| Message {
-            id: String::new(),
-            timestamp_utc: String::new(),
-            protocol_version: PROTOCOL_VERSION.to_owned(),
-            from: String::new(),
-            to: String::new(),
-            topic: String::new(),
-            body: String::new(),
-            thread_id: None,
-            tags: smallvec::SmallVec::new(),
-            priority: crate::models::default_priority(),
-            request_ack: false,
-            reply_to: None,
-            metadata: serde_json::Value::Object(serde_json::Map::new()),
-            stream_id: None,
-        }),
-        Some(redis::Value::SimpleString(s)) => serde_json::from_str::<Message>(s).unwrap_or_else(|_| Message {
-            id: String::new(),
-            timestamp_utc: String::new(),
-            protocol_version: PROTOCOL_VERSION.to_owned(),
-            from: String::new(),
-            to: String::new(),
-            topic: String::new(),
-            body: String::new(),
-            thread_id: None,
-            tags: smallvec::SmallVec::new(),
-            priority: crate::models::default_priority(),
-            request_ack: false,
-            reply_to: None,
-            metadata: serde_json::Value::Object(serde_json::Map::new()),
-            stream_id: None,
-        }),
-        _ => Message {
-            id: String::new(),
-            timestamp_utc: String::new(),
-            protocol_version: PROTOCOL_VERSION.to_owned(),
-            from: String::new(),
-            to: String::new(),
-            topic: String::new(),
-            body: String::new(),
-            thread_id: None,
-            tags: smallvec::SmallVec::new(),
-            priority: crate::models::default_priority(),
-            request_ack: false,
-            reply_to: None,
-            metadata: serde_json::Value::Object(serde_json::Map::new()),
-            stream_id: None,
-        }
-    };
+    let message =
+        match fields.get("message") {
+            Some(redis::Value::BulkString(b)) => serde_json::from_slice::<Message>(b)
+                .unwrap_or_else(|_| Message {
+                    id: String::new(),
+                    timestamp_utc: String::new(),
+                    protocol_version: PROTOCOL_VERSION.to_owned(),
+                    from: String::new(),
+                    to: String::new(),
+                    topic: String::new(),
+                    body: String::new(),
+                    thread_id: None,
+                    tags: smallvec::SmallVec::new(),
+                    priority: crate::models::default_priority(),
+                    request_ack: false,
+                    reply_to: None,
+                    metadata: serde_json::Value::Object(serde_json::Map::new()),
+                    stream_id: None,
+                }),
+            Some(redis::Value::SimpleString(s)) => serde_json::from_str::<Message>(s)
+                .unwrap_or_else(|_| Message {
+                    id: String::new(),
+                    timestamp_utc: String::new(),
+                    protocol_version: PROTOCOL_VERSION.to_owned(),
+                    from: String::new(),
+                    to: String::new(),
+                    topic: String::new(),
+                    body: String::new(),
+                    thread_id: None,
+                    tags: smallvec::SmallVec::new(),
+                    priority: crate::models::default_priority(),
+                    request_ack: false,
+                    reply_to: None,
+                    metadata: serde_json::Value::Object(serde_json::Map::new()),
+                    stream_id: None,
+                }),
+            _ => Message {
+                id: String::new(),
+                timestamp_utc: String::new(),
+                protocol_version: PROTOCOL_VERSION.to_owned(),
+                from: String::new(),
+                to: String::new(),
+                topic: String::new(),
+                body: String::new(),
+                thread_id: None,
+                tags: smallvec::SmallVec::new(),
+                priority: crate::models::default_priority(),
+                request_ack: false,
+                reply_to: None,
+                metadata: serde_json::Value::Object(serde_json::Map::new()),
+                stream_id: None,
+            },
+        };
 
     Notification {
         id: get("id"),
@@ -426,7 +478,9 @@ fn append_notifications_for_message(
 
     let agent = msg.to.clone();
     let id = Uuid::now_v7().to_string();
-    let message_json = serde_json::to_string(msg).map_err(|e| crate::error::AgentBusError::Internal(format!("serialize message for notification: {e}")))?;
+    let message_json = serde_json::to_string(msg).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("serialize message for notification: {e}"))
+    })?;
     let created_at = msg.timestamp_utc.clone();
     let reason = notification_reason(msg).to_owned();
     let requires_ack = if msg.request_ack { "true" } else { "false" };
@@ -447,14 +501,18 @@ fn append_notifications_for_message(
             ("message", message_json.as_str()),
         ])
         .query(conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("XADD notification failed: {e}")))?;
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("XADD notification failed: {e}"))
+        })?;
 
     // Refresh TTL on the notification stream (3 days).
     let _: () = redis::cmd("EXPIRE")
         .arg(&key)
         .arg(NOTIFICATION_STREAM_TTL_SECS)
         .query(conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("EXPIRE notification stream failed: {e}")))?;
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("EXPIRE notification stream failed: {e}"))
+        })?;
 
     Ok(vec![Notification {
         id,
@@ -505,7 +563,9 @@ pub fn list_notifications(
         .arg("COUNT")
         .arg(limit)
         .query(conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("XREVRANGE notifications failed: {e}")))?;
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("XREVRANGE notifications failed: {e}"))
+        })?;
 
     let mut notifications = Vec::new();
     for (stream_id, fields) in parse_xrange_result(&raw) {
@@ -538,7 +598,11 @@ pub fn list_notifications_since_id(
         .arg("COUNT")
         .arg(limit.max(1))
         .query(conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("XRANGE notifications since_id failed: {e}")))?;
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!(
+                "XRANGE notifications since_id failed: {e}"
+            ))
+        })?;
 
     let mut notifications = Vec::new();
     for (stream_id, fields) in parse_xrange_result(&raw) {
@@ -554,8 +618,9 @@ pub fn list_notifications_since_id(
 /// Returns an error if the Redis `GET` command fails.
 pub fn get_notification_cursor(conn: &mut redis::Connection, agent: &str) -> Result<String> {
     let key = notification_cursor_key(agent);
-    let val: Option<String> =
-        redis::Commands::get(conn, &key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET notification cursor: {e}")))?;
+    let val: Option<String> = redis::Commands::get(conn, &key).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("GET notification cursor: {e}"))
+    })?;
     Ok(val.unwrap_or_else(|| "0-0".to_owned()))
 }
 
@@ -570,7 +635,9 @@ pub fn set_notification_cursor(
     stream_id: &str,
 ) -> Result<()> {
     let key = notification_cursor_key(agent);
-    let _: () = redis::Commands::set(conn, &key, stream_id).map_err(|e| crate::error::AgentBusError::Internal(format!("SET notification cursor: {e}")))?;
+    let _: () = redis::Commands::set(conn, &key, stream_id).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("SET notification cursor: {e}"))
+    })?;
     Ok(())
 }
 
@@ -608,20 +675,30 @@ pub fn decode_stream_entry<S: std::hash::BuildHasher>(
     let get_json_vec = |k: &str| -> smallvec::SmallVec<[String; 4]> {
         match fields.get(k) {
             Some(redis::Value::BulkString(b)) => {
-                let cow_vec: Vec<std::borrow::Cow<'_, str>> = serde_json::from_slice(b).unwrap_or_default();
-                cow_vec.into_iter().map(std::borrow::Cow::into_owned).collect()
+                let cow_vec: Vec<std::borrow::Cow<'_, str>> =
+                    serde_json::from_slice(b).unwrap_or_default();
+                cow_vec
+                    .into_iter()
+                    .map(std::borrow::Cow::into_owned)
+                    .collect()
             }
             Some(redis::Value::SimpleString(s)) => {
-                let cow_vec: Vec<std::borrow::Cow<'_, str>> = serde_json::from_str(s).unwrap_or_default();
-                cow_vec.into_iter().map(std::borrow::Cow::into_owned).collect()
+                let cow_vec: Vec<std::borrow::Cow<'_, str>> =
+                    serde_json::from_str(s).unwrap_or_default();
+                cow_vec
+                    .into_iter()
+                    .map(std::borrow::Cow::into_owned)
+                    .collect()
             }
             _ => smallvec::SmallVec::new(),
         }
     };
     let get_json_value = |k: &str| -> serde_json::Value {
         match fields.get(k) {
-            Some(redis::Value::BulkString(b)) => serde_json::from_slice(b).unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
-            Some(redis::Value::SimpleString(s)) => serde_json::from_str(s).unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
+            Some(redis::Value::BulkString(b)) => serde_json::from_slice(b)
+                .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
+            Some(redis::Value::SimpleString(s)) => serde_json::from_str(s)
+                .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new())),
             _ => serde_json::Value::Object(serde_json::Map::new()),
         }
     };
@@ -762,10 +839,20 @@ fn lz4_compress_body(body: &str) -> Result<(String, usize)> {
 fn lz4_decompress_body(encoded: &str) -> Result<String> {
     let compressed = base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("base64 decode of compressed body failed: {e}")))?;
-    let raw = lz4_flex::decompress_size_prepended(&compressed)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("lz4 decompress failed: {e}")))?;
-    String::from_utf8(raw).map_err(|e| crate::error::AgentBusError::Internal(format!("{}: {}", "lz4 decompressed body is not valid UTF-8", e)))
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!(
+                "base64 decode of compressed body failed: {e}"
+            ))
+        })?;
+    let raw = lz4_flex::decompress_size_prepended(&compressed).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("lz4 decompress failed: {e}"))
+    })?;
+    String::from_utf8(raw).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!(
+            "{}: {}",
+            "lz4 decompressed body is not valid UTF-8", e
+        ))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,7 +1138,9 @@ pub fn bus_post_messages_batch_with_notifications(
     }
 
     // Single network round-trip: execute all XADDs.
-    let stream_ids: Vec<String> = pipe.query(conn).map_err(|e| crate::error::AgentBusError::Internal(format!("pipeline XADD failed: {e}")))?;
+    let stream_ids: Vec<String> = pipe
+        .query(conn)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("pipeline XADD failed: {e}")))?;
 
     // Backfill stream_ids onto each message, preserving input order.
     let mut messages: Vec<Message> = Vec::with_capacity(prepared.len());
@@ -1642,9 +1731,12 @@ pub fn track_pending_ack(
         "recipient": recipient,
         "sent_at": sent_at,
     });
-    let value = serde_json::to_string(&record).map_err(|e| crate::error::AgentBusError::Internal(format!("serialize pending-ack record: {e}")))?;
-    let _: () = redis::Commands::set_ex(conn, &key, &value, PENDING_ACK_TTL)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("SET EX pending-ack failed: {e}")))?;
+    let value = serde_json::to_string(&record).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("serialize pending-ack record: {e}"))
+    })?;
+    let _: () = redis::Commands::set_ex(conn, &key, &value, PENDING_ACK_TTL).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("SET EX pending-ack failed: {e}"))
+    })?;
     Ok(())
 }
 
@@ -1655,7 +1747,9 @@ pub fn track_pending_ack(
 /// Returns an error if the Redis `DEL` command fails.
 pub fn clear_pending_ack(conn: &mut redis::Connection, message_id: &str) -> Result<()> {
     let key = format!("{PENDING_ACK_PREFIX}{message_id}");
-    let _: () = redis::Commands::del(conn, &key).map_err(|e| crate::error::AgentBusError::Internal(format!("DEL pending-ack failed: {e}")))?;
+    let _: () = redis::Commands::del(conn, &key).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("DEL pending-ack failed: {e}"))
+    })?;
     Ok(())
 }
 
@@ -1693,7 +1787,9 @@ pub fn list_pending_acks(
             .arg("COUNT")
             .arg(200)
             .query(conn)
-            .map_err(|e| crate::error::AgentBusError::Internal(format!("SCAN pending-acks failed: {e}")))?;
+            .map_err(|e| {
+                crate::error::AgentBusError::Internal(format!("SCAN pending-acks failed: {e}"))
+            })?;
         keys.extend(batch);
         cursor = next_cursor;
         if cursor == 0 {
@@ -1704,14 +1800,24 @@ pub fn list_pending_acks(
     let now = chrono::Utc::now();
     let mut results: Vec<PendingAck> = Vec::new();
     for key in &keys {
-        let value: Option<String> = redis::Commands::get(conn, key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET pending-ack: {e}")))?;
+        let value: Option<String> = redis::Commands::get(conn, key)
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("GET pending-ack: {e}")))?;
         let Some(json) = value else { continue };
         let Ok(record) = serde_json::from_str::<PendingAckRecord>(&json) else {
             continue;
         };
-        let message_id = record.message_id.map(std::borrow::Cow::into_owned).unwrap_or_default();
-        let recipient = record.recipient.map(std::borrow::Cow::into_owned).unwrap_or_default();
-        let sent_at = record.sent_at.map(std::borrow::Cow::into_owned).unwrap_or_default();
+        let message_id = record
+            .message_id
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_default();
+        let recipient = record
+            .recipient
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_default();
+        let sent_at = record
+            .sent_at
+            .map(std::borrow::Cow::into_owned)
+            .unwrap_or_default();
 
         // Apply recipient filter when specified.
         if agent.is_some_and(|filter| recipient != filter) {
@@ -1720,7 +1826,9 @@ pub fn list_pending_acks(
 
         // Determine staleness.
         let stale = chrono::DateTime::parse_from_rfc3339(&sent_at.replace('Z', "+00:00"))
-            .is_ok_and(|ts| (now - ts.with_timezone(&chrono::Utc)).num_seconds() > PENDING_ACK_STALE_SECS);
+            .is_ok_and(|ts| {
+                (now - ts.with_timezone(&chrono::Utc)).num_seconds() > PENDING_ACK_STALE_SECS
+            });
 
         results.push(PendingAck {
             message_id,
@@ -1733,19 +1841,24 @@ pub fn list_pending_acks(
     Ok(results)
 }
 
-/// Read all messages from the Redis stream (ignoring PG), ordered oldest first.
+/// Read a page of messages from the Redis stream (ignoring PG), ordered oldest first.
 ///
-/// Fetches up to `limit` entries via `XRANGE` with no time or agent filter,
-/// suitable for a one-time backfill into `PostgreSQL`.
+/// Fetches up to `limit` entries via `XRANGE` with no time or agent filter.
+/// When `after_id` is present, it is used as an exclusive lower bound.
 ///
 /// # Errors
 ///
 /// Returns an error if the Redis connection or `XRANGE` command fails.
-pub fn bus_read_all_from_redis(settings: &Settings, limit: usize) -> Result<Vec<Message>> {
+pub fn bus_read_page_from_redis(
+    settings: &Settings,
+    after_id: Option<&str>,
+    limit: usize,
+) -> Result<Vec<Message>> {
     let mut conn = connect(settings)?;
+    let start = after_id.map_or_else(|| "-".to_owned(), |id| format!("({id}"));
     let raw: Vec<redis::Value> = redis::cmd("XRANGE")
         .arg(&settings.stream_key)
-        .arg("-")
+        .arg(start)
         .arg("+")
         .arg("COUNT")
         .arg(limit)
@@ -1759,6 +1872,18 @@ pub fn bus_read_all_from_redis(settings: &Settings, limit: usize) -> Result<Vec<
         messages.push(msg);
     }
     Ok(messages)
+}
+
+/// Read all messages from the Redis stream (ignoring PG), ordered oldest first.
+///
+/// Fetches up to `limit` entries via `XRANGE` with no time or agent filter,
+/// suitable for a one-time backfill into `PostgreSQL`.
+///
+/// # Errors
+///
+/// Returns an error if the Redis connection or `XRANGE` command fails.
+pub fn bus_read_all_from_redis(settings: &Settings, limit: usize) -> Result<Vec<Message>> {
+    bus_read_page_from_redis(settings, None, limit)
 }
 
 /// List messages from the stream, most-recent first then reversed to chrono.
@@ -2113,7 +2238,8 @@ pub fn bus_list_messages_since_id_with_filters(
 )]
 pub fn get_inbox_cursor(conn: &mut redis::Connection, agent: &str) -> Result<String> {
     let key = inbox_cursor_key(agent);
-    let val: Option<String> = redis::Commands::get(conn, &key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET inbox cursor: {e}")))?;
+    let val: Option<String> = redis::Commands::get(conn, &key)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("GET inbox cursor: {e}")))?;
     Ok(val.unwrap_or_else(|| "0-0".to_owned()))
 }
 
@@ -2134,8 +2260,9 @@ pub fn set_inbox_cursor(conn: &mut redis::Connection, agent: &str, stream_id: &s
     let mut pipe = redis::pipe();
     pipe.cmd("SET").arg(&key).arg(stream_id);
     pipe.cmd("EXPIRE").arg(&key).arg(CURSOR_TTL_SECS);
-    pipe.query::<((), ())>(conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("SET + EXPIRE inbox cursor: {e}")))?;
+    pipe.query::<((), ())>(conn).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("SET + EXPIRE inbox cursor: {e}"))
+    })?;
     Ok(())
 }
 
@@ -2175,6 +2302,15 @@ pub fn bus_set_presence(
     metadata: &serde_json::Value,
     pg_writer: Option<&PgWriter>,
 ) -> Result<Presence> {
+    // Route user-controlled presence fields through the shared NUL guard. The
+    // agent also forms part of the Redis key, so a NUL there is doubly unsafe.
+    crate::validation::reject_nul_in_fields(&[(agent, "agent"), (status, "status")])?;
+    if let Some(sid) = session_id {
+        crate::validation::reject_nul_bytes(sid, "session_id")?;
+    }
+    for cap in capabilities {
+        crate::validation::reject_nul_bytes(cap, "capability")?;
+    }
     let key = format!("{}{agent}", settings.presence_prefix);
     let sid = session_id.map_or_else(|| Uuid::now_v7().to_string(), String::from);
 
@@ -2189,7 +2325,8 @@ pub fn bus_set_presence(
         ttl_seconds,
     };
 
-    let json = serde_json::to_string(&presence).map_err(|e| crate::error::AgentBusError::Internal(format!("serialize presence: {e}")))?;
+    let json = serde_json::to_string(&presence)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("serialize presence: {e}")))?;
     let _: () = conn
         .set_ex(&key, &json, ttl_seconds)
         .map_err(|e| crate::error::AgentBusError::Internal(format!("SET EX failed: {e}")))?;
@@ -2198,7 +2335,9 @@ pub fn bus_set_presence(
     let event_json = serde_json::to_string(&event).unwrap_or_default();
     let _: () = conn
         .publish(&settings.channel_key, &event_json)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("PUBLISH presence failed: {e}")))?;
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("PUBLISH presence failed: {e}"))
+        })?;
 
     if let Some(writer) = pg_writer {
         writer.send_presence(&presence);
@@ -2242,7 +2381,9 @@ pub fn bus_list_presence(
 
     let mut results: Vec<Presence> = Vec::new();
     for key in &keys {
-        let value: Option<String> = conn.get(key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET failed: {e}")))?;
+        let value: Option<String> = conn
+            .get(key)
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("GET failed: {e}")))?;
         if let Some(json) = value
             && let Ok(p) = serde_json::from_str::<Presence>(&json)
         {
@@ -2382,6 +2523,11 @@ pub const TASK_QUEUE_PREFIX: &str = "bus:tasks:";
 /// println!("queue length: {len}");
 /// ```
 pub fn push_task(settings: &Settings, agent: &str, task_json: &str) -> Result<u64> {
+    // Sink-level NUL guard: this is the single RPUSH point for both the plain
+    // `push_task` path and the structured `push_task_card` path (which
+    // serialises a TaskCard to JSON and calls through here). The agent also
+    // forms the Redis key, so a NUL there is doubly unsafe.
+    crate::validation::reject_nul_in_fields(&[(agent, "agent"), (task_json, "task")])?;
     let mut conn = connect(settings)?;
     let key = format!("{TASK_QUEUE_PREFIX}{agent}");
     let (len,): (u64,) = redis::pipe()
@@ -2393,7 +2539,9 @@ pub fn push_task(settings: &Settings, agent: &str, task_json: &str) -> Result<u6
         .arg(TASK_QUEUE_TTL_SECS)
         .ignore()
         .query(&mut conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("RPUSH + EXPIRE task failed: {e}")))?;
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("RPUSH + EXPIRE task failed: {e}"))
+        })?;
     Ok(len)
 }
 
@@ -2447,10 +2595,9 @@ pub fn peek_tasks(settings: &Settings, agent: &str, limit: usize) -> Result<Vec<
 pub fn task_queue_length(settings: &Settings, agent: &str) -> Result<u64> {
     let mut conn = connect(settings)?;
     let key = format!("{TASK_QUEUE_PREFIX}{agent}");
-    let len: u64 = redis::cmd("LLEN")
-        .arg(&key)
-        .query(&mut conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("LLEN task queue failed: {e}")))?;
+    let len: u64 = redis::cmd("LLEN").arg(&key).query(&mut conn).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("LLEN task queue failed: {e}"))
+    })?;
     Ok(len)
 }
 
@@ -2477,9 +2624,12 @@ use crate::models::Subscription;
 ///
 /// Returns an error if the Redis connection, serialization, or SET fails.
 pub fn save_subscription(settings: &Settings, sub: &Subscription) -> Result<()> {
+    validate_subscription_nul_fields(sub)?;
     let mut conn = connect(settings)?;
     let key = format!("{SUBSCRIPTION_KEY_PREFIX}{}:{}", sub.agent, sub.id);
-    let json = serde_json::to_string(sub).map_err(|e| crate::error::AgentBusError::Internal(format!("serialize subscription: {e}")))?;
+    let json = serde_json::to_string(sub).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("serialize subscription: {e}"))
+    })?;
 
     if let Some(ttl) = sub.ttl_seconds {
         redis::cmd("SET")
@@ -2488,15 +2638,54 @@ pub fn save_subscription(settings: &Settings, sub: &Subscription) -> Result<()> 
             .arg("EX")
             .arg(ttl)
             .query::<()>(&mut conn)
-            .map_err(|e| crate::error::AgentBusError::Internal(format!("SET subscription with TTL failed: {e}")))?;
+            .map_err(|e| {
+                crate::error::AgentBusError::Internal(format!(
+                    "SET subscription with TTL failed: {e}"
+                ))
+            })?;
     } else {
         redis::cmd("SET")
             .arg(&key)
             .arg(&json)
             .query::<()>(&mut conn)
-            .map_err(|e| crate::error::AgentBusError::Internal(format!("SET subscription failed: {e}")))?;
+            .map_err(|e| {
+                crate::error::AgentBusError::Internal(format!("SET subscription failed: {e}"))
+            })?;
     }
 
+    Ok(())
+}
+
+fn validate_subscription_nul_fields(sub: &Subscription) -> Result<()> {
+    crate::validation::reject_nul_in_fields(&[
+        (sub.agent.as_str(), "agent"),
+        (sub.id.as_str(), "subscription_id"),
+        (sub.created_at.as_str(), "created_at"),
+    ])?;
+    if let Some(expires_at) = &sub.expires_at {
+        crate::validation::reject_nul_bytes(expires_at, "expires_at")?;
+    }
+    for repo in &sub.scopes.repos {
+        crate::validation::reject_nul_bytes(repo, "scope_repo")?;
+    }
+    for session in &sub.scopes.sessions {
+        crate::validation::reject_nul_bytes(session, "scope_session")?;
+    }
+    for thread in &sub.scopes.threads {
+        crate::validation::reject_nul_bytes(thread, "scope_thread")?;
+    }
+    for tag in &sub.scopes.tags {
+        crate::validation::reject_nul_bytes(tag, "scope_tag")?;
+    }
+    for topic in &sub.scopes.topics {
+        crate::validation::reject_nul_bytes(topic, "scope_topic")?;
+    }
+    if let Some(priority_min) = &sub.scopes.priority_min {
+        crate::validation::reject_nul_bytes(priority_min, "scope_priority_min")?;
+    }
+    for resource in &sub.scopes.resources {
+        crate::validation::reject_nul_bytes(resource, "scope_resource")?;
+    }
     Ok(())
 }
 
@@ -2523,7 +2712,9 @@ pub fn list_subscriptions(settings: &Settings, agent: &str) -> Result<Vec<Subscr
             .arg("COUNT")
             .arg(100_u64)
             .query(&mut conn)
-            .map_err(|e| crate::error::AgentBusError::Internal(format!("SCAN subscriptions failed: {e}")))?;
+            .map_err(|e| {
+                crate::error::AgentBusError::Internal(format!("SCAN subscriptions failed: {e}"))
+            })?;
         keys.extend(batch);
         cursor = next_cursor;
         if cursor == 0 {
@@ -2533,10 +2724,9 @@ pub fn list_subscriptions(settings: &Settings, agent: &str) -> Result<Vec<Subscr
 
     let mut subs = Vec::with_capacity(keys.len());
     for key in &keys {
-        let json: Option<String> = redis::cmd("GET")
-            .arg(key)
-            .query(&mut conn)
-            .map_err(|e| crate::error::AgentBusError::Internal(format!("GET subscription failed: {e}")))?;
+        let json: Option<String> = redis::cmd("GET").arg(key).query(&mut conn).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("GET subscription failed: {e}"))
+        })?;
         if let Some(raw) = json
             && let Ok(sub) = serde_json::from_str::<Subscription>(&raw)
         {
@@ -2560,10 +2750,9 @@ pub fn list_subscriptions(settings: &Settings, agent: &str) -> Result<Vec<Subscr
 pub fn delete_subscription(settings: &Settings, agent: &str, sub_id: &str) -> Result<bool> {
     let mut conn = connect(settings)?;
     let key = format!("{SUBSCRIPTION_KEY_PREFIX}{agent}:{sub_id}");
-    let deleted: u64 = redis::cmd("DEL")
-        .arg(&key)
-        .query(&mut conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("DEL subscription failed: {e}")))?;
+    let deleted: u64 = redis::cmd("DEL").arg(&key).query(&mut conn).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("DEL subscription failed: {e}"))
+    })?;
     Ok(deleted > 0)
 }
 
@@ -2600,6 +2789,13 @@ pub fn emit_resource_event(
     agent: &str,
     resource: &str,
 ) -> Result<String> {
+    // Route every user-controlled field through the shared NUL guard before it
+    // reaches the C-backed Redis client (NUL bytes can silently truncate values).
+    crate::validation::reject_nul_in_fields(&[
+        (event, "event"),
+        (agent, "agent"),
+        (resource, "resource"),
+    ])?;
     let key = resource_event_stream_key(resource);
     let ts = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
     let fields: Vec<(&str, &str)> = vec![
@@ -2622,7 +2818,11 @@ pub fn emit_resource_event(
         .arg(RESOURCE_EVENT_TTL_SECS)
         .ignore()
         .query(conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("XADD + EXPIRE resource event failed: {e}")))?;
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!(
+                "XADD + EXPIRE resource event failed: {e}"
+            ))
+        })?;
 
     Ok(stream_id)
 }
@@ -2657,7 +2857,9 @@ pub fn list_resource_events(
         .arg("COUNT")
         .arg(limit.max(1))
         .query(conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("XRANGE resource events failed: {e}")))?;
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("XRANGE resource events failed: {e}"))
+        })?;
 
     let mut events = Vec::new();
     for (stream_id, fields) in parse_xrange_result(&raw) {
@@ -2702,14 +2904,20 @@ pub fn create_thread(conn: &mut redis::Connection, thread: &crate::models::Threa
     let key = format!("{THREAD_PREFIX}{}", thread.thread_id);
 
     // Check if thread already exists (NX-style guard).
-    let existing: Option<String> =
-        redis::Commands::get(conn, &key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET thread check failed: {e}")))?;
+    let existing: Option<String> = redis::Commands::get(conn, &key).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("GET thread check failed: {e}"))
+    })?;
     if existing.is_some() {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("thread '{}' already exists", thread.thread_id)));
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "thread '{}' already exists",
+            thread.thread_id
+        )));
     }
 
-    let json = serde_json::to_string(thread).map_err(|e| crate::error::AgentBusError::Internal(format!("serialize thread: {e}")))?;
-    let _: () = redis::Commands::set(conn, &key, &json).map_err(|e| crate::error::AgentBusError::Internal(format!("SET thread failed: {e}")))?;
+    let json = serde_json::to_string(thread)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("serialize thread: {e}")))?;
+    let _: () = redis::Commands::set(conn, &key, &json)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("SET thread failed: {e}")))?;
     Ok(())
 }
 
@@ -2726,17 +2934,20 @@ pub fn join_thread(
     agent: &str,
 ) -> Result<crate::models::Thread> {
     let key = format!("{THREAD_PREFIX}{thread_id}");
-    let json: String =
-        redis::Commands::get(conn, &key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET thread failed (thread not found): {e}")))?;
-    let mut thread: crate::models::Thread =
-        serde_json::from_str(&json).map_err(|e| crate::error::AgentBusError::Internal(format!("deserialize thread: {e}")))?;
+    let json: String = redis::Commands::get(conn, &key).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("GET thread failed (thread not found): {e}"))
+    })?;
+    let mut thread: crate::models::Thread = serde_json::from_str(&json)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("deserialize thread: {e}")))?;
 
     if !thread.members.iter().any(|m| m == agent) {
         thread.members.push(agent.to_owned());
     }
 
-    let updated = serde_json::to_string(&thread).map_err(|e| crate::error::AgentBusError::Internal(format!("serialize thread: {e}")))?;
-    let _: () = redis::Commands::set(conn, &key, &updated).map_err(|e| crate::error::AgentBusError::Internal(format!("SET thread failed: {e}")))?;
+    let updated = serde_json::to_string(&thread)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("serialize thread: {e}")))?;
+    let _: () = redis::Commands::set(conn, &key, &updated)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("SET thread failed: {e}")))?;
     Ok(thread)
 }
 
@@ -2753,15 +2964,18 @@ pub fn leave_thread(
     agent: &str,
 ) -> Result<crate::models::Thread> {
     let key = format!("{THREAD_PREFIX}{thread_id}");
-    let json: String =
-        redis::Commands::get(conn, &key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET thread failed (thread not found): {e}")))?;
-    let mut thread: crate::models::Thread =
-        serde_json::from_str(&json).map_err(|e| crate::error::AgentBusError::Internal(format!("deserialize thread: {e}")))?;
+    let json: String = redis::Commands::get(conn, &key).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("GET thread failed (thread not found): {e}"))
+    })?;
+    let mut thread: crate::models::Thread = serde_json::from_str(&json)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("deserialize thread: {e}")))?;
 
     thread.members.retain(|m| m != agent);
 
-    let updated = serde_json::to_string(&thread).map_err(|e| crate::error::AgentBusError::Internal(format!("serialize thread: {e}")))?;
-    let _: () = redis::Commands::set(conn, &key, &updated).map_err(|e| crate::error::AgentBusError::Internal(format!("SET thread failed: {e}")))?;
+    let updated = serde_json::to_string(&thread)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("serialize thread: {e}")))?;
+    let _: () = redis::Commands::set(conn, &key, &updated)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("SET thread failed: {e}")))?;
     Ok(thread)
 }
 
@@ -2777,10 +2991,13 @@ pub fn get_thread(
     thread_id: &str,
 ) -> Result<Option<crate::models::Thread>> {
     let key = format!("{THREAD_PREFIX}{thread_id}");
-    let value: Option<String> = redis::Commands::get(conn, &key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET thread failed: {e}")))?;
+    let value: Option<String> = redis::Commands::get(conn, &key)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("GET thread failed: {e}")))?;
     match value {
         Some(json) => {
-            let thread = serde_json::from_str(&json).map_err(|e| crate::error::AgentBusError::Internal(format!("deserialize thread: {e}")))?;
+            let thread = serde_json::from_str(&json).map_err(|e| {
+                crate::error::AgentBusError::Internal(format!("deserialize thread: {e}"))
+            })?;
             Ok(Some(thread))
         }
         None => Ok(None),
@@ -2806,7 +3023,9 @@ pub fn list_threads(conn: &mut redis::Connection) -> Result<Vec<crate::models::T
             .arg("COUNT")
             .arg(200)
             .query(conn)
-            .map_err(|e| crate::error::AgentBusError::Internal(format!("SCAN threads failed: {e}")))?;
+            .map_err(|e| {
+                crate::error::AgentBusError::Internal(format!("SCAN threads failed: {e}"))
+            })?;
         keys.extend(batch);
         cursor = next_cursor;
         if cursor == 0 {
@@ -2816,7 +3035,9 @@ pub fn list_threads(conn: &mut redis::Connection) -> Result<Vec<crate::models::T
 
     let mut results: Vec<crate::models::Thread> = Vec::new();
     for key in &keys {
-        let value: Option<String> = redis::Commands::get(conn, key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET thread failed: {e}")))?;
+        let value: Option<String> = redis::Commands::get(conn, key).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("GET thread failed: {e}"))
+        })?;
         if let Some(json) = value
             && let Ok(t) = serde_json::from_str::<crate::models::Thread>(&json)
         {
@@ -2839,15 +3060,18 @@ pub fn close_thread(
     thread_id: &str,
 ) -> Result<crate::models::Thread> {
     let key = format!("{THREAD_PREFIX}{thread_id}");
-    let json: String =
-        redis::Commands::get(conn, &key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET thread failed (thread not found): {e}")))?;
-    let mut thread: crate::models::Thread =
-        serde_json::from_str(&json).map_err(|e| crate::error::AgentBusError::Internal(format!("deserialize thread: {e}")))?;
+    let json: String = redis::Commands::get(conn, &key).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("GET thread failed (thread not found): {e}"))
+    })?;
+    let mut thread: crate::models::Thread = serde_json::from_str(&json)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("deserialize thread: {e}")))?;
 
     thread.status = crate::models::ThreadStatus::Closed;
 
-    let updated = serde_json::to_string(&thread).map_err(|e| crate::error::AgentBusError::Internal(format!("serialize thread: {e}")))?;
-    let _: () = redis::Commands::set(conn, &key, &updated).map_err(|e| crate::error::AgentBusError::Internal(format!("SET thread failed: {e}")))?;
+    let updated = serde_json::to_string(&thread)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("serialize thread: {e}")))?;
+    let _: () = redis::Commands::set(conn, &key, &updated)
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("SET thread failed: {e}")))?;
     Ok(thread)
 }
 
@@ -2869,9 +3093,12 @@ pub fn track_ack_deadline(
     ttl_seconds: u64,
 ) -> Result<()> {
     let key = format!("{ACK_DEADLINE_PREFIX}{}", deadline.message_id);
-    let json = serde_json::to_string(deadline).map_err(|e| crate::error::AgentBusError::Internal(format!("serialize ack deadline: {e}")))?;
-    let _: () = redis::Commands::set_ex(conn, &key, &json, ttl_seconds)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("SET EX ack_deadline failed: {e}")))?;
+    let json = serde_json::to_string(deadline).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("serialize ack deadline: {e}"))
+    })?;
+    let _: () = redis::Commands::set_ex(conn, &key, &json, ttl_seconds).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("SET EX ack_deadline failed: {e}"))
+    })?;
     Ok(())
 }
 
@@ -2882,7 +3109,9 @@ pub fn track_ack_deadline(
 /// Returns an error if the Redis `DEL` command fails.
 pub fn clear_ack_deadline(conn: &mut redis::Connection, message_id: &str) -> Result<()> {
     let key = format!("{ACK_DEADLINE_PREFIX}{message_id}");
-    let _: () = redis::Commands::del(conn, &key).map_err(|e| crate::error::AgentBusError::Internal(format!("DEL ack_deadline failed: {e}")))?;
+    let _: () = redis::Commands::del(conn, &key).map_err(|e| {
+        crate::error::AgentBusError::Internal(format!("DEL ack_deadline failed: {e}"))
+    })?;
     Ok(())
 }
 
@@ -2905,7 +3134,9 @@ pub fn list_ack_deadlines(conn: &mut redis::Connection) -> Result<Vec<crate::mod
             .arg("COUNT")
             .arg(200)
             .query(conn)
-            .map_err(|e| crate::error::AgentBusError::Internal(format!("SCAN ack_deadlines failed: {e}")))?;
+            .map_err(|e| {
+                crate::error::AgentBusError::Internal(format!("SCAN ack_deadlines failed: {e}"))
+            })?;
         keys.extend(batch);
         cursor = next_cursor;
         if cursor == 0 {
@@ -2915,8 +3146,9 @@ pub fn list_ack_deadlines(conn: &mut redis::Connection) -> Result<Vec<crate::mod
 
     let mut results: Vec<crate::models::AckDeadline> = Vec::new();
     for key in &keys {
-        let value: Option<String> =
-            redis::Commands::get(conn, key).map_err(|e| crate::error::AgentBusError::Internal(format!("GET ack_deadline failed: {e}")))?;
+        let value: Option<String> = redis::Commands::get(conn, key).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("GET ack_deadline failed: {e}"))
+        })?;
         if let Some(json) = value
             && let Ok(d) = serde_json::from_str::<crate::models::AckDeadline>(&json)
         {
@@ -3787,5 +4019,114 @@ mod tests {
     #[test]
     fn resource_event_ttl_is_3_days() {
         assert_eq!(RESOURCE_EVENT_TTL_SECS, 259_200);
+    }
+
+    // ------------------------------------------------------------------
+    // NUL-validation audit: every newly-guarded sink rejects NUL bytes.
+    //
+    // These guards fire BEFORE any Redis I/O, so the tests are deterministic
+    // and require no live Redis instance.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn push_task_rejects_nul_in_task_payload() {
+        let settings = Settings::from_env();
+        let err = push_task(&settings, "claude", "task\x00body")
+            .expect_err("NUL in task payload must be rejected before RPUSH");
+        assert!(err.to_string().contains("NUL"), "got: {err}");
+    }
+
+    #[test]
+    fn push_task_rejects_nul_in_agent() {
+        let settings = Settings::from_env();
+        let err = push_task(&settings, "cla\x00ude", "ok task")
+            .expect_err("NUL in agent (Redis key) must be rejected before RPUSH");
+        assert!(err.to_string().contains("NUL"), "got: {err}");
+    }
+
+    #[test]
+    fn save_subscription_rejects_nul_in_agent() {
+        let settings = Settings::from_env();
+        let sub = Subscription {
+            id: "sub-1".to_owned(),
+            agent: "cla\x00ude".to_owned(),
+            scopes: crate::models::SubscriptionScopes::default(),
+            created_at: "2026-06-13T00:00:00Z".to_owned(),
+            ttl_seconds: None,
+            expires_at: None,
+        };
+        let err = save_subscription(&settings, &sub)
+            .expect_err("NUL in subscription agent must be rejected before SET");
+        assert!(err.to_string().contains("NUL"), "got: {err}");
+    }
+
+    #[test]
+    fn save_subscription_rejects_nul_in_scope_before_redis_io() {
+        let settings = Settings::from_env();
+        let sub = Subscription {
+            id: "sub-1".to_owned(),
+            agent: "claude".to_owned(),
+            scopes: crate::models::SubscriptionScopes {
+                topics: vec!["review\x00status".to_owned()],
+                ..crate::models::SubscriptionScopes::default()
+            },
+            created_at: "2026-06-13T00:00:00Z".to_owned(),
+            ttl_seconds: None,
+            expires_at: None,
+        };
+        let err = save_subscription(&settings, &sub)
+            .expect_err("NUL in subscription scope must be rejected before SET");
+        assert!(err.to_string().contains("NUL"), "got: {err}");
+    }
+
+    /// Returns a live Redis connection, or `None` when Redis is unavailable so
+    /// callers can skip gracefully (established skip idiom).
+    fn try_test_conn() -> Option<redis::Connection> {
+        connect(&Settings::from_env()).ok()
+    }
+
+    #[test]
+    fn emit_resource_event_rejects_nul_in_agent() {
+        let Some(mut conn) = try_test_conn() else {
+            eprintln!("SKIP: Redis not available");
+            return;
+        };
+        let err = emit_resource_event(&mut conn, "claim", "cla\x00ude", "src/main.rs")
+            .expect_err("NUL in resource-event agent must be rejected before XADD");
+        assert!(err.to_string().contains("NUL"), "got: {err}");
+    }
+
+    #[test]
+    fn emit_resource_event_rejects_nul_in_resource() {
+        let Some(mut conn) = try_test_conn() else {
+            eprintln!("SKIP: Redis not available");
+            return;
+        };
+        let err = emit_resource_event(&mut conn, "claim", "claude", "src/ma\x00in.rs")
+            .expect_err("NUL in resource-event resource must be rejected before XADD");
+        assert!(err.to_string().contains("NUL"), "got: {err}");
+    }
+
+    #[test]
+    fn bus_set_presence_rejects_nul_in_status() {
+        let Some(mut conn) = try_test_conn() else {
+            eprintln!("SKIP: Redis not available");
+            return;
+        };
+        let settings = Settings::from_env();
+        let meta = serde_json::Value::Object(serde_json::Map::new());
+        let err = bus_set_presence(
+            &mut conn,
+            &settings,
+            "claude",
+            "onl\x00ine",
+            None,
+            &[],
+            60,
+            &meta,
+            None,
+        )
+        .expect_err("NUL in presence status must be rejected before SET");
+        assert!(err.to_string().contains("NUL"), "got: {err}");
     }
 }

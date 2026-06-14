@@ -2,7 +2,6 @@
 
 use crate::error::{AgentBusError, Result};
 
-
 pub const VALID_PRIORITIES: &[&str] = &["low", "normal", "high", "urgent"];
 pub const MAX_TOPIC_LEN: usize = 256;
 /// Maximum message body size (256 KB). Coordination messages are small;
@@ -41,6 +40,27 @@ pub fn reject_nul_bytes(val: &str, name: &str) -> Result<()> {
     }
 }
 
+/// Reject NUL bytes across a set of named, user-controlled string fields.
+///
+/// Convenience wrapper around [`reject_nul_bytes`] for sinks that write several
+/// user-controlled strings into Redis in one operation (task cards, presence
+/// records, subscription records, resource events). Centralising the loop here
+/// keeps every sink routed through the same guard instead of re-implementing
+/// inline checks.
+///
+/// Each tuple is `(value, field_name)`; the first field that contains a NUL
+/// byte produces the error. Empty slices are accepted.
+///
+/// # Errors
+///
+/// Returns an error if any `value` contains a NUL byte.
+pub fn reject_nul_in_fields(fields: &[(&str, &str)]) -> Result<()> {
+    for (value, name) in fields {
+        reject_nul_bytes(value, name)?;
+    }
+    Ok(())
+}
+
 /// Replace NUL and other dangerous control characters in a string so that it
 /// is safe to display in a terminal without corrupting the output stream.
 ///
@@ -69,11 +89,17 @@ pub fn sanitize_for_human_display(s: &str) -> String {
 pub fn non_empty<'a>(val: &'a str, name: &str) -> Result<&'a str> {
     let trimmed = val.trim();
     if trimmed.is_empty() {
-        Err(AgentBusError::InvalidParams(format!("{name} must not be empty")))
+        Err(AgentBusError::InvalidParams(format!(
+            "{name} must not be empty"
+        )))
     } else if name == "topic" && trimmed.len() > MAX_TOPIC_LEN {
-        Err(AgentBusError::InvalidParams(format!("{name} exceeds maximum length of {MAX_TOPIC_LEN}")))
+        Err(AgentBusError::InvalidParams(format!(
+            "{name} exceeds maximum length of {MAX_TOPIC_LEN}"
+        )))
     } else if name == "body" && trimmed.len() > MAX_BODY_LEN {
-        Err(AgentBusError::InvalidParams(format!("{name} exceeds maximum length of {MAX_BODY_LEN}")))
+        Err(AgentBusError::InvalidParams(format!(
+            "{name} exceeds maximum length of {MAX_BODY_LEN}"
+        )))
     } else {
         // F3: Reject NUL bytes in topic and body fields.
         if name == "topic" || name == "body" {
@@ -88,7 +114,9 @@ pub fn non_empty<'a>(val: &'a str, name: &str) -> Result<&'a str> {
 pub fn parse_metadata_arg(metadata: Option<&str>) -> Result<serde_json::Value> {
     match metadata {
         None => Ok(serde_json::Value::Object(serde_json::Map::new())),
-        Some(s) => serde_json::from_str(s).map_err(|e| AgentBusError::InvalidParams(format!("--metadata must be valid JSON object: {e}"))),
+        Some(s) => serde_json::from_str(s).map_err(|e| {
+            AgentBusError::InvalidParams(format!("--metadata must be valid JSON object: {e}"))
+        }),
     }
 }
 
@@ -274,33 +302,40 @@ pub fn validate_message_schema(body: &str, schema: Option<&str>) -> Result<()> {
                 && !body.contains("TAGGED:")
                 && !body.contains("COMPLETE")
             {
-                return Err(AgentBusError::InvalidParams("Schema 'finding' requires FINDING:, FIX, TAGGED:, or COMPLETE in body".to_owned()));
+                return Err(AgentBusError::InvalidParams(
+                    "Schema 'finding' requires FINDING:, FIX, TAGGED:, or COMPLETE in body"
+                        .to_owned(),
+                ));
             }
             // When a FINDING: is declared, SEVERITY: must also be present.
             if body.contains("FINDING:") && !body.contains("SEVERITY:") {
-                return Err(AgentBusError::InvalidParams("Schema 'finding' requires SEVERITY: when FINDING: is present".to_owned()));
+                return Err(AgentBusError::InvalidParams(
+                    "Schema 'finding' requires SEVERITY: when FINDING: is present".to_owned(),
+                ));
             }
             Ok(())
         }
         SCHEMA_STATUS => {
             // Status messages are free-form but must be non-empty.
             if body.trim().is_empty() {
-                return Err(AgentBusError::InvalidParams("Schema 'status' requires non-empty body".to_owned()));
+                return Err(AgentBusError::InvalidParams(
+                    "Schema 'status' requires non-empty body".to_owned(),
+                ));
             }
             Ok(())
         }
         SCHEMA_BENCHMARK => {
             // Must contain key=value metrics (any key, not just agents/msgs/duration).
             if !body.contains('=') {
-                return Err(AgentBusError::InvalidParams("Schema 'benchmark' requires key=value metrics in body".to_owned()));
+                return Err(AgentBusError::InvalidParams(
+                    "Schema 'benchmark' requires key=value metrics in body".to_owned(),
+                ));
             }
             Ok(())
         }
-        other => {
-            Err(AgentBusError::InvalidParams(format!(
-                "Unknown message schema: '{other}'. Valid: {SCHEMA_FINDING}, {SCHEMA_STATUS}, {SCHEMA_BENCHMARK}"
-            )))
-        }
+        other => Err(AgentBusError::InvalidParams(format!(
+            "Unknown message schema: '{other}'. Valid: {SCHEMA_FINDING}, {SCHEMA_STATUS}, {SCHEMA_BENCHMARK}"
+        ))),
     }
 }
 
@@ -644,7 +679,10 @@ mod tests {
 
     #[test]
     fn max_body_len_is_256_kb() {
-        assert_eq!(MAX_BODY_LEN, 262_144, "MAX_BODY_LEN must be 256 KB (262 144 bytes)");
+        assert_eq!(
+            MAX_BODY_LEN, 262_144,
+            "MAX_BODY_LEN must be 256 KB (262 144 bytes)"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -664,6 +702,32 @@ mod tests {
         assert!(
             reject_nul_bytes("hello world", "body").is_ok(),
             "clean string must be accepted"
+        );
+    }
+
+    #[test]
+    fn reject_nul_in_fields_accepts_all_clean() {
+        assert!(
+            reject_nul_in_fields(&[("agent", "agent"), ("ok body", "body")]).is_ok(),
+            "all-clean field set must be accepted"
+        );
+    }
+
+    #[test]
+    fn reject_nul_in_fields_accepts_empty_slice() {
+        assert!(
+            reject_nul_in_fields(&[]).is_ok(),
+            "empty slice must be accepted"
+        );
+    }
+
+    #[test]
+    fn reject_nul_in_fields_rejects_first_offender() {
+        let err = reject_nul_in_fields(&[("clean", "agent"), ("ba\x00d", "resource")])
+            .expect_err("a field containing NUL must be rejected");
+        assert!(
+            err.to_string().contains("resource"),
+            "error must name the offending field, got: {err}"
         );
     }
 
@@ -731,12 +795,20 @@ mod tests {
     #[test]
     fn auto_fit_finding_already_valid_no_mutation() {
         let body = "FINDING: test\nSEVERITY: LOW";
-        assert_eq!(auto_fit_finding(body), body, "already-valid body must not be mutated");
+        assert_eq!(
+            auto_fit_finding(body),
+            body,
+            "already-valid body must not be mutated"
+        );
     }
 
     #[test]
     fn auto_fit_benchmark_already_valid_no_mutation() {
         let body = "duration=5.2s msgs=100";
-        assert_eq!(auto_fit_benchmark(body), body, "already-valid body must not be mutated");
+        assert_eq!(
+            auto_fit_benchmark(body),
+            body,
+            "already-valid body must not be mutated"
+        );
     }
 }

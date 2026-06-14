@@ -1,0 +1,12 @@
+# Keep the Docker build context lean for docker/Dockerfile.linux.
+# Local build artifacts and VCS metadata are not needed inside the image.
+target/
+**/target/
+.git/
+.github/
+.claude/
+docs/
+*.log
+*.log.err
+temp_*.txt
+.cargo-target/

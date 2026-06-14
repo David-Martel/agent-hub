@@ -13,8 +13,8 @@ use rmcp::model::{
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
 };
 
-use agent_bus_core::settings::Settings;
 use agent_bus_core::mcp_dispatch::{McpToolDispatch, ToolDefinition, tool_definitions};
+use agent_bus_core::settings::Settings;
 
 /// Convert a [`ToolDefinition`] into an `rmcp::model::Tool`.
 fn to_rmcp_tool(def: ToolDefinition) -> Tool {
@@ -160,7 +160,10 @@ mod tests {
         let dispatch = test_dispatch();
         let result = dispatch.dispatch_tool("negotiate", &serde_json::Map::new());
         let val = result.expect("negotiate tool failed");
-        assert_eq!(val["protocol_version"], agent_bus_core::models::PROTOCOL_VERSION);
+        assert_eq!(
+            val["protocol_version"],
+            agent_bus_core::models::PROTOCOL_VERSION
+        );
         assert!(val["transports"].as_array().is_some());
         assert!(val["schemas"].as_array().is_some());
     }

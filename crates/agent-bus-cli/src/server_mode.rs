@@ -280,7 +280,10 @@ pub(crate) fn query_windows_service_state(service_name: &str) -> Result<Option<S
 }
 
 #[cfg(not(windows))]
-#[expect(clippy::unnecessary_wraps, reason = "signature must match the #[cfg(windows)] variant that can fail")]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "signature must match the #[cfg(windows)] variant that can fail"
+)]
 pub(crate) fn query_windows_service_state(_service_name: &str) -> Result<Option<String>> {
     Ok(None)
 }

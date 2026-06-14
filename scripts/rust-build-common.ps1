@@ -31,6 +31,7 @@ function Initialize-AgentBusSccacheServer {
         & $SccachePath --start-server *> $null
     }
     catch {
+        return $false
     }
 
     if ($ResetStats) {
@@ -40,6 +41,20 @@ function Initialize-AgentBusSccacheServer {
         catch {
         }
     }
+
+    try {
+        $verifyOutput = & $SccachePath --show-stats 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "sccache was found but did not pass health verification: $(($verifyOutput -join "`n").Trim())"
+            return $false
+        }
+    }
+    catch {
+        Write-Warning "sccache was found but did not pass health verification: $($_.Exception.Message)"
+        return $false
+    }
+
+    return $true
 }
 
 function Get-AgentBusCommandPath {
@@ -157,9 +172,14 @@ function Use-AgentBusRustBuildEnv {
             (Join-Path $env:USERPROFILE "bin\sccache.exe")
         )
         if ($sccache) {
-            $env:RUSTC_WRAPPER = $sccache
-            Initialize-AgentBusSccacheServer -SccachePath $sccache -ResetStats:$ResetSccacheStats
-            $state.Summary.Sccache = $sccache
+            if (Initialize-AgentBusSccacheServer -SccachePath $sccache -ResetStats:$ResetSccacheStats) {
+                $env:RUSTC_WRAPPER = $sccache
+                $state.Summary.Sccache = $sccache
+            }
+            else {
+                Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+                Write-Warning "sccache is unavailable or unhealthy; continuing without RUSTC_WRAPPER."
+            }
         }
     }
 
@@ -329,7 +349,7 @@ function Find-AgentBusBinary {
 function Find-AgentBusBuiltBinary {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$RustCliDir,
+        [string]$WorkspaceRoot,
         [Parameter(Mandatory = $true)]
         [string]$TargetDir,
         [Parameter(Mandatory = $true)]
@@ -339,8 +359,7 @@ function Find-AgentBusBuiltBinary {
 
     $candidates = @(
         (Join-Path $TargetDir "$Profile\$BinaryName.exe"),
-        "T:\RustCache\cargo-target\$Profile\$BinaryName.exe",
-        (Join-Path $RustCliDir "target\$Profile\$BinaryName.exe")
+        (Join-Path $WorkspaceRoot "target\$Profile\$BinaryName.exe")
     )
 
     return Find-AgentBusBinary -Candidates $candidates

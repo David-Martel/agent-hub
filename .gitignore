@@ -12,7 +12,6 @@ bin/
 # Rust
 **/target/
 rust/target/
-rust-cli/target/
 $target/
 T:/RustCache/
 
@@ -50,3 +49,10 @@ build/
 
 # Lock files managed externally
 uv.lock
+
+# Scratch / build capture (never commit)
+temp_*.txt
+errors.json
+build.log
+build.log.err
+.cargo/config.override.toml

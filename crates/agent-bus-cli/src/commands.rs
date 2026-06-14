@@ -162,7 +162,10 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_stora
                 // Never exit 0 on an unhealthy bus: a probe that prints ok=false
                 // but returns success is a silent failure for any
                 // `agent-bus health && <deploy>` gate.
-                let ok = val.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                let ok = val
+                    .get("ok")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
                 let storage_ready = val
                     .get("storage_ready")
                     .and_then(serde_json::Value::as_bool)

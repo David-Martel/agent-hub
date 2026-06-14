@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// Core error type for agent-bus operations, conceptually aligned with MCP/JSON-RPC error classes 
+/// Core error type for agent-bus operations, conceptually aligned with MCP/JSON-RPC error classes
 /// where applicable.
 #[derive(Error, Debug)]
 pub enum AgentBusError {
@@ -15,10 +15,10 @@ pub enum AgentBusError {
     // Backend errors bubble up as Internal errors (-32603) via MCP/HTTP boundaries
     #[error("Database error: {0}")]
     Postgres(#[from] postgres::Error),
-    
+
     #[error("Bus/Redis error: {0}")]
     Redis(#[from] redis::RedisError),
-    
+
     #[error("Serialization error: {0}")]
     Serde(#[from] serde_json::Error),
 

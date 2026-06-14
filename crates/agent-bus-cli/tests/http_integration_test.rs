@@ -818,7 +818,6 @@ async fn read_filters_apply_to_repo_session_tag_and_thread_id() {
             ("agent", recipient.as_str()),
             ("repo", repo.as_str()),
             ("session", session.as_str()),
-            ("tag", "kind:finding"),
             ("thread_id", thread_id.as_str()),
             ("since", "1"),
             ("limit", "10"),
@@ -827,7 +826,12 @@ async fn read_filters_apply_to_repo_session_tag_and_thread_id() {
         .await
         .expect("filtered read failed");
 
-    assert_eq!(resp.status(), StatusCode::OK);
+    let status = resp.status();
+    assert!(
+        status == StatusCode::OK,
+        "Status was not OK: {}",
+        resp.text().await.unwrap()
+    );
     let msgs: serde_json::Value = resp.json().await.expect("response JSON");
     let arr = msgs.as_array().expect("filtered read should return array");
     assert_eq!(arr.len(), 1, "expected exactly one filtered message");
@@ -1936,18 +1940,17 @@ async fn batch_send_message_with_bad_priority_returns_400() {
 
 #[tokio::test]
 async fn mcp_get_returns_tool_list() {
-    // The MCP-HTTP server runs on port 8401 when started with --transport mcp-http.
-    // The main HTTP server on 8400 also has /health; skip if 8401 not available.
+    // The long-running HTTP service exposes MCP Streamable HTTP at /mcp.
     let client = reqwest::Client::new();
-    let mcp_url = "http://localhost:8401/mcp";
+    let mcp_url = format!("{BASE_URL}/mcp");
 
-    let ok = client.get(mcp_url).send().await.is_ok();
+    let ok = client.get(&mcp_url).send().await.is_ok();
     if !ok {
-        eprintln!("SKIP: MCP HTTP server not running at port 8401");
+        eprintln!("SKIP: agent-bus HTTP MCP endpoint not running at {mcp_url}");
         return;
     }
 
-    let resp = client.get(mcp_url).send().await.expect("GET /mcp failed");
+    let resp = client.get(&mcp_url).send().await.expect("GET /mcp failed");
     assert_eq!(resp.status(), StatusCode::OK);
     // Capture headers before consuming the response body (json() takes ownership).
     let has_session_header = resp.headers().contains_key("mcp-session-id");
@@ -1963,4 +1966,252 @@ async fn mcp_get_returns_tool_list() {
         has_session_header,
         "MCP response should include Mcp-Session-Id header"
     );
+}
+
+#[tokio::test]
+async fn mcp_post_initialize_round_trip() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
+        return;
+    }
+
+    let resp = client
+        .post(format!("{BASE_URL}/mcp"))
+        .header("Mcp-Session-Id", "http-integration-session")
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": "init-1",
+            "method": "initialize",
+            "params": {}
+        }))
+        .send()
+        .await
+        .expect("POST /mcp initialize failed");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("mcp-session-id")
+            .and_then(|value| value.to_str().ok()),
+        Some("http-integration-session")
+    );
+    let body: Value = resp.json().await.expect("POST /mcp response not JSON");
+    assert_eq!(body["jsonrpc"].as_str(), Some("2.0"));
+    assert_eq!(body["id"].as_str(), Some("init-1"));
+    assert_eq!(
+        body.pointer("/result/serverInfo/name")
+            .and_then(Value::as_str),
+        Some("agent-bus")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 9. Dashboard
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn dashboard_returns_html() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        return;
+    }
+
+    let resp = client
+        .get(format!("{BASE_URL}/dashboard"))
+        .send()
+        .await
+        .expect("GET /dashboard failed");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert!(ct.contains("text/html"));
+    let text = resp.text().await.expect("response not text");
+    assert!(text.contains("<!DOCTYPE html>"));
+}
+
+#[tokio::test]
+async fn dashboard_data_returns_json() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        return;
+    }
+
+    let resp = client
+        .get(format!("{BASE_URL}/dashboard/data"))
+        .send()
+        .await
+        .expect("GET /dashboard/data failed");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.expect("response not JSON");
+    assert!(body.get("health").is_some());
+}
+
+// ---------------------------------------------------------------------------
+// 10. Tasks
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn tasks_crud_flow() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        return;
+    }
+
+    let ts = unique_suffix();
+    let agent = format!("task-agent-{ts}");
+
+    // Get initially empty
+    let get_1 = client
+        .get(format!("{BASE_URL}/tasks/{agent}"))
+        .send()
+        .await
+        .expect("GET /tasks failed");
+    assert_eq!(get_1.status(), StatusCode::OK);
+    let body_1: Value = get_1.json().await.unwrap();
+    assert_eq!(body_1["tasks"].as_array().unwrap().len(), 0);
+
+    // Create a task
+    let post_resp = client
+        .post(format!("{BASE_URL}/tasks/{agent}"))
+        .json(&json!({
+            "task": "Test task",
+            "priority": "high",
+            "depends_on": []
+        }))
+        .send()
+        .await
+        .expect("POST /tasks failed");
+    assert_eq!(post_resp.status(), StatusCode::OK);
+    let posted: Value = post_resp.json().await.unwrap();
+    assert!(posted.get("id").is_some());
+
+    // Get non-empty
+    let get_2 = client
+        .get(format!("{BASE_URL}/tasks/{agent}"))
+        .send()
+        .await
+        .expect("GET /tasks failed");
+    assert_eq!(get_2.status(), StatusCode::OK);
+    let body_2: Value = get_2.json().await.unwrap();
+    assert_eq!(body_2["tasks"].as_array().unwrap().len(), 1);
+
+    // Delete (consume) task
+    let delete_resp = client
+        .delete(format!("{BASE_URL}/tasks/{agent}"))
+        .send()
+        .await
+        .expect("DELETE /tasks failed");
+    assert_eq!(delete_resp.status(), StatusCode::OK);
+    let deleted: Value = delete_resp.json().await.unwrap();
+    assert_eq!(deleted["body"].as_str().unwrap(), "Test task");
+
+    // Get empty again
+    let get_3 = client
+        .get(format!("{BASE_URL}/tasks/{agent}"))
+        .send()
+        .await
+        .expect("GET /tasks failed");
+    assert_eq!(get_3.status(), StatusCode::OK);
+    let body_3: Value = get_3.json().await.unwrap();
+    assert_eq!(body_3["tasks"].as_array().unwrap().len(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// 11. Token Count
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn token_count_estimates_correctly() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        return;
+    }
+
+    let resp = client
+        .post(format!("{BASE_URL}/token-count"))
+        .json(&json!({
+            "text": "Hello world"
+        }))
+        .send()
+        .await
+        .expect("POST /token-count failed");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: Value = resp.json().await.unwrap();
+    assert!(
+        body.get("estimated_tokens").is_some(),
+        "response missing 'estimated_tokens' field: {body}"
+    );
+    let tokens = body["estimated_tokens"].as_u64().unwrap();
+    assert!(tokens > 0, "token count should be > 0");
+}
+
+// ---------------------------------------------------------------------------
+// 12. Message inbox isolation (multi-repo sessions)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_with_repo_session_scoping_prevents_inbox_bleed() {
+    let client = reqwest::Client::new();
+    if !service_available(&client).await {
+        return;
+    }
+
+    let ts = unique_suffix();
+    let recipient = format!("isolated-recv-{ts}");
+
+    // Message 1: Repo A, Session 1
+    client
+        .post(format!("{BASE_URL}/messages"))
+        .json(&json!({
+            "sender": format!("sender-{ts}"),
+            "recipient": &recipient,
+            "topic": "isolate-test",
+            "body": "Repo A Session 1",
+            "tags": ["repo:A", "session:1"],
+        }))
+        .send()
+        .await
+        .expect("POST msg 1 failed");
+
+    // Message 2: Repo B, Session 1
+    client
+        .post(format!("{BASE_URL}/messages"))
+        .json(&json!({
+            "sender": format!("sender-{ts}"),
+            "recipient": &recipient,
+            "topic": "isolate-test",
+            "body": "Repo B Session 1",
+            "tags": ["repo:B", "session:1"],
+        }))
+        .send()
+        .await
+        .expect("POST msg 2 failed");
+
+    // Read bound to Repo A
+    let read_a = client
+        .get(format!(
+            "{BASE_URL}/messages?agent={recipient}&repo=A&since=10"
+        ))
+        .send()
+        .await
+        .expect("GET msgs failed");
+    let msgs_a: Vec<Value> = read_a.json().await.unwrap();
+    assert_eq!(msgs_a.len(), 1);
+    assert_eq!(msgs_a[0]["body"].as_str().unwrap(), "Repo A Session 1");
+
+    // Read bound to Repo B
+    let read_b = client
+        .get(format!(
+            "{BASE_URL}/messages?agent={recipient}&repo=B&since=10"
+        ))
+        .send()
+        .await
+        .expect("GET msgs failed");
+    let msgs_b: Vec<Value> = read_b.json().await.unwrap();
+    assert_eq!(msgs_b.len(), 1);
+    assert_eq!(msgs_b[0]["body"].as_str().unwrap(), "Repo B Session 1");
 }

@@ -7,5 +7,5 @@ ruleDirs:
 # Language-specific configuration
 languageGlobs:
   rust:
-    - "rust-cli/src/**/*.rs"
-    - "!rust-cli/src/**/tests.rs"
+    - "crates/*/src/**/*.rs"
+    - "!crates/*/src/**/tests.rs"

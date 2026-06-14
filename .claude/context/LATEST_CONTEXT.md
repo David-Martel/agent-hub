@@ -1,13 +1,15 @@
 # Latest Context Pointer
 
-**Latest context:** [`agent-bus-context-2026-06-12.md`](./agent-bus-context-2026-06-12.md)
+**Latest context:** [`agent-bus-context-2026-06-13.md`](./agent-bus-context-2026-06-13.md)
 
-- **ID:** `ctx-agent-bus-20260612-1828`
-- **Created:** 2026-06-12T22:28:16Z
-- **Branch / commit:** `main` @ `356acdc` (in sync with origin)
-- **Summary:** Synced local repo with origin/main (fast-forward, 7 commits).
-  Preserved uncommitted WIP via stash/pull/pop; resolved 3 merge conflicts
-  favoring upstream; workspace compiles clean. WIP intentionally uncommitted —
-  resume by deciding whether to commit-cluster it or continue editing.
+- **ID:** `ctx-agent-bus-20260613`
+- **Created:** 2026-06-13
+- **Branch / commit:** `main` @ `a151397`
+- **Summary:** Audited TODO trackers against real code. Found the `rust-cli`
+  crate already removed (workspace split done; `cargo check` clean) but CI,
+  `release.yml`, `build.ps1`, and `sgconfig.yml` still reference it (broken).
+  Updated TODO.md (added P8 post-split remediation + P9 robustness) and
+  agents.TODO.md (refreshed checkpoint/test inventory). Next: land CI/build
+  fixes + in-flight migration, then deploy parallel fleet.
 
 Index: [`CONTEXT_INDEX.json`](./CONTEXT_INDEX.json)

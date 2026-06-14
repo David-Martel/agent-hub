@@ -1,3 +1,22 @@
+> **STATUS: COMPLETE (2026-06-13)** — The split described in this plan has
+> landed. `rust-cli` has been removed from the workspace. The four-crate layout
+> (`agent-bus-core`, `agent-bus-cli`, `agent-bus-http`, `agent-bus-mcp`) is now
+> the authoritative runtime. All blockers listed below are resolved:
+>
+> - **McpToolDispatch in core**: `agent-bus-core/src/mcp_dispatch.rs` is the
+>   shared tool-dispatch layer; `http.rs` and `mcp.rs` consume it directly.
+> - **Entry points**: each binary crate owns its own `main.rs` and calls
+>   `bootstrap()` from `agent-bus-core` directly — no longer delegating into a
+>   shared `rust-cli` `run()`.
+> - **`server_mode.rs`**: lives in `crates/agent-bus-cli/src/server_mode.rs`.
+> - **`bootstrap()`**: extracted into `agent-bus-core/src/bootstrap.rs`.
+> - **`clap::ValueEnum` on `Encoding`**: gated behind `features = ["cli"]` in
+>   `agent-bus-core/Cargo.toml`.
+>
+> `cargo check --workspace` is clean; 590+ library tests pass on Linux via
+> Docker. See [`docs/current-status-2026-06-13.md`](./current-status-2026-06-13.md)
+> for the post-split status snapshot.
+
 # Phase 3: Crate Split Execution Plan (2026-04-04)
 
 Code-grounded dependency analysis for completing the workspace split.

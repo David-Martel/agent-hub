@@ -1,32 +1,60 @@
 # Agent Bus
 
 Rust-native coordination bus for Codex, Claude, Gemini, and local sub-agents.
+Redis for live transport, PostgreSQL for durable history and presence-event
+persistence. Deprecated Python runtime code has been removed.
 
-The active implementation lives in `rust-cli/` and uses Redis for live
-transport plus PostgreSQL for durable history and presence-event persistence.
-Deprecated Python runtime code has been removed from this repository.
+## Crate Map
 
-## Code-Grounded Status (2026-04-03)
+The workspace contains exactly four crates. `rust-cli` has been removed.
 
-- The repository now has a top-level Cargo workspace with `rust-cli`,
-  `agent-bus-core`, `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp`.
-- `agent-bus-core` already owns most shared storage, validation, token, and
-  typed ops logic.
-- The structural split is still in progress: `rust-cli` remains the primary
-  runtime crate and still owns the large CLI, HTTP, and MCP transport modules.
-- The `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` crates currently
-  act as thin wrapper crates that call into `rust-cli`.
-- The build, validate, and deploy scripts still treat `rust-cli` as the
-  authoritative build root.
+| Crate | Package name | Binary | Role |
+|-------|-------------|--------|------|
+| `crates/agent-bus-core` | `agent-bus-core` | — | Shared library: storage adapters, models, ops, token, validation, output, bootstrap, `McpToolDispatch` |
+| `crates/agent-bus-cli` | `agent-bus` | `agent-bus` | CLI + inline MCP/HTTP serve; owns cli.rs, commands.rs, lib.rs, server_mode.rs, monitor.rs, mcp_discovery.rs |
+| `crates/agent-bus-http` | `agent-bus-http` | `agent-bus-http` | Long-running HTTP/SSE service + `/mcp` MCP-HTTP endpoint |
+| `crates/agent-bus-mcp` | `agent-bus-mcp` | `agent-bus-mcp` | MCP stdio-only server; lightest dependency footprint |
 
-See [docs/current-status-2026-04-03.md](./docs/current-status-2026-04-03.md)
-for the full code-grounded status snapshot and remaining required work.
+**How to find the right crate for a contribution:**
+- Adding or modifying a CLI subcommand → `crates/agent-bus-cli/src/commands.rs` + `cli.rs`.
+- Adding or modifying a shared data type, storage op, or validation rule → `crates/agent-bus-core/src/`.
+- Adding or modifying an HTTP route → `crates/agent-bus-http/src/http.rs`.
+- Adding or modifying an MCP tool definition or dispatch → `crates/agent-bus-core/src/mcp_dispatch.rs` (shared) and/or `crates/agent-bus-mcp/src/mcp.rs` (rmcp adapter).
+- Integration tests (HTTP, channel, CLI) → `crates/agent-bus-cli/tests/`.
+
+**Note on agent-bus-cli:** The CLI crate is still "fat" — its `lib.rs`
+declares private shim modules (`channels`, `redis_bus`, etc.) that re-export
+from `agent-bus-core`. Canonical implementations live in `agent-bus-core`.
+A follow-on cleanup pass will remove these shims.
+
+## Build Commands (workspace root)
+
+```bash
+# Unit tests — no external services needed
+cargo test --workspace --lib --bins
+
+# All binaries, release profile
+cargo build --workspace --release --bins
+
+# Clippy (enforced by pre-push hook)
+cargo clippy --workspace --all-targets -- -D warnings
+
+# Format check
+cargo fmt --all --check
+
+# Integration tests (requires Redis :6380 + PostgreSQL :5300)
+cargo test --workspace --test '*'
+```
+
+See [docs/current-status-2026-06-13.md](./docs/current-status-2026-06-13.md)
+for the full code-grounded status snapshot, resolved blockers, and remaining
+work.
 
 Current protocol metadata:
 - Bus protocol: `agent-bus` message contract v1.0
 - Message identity: UUID `id` + UTC `timestamp_utc`
-- Default Redis endpoint: `redis://localhost:6380/0`
-- Default PostgreSQL endpoint: `postgresql://postgres@localhost:5300/redis_backend`
+- Default Redis endpoint: `redis://127.0.0.1:6380/0`
+- Default PostgreSQL endpoint: `postgresql://postgres@127.0.0.1:5300/redis_backend`
 - Redis install fallback: [redis-windows/redis-windows](https://github.com/redis-windows/redis-windows)
 
 ## Commands
@@ -53,7 +81,7 @@ pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-functional.ps1
 
 - `agent-bus.exe`: CLI + MCP stdio entry point. Use it for `serve --transport stdio`, backend health checks, admin commands, and local debugging.
 - `agent-bus-http.exe`: long-running HTTP/SSE service variant. Use it for frequent `send` / `read` loops, `/notifications/{agent}` replay, SSE subscribers, and Windows service installs.
-- `agent-bus-mcp.exe`: MCP-focused wrapper binary. With no arguments it defaults to `serve --transport stdio`, but today it still delegates into the shared `rust-cli` runtime rather than an independent MCP-only crate implementation.
+- `agent-bus-mcp.exe`: Independent MCP stdio server (`crates/agent-bus-mcp`). Owns its own `mcp.rs` (`AgentBusMcpServer`) and calls `bootstrap()` from `agent-bus-core` directly. Lightest dependency footprint of the three binaries.
 
 ## Local Build Orchestration
 
@@ -61,14 +89,13 @@ pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-functional.ps1
 - It imports `CargoTools` when available, then applies the repo's shared Rust build helper so `CARGO_TARGET_DIR`, `sccache`, `lld-link`, and local iteration flags are configured consistently across build, validate, deploy, and bootstrap flows.
 - By default it writes to a private `CARGO_TARGET_DIR` namespace under the active machine target root so concurrent repo work does not fight over the same cargo lock. Use `-TargetNamespace <name>` or `-TargetDir <path>` to make that namespace explicit.
 - Local validation prefers `cargo nextest` when available and falls back to `cargo test` otherwise. Integration targets still run serially against the shared Redis/PostgreSQL services.
-- A repo-scoped [`.cargo/config.toml`](./.cargo/config.toml) now adds `cargo ab-fast`, `cargo ab-build`, `cargo ab-test`, `cargo ab-itest`, `cargo ab-clippy`, and `cargo ab-nextest` aliases so direct cargo use from the repo root still targets `rust-cli/` consistently.
-- The checked-in cargo config now also installs a repo-local `rustc-wrapper` shim, so plain shell `cargo` runs automatically use `sccache` when it is present without requiring operator profile setup.
-- The repo is now a workspace, but operationally it still behaves like a partially split runtime: `agent-bus-core` owns extracted shared modules while `rust-cli` still owns runtime startup plus the large `commands.rs`, `http.rs`, and `mcp.rs` surfaces.
-- The wrapper crates under `crates/agent-bus-cli`, `crates/agent-bus-http`, and `crates/agent-bus-mcp` currently call back into `rust-cli`; they do not yet remove `rust-cli` from the build graph.
-- Shared typed ops now live in [`crates/agent-bus-core/src/ops/mod.rs`](./crates/agent-bus-core/src/ops/mod.rs), while [`rust-cli/src/ops/mod.rs`](./rust-cli/src/ops/mod.rs) acts as a compatibility shim.
-- The structural split plan and current checkpoint are documented in [docs/structural-refactor-plan-2026-03-25.md](./docs/structural-refactor-plan-2026-03-25.md) and [docs/current-status-2026-04-03.md](./docs/current-status-2026-04-03.md).
+- A repo-scoped [`.cargo/config.toml`](./.cargo/config.toml) adds `cargo ab-fast`, `cargo ab-build`, `cargo ab-test`, `cargo ab-itest`, `cargo ab-clippy`, and `cargo ab-nextest` aliases that target the `agent-bus` package (in `crates/agent-bus-cli`).
+- Repo build scripts import `CargoTools` and enable `sccache` only after a health check; plain shell `cargo` stays wrapper-free so Windows command-line limits in wrapper scripts cannot break normal builds.
+- The workspace split is complete: `rust-cli` has been removed. `agent-bus-core` owns all shared modules; `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` are independent binary crates.
+- Shared typed ops live in [`crates/agent-bus-core/src/ops/`](./crates/agent-bus-core/src/ops/).
+- The split history and post-split status are documented in [docs/phase3-crate-split-plan-2026-04-04.md](./docs/phase3-crate-split-plan-2026-04-04.md) and [docs/current-status-2026-06-13.md](./docs/current-status-2026-06-13.md).
 - Use `pwsh -NoLogo -NoProfile -File build.ps1 -Release` for a full optimized build, or `pwsh -NoLogo -NoProfile -File build.ps1 -FastRelease` for a faster local iteration binary that avoids the full release link cost.
-- The shared helper now restarts a stale `sccache` server automatically when the resident server version does not match the installed client, which avoids noisy post-build stats failures after tool upgrades.
+- The shared helper restarts stale `sccache` servers and disables `RUSTC_WRAPPER` when the cache server fails health verification, which avoids shipping builds through a broken cache process.
 - CLI server-mode reads and admin calls now use the async `reqwest` client path internally rather than a separate blocking client plus worker thread bridge.
 - Use `cargo ab-clippy --target-dir <dir> -- -D warnings` when you want strict clippy with an explicit target dir; the alias now leaves room for extra cargo args instead of hard-coding the lint terminator.
 
@@ -183,7 +210,8 @@ agent-bus serve --transport mcp-http --port 8765
 - PowerShell wrapper scripts call the Rust binary directly and default to local `localhost` Redis/PostgreSQL services.
 - `scripts\build-deploy.ps1` now uses the shared Rust build helper, prefers `sccache`/`lld-link` when present, deploys dedicated CLI/HTTP/MCP binaries, requests pause/flush through the built-in service controls before stopping the service, then verifies the HTTP health endpoint and runs a live SSE notification smoke test after restart.
 - `scripts\validate-agent-bus.ps1` now uses the same helper and builds with the `fast-release` profile by default before running tests, health, and optional smoke checks.
-- `scripts\install-mcp-clients.ps1` updates Claude and Codex MCP configs in-place, with timestamped backups by default.
+- `scripts\install-mcp-clients.ps1` updates Claude, Codex, and Gemini MCP configs in-place, with timestamped backups by default. It uses the dedicated `agent-bus-mcp` stdio binary when available, falls back to `agent-bus serve --transport stdio`, and runs `scripts\validate-agent-client-configs.ps1` afterward.
+- Client install/version requirements and multi-agent installer practices are documented in [docs/agent-client-installation.md](./docs/agent-client-installation.md).
 - `scripts/install-agent-hub-service.ps1` installs the native HTTP transport as a Windows service using `nssm` + `pwsh` and sets `AGENT_BUS_SERVICE_NAME` for the runtime.
 - MCP clients should register the stdio form by default.
 - Streamable HTTP is available for clients that support long-lived MCP sessions and notifications.
@@ -192,7 +220,7 @@ agent-bus serve --transport mcp-http --port 8765
 - Sample client configs are in `examples/mcp/`.
 - A tiny browser client lives under `web/` for manual HTTP probing; it is intentionally static and not auto-served by the Rust binary yet.
 - Agent coordination guidance is in `AGENT_COMMUNICATIONS.md` and `MCP_CONFIGURATION.md`.
-- Current architecture and backlog status are summarized in [docs/current-status-2026-04-03.md](./docs/current-status-2026-04-03.md).
+- Current architecture and backlog status are summarized in [docs/current-status-2026-06-13.md](./docs/current-status-2026-06-13.md).
 
 ## Encoding and interoperability
 

@@ -23,6 +23,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 pub const DEFAULT_PORT: u16 = 8400;
 
+use agent_bus_core::mcp_dispatch::{McpToolDispatch, tool_definitions};
 use agent_bus_core::models::MAX_HISTORY_MINUTES;
 #[cfg(test)]
 use agent_bus_core::ops::admin::ServerMode;
@@ -61,7 +62,9 @@ use agent_bus_core::ops::{
     ValidatedBatchItem, ValidatedSendRequest, knock_metadata, list_messages_live, post_ack,
     post_message, set_presence, validated_batch_send, validated_post_message,
 };
-use agent_bus_core::output::{excerpt_body, format_health_toon, format_message_toon, format_presence_toon};
+use agent_bus_core::output::{
+    excerpt_body, format_health_toon, format_message_toon, format_presence_toon,
+};
 use agent_bus_core::redis_bus::{
     RedisPool, SseSubscriberCount, bus_list_messages_from_redis,
     bus_post_message_with_notifications, list_notifications, list_notifications_since_id,
@@ -69,7 +72,6 @@ use agent_bus_core::redis_bus::{
 };
 use agent_bus_core::settings::Settings;
 use agent_bus_core::validation::validate_priority;
-use agent_bus_core::mcp_dispatch::{McpToolDispatch, tool_definitions};
 
 /// Per-agent live SSE subscriber channels.
 ///
@@ -221,7 +223,8 @@ pub(crate) async fn http_health_handler(
     // detail for loopback-only deployments. Captured before `state` moves into
     // the blocking task below.
     let bind_host = state.settings.server_host.trim().to_ascii_lowercase();
-    let exposed_bind = !(bind_host == "localhost" || bind_host == "127.0.0.1" || bind_host == "::1");
+    let exposed_bind =
+        !(bind_host == "localhost" || bind_host == "127.0.0.1" || bind_host == "::1");
     let control = state.control_status.read().await.clone();
     let result =
         tokio::task::spawn_blocking(move || ops_health(&state.settings, Some(&pool_for_health)))
@@ -836,12 +839,6 @@ pub(crate) async fn handle_mcp_http(
     headers: HeaderMap,
     Json(request): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    // Assign or echo the session ID.
-    let session_id = headers
-        .get("Mcp-Session-Id")
-        .and_then(|v| v.to_str().ok())
-        .map_or_else(|| uuid::Uuid::new_v4().to_string(), String::from);
-
     let request_id = request
         .get("id")
         .cloned()
@@ -867,26 +864,42 @@ pub(crate) async fn handle_mcp_http(
                 })
             });
 
-    // Merge the id into the final response.
-    let mut resp = response;
+    build_mcp_http_response(&headers, request_id, response)
+}
+
+fn build_mcp_http_response(
+    headers: &HeaderMap,
+    request_id: serde_json::Value,
+    mut resp: serde_json::Value,
+) -> Response {
+    // Assign or echo the session ID.
+    let session_id = headers
+        .get("Mcp-Session-Id")
+        .and_then(|v| v.to_str().ok())
+        .map_or_else(|| uuid::Uuid::new_v4().to_string(), String::from);
+
     if let serde_json::Value::Object(ref mut map) = resp {
         map.insert("jsonrpc".to_owned(), serde_json::json!("2.0"));
         map.insert("id".to_owned(), request_id);
     }
-
-    let mut builder = axum::response::Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .header("Mcp-Session-Id", &session_id);
 
     // If the client sent `Accept: text/event-stream`, wrap in SSE framing.
     let wants_sse = headers
         .get(axum::http::header::ACCEPT)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.contains("text/event-stream"));
+    let content_type = if wants_sse {
+        "text/event-stream"
+    } else {
+        "application/json"
+    };
+
+    let builder = axum::response::Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", content_type)
+        .header("Mcp-Session-Id", &session_id);
 
     if wants_sse {
-        builder = builder.header("Content-Type", "text/event-stream");
         let body = format!(
             "data: {}\n\n",
             serde_json::to_string(&resp).unwrap_or_default()
@@ -1131,7 +1144,8 @@ fn spawn_agent_notification_bridge(state: &AppState) {
                 let Some(message_val) = event_val.get("message").cloned() else {
                     continue;
                 };
-                let Ok(message) = serde_json::from_value::<agent_bus_core::models::Message>(message_val)
+                let Ok(message) =
+                    serde_json::from_value::<agent_bus_core::models::Message>(message_val)
                 else {
                     continue;
                 };
@@ -1142,6 +1156,143 @@ fn spawn_agent_notification_bridge(state: &AppState) {
                     push_notifications_to_agent_connections(&agent_connections, &[notification])
                         .await;
                 });
+            }
+        }
+    });
+}
+
+/// How often the PG backfill monitor wakes to check for outstanding dropped writes.
+const PG_BACKFILL_CHECK_SECS: u64 = 30;
+
+/// Upper bound on how many Redis stream entries a single backfill page replays.
+///
+/// Matches the conservative default used by the `agent-bus sync` CLI command.
+/// A dropped-write burst larger than this is recovered by paging through the
+/// stream from oldest to newest.
+const PG_BACKFILL_REPLAY_LIMIT: usize = 100_000;
+
+/// Spawn a background task that auto-backfills `PostgreSQL` after a PG reconnect
+/// (deferred F1).
+///
+/// This is wired at the HTTP bootstrap layer precisely because it is the only
+/// place where BOTH storage handles are available: the Redis pool
+/// (`state.redis`) and the PG settings (`state.settings`). The storage layers
+/// themselves stay decoupled — `postgres_store::backfill_dropped_writes` never
+/// touches Redis; this task reads the Redis stream and hands the decoded
+/// messages to it.
+///
+/// ## Behaviour
+///
+/// Every [`PG_BACKFILL_CHECK_SECS`] the task observes the metrics gauge. It only
+/// acts when `PostgreSQL` is configured, the circuit breaker is **closed** (PG is
+/// healthy again), and `pg_dropped_writes > 0` (there is recovery debt from a
+/// prior outage). When all three hold it reads the Redis stream and replays it
+/// into `PostgreSQL` via the idempotent, paged
+/// [`backfill_dropped_writes`](agent_bus_core::postgres_store::backfill_dropped_writes),
+/// which clears the gauge by the number of rows actually recovered.
+///
+/// ## Decoupling / non-blocking guarantees
+///
+/// The Redis read + PG replay run inside `spawn_blocking`, so the blocking
+/// storage I/O never stalls the async runtime, and the separate
+/// `pg-health-monitor` OS thread (which flips the circuit breaker) is never
+/// blocked on Redis I/O. The async cadence loop itself does no blocking work.
+fn spawn_pg_backfill_monitor(state: &AppState) {
+    // PG backfill only makes sense when a database is configured.
+    if state.settings.database_url.is_none() {
+        return;
+    }
+    let settings = Arc::clone(&state.settings);
+
+    tokio::spawn(async move {
+        use std::sync::atomic::Ordering;
+
+        let mut ticker = tokio::time::interval(Duration::from_secs(PG_BACKFILL_CHECK_SECS));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // Skip the immediate first tick so we wait a full interval before the
+        // first check (gives a freshly-booted server time to settle).
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+
+            // Cheap, non-blocking gate: only proceed when PG is healthy again and
+            // there is recovery debt to settle.
+            let dropped = agent_bus_core::postgres_store::pg_metrics()
+                .dropped_writes
+                .load(Ordering::Relaxed);
+            if dropped == 0 || agent_bus_core::postgres_store::is_pg_circuit_open() {
+                continue;
+            }
+
+            tracing::info!(
+                "pg-backfill-monitor: {dropped} dropped write(s) detected after PG recovery — \
+                 replaying Redis stream into PostgreSQL"
+            );
+
+            // All blocking storage I/O happens here, off the async runtime.
+            let settings = Arc::clone(&settings);
+            let result = tokio::task::spawn_blocking(move || -> Result<(usize, usize)> {
+                // Read the Redis stream (authoritative source of truth) in
+                // pages and replay it into PostgreSQL idempotently. Paging is
+                // required because a fixed prefix reread can get stuck when the
+                // missing rows sit after already-inserted entries.
+                let mut after_id: Option<String> = None;
+                let mut checked_total = 0;
+                let mut inserted_total = 0;
+                loop {
+                    let messages = agent_bus_core::redis_bus::bus_read_page_from_redis(
+                        &settings,
+                        after_id.as_deref(),
+                        PG_BACKFILL_REPLAY_LIMIT,
+                    )?;
+                    if messages.is_empty() {
+                        break;
+                    }
+                    let last_id = messages
+                        .last()
+                        .and_then(|message| message.stream_id.clone());
+                    let page_len = messages.len();
+                    let (checked, inserted) =
+                        agent_bus_core::postgres_store::backfill_dropped_writes(
+                            &settings, &messages,
+                        )?;
+                    checked_total += checked;
+                    inserted_total += inserted;
+
+                    if agent_bus_core::postgres_store::pg_metrics()
+                        .dropped_writes
+                        .load(Ordering::Relaxed)
+                        == 0
+                    {
+                        break;
+                    }
+                    if page_len < PG_BACKFILL_REPLAY_LIMIT {
+                        break;
+                    }
+                    if last_id == after_id {
+                        break;
+                    }
+                    after_id = last_id;
+                }
+                Ok((checked_total, inserted_total))
+            })
+            .await;
+
+            match result {
+                Ok(Ok((checked, inserted))) => {
+                    tracing::warn!(
+                        "pg-backfill-monitor: backfill complete — checked {checked} Redis \
+                         message(s), recovered {inserted} into PostgreSQL"
+                    );
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        "pg-backfill-monitor: backfill failed (will retry next cycle): {e:#}"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("pg-backfill-monitor: backfill task join error: {e}");
+                }
             }
         }
     });
@@ -1269,7 +1420,6 @@ async fn http_pending_acks_handler(
 
     Ok(Json(serde_json::to_value(&pending).unwrap_or_default()))
 }
-
 
 // --- POST /messages/batch --------------------------------------------------
 
@@ -3151,7 +3301,9 @@ async fn http_create_thread_handler(
     }
 
     let thread = tokio::task::spawn_blocking(move || {
-        use agent_bus_core::ops::thread::{CreateThreadRequest, create_thread as ops_create_thread};
+        use agent_bus_core::ops::thread::{
+            CreateThreadRequest, create_thread as ops_create_thread,
+        };
         ops_create_thread(
             &state.settings,
             &CreateThreadRequest {
@@ -3380,6 +3532,10 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         shutdown_signal: Arc::clone(&shutdown_signal),
     };
     spawn_agent_notification_bridge(&state);
+    // F1: auto-backfill PostgreSQL after a PG reconnect. Wired here because the
+    // HTTP bootstrap layer is the only place that holds both the Redis pool and
+    // the PG settings; the storage layers stay decoupled.
+    spawn_pg_backfill_monitor(&state);
     // Capture before `state` is moved into the router.
     let auth_token = state.settings.auth_token.clone();
     let app = Router::new()
@@ -3534,6 +3690,8 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
 mod tests {
     use super::*;
     use agent_bus_core::models::{Health, PROTOCOL_VERSION};
+    use axum::body::to_bytes;
+    use axum::http::{HeaderName, HeaderValue};
 
     fn make_health(redis_ok: bool, pg_ok: bool) -> Health {
         Health {
@@ -3932,6 +4090,79 @@ mod tests {
                 .all(|tool| tool.get("inputSchema").is_some() && tool.get("description").is_some()),
             "every tool entry must include schema and description"
         );
+    }
+
+    #[tokio::test]
+    async fn mcp_http_response_echoes_session_and_request_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("mcp-session-id"),
+            HeaderValue::from_static("session-test-1"),
+        );
+
+        let response = build_mcp_http_response(
+            &headers,
+            serde_json::json!("rpc-42"),
+            serde_json::json!({"result": {"ok": true}}),
+        );
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get("mcp-session-id"),
+            Some(&HeaderValue::from_static("session-test-1"))
+        );
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let value: serde_json::Value =
+            serde_json::from_slice(&body).expect("MCP JSON response should parse");
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], "rpc-42");
+        assert_eq!(value["result"]["ok"].as_bool(), Some(true));
+    }
+
+    #[tokio::test]
+    async fn mcp_http_response_supports_sse_framing() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::ACCEPT,
+            HeaderValue::from_static("text/event-stream"),
+        );
+
+        let response = build_mcp_http_response(
+            &headers,
+            serde_json::json!(7),
+            serde_json::json!({"result": {"transport": "mcp-http"}}),
+        );
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert_eq!(content_type, "text/event-stream");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body should be readable");
+        let text = String::from_utf8(body.to_vec()).expect("SSE body should be UTF-8");
+        assert!(
+            text.starts_with("data: "),
+            "SSE body must start with data: {text}"
+        );
+        assert!(
+            text.ends_with("\n\n"),
+            "SSE event must be terminated: {text}"
+        );
+        let json_text = text
+            .strip_prefix("data: ")
+            .and_then(|value| value.strip_suffix("\n\n"))
+            .expect("SSE data frame should contain one JSON payload");
+        let value: serde_json::Value =
+            serde_json::from_str(json_text).expect("SSE data should be JSON-RPC");
+        assert_eq!(value["jsonrpc"], "2.0");
+        assert_eq!(value["id"], 7);
+        assert_eq!(value["result"]["transport"], "mcp-http");
     }
 
     #[test]

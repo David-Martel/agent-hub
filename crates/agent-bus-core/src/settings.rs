@@ -112,8 +112,8 @@ fn maybe_write_default_config(path: &std::path::Path) {
         return;
     }
     let default_json = r#"{
-  "redis_url": "redis://localhost:6380/0",
-  "database_url": "postgresql://postgres@localhost:5300/redis_backend",
+  "redis_url": "redis://127.0.0.1:6380/0",
+  "database_url": "postgresql://postgres@127.0.0.1:5300/redis_backend",
   "stream_key": "agent_bus:messages",
   "channel": "agent_bus:events",
   "presence_prefix": "agent_bus:presence:",
@@ -261,12 +261,12 @@ impl Settings {
             redis_url: resolve(
                 "AGENT_BUS_REDIS_URL",
                 cfg.redis_url.as_deref(),
-                "redis://localhost:6380/0",
+                "redis://127.0.0.1:6380/0",
             ),
             database_url: resolve_optional_url(
                 "AGENT_BUS_DATABASE_URL",
                 cfg.database_url.as_deref(),
-                "postgresql://postgres@localhost:5300/redis_backend",
+                "postgresql://postgres@127.0.0.1:5300/redis_backend",
             ),
             stream_key: resolve(
                 "AGENT_BUS_STREAM_KEY",
@@ -407,20 +407,68 @@ impl Settings {
 
 fn is_localhost(host: &str) -> bool {
     let h = host.trim().to_lowercase();
-    h == "localhost" || h == "127.0.0.1" || h == "::1"
+    h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "[::1]"
+}
+
+fn url_host_span(url: &str) -> Option<(std::ops::Range<usize>, &str)> {
+    let scheme_end = url.find("://")?;
+    let authority_start = scheme_end + 3;
+    let authority_end = url[authority_start..]
+        .find(['/', '?', '#'])
+        .map_or(url.len(), |index| authority_start + index);
+    let authority = &url[authority_start..authority_end];
+    let host_start = authority
+        .rfind('@')
+        .map_or(authority_start, |index| authority_start + index + 1);
+    let host_port = &url[host_start..authority_end];
+    if host_port.starts_with('[') {
+        let close = host_port.find(']')?;
+        let host_end = host_start + close + 1;
+        let host = &url[host_start + 1..host_end - 1];
+        return Some((host_start..host_end, host));
+    }
+
+    let host_len = host_port.find(':').unwrap_or(host_port.len());
+    let host_end = host_start + host_len;
+    Some((host_start..host_end, &url[host_start..host_end]))
+}
+
+/// Return deterministic loopback candidates for backend URLs using `localhost`.
+///
+/// Windows commonly resolves `localhost` to `::1` before `127.0.0.1`, while
+/// local Redis containers are often IPv4-only. Backend clients use these
+/// candidates to avoid depending on OS resolver ordering.
+#[must_use]
+pub fn loopback_url_candidates(url: &str) -> Vec<String> {
+    let Some((host_range, host)) = url_host_span(url) else {
+        return vec![url.to_owned()];
+    };
+    if !host.eq_ignore_ascii_case("localhost") {
+        return vec![url.to_owned()];
+    }
+
+    let mut candidates = Vec::with_capacity(3);
+    for replacement in ["127.0.0.1", "[::1]", "localhost"] {
+        let mut candidate = String::with_capacity(url.len() + replacement.len());
+        candidate.push_str(&url[..host_range.start]);
+        candidate.push_str(replacement);
+        candidate.push_str(&url[host_range.end..]);
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
+    }
+    candidates
 }
 
 /// Extract the host from a URL and verify it is localhost.
 fn validate_localhost_url(url: &str, env_var: &str) -> Result<()> {
-    let Some(scheme_end) = url.find("://") else {
+    let Some((_host_range, host)) = url_host_span(url) else {
         return Ok(()); // not a URL, skip
     };
-    let after_scheme = &url[scheme_end + 3..];
-    let authority = after_scheme.split('/').next().unwrap_or("");
-    let host_port = authority.rsplit('@').next().unwrap_or(authority);
-    let host = host_port.split(':').next().unwrap_or("");
     if !is_localhost(host) {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("{env_var} must use localhost, got host '{host}' in '{url}'")));
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "{env_var} must use localhost, got host '{host}' in '{url}'"
+        )));
     }
     Ok(())
 }
@@ -428,10 +476,14 @@ fn validate_localhost_url(url: &str, env_var: &str) -> Result<()> {
 /// Verify an identifier is non-empty and contains no whitespace.
 fn validate_identifier(value: &str, env_var: &str) -> Result<()> {
     if value.is_empty() {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("{env_var} must not be empty")));
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "{env_var} must not be empty"
+        )));
     }
     if value.contains(' ') || value.contains('\n') || value.contains('\t') {
-        return Err(crate::error::AgentBusError::InvalidParams(format!("{env_var} must not contain whitespace, got '{value}'")));
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "{env_var} must not contain whitespace, got '{value}'"
+        )));
     }
     Ok(())
 }
@@ -622,6 +674,40 @@ mod tests {
         s.redis_url = "redis://127.0.0.1:6380/0".to_owned();
         s.server_host = "127.0.0.1".to_owned();
         assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_bracketed_ipv6_backend_urls() {
+        let mut s = Settings::from_env();
+        s.redis_url = "redis://[::1]:6380/0".to_owned();
+        s.database_url = Some("postgresql://postgres@[::1]:5300/redis_backend".to_owned());
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn localhost_backend_candidates_try_explicit_loopbacks_first() {
+        let candidates =
+            loopback_url_candidates("redis://default:secret@localhost:6380/0?timeout=1");
+        assert_eq!(
+            candidates,
+            vec![
+                "redis://default:secret@127.0.0.1:6380/0?timeout=1".to_owned(),
+                "redis://default:secret@[::1]:6380/0?timeout=1".to_owned(),
+                "redis://default:secret@localhost:6380/0?timeout=1".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn localhost_backend_candidates_leave_explicit_hosts_unchanged() {
+        assert_eq!(
+            loopback_url_candidates("postgresql://postgres@127.0.0.1:5300/redis_backend"),
+            vec!["postgresql://postgres@127.0.0.1:5300/redis_backend".to_owned()]
+        );
+        assert_eq!(
+            loopback_url_candidates("redis://[::1]:6380/0"),
+            vec!["redis://[::1]:6380/0".to_owned()]
+        );
     }
 
     #[test]

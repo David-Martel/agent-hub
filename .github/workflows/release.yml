@@ -31,27 +31,23 @@ jobs:
 
       - name: Verify Cargo.toml version matches tag
         shell: pwsh
-        working-directory: rust-cli
         run: |
-          $cargoVersion = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"(.+)"').Matches[0].Groups[1].Value
+          $cargoVersion = (Select-String -Path crates/agent-bus-cli/Cargo.toml -Pattern '^version\s*=\s*"(.+)"').Matches[0].Groups[1].Value
           $tagVersion = "${{ steps.version.outputs.VERSION }}"
           if ($cargoVersion -ne $tagVersion) {
-            Write-Error "Cargo.toml version ($cargoVersion) does not match tag ($tagVersion). Update Cargo.toml before tagging."
+            Write-Error "crates/agent-bus-cli/Cargo.toml version ($cargoVersion) does not match tag ($tagVersion). Update Cargo.toml before tagging."
             exit 1
           }
           Write-Host "Version match confirmed: $cargoVersion"
 
       - name: Format check
-        working-directory: rust-cli
         run: cargo fmt --all --check
 
       - name: Clippy
-        working-directory: rust-cli
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Tests
-        working-directory: rust-cli
-        run: cargo test --bin agent-bus -- --test-threads=4
+        run: cargo test --workspace --lib --bins -- --test-threads=4
         env:
           AGENT_BUS_REDIS_URL: redis://localhost:6380/0
           AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
@@ -80,8 +76,7 @@ jobs:
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- PostgreSQL available: $postgresAvailable"
 
       - name: Build release binary
-        working-directory: rust-cli
-        run: cargo build --release
+        run: cargo build --release --workspace --bins
 
       - name: Verify binary runs
         shell: pwsh

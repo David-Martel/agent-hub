@@ -16,8 +16,8 @@ use crate::output::Encoding;
         Codec: serde_json + MessagePack + LZ4 | Runtime: Rust native (no Python)\n\n\
         Stable agent IDs: claude, codex, gemini, copilot, euler, pasteur, all",
     after_help = "ENVIRONMENT VARIABLES:\n  \
-        AGENT_BUS_REDIS_URL          Redis connection URL [default: redis://localhost:6380/0]\n  \
-        AGENT_BUS_DATABASE_URL       PostgreSQL connection URL [default: postgresql://postgres@localhost:5300/redis_backend]\n  \
+        AGENT_BUS_REDIS_URL          Redis connection URL [default: redis://127.0.0.1:6380/0]\n  \
+        AGENT_BUS_DATABASE_URL       PostgreSQL connection URL [default: postgresql://postgres@127.0.0.1:5300/redis_backend]\n  \
         AGENT_BUS_STREAM_KEY         Redis Stream key [default: agent_bus:messages]\n  \
         AGENT_BUS_CHANNEL            Redis Pub/Sub channel [default: agent_bus:events]\n  \
         AGENT_BUS_PRESENCE_PREFIX    Redis key prefix for presence [default: agent_bus:presence:]\n  \
