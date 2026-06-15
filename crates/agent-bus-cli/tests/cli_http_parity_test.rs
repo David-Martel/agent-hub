@@ -32,8 +32,9 @@
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 
 const BASE_URL: &str = "http://localhost:8400";
@@ -58,6 +59,22 @@ fn http_available(client: &reqwest::blocking::Client) -> bool {
     client.get(format!("{BASE_URL}/health")).send().is_ok()
 }
 
+fn http_client() -> reqwest::blocking::Client {
+    let mut headers = HeaderMap::new();
+    if let Ok(token) = std::env::var("AGENT_BUS_AUTH_TOKEN")
+        && !token.is_empty()
+    {
+        let value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .expect("AGENT_BUS_AUTH_TOKEN should be a valid HTTP header value");
+        headers.insert(AUTHORIZATION, value);
+    }
+
+    reqwest::blocking::Client::builder()
+        .default_headers(headers)
+        .build()
+        .expect("failed to build HTTP test client")
+}
+
 /// The CLI binary, with **default** settings so its Redis keys match the
 /// running HTTP server.
 fn agent_bus_binary() -> Command {
@@ -70,7 +87,7 @@ fn agent_bus_binary() -> Command {
 
 #[test]
 fn read_direct_parity_cli_and_http() {
-    let client = reqwest::blocking::Client::new();
+    let client = http_client();
     if !http_available(&client) {
         eprintln!("SKIP: agent-bus HTTP not running at {BASE_URL}");
         return;
@@ -170,7 +187,7 @@ fn read_direct_parity_cli_and_http() {
     reason = "linear seed -> HTTP-compact -> CLI-compact -> parity-assert flow reads clearer inline than split across helpers"
 )]
 fn compact_context_parity_cli_and_http() {
-    let client = reqwest::blocking::Client::new();
+    let client = http_client();
     if !http_available(&client) {
         eprintln!("SKIP: agent-bus HTTP not running at {BASE_URL}");
         return;
@@ -292,8 +309,12 @@ fn compact_context_parity_cli_and_http() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear seed -> durable-summary poll -> aggregate-assert flow reads clearer inline than split across helpers"
+)]
 fn summarize_thread_aggregates_thread_traffic() {
-    let client = reqwest::blocking::Client::new();
+    let client = http_client();
     if !http_available(&client) {
         eprintln!("SKIP: agent-bus HTTP not running at {BASE_URL}");
         return;
@@ -342,27 +363,44 @@ fn summarize_thread_aggregates_thread_traffic() {
         assert!(resp.status().is_success(), "seed message POST failed");
     }
 
-    // summarize-thread via the CLI, JSON output.
-    let cli = agent_bus_binary()
-        .args([
-            "summarize-thread",
-            "--thread-id",
-            &thread_id,
-            "--since-minutes",
-            "10",
-            "--encoding",
-            "json",
-        ])
-        .output()
-        .expect("summarize-thread CLI failed to run");
-    assert!(
-        cli.status.success(),
-        "summarize-thread exited non-zero: {}",
-        String::from_utf8_lossy(&cli.stderr)
-    );
-    let cli_stdout = String::from_utf8_lossy(&cli.stdout);
-    let summary: Value = serde_json::from_str(cli_stdout.trim())
-        .unwrap_or_else(|e| panic!("summarize-thread output not JSON ({e}):\n{cli_stdout}"));
+    // summarize-thread reads durable history, so wait briefly for the HTTP
+    // service's background PostgreSQL writer to flush the seeded messages.
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let summary: Value = loop {
+        let cli = agent_bus_binary()
+            .args([
+                "summarize-thread",
+                "--thread-id",
+                &thread_id,
+                "--since-minutes",
+                "10",
+                "--encoding",
+                "json",
+            ])
+            .output()
+            .expect("summarize-thread CLI failed to run");
+        assert!(
+            cli.status.success(),
+            "summarize-thread exited non-zero: {}",
+            String::from_utf8_lossy(&cli.stderr)
+        );
+        let cli_stdout = String::from_utf8_lossy(&cli.stdout);
+        let summary: Value = serde_json::from_str(cli_stdout.trim())
+            .unwrap_or_else(|e| panic!("summarize-thread output not JSON ({e}):\n{cli_stdout}"));
+        let agents = summary["active_agents"]
+            .as_array()
+            .expect("summary must list active_agents");
+        let agent_names: Vec<&str> = agents.iter().filter_map(Value::as_str).collect();
+        if agent_names.contains(&sender_one.as_str()) && agent_names.contains(&sender_two.as_str())
+        {
+            break summary;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "thread summary should include both in-thread senders, got {agent_names:?}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
 
     // The two thread senders must both appear and the message count must be at
     // least 2 (only the two in-thread messages, not the unrelated one).

@@ -19,6 +19,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::StatusCode;
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,32 @@ fn unique_suffix() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64;
     ms
+}
+
+fn auth_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    if let Ok(token) = std::env::var("AGENT_BUS_AUTH_TOKEN")
+        && !token.is_empty()
+    {
+        let value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .expect("AGENT_BUS_AUTH_TOKEN should be a valid HTTP header value");
+        headers.insert(AUTHORIZATION, value);
+    }
+    headers
+}
+
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .default_headers(auth_headers())
+        .build()
+        .expect("failed to build HTTP test client")
+}
+
+fn blocking_http_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .default_headers(auth_headers())
+        .build()
+        .expect("failed to build blocking HTTP test client")
 }
 
 /// Returns a reqwest client and `true` when the service is reachable.
@@ -81,7 +108,7 @@ impl Drop for MaintenanceResumeGuard {
         if !self.active {
             return;
         }
-        let _ = reqwest::blocking::Client::new()
+        let _ = blocking_http_client()
             .post(format!("{BASE_URL}/admin/service/control"))
             .json(&json!({
                 "action": "resume",
@@ -97,7 +124,7 @@ impl Drop for MaintenanceResumeGuard {
 
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -120,7 +147,7 @@ async fn health_endpoint_returns_ok() {
 
 #[tokio::test]
 async fn health_toon_encoding_returns_text() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -150,7 +177,7 @@ async fn health_toon_encoding_returns_text() {
 
 #[tokio::test]
 async fn health_json_contains_pool_metrics() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -177,7 +204,7 @@ async fn health_json_contains_pool_metrics() {
 
 #[tokio::test]
 async fn service_control_pause_blocks_writes_until_resume() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -254,7 +281,7 @@ async fn service_control_pause_blocks_writes_until_resume() {
 
 #[tokio::test]
 async fn post_message_returns_id() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -283,7 +310,7 @@ async fn post_message_returns_id() {
 
 #[tokio::test]
 async fn direct_message_creates_replayable_notification() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -361,7 +388,7 @@ async fn direct_message_creates_replayable_notification() {
 
 #[tokio::test]
 async fn knock_endpoint_creates_knock_notification() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -418,7 +445,7 @@ async fn knock_endpoint_creates_knock_notification() {
 
 #[tokio::test]
 async fn claim_renew_release_round_trip_via_http() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -479,7 +506,7 @@ async fn claim_renew_release_round_trip_via_http() {
 
 #[tokio::test]
 async fn compact_context_respects_repo_tag_and_thread_filters() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -552,7 +579,7 @@ async fn compact_context_respects_repo_tag_and_thread_filters() {
 
 #[tokio::test]
 async fn post_message_missing_sender_returns_400() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -585,7 +612,7 @@ async fn post_message_missing_sender_returns_400() {
 
 #[tokio::test]
 async fn post_message_empty_sender_returns_400() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -617,7 +644,7 @@ async fn post_message_empty_sender_returns_400() {
 
 #[tokio::test]
 async fn post_message_empty_body_returns_400() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -644,7 +671,7 @@ async fn post_message_empty_body_returns_400() {
 
 #[tokio::test]
 async fn get_messages_returns_array() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -666,7 +693,7 @@ async fn get_messages_returns_array() {
 
 #[tokio::test]
 async fn get_messages_toon_encoding_returns_text() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -723,7 +750,7 @@ async fn get_messages_toon_encoding_returns_text() {
 
 #[tokio::test]
 async fn toon_format_matches_spec() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -781,7 +808,7 @@ async fn toon_format_matches_spec() {
 
 #[tokio::test]
 async fn read_filters_apply_to_repo_session_tag_and_thread_id() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -855,7 +882,7 @@ async fn read_filters_apply_to_repo_session_tag_and_thread_id() {
 
 #[tokio::test]
 async fn toon_body_truncated_at_120_chars() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -916,7 +943,7 @@ async fn toon_body_truncated_at_120_chars() {
 
 #[tokio::test]
 async fn toon_shows_tags_in_brackets() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -967,7 +994,7 @@ async fn toon_shows_tags_in_brackets() {
 
 #[tokio::test]
 async fn large_body_is_compressed_and_decompressed() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1038,7 +1065,7 @@ async fn large_body_is_compressed_and_decompressed() {
 
 #[tokio::test]
 async fn small_body_not_compressed() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1079,7 +1106,7 @@ async fn small_body_not_compressed() {
 
 #[tokio::test]
 async fn batch_send_three_messages_returns_three_ids() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1114,7 +1141,7 @@ async fn batch_send_three_messages_returns_three_ids() {
 
 #[tokio::test]
 async fn batch_send_empty_array_returns_400() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1136,7 +1163,7 @@ async fn batch_send_empty_array_returns_400() {
 
 #[tokio::test]
 async fn batch_send_over_100_messages_returns_400() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1178,7 +1205,7 @@ async fn batch_send_over_100_messages_returns_400() {
 
 #[tokio::test]
 async fn batch_ack_valid_ids_returns_ok() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1229,7 +1256,7 @@ async fn batch_ack_valid_ids_returns_ok() {
 
 #[tokio::test]
 async fn direct_channel_send_and_read() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1286,7 +1313,7 @@ async fn direct_channel_send_and_read() {
 
 #[tokio::test]
 async fn escalate_channel_sets_high_priority() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1335,7 +1362,7 @@ async fn escalate_channel_sets_high_priority() {
 /// record expires on its own TTL.
 #[tokio::test]
 async fn escalate_routes_to_orchestrator_when_present() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1402,7 +1429,7 @@ async fn escalate_routes_to_orchestrator_when_present() {
 /// is missing from the request body. This covers Deviation 1 for the batch endpoint.
 #[tokio::test]
 async fn batch_send_missing_messages_field_returns_400() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1433,7 +1460,7 @@ async fn batch_send_missing_messages_field_returns_400() {
 /// is missing. This covers Deviation 1 for the batch-ack endpoint.
 #[tokio::test]
 async fn batch_ack_missing_agent_field_returns_400() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1462,7 +1489,7 @@ async fn batch_ack_missing_agent_field_returns_400() {
 
 #[tokio::test]
 async fn arbitrate_first_claim_granted() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1499,7 +1526,7 @@ async fn arbitrate_first_claim_granted() {
 
 #[tokio::test]
 async fn arbitrate_second_claim_is_contested() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1540,7 +1567,7 @@ async fn arbitrate_second_claim_is_contested() {
 
 #[tokio::test]
 async fn arbitrate_get_state_shows_claims() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1575,7 +1602,7 @@ async fn arbitrate_get_state_shows_claims() {
 
 #[tokio::test]
 async fn arbitrate_resolve_sets_winner() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1636,7 +1663,7 @@ async fn arbitrate_resolve_sets_winner() {
 
 #[tokio::test]
 async fn put_presence_returns_200() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1672,7 +1699,7 @@ async fn put_presence_returns_200() {
 
 #[tokio::test]
 async fn get_presence_returns_array() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1694,7 +1721,7 @@ async fn get_presence_returns_array() {
 
 #[tokio::test]
 async fn get_presence_toon_encoding() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1739,7 +1766,7 @@ async fn get_presence_toon_encoding() {
 
 #[tokio::test]
 async fn pending_ack_message_appears_in_pending_list() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1792,7 +1819,7 @@ async fn pending_ack_message_appears_in_pending_list() {
 
 #[tokio::test]
 async fn acknowledged_message_removed_from_pending() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1850,7 +1877,7 @@ async fn acknowledged_message_removed_from_pending() {
 
 #[tokio::test]
 async fn post_message_invalid_priority_returns_400() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1878,7 +1905,7 @@ async fn post_message_invalid_priority_returns_400() {
 
 #[tokio::test]
 async fn post_message_missing_recipient_returns_400() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1906,7 +1933,7 @@ async fn post_message_missing_recipient_returns_400() {
 
 #[tokio::test]
 async fn batch_send_message_with_bad_priority_returns_400() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -1941,7 +1968,7 @@ async fn batch_send_message_with_bad_priority_returns_400() {
 #[tokio::test]
 async fn mcp_get_returns_tool_list() {
     // The long-running HTTP service exposes MCP Streamable HTTP at /mcp.
-    let client = reqwest::Client::new();
+    let client = http_client();
     let mcp_url = format!("{BASE_URL}/mcp");
 
     let ok = client.get(&mcp_url).send().await.is_ok();
@@ -1970,7 +1997,7 @@ async fn mcp_get_returns_tool_list() {
 
 #[tokio::test]
 async fn mcp_post_initialize_round_trip() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
         return;
@@ -2012,7 +2039,7 @@ async fn mcp_post_initialize_round_trip() {
 
 #[tokio::test]
 async fn dashboard_returns_html() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         return;
     }
@@ -2035,7 +2062,7 @@ async fn dashboard_returns_html() {
 
 #[tokio::test]
 async fn dashboard_data_returns_json() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         return;
     }
@@ -2056,7 +2083,7 @@ async fn dashboard_data_returns_json() {
 
 #[tokio::test]
 async fn tasks_crud_flow() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         return;
     }
@@ -2126,7 +2153,7 @@ async fn tasks_crud_flow() {
 
 #[tokio::test]
 async fn token_count_estimates_correctly() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         return;
     }
@@ -2155,7 +2182,7 @@ async fn token_count_estimates_correctly() {
 
 #[tokio::test]
 async fn read_with_repo_session_scoping_prevents_inbox_bleed() {
-    let client = reqwest::Client::new();
+    let client = http_client();
     if !service_available(&client).await {
         return;
     }
