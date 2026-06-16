@@ -4,10 +4,20 @@ use clap::{Parser, Subcommand};
 
 use crate::output::Encoding;
 
+/// Full version string: crate version plus the git metadata embedded by `build.rs`
+/// (e.g. `0.5.0 (v0.5.0-3-gab12cd34ef56 2026-06-16)`). Lets a deployed binary
+/// report the exact commit it was built from for cross-machine parity checks.
+const VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("AGENT_BUS_GIT_VERSION"),
+    ")"
+);
+
 #[derive(Parser)]
 #[command(
     name = "agent-bus",
-    version,
+    version = VERSION,
     about = "Redis + PostgreSQL agent coordination bus — CLI + MCP server (Rust native)",
     long_about = "Redis + PostgreSQL coordination bus for AI coding agents.\n\n\
         Provides message passing, presence tracking, and real-time event streaming\n\
