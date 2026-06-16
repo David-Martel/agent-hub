@@ -182,3 +182,61 @@ fn cli_server_mode_send_and_read_round_trip() {
     let stdout = String::from_utf8_lossy(&read.stdout);
     assert!(stdout.contains("hello-via-server-mode"));
 }
+
+#[test]
+fn cli_server_mode_batch_send_round_trip() {
+    if !redis_available() {
+        eprintln!("SKIP: Redis not available");
+        return;
+    }
+
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let recipient = format!("cli-svr-batch-recv-{ts}");
+    let batch_file = std::env::temp_dir().join(format!("agent-bus-batch-{ts}.ndjson"));
+    std::fs::write(
+        &batch_file,
+        format!(
+            "{{\"sender\":\"cli-svr-batch\",\"recipient\":\"{recipient}\",\"topic\":\"server-mode-batch\",\"body\":\"batch-one\"}}\n\
+             {{\"sender\":\"cli-svr-batch\",\"recipient\":\"{recipient}\",\"topic\":\"server-mode-batch\",\"body\":\"batch-two\"}}\n"
+        ),
+    )
+    .expect("failed to write batch fixture");
+
+    let batch_path = batch_file.to_string_lossy().into_owned();
+    let send = agent_bus_binary()
+        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .args(["batch-send", "--file", &batch_path, "--encoding", "compact"])
+        .output()
+        .expect("batch-send failed");
+    let _ = std::fs::remove_file(&batch_file);
+
+    assert!(
+        send.status.success(),
+        "server-mode batch-send failed: {}",
+        String::from_utf8_lossy(&send.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&send.stdout);
+    assert!(stdout.contains(r#""sent":2"#));
+
+    let read = agent_bus_binary()
+        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .args([
+            "read",
+            "--agent",
+            &recipient,
+            "--since-minutes",
+            "1",
+            "--encoding",
+            "compact",
+        ])
+        .output()
+        .expect("read failed");
+
+    assert!(read.status.success());
+    let stdout = String::from_utf8_lossy(&read.stdout);
+    assert!(stdout.contains("batch-one"));
+    assert!(stdout.contains("batch-two"));
+}
