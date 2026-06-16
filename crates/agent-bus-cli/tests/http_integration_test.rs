@@ -813,15 +813,9 @@ async fn read_filters_apply_to_repo_session_tag_and_thread_id() {
         .expect("send failed");
 
     let resp = client
-        .get(format!("{BASE_URL}/messages"))
-        .query(&[
-            ("agent", recipient.as_str()),
-            ("repo", repo.as_str()),
-            ("session", session.as_str()),
-            ("thread_id", thread_id.as_str()),
-            ("since", "1"),
-            ("limit", "10"),
-        ])
+        .get(format!(
+            "{BASE_URL}/messages?agent={recipient}&repo={repo}&session={session}&thread_id={thread_id}&since=1&limit=10"
+        ))
         .send()
         .await
         .expect("filtered read failed");
