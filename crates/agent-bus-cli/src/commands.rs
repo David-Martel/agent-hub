@@ -864,7 +864,7 @@ pub(crate) fn cmd_codex_sync(settings: &Settings, limit: usize, encoding: &Encod
 /// # Errors
 ///
 /// Returns an error if the file cannot be opened, any line fails JSON parsing,
-/// or any message fails validation or Redis write.
+/// or any message fails validation or the transport write fails.
 pub(crate) fn cmd_batch_send(settings: &Settings, file: &str, encoding: &Encoding) -> Result<()> {
     use std::io::BufRead as _;
 
@@ -927,10 +927,65 @@ pub(crate) fn cmd_batch_send(settings: &Settings, file: &str, encoding: &Encodin
         });
     }
 
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        return batch_send_via_server(settings, &items, encoding);
+    }
+
     let mut conn = connect(settings)?;
     let posted = validated_batch_send(&mut conn, settings, &items, "cli", false)?;
 
     let ids: Vec<String> = posted.iter().map(|m| m.message.id.clone()).collect();
+    let result = serde_json::json!({
+        "sent": ids.len(),
+        "ids": ids,
+    });
+    output(&result, encoding);
+    Ok(())
+}
+
+/// Send a batch of pre-validated messages through the HTTP server-mode endpoint.
+///
+/// # Errors
+///
+/// Returns an error if the HTTP POST to `/messages/batch` fails.
+#[cfg(feature = "server-mode")]
+fn batch_send_via_server(
+    settings: &Settings,
+    items: &[ValidatedBatchItem],
+    encoding: &Encoding,
+) -> Result<()> {
+    let base = settings.server_url.as_deref().unwrap_or("");
+    let url = format!("{base}/messages/batch");
+    let messages: Vec<serde_json::Value> = items
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "sender": item.sender,
+                "recipient": item.recipient,
+                "topic": item.topic,
+                "body": item.body,
+                "priority": item.priority,
+                "schema": item.schema,
+                "tags": item.tags,
+                "thread_id": item.thread_id,
+                "reply_to": item.reply_to,
+                "request_ack": item.request_ack,
+                "metadata": item.metadata,
+            })
+        })
+        .collect();
+    let val = http_post(&url, &serde_json::json!({ "messages": messages }))?;
+    let ids: Vec<String> = val
+        .get("ids")
+        .and_then(serde_json::Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
     let result = serde_json::json!({
         "sent": ids.len(),
         "ids": ids,
