@@ -2201,7 +2201,9 @@ pub fn bus_list_messages_since_id_with_filters(
         // after dropping messages not addressed to this agent.
         .arg((limit.saturating_mul(fetch_multiplier)).max(XREVRANGE_MIN_FETCH))
         .query(&mut conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("XRANGE since_id failed: {e}")))?;
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("XRANGE since_id failed: {e}"))
+        })?;
 
     let mut messages: Vec<Message> = Vec::new();
     for (stream_id, fields) in parse_xrange_result(&raw) {

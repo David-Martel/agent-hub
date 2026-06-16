@@ -15,6 +15,8 @@
 
 use std::process::Command;
 
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -48,6 +50,22 @@ fn redis_available() -> bool {
 /// (alphanumerics only, no special characters beyond what the validator allows).
 fn unique_id() -> String {
     uuid::Uuid::new_v4().as_simple().to_string()
+}
+
+fn http_client() -> reqwest::blocking::Client {
+    let mut headers = HeaderMap::new();
+    if let Ok(token) = std::env::var("AGENT_BUS_AUTH_TOKEN")
+        && !token.is_empty()
+    {
+        let value = HeaderValue::from_str(&format!("Bearer {token}"))
+            .expect("AGENT_BUS_AUTH_TOKEN should be a valid HTTP header value");
+        headers.insert(AUTHORIZATION, value);
+    }
+
+    reqwest::blocking::Client::builder()
+        .default_headers(headers)
+        .build()
+        .expect("failed to build HTTP test client")
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +167,7 @@ fn channel_group_lifecycle() {
     // the HTTP server. If the HTTP server is not running we still test the error
     // path (non-zero exit) and skip assertion on body.
     let http_base = "http://localhost:8400";
-    let create_resp = reqwest::blocking::Client::new()
+    let create_resp = http_client()
         .post(format!("{http_base}/channels/groups/{group}"))
         .json(&serde_json::json!({
             "created_by": sender,
