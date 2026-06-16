@@ -7,9 +7,8 @@
 //!
 //! # Example
 //!
-//! ```no_run
-//! use agent_bus::mcp_discovery::discover_mcp_tools;
-//!
+//! ```ignore
+//! // Illustrative: discover_mcp_tools is crate-private to this binary crate.
 //! let summary = discover_mcp_tools("/home/user/my-repo");
 //! println!("{summary}");
 //! // "MCP servers available: ast-grep (structural-search), serena (rust-lsp)"
@@ -54,7 +53,8 @@ struct McpServer {
 ///
 /// # Examples
 ///
-/// ```no_run
+/// ```ignore
+/// // Illustrative: discover_mcp_tools is crate-private to this binary crate.
 /// let summary = discover_mcp_tools("C:/Users/david/my-repo");
 /// assert!(!summary.is_empty());
 /// ```

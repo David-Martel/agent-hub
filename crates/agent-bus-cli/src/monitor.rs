@@ -6,9 +6,8 @@
 //!
 //! # Example
 //!
-//! ```no_run
-//! # use agent_bus::monitor::monitor_session;
-//! # use agent_bus::settings::Settings;
+//! ```ignore
+//! // Illustrative: these are crate-private items of this binary crate.
 //! let settings = Settings::from_env();
 //! monitor_session(&settings, Some("session:framework-upgrade"), 5).unwrap();
 //! ```
