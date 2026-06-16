@@ -17,7 +17,7 @@
 //! ```no_run
 //! use agent_bus_core::agent_profile::{AgentProfile, CodexProfile, run_agent_sync};
 //! # use agent_bus_core::settings::Settings;
-//! # let settings = Settings::default();
+//! # let settings = Settings::from_env();
 //! let profile = CodexProfile;
 //! let (result, findings) = run_agent_sync(&profile, &settings, 100)
 //!     .expect("sync failed");
