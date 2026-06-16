@@ -27,6 +27,10 @@ param(
     [string]$TargetDir,
     [string]$TargetNamespace,
     [switch]$DisableSccache,
+    # Reinstall the service bound off-loopback (LAN peers can reach this coordinator).
+    # Passed through to install-agent-hub-service.ps1; requires an auth token in
+    # ~/.config/agent-bus/config.json (or set one there first).
+    [switch]$AllowRemote,
     [switch]$DryRun
 )
 
@@ -234,8 +238,8 @@ try {
             throw "Service install script not found at $installServiceScript"
         }
 
-        Write-Host "Reinstalling $serviceName service against $deployPath..."
-        & $installServiceScript -ServiceName $serviceName -BinaryPath $deployPath -ForceReinstall -StartService:$false
+        Write-Host "Reinstalling $serviceName service against $deployPath$(if ($AllowRemote) { ' (remote-enabled)' })..."
+        & $installServiceScript -ServiceName $serviceName -BinaryPath $deployPath -ForceReinstall -StartService:$false -AllowRemote:$AllowRemote
         if ($LASTEXITCODE -ne 0) {
             throw "Service reinstall failed"
         }
