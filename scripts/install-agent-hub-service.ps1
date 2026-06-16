@@ -6,10 +6,34 @@ param(
     [string]$BinaryPath = (Join-Path $HOME "bin/agent-bus-http.exe"),
     [switch]$ForceReinstall,
     [bool]$StartService = $true,
+    # Bind the HTTP server off-loopback so LAN peers can reach this coordinator.
+    # When set, AGENT_BUS_SERVER_HOST defaults to 0.0.0.0 and an auth token is required.
+    [switch]$AllowRemote,
+    [string]$ServerHost,
+    # Bearer token for remote auth. If -AllowRemote and this is empty, the token is
+    # read from ~/.config/agent-bus/config.json (.auth_token).
+    [string]$AuthToken,
     [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
+
+# Resolve the effective bind host + auth token for remote mode.
+if ($AllowRemote) {
+    if (-not $ServerHost) { $ServerHost = "0.0.0.0" }
+    if (-not $AuthToken) {
+        $cfgPath = Join-Path $HOME ".config/agent-bus/config.json"
+        if (Test-Path $cfgPath) {
+            try { $AuthToken = (Get-Content $cfgPath -Raw | ConvertFrom-Json).auth_token } catch { }
+        }
+    }
+    if (-not $AuthToken) {
+        throw "-AllowRemote requires an auth token (pass -AuthToken or set .auth_token in ~/.config/agent-bus/config.json)."
+    }
+}
+elseif (-not $ServerHost) {
+    $ServerHost = "localhost"
+}
 
 $logRoot = "C:\ProgramData\AgentHub\logs"
 $stdoutLog = Join-Path $logRoot "agent-hub-stdout.log"
@@ -27,7 +51,11 @@ if ($DryRun) {
     Write-Host "  - Environment:"
     Write-Host "      AGENT_BUS_REDIS_URL=redis://127.0.0.1:6380/0"
     Write-Host "      AGENT_BUS_DATABASE_URL=postgresql://postgres@127.0.0.1:5300/$DatabaseName"
-    Write-Host "      AGENT_BUS_SERVER_HOST=localhost"
+    Write-Host "      AGENT_BUS_SERVER_HOST=$ServerHost"
+    if ($AllowRemote) {
+        Write-Host "      AGENT_BUS_ALLOW_REMOTE=true"
+        Write-Host "      AGENT_BUS_AUTH_TOKEN=*** (set; from param or config.json)"
+    }
     Write-Host "      AGENT_BUS_SERVICE_NAME=$ServiceName"
     Write-Host "  - Force reinstall: $ForceReinstall"
     Write-Host "  - Start service after install: $StartService"
@@ -70,19 +98,25 @@ if ($existing) {
 Write-Host "Installing $ServiceName service..."
 & $nssmPath install $ServiceName $binaryPath "serve" "--transport" "http" "--port" "$Port"
 & $nssmPath set $ServiceName DisplayName $DisplayName
-& $nssmPath set $ServiceName Description "Agent Hub coordination service (Redis + PostgreSQL). HTTP REST + SSE at localhost:$Port"
+& $nssmPath set $ServiceName Description "Agent Hub coordination service (Redis + PostgreSQL). HTTP REST + SSE at ${ServerHost}:$Port$(if ($AllowRemote) { ' (remote-enabled, bearer auth)' })"
 & $nssmPath set $ServiceName Start SERVICE_AUTO_START
 & $nssmPath set $ServiceName AppDirectory (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
 
-# Environment variables
-& $nssmPath set $ServiceName AppEnvironmentExtra `
-    "AGENT_BUS_REDIS_URL=redis://127.0.0.1:6380/0" `
-    "AGENT_BUS_DATABASE_URL=postgresql://postgres@127.0.0.1:5300/$DatabaseName" `
-    "AGENT_BUS_SERVER_HOST=localhost" `
-    "AGENT_BUS_SERVICE_NAME=$ServiceName" `
-    "AGENT_BUS_STARTUP_ENABLED=true" `
-    "AGENT_BUS_STREAM_MAXLEN=100000" `
-    "RUST_LOG=warn"
+# Environment variables. Redis/PostgreSQL stay pinned to 127.0.0.1 (loopback) in
+# all modes; only the HTTP server binds off-loopback when -AllowRemote is set.
+$envPairs = [System.Collections.Generic.List[string]]::new()
+$envPairs.Add("AGENT_BUS_REDIS_URL=redis://127.0.0.1:6380/0")
+$envPairs.Add("AGENT_BUS_DATABASE_URL=postgresql://postgres@127.0.0.1:5300/$DatabaseName")
+$envPairs.Add("AGENT_BUS_SERVER_HOST=$ServerHost")
+if ($AllowRemote) {
+    $envPairs.Add("AGENT_BUS_ALLOW_REMOTE=true")
+    $envPairs.Add("AGENT_BUS_AUTH_TOKEN=$AuthToken")
+}
+$envPairs.Add("AGENT_BUS_SERVICE_NAME=$ServiceName")
+$envPairs.Add("AGENT_BUS_STARTUP_ENABLED=true")
+$envPairs.Add("AGENT_BUS_STREAM_MAXLEN=100000")
+$envPairs.Add("RUST_LOG=warn")
+& $nssmPath set $ServiceName AppEnvironmentExtra @($envPairs.ToArray())
 
 # Logging with rotation
 & $nssmPath set $ServiceName AppStdout $stdoutLog
