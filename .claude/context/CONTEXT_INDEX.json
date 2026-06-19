@@ -1,6 +1,17 @@
 {
   "contexts": [
     {
+      "id": "ctx-agent-bus-20260616",
+      "file": "agent-bus-context-2026-06-16.md",
+      "created": "2026-06-16T22:37:00Z",
+      "project": "agent-bus",
+      "git_branch": "main",
+      "git_commit": "e3d2d95",
+      "git_tag": "v0.5.0",
+      "agents_involved": ["main", "general-purpose"],
+      "summary": "Multi-session sweep: merged PRs #13-22 (deps, authed tests, batch-send, cross-machine health, remote-bind, doctest fixes, git-version build.rs); cut first tag v0.5.0 + GitHub Release; --version now embeds git metadata. Vigil-fleet: full bidirectional SSH mesh (fleet key ~/.ssh/id_ed25519), single shared hub on asuspro13:8400 with ALL nodes incl. dtm joined, versioned binaries deployed to dtm + both sparks (built on spark-3066 aarch64). Fixed CargoTools cargo-route.ps1 exit-code crash. Deferred: asuspro13 x86_64 version rebuild."
+    },
+    {
       "id": "ctx-agent-bus-20260613",
       "file": "agent-bus-context-2026-06-13.md",
       "created": "2026-06-13T00:00:00Z",
@@ -29,5 +40,5 @@
       "summary": "Earlier structural refactor context (crate split planning)."
     }
   ],
-  "latest": "ctx-agent-bus-20260613"
+  "latest": "ctx-agent-bus-20260616"
 }
