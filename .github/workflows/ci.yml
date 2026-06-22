@@ -17,21 +17,21 @@ jobs:
     name: Format Check
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: cargo fmt --all --check
 
   clippy:
     name: Clippy Lint
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test-unit:
     name: Unit Tests
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: cargo test --workspace --lib --bins -- --test-threads=4
 
   test-integration:
@@ -40,7 +40,7 @@ jobs:
     needs: [test-unit]
     # Uses local Redis at localhost:6380 and PostgreSQL at localhost:5300
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Probe Redis and PostgreSQL
         shell: pwsh
         run: |
@@ -73,7 +73,7 @@ jobs:
     runs-on: self-hosted
     needs: [format, clippy, test-unit]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: cargo build --release --workspace --bins
       - uses: actions/upload-artifact@v7
         with:
@@ -88,7 +88,7 @@ jobs:
     runs-on: self-hosted
     needs: [build-release, test-integration]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Build release binary
         run: cargo build --release --workspace --bins
       - name: Stage HTTP variant
@@ -114,7 +114,7 @@ jobs:
     name: Security Audit
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install latest cargo-audit
         run: cargo install cargo-audit --locked --force
       - run: cargo audit
@@ -124,7 +124,7 @@ jobs:
     name: Ubuntu Build And Unit Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: cargo fmt --all --check
       - run: cargo test --workspace --lib --bins -- --test-threads=4
 
@@ -133,7 +133,7 @@ jobs:
     runs-on: self-hosted
     needs: [test-unit]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: cargo bench -p agent-bus --bench throughput -- --output-format bencher
         continue-on-error: true
       - run: cargo bench -p agent-bus --bench bus_benchmarks -- --noplot
@@ -150,7 +150,7 @@ jobs:
     name: Cross-Platform (Linux Docker)
     runs-on: self-hosted
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Validate Linux build + tests via Docker
         shell: pwsh
         run: |
