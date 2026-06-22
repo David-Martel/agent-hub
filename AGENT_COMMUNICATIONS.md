@@ -17,10 +17,10 @@
 
 ## Quick Start (Copy These 5 Steps Into Your First Actions)
 
-**Binary selection:**
-- Prefer `agent-bus-http.exe` for normal agent-to-agent coordination against the already-running HTTP service: frequent `send` / `read` loops, `read-direct`, `compact-context`, `session-summary`, claims, and low-latency TOON reads.
-- Prefer `agent-bus.exe` for backend administration, transport debugging, and direct health validation of the service/runtime.
-- Prefer `agent-bus-mcp.exe` or `agent-bus.exe serve --transport stdio` for MCP stdio sessions.
+**Binary selection (post crate-split, v0.5.x — IMPORTANT):**
+- **`agent-bus`** is the **client CLI for ALL agent operations**: `send`, `read`, `read-direct`, `compact-context`, `knock`, `claim`, `ack`, `presence`, `presence-list`, `health`, `watch`. When `server_url` is configured (e.g. `http://localhost:8400`) these route through the already-running HTTP service; otherwise they hit the local Redis/PostgreSQL backend directly. **This is the binary agents use for everything.**
+- **`agent-bus-http`** is the **long-running HTTP/SSE service ONLY** (the `:8400` hub + `/mcp` endpoint). After the crate split it **ignores every CLI arg except `--port`** — so `agent-bus-http health` / `read-direct` / `--version` do **not** run a client command, they **start another server**. Never invoke it ad-hoc; the service manager (Windows `AgentHub` / Linux systemd) owns it.
+- **`agent-bus-mcp`** (or `agent-bus serve --transport stdio`) is the **stdio MCP** server.
 - Keep machine-readable reads narrow. Real joint runs work best with `repo:<name>` tags, explicit `thread_id` values, and `RESOURCE_START` / `RESOURCE_DONE` handoffs instead of broad unfiltered inbox scans.
 
 **Step 1 — Announce yourself (HTTP POST or CLI):**
@@ -71,15 +71,16 @@ agent-bus read --agent <YOUR-AGENT-ID> --since-minutes 5 --limit 5 --encoding to
 If you see a task-assignment or coordination message, acknowledge it and incorporate.
 
 **Positive examples:**
-- Good: `agent-bus-http.exe read-direct --agent-a codex --agent-b claude --limit 20 --encoding toon`
-- Good: `agent-bus-http.exe compact-context --agent claude --repo wezterm --tag planning --thread-id wezterm-joint-plan-20260324 --max-tokens 2000 --since-minutes 120`
-- Good: `agent-bus-http.exe knock --from-agent codex --to-agent claude --body "check direct thread" --request-ack`
-- Good: `agent-bus-http.exe health --encoding compact`
-- Good: `agent-bus.exe serve --transport stdio`
+- Good: `agent-bus read-direct --agent-a codex --agent-b claude --limit 20 --encoding toon`
+- Good: `agent-bus compact-context --agent claude --repo wezterm --tag planning --thread-id wezterm-joint-plan-20260324 --max-tokens 2000 --since-minutes 120`
+- Good: `agent-bus knock --from-agent codex --to-agent claude --body "check direct thread" --request-ack`
+- Good: `agent-bus health --encoding compact`
+- Good: `agent-bus serve --transport stdio`
 
 **Negative examples:**
-- Avoid `agent-bus-http.exe read --agent codex --since-minutes 1440` with no repo/session/thread narrowing during multi-repo work.
-- Avoid `agent-bus-http.exe compact-context --since-minutes 240 --max-tokens 4000` with no repo/session/thread filter during a busy multi-repo day.
+- Avoid `agent-bus read --agent codex --since-minutes 1440` with no repo/session/thread narrowing during multi-repo work.
+- Avoid `agent-bus compact-context --since-minutes 240 --max-tokens 4000` with no repo/session/thread filter during a busy multi-repo day.
+- Avoid invoking `agent-bus-http` for any client command — it ignores args except `--port` and just starts a second server.
 - Avoid assuming `session-summary` covers untagged direct-thread work; if there is no `session:<id>` tag, use direct reads or a future thread summary path instead.
 - Avoid documenting `agent-bus-http.exe` as the MCP stdio binary; prefer `agent-bus-mcp.exe` or `agent-bus.exe serve --transport stdio`.
 - Avoid treating `watch` as the durable source of truth. Use it to notice activity, then switch to scoped reads for recovery or synthesis.

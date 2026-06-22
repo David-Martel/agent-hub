@@ -8,8 +8,8 @@ Gemini, Antigravity, and adjacent agent launchers.
 | Tool | Minimum | Validation |
 |------|---------|------------|
 | `agent-bus` | `0.5.0` | `agent-bus --version` |
-| `agent-bus-mcp` | `0.5.0` | `agent-bus-mcp --version` |
-| `agent-bus-http` | `0.5.0` | `agent-bus-http --version` |
+| `agent-bus-mcp` | `0.5.0` | server binary — see note (no `--version`) |
+| `agent-bus-http` | `0.5.0` | `agent-bus health` (probes the running service) |
 | Rust | `1.85` or newer with edition 2024 support | `rustc --version` |
 | PowerShell | `7.0` or newer for scripts | `$PSVersionTable.PSVersion` |
 | Redis | `6.2` or newer | `redis-cli INFO server` |
@@ -17,7 +17,11 @@ Gemini, Antigravity, and adjacent agent launchers.
 
 The current workspace version is `0.5.0`. Update all three binaries together;
 mixed CLI/MCP/HTTP versions make config validation harder and can hide protocol
-drift.
+drift. **Note:** `agent-bus-http` and `agent-bus-mcp` are server binaries — they
+ignore CLI args except `--port` and start serving, so `--version` does **not**
+work on them (it just launches a server). They are built and deployed at the same
+workspace version as `agent-bus`; check that single version with `agent-bus
+--version`, and confirm the HTTP service is live with `agent-bus health`.
 
 ## Recommended Defaults
 

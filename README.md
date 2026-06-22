@@ -137,12 +137,13 @@ pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1 -DryRun
 
 ## Operator Examples
 
-- Good: `agent-bus-http.exe compact-context --agent claude --repo wezterm --tag planning --thread-id wezterm-joint-plan-20260324 --since-minutes 120 --max-tokens 2000`
-- Good: `agent-bus-http.exe read-direct --agent-a codex --agent-b claude --limit 20 --encoding toon`
-- Good: `agent-bus-http.exe knock --from-agent codex --to-agent claude --body "claim review ready" --request-ack`
+- Good: `agent-bus compact-context --agent claude --repo wezterm --tag planning --thread-id wezterm-joint-plan-20260324 --since-minutes 120 --max-tokens 2000`
+- Good: `agent-bus read-direct --agent-a codex --agent-b claude --limit 20 --encoding toon`
+- Good: `agent-bus knock --from-agent codex --to-agent claude --body "claim review ready" --request-ack`
 - Good: `agent-bus claim T:\RustCache\cargo-target --agent codex --mode shared_namespaced --namespace codex-build --scope-kind artifact_root --repo-scope agent-bus`
 - Good: `agent-bus health --encoding compact`
-- Avoid: `agent-bus-http.exe read --agent claude --since-minutes 1440 --encoding toon` with no `repo`, `session`, `tag`, or `thread_id` during multi-repo work.
+- Avoid: `agent-bus read --agent claude --since-minutes 1440 --encoding toon` with no `repo`, `session`, `tag`, or `thread_id` during multi-repo work.
+- Note: client commands run through **`agent-bus`** (the CLI), never `agent-bus-http` — the latter is the server binary and ignores all args except `--port`.
 - Avoid: treating `watch` as the durable source of record. Use it as a notification probe, then follow up with scoped `read`, `read-direct`, or `compact-context`.
 
 ## WezTerm Pattern
