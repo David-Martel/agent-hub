@@ -9,7 +9,7 @@ Gemini, Antigravity, and adjacent agent launchers.
 |------|---------|------------|
 | `agent-bus` | `0.5.0` | `agent-bus --version` |
 | `agent-bus-mcp` | `0.5.0` | server binary — see note (no `--version`) |
-| `agent-bus-http` | `0.5.0` | `agent-bus health` (probes the running service) |
+| `agent-bus-http` | `0.5.0` | `curl http://localhost:8400/health` (probes the running service) |
 | Rust | `1.85` or newer with edition 2024 support | `rustc --version` |
 | PowerShell | `7.0` or newer for scripts | `$PSVersionTable.PSVersion` |
 | Redis | `6.2` or newer | `redis-cli INFO server` |
@@ -17,11 +17,12 @@ Gemini, Antigravity, and adjacent agent launchers.
 
 The current workspace version is `0.5.0`. Update all three binaries together;
 mixed CLI/MCP/HTTP versions make config validation harder and can hide protocol
-drift. **Note:** `agent-bus-http` and `agent-bus-mcp` are server binaries — they
-ignore CLI args except `--port` and start serving, so `--version` does **not**
-work on them (it just launches a server). They are built and deployed at the same
-workspace version as `agent-bus`; check that single version with `agent-bus
---version`, and confirm the HTTP service is live with `agent-bus health`.
+drift. **Note:** `agent-bus-http` and `agent-bus-mcp` are server binaries that start
+serving on launch, so `--version` does **not** work on them (it just runs the server).
+`agent-bus-http` honors only `--port`; `agent-bus-mcp` is stdio-only and takes no flags.
+All three are built and deployed at the same workspace version, so check it once with
+`agent-bus --version`. To confirm the HTTP service itself is live, probe its endpoint
+directly with `curl http://localhost:8400/health`.
 
 ## Recommended Defaults
 

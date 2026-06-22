@@ -84,8 +84,8 @@ pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1 -DryRun
 
 ## Binary Roles
 
-- `agent-bus.exe`: CLI + MCP stdio entry point. Use it for `serve --transport stdio`, backend health checks, admin commands, and local debugging.
-- `agent-bus-http.exe`: long-running HTTP/SSE service variant. Use it for frequent `send` / `read` loops, `/notifications/{agent}` replay, SSE subscribers, and Windows service installs.
+- `agent-bus.exe`: **the client CLI for all agent operations** (`send`, `read`, `read-direct`, `compact-context`, `knock`, `claim`, `ack`, `presence`, `health`, `watch`) plus `serve --transport stdio`. With `server_url` set it talks to the running HTTP service; otherwise it uses the local backend. **This is the binary agents invoke.**
+- `agent-bus-http.exe`: long-running HTTP/SSE **server** (`:8400` REST, `/notifications/{agent}` replay, SSE subscribers, `/mcp`, Windows service installs). It ignores all CLI args except `--port` and starts serving — never invoke it for client commands.
 - `agent-bus-mcp.exe`: Independent MCP stdio server (`crates/agent-bus-mcp`). Owns its own `mcp.rs` (`AgentBusMcpServer`) and calls `bootstrap()` from `agent-bus-core` directly. Lightest dependency footprint of the three binaries.
 
 ## Local Build Orchestration
@@ -155,7 +155,7 @@ Recent Codex/Claude work in the `wezterm` repo converged on a stable pattern tha
 - Use explicit `RESOURCE_START` and `RESOURCE_DONE` messages for shared paths or deployment/PR ownership.
 - Back those messages with a lease-backed claim when the resource is long-lived or exclusive.
 - Prefer `read-direct` for pairwise handoffs and scoped `compact-context` for “what changed in this one thread?” context recovery.
-- Health-check `agent-bus-http.exe` before long waves instead of assuming the service is still up.
+- Health-check with `agent-bus health` (or `curl http://localhost:8400/health`) before long waves instead of assuming the service is still up.
 
 ### Windows service
 

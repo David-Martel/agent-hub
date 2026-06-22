@@ -7,18 +7,16 @@
 > Protocol Version: v0.5 | Implementation: Rust native (zero Python)
 > Storage: Redis (realtime) + PostgreSQL (durable history)
 
-## Code-Grounded Status (2026-04-03)
+## Code-Grounded Status (2026-06-22)
 
-- The repository is now a Cargo workspace, but the runtime is still operationally centered on `rust-cli/`.
-- Shared storage and orchestration logic has been extracted into `crates/agent-bus-core/`, while major transport entrypoints still live in `rust-cli/src/commands.rs`, `rust-cli/src/http.rs`, and `rust-cli/src/mcp.rs`.
-- `agent-bus-cli`, `agent-bus-http`, and `agent-bus-mcp` currently remain thin wrapper crates over `rust-cli`, not fully independent runtimes.
-- Build and deployment scripts still compile and discover binaries from `rust-cli/`.
-- Canonical architecture checkpoint: [`docs/current-status-2026-04-03.md`](./docs/current-status-2026-04-03.md)
+- The crate split is complete: `rust-cli/` has been removed. The workspace is `crates/agent-bus-core` (shared storage/orchestration lib) plus three binary crates: `agent-bus-cli` (the `agent-bus` client CLI + inline `serve`), `agent-bus-http` (the `:8400` HTTP/SSE + `/mcp` server), and `agent-bus-mcp` (stdio MCP server).
+- Client operations use the `agent-bus` binary; `agent-bus-http` and `agent-bus-mcp` are servers (see **Binary selection** below).
+- Canonical architecture checkpoint: [`docs/current-status-2026-06-13.md`](./docs/current-status-2026-06-13.md)
 
 ## Quick Start (Copy These 5 Steps Into Your First Actions)
 
 **Binary selection (post crate-split, v0.5.x — IMPORTANT):**
-- **`agent-bus`** is the **client CLI for ALL agent operations**: `send`, `read`, `read-direct`, `compact-context`, `knock`, `claim`, `ack`, `presence`, `presence-list`, `health`, `watch`. When `server_url` is configured (e.g. `http://localhost:8400`) these route through the already-running HTTP service; otherwise they hit the local Redis/PostgreSQL backend directly. **This is the binary agents use for everything.**
+- **`agent-bus`** is the **client CLI for ALL agent operations**: `send`, `read`, `read-direct`, `compact-context`, `knock`, `claim`, `ack`, `presence`, `presence-list`, `health`, `watch`. They reach the bus via the local Redis/PostgreSQL backend, or via the already-running HTTP service when `server_url` is set. **This is the binary agents use for everything.**
 - **`agent-bus-http`** is the **long-running HTTP/SSE service ONLY** (the `:8400` hub + `/mcp` endpoint). After the crate split it **ignores every CLI arg except `--port`** — so `agent-bus-http health` / `read-direct` / `--version` do **not** run a client command, they **start another server**. Never invoke it ad-hoc; the service manager (Windows `AgentHub` / Linux systemd) owns it.
 - **`agent-bus-mcp`** (or `agent-bus serve --transport stdio`) is the **stdio MCP** server.
 - Keep machine-readable reads narrow. Real joint runs work best with `repo:<name>` tags, explicit `thread_id` values, and `RESOURCE_START` / `RESOURCE_DONE` handoffs instead of broad unfiltered inbox scans.
