@@ -139,6 +139,33 @@ function Write-ServerVersionDiagnostics {
     }
 }
 
+function Set-AgentBusAuthTokenForChildProcesses {
+    if (-not [string]::IsNullOrWhiteSpace($env:AGENT_BUS_AUTH_TOKEN)) {
+        Write-Host "Using AGENT_BUS_AUTH_TOKEN from current process for deploy validation."
+        return
+    }
+
+    $configPath = Join-Path $HOME ".config/agent-bus/config.json"
+    if (-not (Test-Path $configPath)) {
+        Write-Host "No agent-bus client config found; deploy validation will run without bearer auth."
+        return
+    }
+
+    try {
+        $config = Get-Content -Path $configPath -Raw | ConvertFrom-Json
+        if (-not [string]::IsNullOrWhiteSpace([string]$config.auth_token)) {
+            $env:AGENT_BUS_AUTH_TOKEN = [string]$config.auth_token
+            Write-Host "Loaded AGENT_BUS_AUTH_TOKEN for child deploy validation from client config (redacted)."
+        }
+    }
+    catch {
+        Write-Warning "Could not read $configPath for deploy auth token. Continuing without token."
+        Write-Warning $_.Exception.Message
+    }
+}
+
+Set-AgentBusAuthTokenForChildProcesses
+
 # Step 1: Build
 try {
     if (-not $SkipBuild) {
