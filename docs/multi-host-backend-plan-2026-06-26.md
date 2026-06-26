@@ -45,8 +45,8 @@ Required properties:
 Expose one AgentHub HTTP endpoint over the Headscale tailnet. Clients set:
 
 ```powershell
-AGENT_BUS_SERVER_URL=http://<agenthub-tailnet-name>:8400
-AGENT_BUS_AUTH_TOKEN=<from local secret store>
+$env:AGENT_BUS_SERVER_URL = "http://<agenthub-tailnet-name>:8400"
+$env:AGENT_BUS_AUTH_TOKEN = "<from local secret store>"
 ```
 
 Keep Redis and PostgreSQL bound to the hub's loopback interface. Remote clients
@@ -111,9 +111,10 @@ without hiding network failures.
 
 ## `.claude*` Configuration Standard
 
-- Preferred Claude MCP command: `C:\Users\david\bin\agent-bus-mcp.exe`.
-- Preferred active config: `~\.claude\mcp.json`.
-- Legacy `~\.claude.json` may contain a project-level MCP entry, but it must
+- Preferred Claude MCP command: `%USERPROFILE%\bin\agent-bus-mcp.exe` on
+  Windows or `~/bin/agent-bus-mcp` on Linux.
+- Preferred active config: `~/.claude/mcp.json`.
+- Legacy `~/.claude.json` may contain a project-level MCP entry, but it must
   use stdio and must not contain inline `Authorization` headers or bearer
   tokens.
 - SessionStart hooks should call the presence hook with a stable id such as
