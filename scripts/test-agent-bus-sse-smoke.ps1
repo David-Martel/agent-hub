@@ -18,6 +18,29 @@ function New-TempFile {
     return Join-Path $env:TEMP $name
 }
 
+function Get-AgentBusAuthToken {
+    if (-not [string]::IsNullOrWhiteSpace($env:AGENT_BUS_AUTH_TOKEN)) {
+        return $env:AGENT_BUS_AUTH_TOKEN
+    }
+
+    $configPath = Join-Path $HOME ".config/agent-bus/config.json"
+    if (-not (Test-Path $configPath)) {
+        return $null
+    }
+
+    try {
+        $config = Get-Content -Path $configPath -Raw | ConvertFrom-Json
+        if (-not [string]::IsNullOrWhiteSpace([string]$config.auth_token)) {
+            return [string]$config.auth_token
+        }
+    }
+    catch {
+        Write-Warning "Could not read $configPath for AgentHub auth token. Continuing without token."
+        Write-Warning $_.Exception.Message
+    }
+    return $null
+}
+
 $probeId = [guid]::NewGuid().ToString("N")
 $probeBody = "SSE smoke probe $probeId"
 $probeTopic = "sse-smoke"
@@ -26,6 +49,7 @@ $messageUrl = "{0}/messages" -f $BaseUrl.TrimEnd("/")
 $headersFile = New-TempFile -Prefix "agent-bus-sse-headers" -Extension ".txt"
 $bodyFile = New-TempFile -Prefix "agent-bus-sse-body" -Extension ".txt"
 $stderrFile = New-TempFile -Prefix "agent-bus-sse-stderr" -Extension ".txt"
+$authToken = Get-AgentBusAuthToken
 
 $curl = Get-Command curl.exe -ErrorAction SilentlyContinue
 if (-not $curl) {
@@ -43,10 +67,17 @@ $args = @(
     "--dump-header", $headersFile
     $eventUrl
 )
+if (-not [string]::IsNullOrWhiteSpace($authToken)) {
+    $args = @("--header", "`"Authorization: Bearer $authToken`"") + $args
+}
 
 if ($DryRun) {
+    $displayArgs = $args
+    if (-not [string]::IsNullOrWhiteSpace($authToken)) {
+        $displayArgs = $displayArgs | ForEach-Object { ([string]$_).Replace($authToken, "***") }
+    }
     Write-Host "[DRY-RUN] SSE smoke plan:" -ForegroundColor Cyan
-    Write-Host "  - Open SSE subscription: $curlPath $($args -join ' ')"
+    Write-Host "  - Open SSE subscription: $curlPath $($displayArgs -join ' ')"
     Write-Host "  - POST probe message to: $messageUrl"
     Write-Host "  - Probe recipient: $Agent"
     Write-Host "  - Probe topic: $probeTopic"
@@ -79,7 +110,12 @@ try {
         body = $probeBody
     } | ConvertTo-Json -Compress
 
-    Invoke-RestMethod -Method Post -Uri $messageUrl -ContentType "application/json" -Body $payload | Out-Null
+    $requestHeaders = @{}
+    if (-not [string]::IsNullOrWhiteSpace($authToken)) {
+        $requestHeaders["Authorization"] = "Bearer $authToken"
+    }
+
+    Invoke-RestMethod -Method Post -Uri $messageUrl -Headers $requestHeaders -ContentType "application/json" -Body $payload | Out-Null
 
     Start-Sleep -Seconds ([Math]::Max(2, [Math]::Min($TimeoutSeconds, 5)))
 
