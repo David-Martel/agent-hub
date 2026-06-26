@@ -102,6 +102,19 @@ Validate installed client entries without editing them with:
 
 `pwsh -NoLogo -NoProfile -File scripts\validate-agent-client-configs.ps1`
 
+If `agent-bus health` succeeds but `send`, `read`, or MCP calls return
+`HTTP 401`, the long-running `AgentHub` service is using bearer-token auth and
+the client shell is missing the token. For same-machine use, sync the existing
+service token into the user client config without printing it:
+
+`pwsh -NoLogo -NoProfile -File scripts\sync-agent-bus-client-auth.ps1`
+
+For intentional cross-machine exposure, install the service with
+`scripts\install-agent-hub-service.ps1 -AllowRemote`, use a stable hostname
+rather than a numeric LAN IP in client configs, and validate with:
+
+`pwsh -NoLogo -NoProfile -File scripts\cross-machine-health.ps1 -Strict -CheckAuth`
+
 See [docs/agent-client-installation.md](./docs/agent-client-installation.md)
 for version minimums, install/validate workflow, and multi-agent operating
 practices.

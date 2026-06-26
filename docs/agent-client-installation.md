@@ -80,6 +80,24 @@ page. It requires no internet access and summarizes local health checks,
 loopback defaults, IPv4/IPv6 notes, service recovery commands, and bearer-token
 requirements for remote binds.
 
+## Same-Machine Auth Alignment
+
+When the `AgentHub` Windows service is installed with bearer-token auth,
+`GET /health` can still succeed while `send`, `read`, `presence`, and MCP
+routes return `HTTP 401`. Same-machine clients need the same token source as
+the service.
+
+Use this repair path before debugging Redis or MCP config:
+
+```powershell
+pwsh -NoLogo -NoProfile -File scripts\sync-agent-bus-client-auth.ps1
+pwsh -NoLogo -NoProfile -File scripts\validate-agent-client-configs.ps1
+cmd /c "set AGENT_BUS_SERVER_URL=http://localhost:8400&& agent-bus send --from-agent codex --to-agent codex --topic diagnostic --body auth-check --encoding compact"
+```
+
+The sync script reads the token from the `AgentHub` service environment and
+writes it to `~\.config\agent-bus\config.json` without printing the secret.
+
 ## Multi-Agent Operating Practices
 
 The installer and docs follow the same coordination pattern used by modern

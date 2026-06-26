@@ -6,17 +6,19 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Use the Rust binary directly (primary entry point).  This workstation installs
-# the active CLI under ~/.local/bin; ~/bin may contain sibling helper binaries.
+# active AgentHub binaries under ~/bin.  Some historical ~/.local/bin shims were
+# zero-byte placeholders, so reject empty files instead of selecting them.
 $candidateBins = @(
-    (Join-Path $HOME ".local/bin/agent-bus.exe"),
     (Join-Path $HOME "bin/agent-bus.exe"),
+    (Join-Path $HOME ".local/bin/agent-bus.exe"),
     (Join-Path $PSScriptRoot "..\target\release\agent-bus.exe")
 )
 
 $rustBin = $null
 foreach ($candidate in $candidateBins) {
-    if (Test-Path $candidate) {
-        $rustBin = (Resolve-Path $candidate).Path
+    $item = Get-Item -LiteralPath $candidate -ErrorAction SilentlyContinue
+    if ($item -and $item.Length -gt 0) {
+        $rustBin = $item.FullName
         break
     }
 }

@@ -486,7 +486,7 @@ Before reading files, check if these tools have already indexed the repo:
 
 ## MCP Tool Names (When Agent-Bus Is Loaded as MCP Server)
 
-If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), these 14 tools are available directly in your LLM session:
+If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), these 17 tools are available directly in your LLM session:
 
 | MCP Tool | Purpose | Key Parameters |
 |----------|---------|----------------|
@@ -502,7 +502,10 @@ If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), thes
 | `post_to_channel` | Post to a direct, group, or escalation channel | `channel_type`, `sender`, `recipient`, `topic`, `body`, `tags[]` |
 | `read_channel` | Read direct or group channel traffic | `channel_type`, `agent_a`, `agent_b`, `group_name`, `limit` |
 | `claim_resource` | Register first-edit ownership | `resource`, `agent`, `reason` |
+| `renew_claim` | Extend an active ownership lease | `resource`, `agent`, `lease_ttl_seconds` |
+| `release_claim` | Release an active ownership lease | `resource`, `agent` |
 | `resolve_claim` | Resolve a contested ownership claim | `resource`, `winner`, `reason`, `resolved_by` |
+| `knock_agent` | Send a high-priority attention signal | `sender`, `recipient`, `body`, `request_ack` |
 | `check_inbox` | Cursor-based inbox polling for only new messages | `agent`, `limit`, `reset_cursor` |
 
 Use `check_inbox` for routine follow-up polling; it advances a per-agent cursor and avoids repeatedly re-reading the same bus history.
