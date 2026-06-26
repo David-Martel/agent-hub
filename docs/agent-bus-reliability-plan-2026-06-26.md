@@ -16,10 +16,9 @@
   dedicated MCP binary is `~/bin/agent-bus-mcp.exe`.
 - Home coordination docs mixed POSIX environment assignment syntax, private
   numeric IP examples, old source paths, and stale MCP tool counts.
-- Remaining warnings are outside the active same-machine path: legacy
-  `~/.claude.json` still contains an inline bearer token and private numeric IP
-  references, and broader Claude MCP config includes private numeric IPs for
-  non-agent-bus servers.
+- Remaining warnings are outside the active same-machine agent-bus path:
+  broader Claude MCP config still includes private numeric IPs for non-agent-bus
+  servers.
 
 ## Implemented Resolution
 
@@ -57,9 +56,8 @@
 
 ## Remaining Work
 
-- Rotate or migrate the legacy inline bearer token in `~/.claude.json` to an
-  environment/config-file source after confirming Claude's legacy HTTP MCP
-  schema.
+- Keep `~/.claude.json` and `~/.claude/mcp.json` on stdio MCP for agent-bus;
+  do not reintroduce inline bearer tokens or HTTP authorization headers.
 - Decide whether `watch` should honor server-mode HTTP/SSE instead of direct
   Redis only.
 - Optimize large history paths: `/messages`, `journal`, and export currently
@@ -67,3 +65,5 @@
 - Add a dedicated server-mode smoke script that exercises health, authenticated
   send/read, presence, and failure messaging for both local and remote URL
   profiles.
+- Implement the multi-host backend direction in
+  [`multi-host-backend-plan-2026-06-26.md`](./multi-host-backend-plan-2026-06-26.md).
