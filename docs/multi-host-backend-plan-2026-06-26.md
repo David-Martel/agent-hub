@@ -42,7 +42,20 @@ Required properties:
 
 ### Phase 1: Tailnet Shared Hub
 
-Expose one AgentHub HTTP endpoint over the Headscale tailnet. Clients set:
+Expose one AgentHub HTTP endpoint over the Headscale tailnet. The hub must
+explicitly allow remote binds; otherwise AgentHub remains reachable only from
+the hub itself.
+
+Hub setup:
+
+```powershell
+pwsh -NoLogo -NoProfile -File scripts\install-agent-hub-service.ps1 -AllowRemote
+$env:AGENT_BUS_SERVER_HOST = "0.0.0.0"
+$env:AGENT_BUS_ALLOW_REMOTE = "true"
+```
+
+Only use `0.0.0.0` on a tailnet- or firewall-restricted host with bearer auth
+configured. Remote clients then set:
 
 ```powershell
 $env:AGENT_BUS_SERVER_URL = "http://<agenthub-tailnet-name>:8400"
