@@ -3560,7 +3560,11 @@ async fn require_bearer_auth(
         }
         _ => (
             StatusCode::UNAUTHORIZED,
-            "unauthorized: missing or invalid bearer token\n",
+            [(header::WWW_AUTHENTICATE, "Bearer")],
+            Json(serde_json::json!({
+                "error": "unauthorized",
+                "message": "missing or invalid bearer token",
+            })),
         )
             .into_response(),
     }

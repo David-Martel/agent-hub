@@ -196,6 +196,7 @@ Common issues:
 - **PostgreSQL connection refused**: Verify with `psql -h localhost -p 5300 -U postgres -c "SELECT 1"`.
 - **Service won't start**: Check error log, ensure `%USERPROFILE%\bin\agent-bus-http.exe` exists.
 - **Loopback family mismatch**: Prefer `redis://127.0.0.1:6380/0` and `postgresql://postgres@127.0.0.1:5300/redis_backend` for local storage. HTTP clients may keep `http://localhost:8400`; IPv6 literal URLs must use brackets, for example `http://[::1]:8400`.
+- **Health works but send/read fail with 401**: The HTTP service has bearer auth enabled, but the client shell has no token. Run `pwsh -NoLogo -NoProfile -File scripts\sync-agent-bus-client-auth.ps1`, or set `AGENT_BUS_AUTH_TOKEN` before using `AGENT_BUS_SERVER_URL`.
 
 ### MCP launch
 
@@ -261,6 +262,9 @@ agent-bus serve --transport mcp-http --port 8765
 - `pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-cli-smoke.ps1` validates CLI health, presence, send, and read against a live Redis-backed bus.
 - `pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-http-smoke.ps1` starts `agent-bus-http.exe`, checks `/health`, `/messages`, `/notifications/{agent}`, and the live SSE path.
 - `pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-functional.ps1` runs both smoke layers and forces a degraded PostgreSQL mode to verify Redis-only fallback behavior.
+- `pwsh -NoLogo -NoProfile -File scripts\sync-agent-bus-client-auth.ps1` copies the installed `AgentHub` service bearer token into `~\.config\agent-bus\config.json` without printing it, so same-machine CLI server-mode can authenticate.
+- `pwsh -NoLogo -NoProfile -File scripts\validate-agent-client-configs.ps1` verifies installed binaries, MCP client configs, same-machine auth-token alignment, IPv4 loopback URLs, and repo MCP examples.
+- `pwsh -NoLogo -NoProfile -File scripts\cross-machine-health.ps1 -Strict -CheckAuth` validates remote exposure when `AgentHub` is intentionally bound off-loopback.
 - `pwsh -NoLogo -NoProfile -File scripts\build-deploy.ps1 -TargetDir T:\RustCache\cargo-target\codex-http-deploy` rebuilds from an isolated release target dir, refreshes `%USERPROFILE%\bin\agent-bus.exe`, `%USERPROFILE%\bin\agent-bus-http.exe`, and `%USERPROFILE%\bin\agent-bus-mcp.exe`, then restarts the long-running HTTP service.
 - `pwsh -NoLogo -NoProfile -File scripts\build-deploy.ps1` rebuilds the release binaries, refreshes the installed binary paths, restarts the service, prints a health summary, and runs the SSE smoke test.
 - `pwsh -NoLogo -NoProfile -File scripts\setup-agent-hub-local.ps1` installs the local binaries and validates CLI health against Redis/PostgreSQL.

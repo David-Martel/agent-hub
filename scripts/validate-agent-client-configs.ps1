@@ -9,6 +9,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$repoRoot = Split-Path -Parent $PSScriptRoot
 $results = New-Object System.Collections.Generic.List[object]
 
 function Add-CheckResult {
@@ -147,8 +148,128 @@ function Test-AgentBusJsonMcp {
     }
 }
 
+function Test-AgentBusInstallShadowing {
+    $installDirs = @(
+        (Join-Path $HomeDir "bin"),
+        (Join-Path $HomeDir ".local/bin")
+    )
+    foreach ($dir in $installDirs) {
+        foreach ($name in @("agent-bus.exe", "agent-bus-http.exe", "agent-bus-mcp.exe")) {
+            $path = Join-Path $dir $name
+            $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+            if (-not $item) {
+                continue
+            }
+            if ($item.Length -eq 0) {
+                Add-CheckResult -Name "install:zero-byte:$name" -Status "fail" -Detail "Zero-byte agent-bus binary/shim shadows valid installs; delete or replace it" -Path $path
+            }
+            else {
+                Add-CheckResult -Name "install:file:$name" -Status "ok" -Detail "Installed file size=$($item.Length)" -Path $path
+            }
+        }
+    }
+}
+
+function Get-AgentHubServiceAuthState {
+    param([Parameter(Mandatory = $true)][string]$ServiceName)
+
+    $path = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName\Parameters"
+    if (-not (Test-Path $path)) {
+        return [pscustomobject]@{
+            installed = $false
+            authToken = $false
+            allowRemote = $false
+            path = $path
+        }
+    }
+
+    $props = Get-ItemProperty -Path $path
+    $envExtra = @($props.AppEnvironmentExtra)
+    return [pscustomobject]@{
+        installed = $true
+        authToken = [bool]($envExtra | Where-Object { $_ -like "AGENT_BUS_AUTH_TOKEN=*" })
+        allowRemote = [bool]($envExtra | Where-Object { $_ -like "AGENT_BUS_ALLOW_REMOTE=true" })
+        path = $path
+    }
+}
+
+function Test-AgentBusClientConfig {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$ServiceAuthState
+    )
+
+    $json = Test-JsonSyntax -Path $Path
+    if ($null -eq $json) {
+        return
+    }
+
+    $serverUrl = [string]$json.server_url
+    $authToken = [string]$json.auth_token
+    $hasProcessToken = -not [string]::IsNullOrWhiteSpace($env:AGENT_BUS_AUTH_TOKEN)
+
+    if ([string]::IsNullOrWhiteSpace($serverUrl)) {
+        Add-CheckResult -Name "client-config:server-url" -Status "warn" -Detail "server_url is absent; CLI will use direct Redis mode" -Path $Path
+    }
+    elseif ($serverUrl -ne $ExpectedServerUrl) {
+        Add-CheckResult -Name "client-config:server-url" -Status "warn" -Detail "server_url is '$serverUrl', expected '$ExpectedServerUrl' for same-machine use" -Path $Path
+    }
+    else {
+        Add-CheckResult -Name "client-config:server-url" -Status "ok" -Detail "server_url is $ExpectedServerUrl" -Path $Path
+    }
+
+    if ($ServiceAuthState.installed -and $ServiceAuthState.authToken -and -not $hasProcessToken -and [string]::IsNullOrWhiteSpace($authToken)) {
+        Add-CheckResult -Name "client-config:auth-token" -Status "fail" -Detail "AgentHub service requires bearer auth, but neither AGENT_BUS_AUTH_TOKEN nor config auth_token is available to this client" -Path $Path
+    }
+    elseif ($ServiceAuthState.authToken) {
+        Add-CheckResult -Name "client-config:auth-token" -Status "ok" -Detail "Client has a bearer-token source for authenticated AgentHub routes" -Path $Path
+    }
+
+    if ([string]$json.redis_url -ne $ExpectedRedisUrl) {
+        Add-CheckResult -Name "client-config:redis-url" -Status "warn" -Detail "redis_url should be $ExpectedRedisUrl to avoid Windows localhost/IPv6 drift" -Path $Path
+    }
+    else {
+        Add-CheckResult -Name "client-config:redis-url" -Status "ok" -Detail "redis_url is IPv4-loopback explicit" -Path $Path
+    }
+
+    if ([string]$json.database_url -ne $ExpectedDatabaseUrl) {
+        Add-CheckResult -Name "client-config:database-url" -Status "warn" -Detail "database_url should be $ExpectedDatabaseUrl for local durability checks" -Path $Path
+    }
+    else {
+        Add-CheckResult -Name "client-config:database-url" -Status "ok" -Detail "database_url is IPv4-loopback explicit" -Path $Path
+    }
+}
+
+function Test-ExampleConfigs {
+    $examplesRoot = Join-Path $repoRoot "examples/mcp"
+    if (-not (Test-Path $examplesRoot)) {
+        Add-CheckResult -Name "examples:mcp" -Status "missing" -Detail "examples/mcp not found" -Path $examplesRoot
+        return
+    }
+
+    Get-ChildItem -Path $examplesRoot -File | ForEach-Object {
+        $raw = Get-Content -Path $_.FullName -Raw
+        if ($raw -match '192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.') {
+            Add-CheckResult -Name "examples:numeric-url:$($_.Name)" -Status "warn" -Detail "Private numeric IP found in example; prefer localhost or <hostname>" -Path $_.FullName
+        }
+        if ($raw -match 'Bearer\s+[A-Za-z0-9_\-\.]{12,}' -or $raw -match '"auth_token"\s*:\s*"[A-Za-z0-9_\-\.]{12,}"') {
+            Add-CheckResult -Name "examples:literal-token:$($_.Name)" -Status "fail" -Detail "Example appears to contain a literal bearer/auth token" -Path $_.FullName
+        }
+    }
+    Add-CheckResult -Name "examples:mcp" -Status "ok" -Detail "Scanned examples/mcp for literal tokens and private numeric IPs" -Path $examplesRoot
+}
+
 foreach ($commandName in @("agent-bus", "agent-bus-mcp", "agent-bus-http")) {
     Get-AgentBusVersion -CommandName $commandName
+}
+Test-AgentBusInstallShadowing
+
+$serviceAuthState = Get-AgentHubServiceAuthState -ServiceName "AgentHub"
+if ($serviceAuthState.installed) {
+    Add-CheckResult -Name "service:AgentHub" -Status "ok" -Detail "Service installed; authToken=$($serviceAuthState.authToken); allowRemote=$($serviceAuthState.allowRemote)" -Path $serviceAuthState.path
+}
+else {
+    Add-CheckResult -Name "service:AgentHub" -Status "warn" -Detail "AgentHub service registry entry was not found" -Path $serviceAuthState.path
 }
 
 $homeBinCli = Join-Path $HomeDir "bin/agent-bus.exe"
@@ -156,6 +277,7 @@ if ($IsWindows -and -not (Test-Path $homeBinCli)) {
     Add-CheckResult -Name "install:home-bin-cli" -Status "warn" -Detail "Documented ~/bin/agent-bus.exe is missing; command may be resolving from another path" -Path $homeBinCli
 }
 
+Test-AgentBusClientConfig -Path (Join-Path $HomeDir ".config/agent-bus/config.json") -ServiceAuthState $serviceAuthState
 Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".claude/mcp.json") -ClientName "claude"
 Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".claude.json") -ClientName "claude-legacy"
 Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".gemini/settings.json") -ClientName "gemini"
@@ -163,6 +285,7 @@ Test-JsonSyntax -Path (Join-Path $HomeDir ".antigravity/argv.json") | Out-Null
 Test-TextConfig -Path (Join-Path $HomeDir ".codex/config.toml") -Needle "[mcp_servers.agent_bus]" -Label "codex:agent-bus"
 Test-TextConfig -Path (Join-Path $HomeDir ".agents/AGENT_COORDINATION.md") -Needle "agent-bus" -Label "agents:coordination-doc"
 Test-TextConfig -Path (Join-Path $HomeDir ".codex/AGENT_COORDINATION.md") -Needle "agent-bus" -Label "codex:coordination-doc"
+Test-ExampleConfigs
 
 if ($ExpectedRedisUrl -match 'localhost') {
     Add-CheckResult -Name "defaults:redis-url" -Status "warn" -Detail "Redis default uses localhost; prefer 127.0.0.1 for IPv4-only Redis on Windows"

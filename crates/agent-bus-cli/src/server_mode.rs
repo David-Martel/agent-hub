@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
+use reqwest::StatusCode;
 
 use crate::settings::Settings;
 
@@ -52,6 +53,60 @@ fn server_client() -> &'static reqwest::Client {
 }
 
 #[cfg(feature = "server-mode")]
+fn server_auth_configured() -> bool {
+    matches!(SERVER_AUTH_TOKEN.get(), Some(Some(token)) if !token.trim().is_empty())
+}
+
+#[cfg(feature = "server-mode")]
+fn http_status_error(method: &str, url: &str, status: StatusCode, body: &str) -> anyhow::Error {
+    let body = body.trim();
+    let body = if body.is_empty() {
+        "<empty response body>"
+    } else {
+        body
+    };
+
+    if status == StatusCode::UNAUTHORIZED && !server_auth_configured() {
+        anyhow::anyhow!(
+            "{method} {url} returned HTTP {status}: {body}. \
+             The AgentHub service requires bearer-token auth, but this client has no \
+             AGENT_BUS_AUTH_TOKEN/auth_token configured. Set AGENT_BUS_AUTH_TOKEN or \
+             add auth_token to AGENT_BUS_CONFIG (~/.config/agent-bus/config.json)."
+        )
+    } else {
+        anyhow::anyhow!("{method} {url} returned HTTP {status}: {body}")
+    }
+}
+
+#[cfg(feature = "server-mode")]
+async fn decode_json_response(
+    method: &str,
+    url: &str,
+    response: reqwest::Response,
+) -> Result<serde_json::Value> {
+    let status = response.status();
+    let text = response
+        .text()
+        .await
+        .with_context(|| format!("{method} {url} response body read failed"))?;
+    let parsed = serde_json::from_str::<serde_json::Value>(&text);
+
+    if !status.is_success() {
+        return match parsed {
+            Ok(body) => Err(http_status_error(method, url, status, &body.to_string())),
+            Err(_) => Err(http_status_error(method, url, status, &text)),
+        };
+    }
+
+    parsed.with_context(|| {
+        format!(
+            "{method} {url} returned HTTP {status} but the response was not JSON: {}",
+            text.trim()
+        )
+    })
+}
+
+#[cfg(feature = "server-mode")]
 fn run_server_future<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         tokio::task::block_in_place(|| handle.block_on(future))
@@ -91,15 +146,7 @@ pub(crate) fn http_get(url: &str) -> Result<serde_json::Value> {
             .send()
             .await
             .with_context(|| format!("GET {url} failed"))?;
-        let status = response.status();
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .context("HTTP response JSON decode failed")?;
-        if !status.is_success() {
-            anyhow::bail!("HTTP {status}: {body}");
-        }
-        Ok(body)
+        decode_json_response("GET", &url, response).await
     })
 }
 
@@ -126,15 +173,7 @@ pub(crate) fn http_post(url: &str, body: &serde_json::Value) -> Result<serde_jso
             .send()
             .await
             .with_context(|| format!("POST {url} failed"))?;
-        let status = response.status();
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .context("HTTP response JSON decode failed")?;
-        if !status.is_success() {
-            anyhow::bail!("HTTP {status}: {body}");
-        }
-        Ok(body)
+        decode_json_response("POST", &url, response).await
     })
 }
 
@@ -160,15 +199,7 @@ pub(crate) fn http_put(url: &str, body: &serde_json::Value) -> Result<serde_json
             .send()
             .await
             .with_context(|| format!("PUT {url} failed"))?;
-        let status = response.status();
-        let body: serde_json::Value = response
-            .json()
-            .await
-            .context("HTTP response JSON decode failed")?;
-        if !status.is_success() {
-            anyhow::bail!("HTTP {status}: {body}");
-        }
-        Ok(body)
+        decode_json_response("PUT", &url, response).await
     })
 }
 
@@ -361,4 +392,39 @@ pub(crate) fn service_status_payload(
         "windows_service_state": windows_service_state,
         "admin": admin_status,
     })
+}
+
+#[cfg(all(test, feature = "server-mode"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_status_error_explains_missing_bearer_token() {
+        let message = http_status_error(
+            "POST",
+            "http://localhost:8400/messages",
+            StatusCode::UNAUTHORIZED,
+            "unauthorized: missing or invalid bearer token",
+        )
+        .to_string();
+
+        assert!(message.contains("HTTP 401 Unauthorized"));
+        assert!(message.contains("AGENT_BUS_AUTH_TOKEN"));
+        assert!(message.contains("auth_token"));
+    }
+
+    #[test]
+    fn http_status_error_preserves_non_auth_status_body() {
+        let message = http_status_error(
+            "GET",
+            "http://localhost:8400/messages",
+            StatusCode::SERVICE_UNAVAILABLE,
+            "maintenance",
+        )
+        .to_string();
+
+        assert!(message.contains("HTTP 503 Service Unavailable"));
+        assert!(message.contains("maintenance"));
+        assert!(!message.contains("requires bearer-token auth"));
+    }
 }

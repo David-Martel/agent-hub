@@ -53,6 +53,9 @@ if ($DryRun) {
     else {
         Write-Host "  - Run final agent-bus health check"
     }
+    Write-Host "  - If the AgentHub service uses bearer auth, align the local client with:"
+    Write-Host "      pwsh -NoLogo -NoProfile -File scripts\sync-agent-bus-client-auth.ps1"
+    Write-Host "      pwsh -NoLogo -NoProfile -File scripts\validate-agent-client-configs.ps1"
     if (-not $psql) { Write-Host "  - Note: psql.exe is not currently on PATH" -ForegroundColor Yellow }
     if (-not $createdb) { Write-Host "  - Note: createdb.exe is not currently on PATH" -ForegroundColor Yellow }
     Write-Host "  No services, databases, binaries, or environment variables were changed."
@@ -161,6 +164,11 @@ try {
         & $healthBinary "health" "--encoding" "json"
         if ($LASTEXITCODE -ne 0) {
             throw "agent-bus health check failed."
+        }
+        Write-Host "Validating installed client configuration ..."
+        & (Join-Path $PSScriptRoot "validate-agent-client-configs.ps1")
+        if ($LASTEXITCODE -ne 0) {
+            throw "agent-bus client config validation failed."
         }
     }
 }
