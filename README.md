@@ -49,6 +49,8 @@ cargo test --workspace --test '*'
 See [docs/current-status-2026-06-13.md](./docs/current-status-2026-06-13.md)
 for the full code-grounded status snapshot, resolved blockers, and remaining
 work.
+For the Headscale/Tailscale multi-machine backend direction, see
+[docs/multi-host-backend-plan-2026-06-26.md](./docs/multi-host-backend-plan-2026-06-26.md).
 
 Current protocol metadata:
 - Bus protocol: `agent-bus` message contract v1.0

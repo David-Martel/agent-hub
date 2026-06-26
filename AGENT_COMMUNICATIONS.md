@@ -737,11 +737,11 @@ Register agent-bus in your LLM agent's MCP config for instant message bus access
 ```json
 {
   "agent-bus": {
-    "command": "agent-bus.exe",
-    "args": ["serve", "--transport", "stdio"],
+    "command": "agent-bus-mcp.exe",
+    "args": [],
     "env": {
-      "AGENT_BUS_REDIS_URL": "redis://localhost:6380/0",
-      "AGENT_BUS_DATABASE_URL": "postgresql://postgres@localhost:5300/redis_backend",
+      "AGENT_BUS_REDIS_URL": "redis://127.0.0.1:6380/0",
+      "AGENT_BUS_DATABASE_URL": "postgresql://postgres@127.0.0.1:5300/redis_backend",
       "AGENT_BUS_SERVER_HOST": "localhost",
       "AGENT_BUS_STARTUP_ENABLED": "false",
       "RUST_LOG": "error"
@@ -754,12 +754,12 @@ Register agent-bus in your LLM agent's MCP config for instant message bus access
 
 ```toml
 [mcp_servers.agent_bus]
-command = "agent-bus.exe"
-args = ["serve", "--transport", "stdio"]
+command = "agent-bus-mcp.exe"
+args = []
 
 [mcp_servers.agent_bus.env]
-AGENT_BUS_REDIS_URL = "redis://localhost:6380/0"
-AGENT_BUS_DATABASE_URL = "postgresql://postgres@localhost:5300/redis_backend"
+AGENT_BUS_REDIS_URL = "redis://127.0.0.1:6380/0"
+AGENT_BUS_DATABASE_URL = "postgresql://postgres@127.0.0.1:5300/redis_backend"
 AGENT_BUS_SERVER_HOST = "localhost"
 AGENT_BUS_STARTUP_ENABLED = "false"
 RUST_LOG = "error"
@@ -771,11 +771,11 @@ RUST_LOG = "error"
 {
   "mcp_servers": {
     "agent-bus": {
-      "command": "agent-bus.exe",
-      "args": ["serve", "--transport", "stdio"],
+      "command": "agent-bus-mcp.exe",
+      "args": [],
       "env": {
-        "AGENT_BUS_REDIS_URL": "redis://localhost:6380/0",
-        "AGENT_BUS_DATABASE_URL": "postgresql://postgres@localhost:5300/redis_backend",
+        "AGENT_BUS_REDIS_URL": "redis://127.0.0.1:6380/0",
+        "AGENT_BUS_DATABASE_URL": "postgresql://postgres@127.0.0.1:5300/redis_backend",
         "AGENT_BUS_SERVER_HOST": "localhost",
         "AGENT_BUS_STARTUP_ENABLED": "false",
         "RUST_LOG": "error"
@@ -785,7 +785,9 @@ RUST_LOG = "error"
 }
 ```
 
-**All platforms use identical Rust binary** (`~/bin/agent-bus.exe`) — no platform-specific code.
+Use the dedicated `agent-bus-mcp` stdio server when it is installed. Fallback to
+`agent-bus serve --transport stdio` only on machines that have not yet received
+the split MCP binary.
 
 For Windows machines managed from this repo, install or refresh Claude and
 Codex configs with:
