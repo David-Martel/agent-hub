@@ -222,6 +222,18 @@ pub struct Health {
     /// that have not yet been backfilled.  Use `agent-bus sync` to replay them.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pg_dropped_writes: Option<u64>,
+    /// Short host or gateway identity for multi-machine deployments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hub_identity: Option<String>,
+    /// Redis persistence mode/status summary, when Redis is reachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub redis_persistence: Option<String>,
+    /// Age of the newest backup artifact in seconds, when configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backup_age_seconds: Option<u64>,
+    /// `PostgreSQL` replication lag placeholder for HA deployments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub postgres_replication_lag_seconds: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -658,6 +670,10 @@ mod tests {
             pg_batches: None,
             pg_write_errors: None,
             pg_dropped_writes: None,
+            hub_identity: None,
+            redis_persistence: None,
+            backup_age_seconds: None,
+            postgres_replication_lag_seconds: None,
         }
     }
 

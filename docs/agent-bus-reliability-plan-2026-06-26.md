@@ -40,6 +40,23 @@
   MCP binary, IPv4 loopback Redis/PostgreSQL URLs, current 17-tool MCP surface,
   and the same-machine auth sync workflow.
 - Removed confirmed zero-byte `agent-bus*.exe` shims from `~/.local/bin`.
+- Added backup and restore-safety commands:
+  - `agent-bus backup --output <path>.ndjson`
+  - `agent-bus validate-backup --input <path>.ndjson`
+  - `agent-bus service --action backup`
+- Added offline coordination commands:
+  - `agent-bus spool-send ... --spool <path>.ndjson`
+  - `agent-bus spool-replay --spool <path>.ndjson`
+  These use the same NDJSON shape as `batch-send`, so queued messages can be
+  inspected and copied between hosts before replay.
+- Added `scripts/test-agent-bus-remote-smoke.ps1` to exercise remote `/health`
+  plus CLI health, presence, read, and optional send against a local, tailnet,
+  or headscale URL.
+- Extended health output with `hub_identity`, Redis persistence status,
+  newest-backup age, and a PostgreSQL replication-lag placeholder for future HA
+  deployments.
+- Tightened `scripts/validate-agent-client-configs.ps1` so active MCP entries
+  fail when they embed bearer-token material in headers, env blocks, or args.
 
 ## Validation
 
@@ -53,6 +70,11 @@
   - `agent-bus read --agent codex --since-minutes 30 --limit 5 --encoding compact`
 - Targeted Rust validation passed:
   - `cargo test -p agent-bus --features server-mode server_mode::tests --lib`
+- New resilience validation targets:
+  - `cargo test -p agent-bus-cli --features server-mode`
+  - `cargo test -p agent-bus-core`
+  - `pwsh -NoLogo -NoProfile -File scripts\validate-agent-client-configs.ps1`
+  - `pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-remote-smoke.ps1 -BaseUrl http://localhost:8400`
 
 ## Remaining Work
 
@@ -62,8 +84,7 @@
   Redis only.
 - Optimize large history paths: `/messages`, `journal`, and export currently
   over-fetch and filter client-side for some selectors.
-- Add a dedicated server-mode smoke script that exercises health, authenticated
-  send/read, presence, and failure messaging for both local and remote URL
-  profiles.
 - Implement the multi-host backend direction in
   [`multi-host-backend-plan-2026-06-26.md`](./multi-host-backend-plan-2026-06-26.md).
+- Add automated restore rehearsal against a disposable Redis/PostgreSQL pair
+  once restore semantics are finalized beyond validation-only backups.

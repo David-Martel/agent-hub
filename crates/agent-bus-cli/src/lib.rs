@@ -33,15 +33,16 @@ use mimalloc::MiMalloc;
 use agent_bus_core::bootstrap;
 use cli::{Cli, Cmd};
 use commands::{
-    CompactContextArgs, PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_batch_send, cmd_claim,
-    cmd_claims, cmd_codex_sync, cmd_compact_context, cmd_compact_thread, cmd_dedup, cmd_export,
-    cmd_health, cmd_inventory, cmd_journal, cmd_knock, cmd_monitor, cmd_overdue_acks,
+    CompactContextArgs, PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_backup, cmd_batch_send,
+    cmd_claim, cmd_claims, cmd_codex_sync, cmd_compact_context, cmd_compact_thread, cmd_dedup,
+    cmd_export, cmd_health, cmd_inventory, cmd_journal, cmd_knock, cmd_monitor, cmd_overdue_acks,
     cmd_peek_tasks, cmd_pending_acks, cmd_post_direct, cmd_post_group, cmd_presence,
     cmd_presence_history, cmd_presence_list, cmd_prune, cmd_pull_task, cmd_push_task, cmd_read,
     cmd_read_direct, cmd_read_group, cmd_release_claim, cmd_renew_claim, cmd_resolve, cmd_send,
-    cmd_service, cmd_session_summary, cmd_subscribe, cmd_subscriptions, cmd_summarize_thread,
-    cmd_sync, cmd_thread_close, cmd_thread_create, cmd_thread_join, cmd_thread_leave,
-    cmd_thread_list, cmd_token_count, cmd_unsubscribe, cmd_watch,
+    cmd_service, cmd_session_summary, cmd_spool_replay, cmd_spool_send, cmd_subscribe,
+    cmd_subscriptions, cmd_summarize_thread, cmd_sync, cmd_thread_close, cmd_thread_create,
+    cmd_thread_join, cmd_thread_leave, cmd_thread_list, cmd_token_count, cmd_unsubscribe,
+    cmd_validate_backup, cmd_watch,
 };
 
 #[global_allocator]
@@ -388,6 +389,78 @@ fn run(args: Vec<OsString>) -> Result<()> {
                 timeout_seconds,
                 encoding,
             )?;
+        }
+
+        Cmd::Backup {
+            ref output,
+            ref from_agent,
+            ref repo,
+            ref session,
+            ref tag,
+            ref thread_id,
+            since_minutes,
+            limit,
+            ref encoding,
+        } => {
+            cmd_backup(
+                &settings,
+                output,
+                from_agent.as_deref(),
+                repo.as_deref(),
+                session.as_deref(),
+                tag,
+                thread_id.as_deref(),
+                since_minutes,
+                limit,
+                encoding,
+            )?;
+        }
+
+        Cmd::ValidateBackup {
+            ref input,
+            ref encoding,
+        } => {
+            cmd_validate_backup(input, encoding)?;
+        }
+
+        Cmd::SpoolSend {
+            ref from_agent,
+            ref to_agent,
+            ref topic,
+            ref body,
+            ref thread_id,
+            ref tag,
+            ref priority,
+            request_ack,
+            ref reply_to,
+            ref metadata,
+            ref schema,
+            ref spool,
+            ref encoding,
+        } => {
+            cmd_spool_send(
+                from_agent,
+                to_agent,
+                topic,
+                body,
+                thread_id.as_deref(),
+                tag,
+                priority,
+                request_ack,
+                reply_to.as_deref(),
+                metadata.as_deref(),
+                schema.as_deref(),
+                spool,
+                encoding,
+            )?;
+        }
+
+        Cmd::SpoolReplay {
+            ref spool,
+            delete_on_success,
+            ref encoding,
+        } => {
+            cmd_spool_replay(&settings, spool, delete_on_success, encoding)?;
         }
 
         Cmd::BatchSend {

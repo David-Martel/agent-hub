@@ -2403,31 +2403,34 @@ pub fn bus_list_presence(
 /// implementation incurred.  Pass `None` in CLI mode where no pool exists.
 pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
     // Use a pooled connection when available; otherwise open a fresh one.
-    let (ok, stream_length) = if let Some(mut conn) = pool.and_then(|p| p.get_connection().ok()) {
-        let ok = redis::cmd("PING")
-            .query::<String>(&mut *conn)
-            .is_ok_and(|pong| pong == "PONG");
-        let stream_length = redis::cmd("XLEN")
-            .arg(&settings.stream_key)
-            .query::<u64>(&mut *conn)
-            .ok();
-        (ok, stream_length)
-    } else {
-        // CLI mode: fall back to a single fresh connection for both queries.
-        match connect(settings) {
-            Ok(mut conn) => {
-                let ok = redis::cmd("PING")
-                    .query::<String>(&mut conn)
-                    .is_ok_and(|pong| pong == "PONG");
-                let stream_length = redis::cmd("XLEN")
-                    .arg(&settings.stream_key)
-                    .query::<u64>(&mut conn)
-                    .ok();
-                (ok, stream_length)
+    let (ok, stream_length, redis_persistence) =
+        if let Some(mut conn) = pool.and_then(|p| p.get_connection().ok()) {
+            let ok = redis::cmd("PING")
+                .query::<String>(&mut *conn)
+                .is_ok_and(|pong| pong == "PONG");
+            let stream_length = redis::cmd("XLEN")
+                .arg(&settings.stream_key)
+                .query::<u64>(&mut *conn)
+                .ok();
+            let redis_persistence = redis_persistence_summary(&mut conn);
+            (ok, stream_length, redis_persistence)
+        } else {
+            // CLI mode: fall back to a single fresh connection for both queries.
+            match connect(settings) {
+                Ok(mut conn) => {
+                    let ok = redis::cmd("PING")
+                        .query::<String>(&mut conn)
+                        .is_ok_and(|pong| pong == "PONG");
+                    let stream_length = redis::cmd("XLEN")
+                        .arg(&settings.stream_key)
+                        .query::<u64>(&mut conn)
+                        .ok();
+                    let redis_persistence = redis_persistence_summary(&mut conn);
+                    (ok, stream_length, redis_persistence)
+                }
+                Err(_) => (false, None, None),
             }
-            Err(_) => (false, None),
-        }
-    };
+        };
 
     let (database_ok, database_error, storage_ready) = probe_postgres(settings);
     // Single round-trip for both PG counts instead of two separate queries.
@@ -2467,7 +2470,52 @@ pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
         pg_batches,
         pg_write_errors,
         pg_dropped_writes,
+        hub_identity: hub_identity(),
+        redis_persistence,
+        backup_age_seconds: latest_backup_age_seconds(),
+        postgres_replication_lag_seconds: None,
     }
+}
+
+fn redis_persistence_summary(conn: &mut redis::Connection) -> Option<String> {
+    let info = redis::cmd("INFO")
+        .arg("persistence")
+        .query::<String>(conn)
+        .ok()?;
+    let aof = info_value(&info, "aof_enabled").unwrap_or("unknown");
+    let rdb_status = info_value(&info, "rdb_last_bgsave_status").unwrap_or("unknown");
+    let aof_status = info_value(&info, "aof_last_write_status").unwrap_or("unknown");
+    Some(format!(
+        "aof_enabled={aof};rdb_last_bgsave_status={rdb_status};aof_last_write_status={aof_status}"
+    ))
+}
+
+fn info_value<'a>(info: &'a str, key: &str) -> Option<&'a str> {
+    info.lines().find_map(|line| {
+        let (actual_key, value) = line.split_once(':')?;
+        (actual_key == key).then_some(value.trim())
+    })
+}
+
+fn hub_identity() -> Option<String> {
+    std::env::var("AGENT_BUS_HUB_ID")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn latest_backup_age_seconds() -> Option<u64> {
+    let dir = std::env::var("AGENT_BUS_BACKUP_DIR").ok()?;
+    let latest = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| entry.metadata().ok()?.modified().ok())
+        .max()?;
+    std::time::SystemTime::now()
+        .duration_since(latest)
+        .ok()
+        .map(|age| age.as_secs())
 }
 
 /// Return a degraded [`Health`] value for use when the health probe panics.
@@ -2495,6 +2543,10 @@ pub fn health_error_fallback() -> Health {
         pg_batches: None,
         pg_write_errors: None,
         pg_dropped_writes: None,
+        hub_identity: hub_identity(),
+        redis_persistence: None,
+        backup_age_seconds: latest_backup_age_seconds(),
+        postgres_replication_lag_seconds: None,
     }
 }
 
