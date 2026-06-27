@@ -239,6 +239,31 @@ pub(crate) fn cmd_service(
             output(&result, encoding);
             Ok(())
         }
+        "backup" => {
+            let backup_dir = std::env::var("AGENT_BUS_BACKUP_DIR")
+                .unwrap_or_else(|_| "backups/agent-bus".to_owned());
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_secs());
+            let output_path = std::path::Path::new(&backup_dir)
+                .join(format!("agent-bus-backup-{timestamp}.ndjson"));
+            let tags: Vec<String> = Vec::new();
+            let limit = usize::try_from(settings.stream_maxlen)
+                .unwrap_or(usize::MAX)
+                .min(100_000);
+            cmd_backup(
+                settings,
+                &output_path.display().to_string(),
+                None,
+                None,
+                None,
+                &tags,
+                None,
+                MAX_HISTORY_MINUTES,
+                limit,
+                encoding,
+            )
+        }
         "stop" => {
             if query_windows_service_state(service_name)?.is_some() {
                 let _ = post_service_action(&base_url, "pause", reason);
@@ -318,7 +343,7 @@ pub(crate) fn cmd_service(
             Ok(())
         }
         _ => anyhow::bail!(
-            "invalid service action '{action}'; expected status|pause|resume|flush|stop|start|restart"
+            "invalid service action '{action}'; expected status|pause|resume|flush|stop|start|restart|backup"
         ),
     }
 }
@@ -850,6 +875,182 @@ pub(crate) fn cmd_codex_sync(settings: &Settings, limit: usize, encoding: &Encod
         );
     }
     output(&result, encoding);
+    Ok(())
+}
+
+/// Export recent messages to NDJSON for portable backups.
+#[expect(clippy::too_many_arguments, reason = "maps directly to CLI filters")]
+pub(crate) fn cmd_backup(
+    settings: &Settings,
+    output_path: &str,
+    from_agent: Option<&str>,
+    repo: Option<&str>,
+    session: Option<&str>,
+    tags: &[String],
+    thread_id: Option<&str>,
+    since_minutes: u64,
+    limit: usize,
+    encoding: &Encoding,
+) -> Result<()> {
+    use std::io::Write as _;
+
+    let filters = MessageFilters {
+        repo,
+        session,
+        tags,
+        thread_id,
+    };
+    let messages = list_filtered_messages(
+        settings,
+        None,
+        from_agent,
+        since_minutes,
+        limit,
+        true,
+        &filters,
+    )?;
+
+    let path = std::path::Path::new(output_path);
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create backup directory: {}", parent.display()))?;
+    }
+    let mut file = std::fs::File::create(path)
+        .with_context(|| format!("failed to create backup file: {}", path.display()))?;
+    for message in &messages {
+        writeln!(file, "{}", serde_json::to_string(message)?)
+            .with_context(|| format!("failed to write backup file: {}", path.display()))?;
+    }
+    output(
+        &serde_json::json!({
+            "ok": true,
+            "path": path.display().to_string(),
+            "messages": messages.len(),
+        }),
+        encoding,
+    );
+    Ok(())
+}
+
+/// Validate a message NDJSON backup.
+pub(crate) fn cmd_validate_backup(input_path: &str, encoding: &Encoding) -> Result<()> {
+    use std::io::BufRead as _;
+
+    let path = std::path::Path::new(input_path);
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("failed to open backup file: {}", path.display()))?;
+    let reader = std::io::BufReader::new(file);
+    let mut seen = std::collections::HashSet::new();
+    let mut duplicates = Vec::new();
+    let mut count = 0usize;
+    for (line_no, line) in reader.lines().enumerate() {
+        let line = line.with_context(|| format!("line {}: read failed", line_no + 1))?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let message: Message = serde_json::from_str(trimmed)
+            .with_context(|| format!("line {}: invalid message JSON", line_no + 1))?;
+        if !seen.insert(message.id.clone()) {
+            duplicates.push(message.id);
+        }
+        count += 1;
+    }
+    let ok = duplicates.is_empty();
+    output(
+        &serde_json::json!({
+            "ok": ok,
+            "path": path.display().to_string(),
+            "messages": count,
+            "duplicates": duplicates,
+        }),
+        encoding,
+    );
+    if !ok {
+        anyhow::bail!("backup validation failed: duplicate message ids");
+    }
+    Ok(())
+}
+
+/// Append a send request to the local offline spool.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "maps directly to send CLI arguments"
+)]
+pub(crate) fn cmd_spool_send(
+    from_agent: &str,
+    to_agent: &str,
+    topic: &str,
+    body: &str,
+    thread_id: Option<&str>,
+    tags: &[String],
+    priority: &str,
+    request_ack: bool,
+    reply_to: Option<&str>,
+    metadata: Option<&str>,
+    schema: Option<&str>,
+    spool_path: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    use std::io::Write as _;
+
+    let from = non_empty(from_agent, "--from-agent")?;
+    let to = non_empty(to_agent, "--to-agent")?;
+    let topic = non_empty(topic, "--topic")?;
+    let body = non_empty(body, "--body")?;
+    let meta = parse_metadata_arg(metadata)?;
+    let path = std::path::Path::new(spool_path);
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create spool directory: {}", parent.display()))?;
+    }
+    let entry = serde_json::json!({
+        "sender": from,
+        "recipient": to,
+        "topic": topic,
+        "body": body,
+        "tags": tags,
+        "priority": priority,
+        "thread_id": thread_id,
+        "request_ack": request_ack,
+        "reply_to": reply_to,
+        "metadata": meta,
+        "schema": schema,
+    });
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("failed to open spool file: {}", path.display()))?;
+    writeln!(file, "{entry}")
+        .with_context(|| format!("failed to write spool file: {}", path.display()))?;
+    output(
+        &serde_json::json!({
+            "ok": true,
+            "spooled": 1,
+            "path": path.display().to_string(),
+        }),
+        encoding,
+    );
+    Ok(())
+}
+
+/// Replay a local offline spool with the existing batch-send path.
+pub(crate) fn cmd_spool_replay(
+    settings: &Settings,
+    spool_path: &str,
+    delete_on_success: bool,
+    encoding: &Encoding,
+) -> Result<()> {
+    cmd_batch_send(settings, spool_path, encoding)?;
+    if delete_on_success {
+        std::fs::remove_file(spool_path)
+            .with_context(|| format!("failed to delete spool file: {spool_path}"))?;
+    }
     Ok(())
 }
 
@@ -2112,6 +2313,20 @@ mod tests {
         .expect_err("invalid service action must fail");
 
         assert!(err.to_string().contains("invalid service action"));
+    }
+
+    #[test]
+    fn cmd_validate_backup_rejects_duplicate_message_ids() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("backup.ndjson");
+        let message = make_message();
+        let line = serde_json::to_string(&message).expect("message json");
+        std::fs::write(&path, format!("{line}\n{line}\n")).expect("write backup");
+
+        let err = cmd_validate_backup(&path.display().to_string(), &Encoding::Json)
+            .expect_err("duplicate message ids must fail validation");
+
+        assert!(err.to_string().contains("duplicate message ids"));
     }
 
     #[test]

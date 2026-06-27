@@ -137,6 +137,40 @@ function Test-AgentBusJsonMcp {
     $transport = if ($entry.ContainsKey("type")) { $entry["type"] } elseif ($entry.ContainsKey("httpUrl")) { "http" } else { "stdio" }
     Add-CheckResult -Name "${ClientName}:agent-bus" -Status "ok" -Detail "agent-bus MCP entry found ($transport)" -Path $Path
 
+    if ($entry.ContainsKey("httpUrl")) {
+        $httpUrl = [string]$entry["httpUrl"]
+        if ($httpUrl -match 'http://(192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)') {
+            Add-CheckResult -Name "${ClientName}:agent-bus-http-url" -Status "warn" -Detail "Active agent-bus MCP URL uses a private numeric IP; prefer localhost or a stable tailnet/headscale hostname" -Path $Path
+        }
+        elseif ($httpUrl -match '^http://localhost(:|/)') {
+            Add-CheckResult -Name "${ClientName}:agent-bus-http-url" -Status "ok" -Detail "Active agent-bus MCP URL uses localhost" -Path $Path
+        }
+    }
+
+    if ($entry.ContainsKey("headers")) {
+        $headers = $entry["headers"]
+        foreach ($key in @("Authorization", "authorization")) {
+            if ($headers.ContainsKey($key) -and ([string]$headers[$key]) -match '^Bearer\s+\S+') {
+                Add-CheckResult -Name "${ClientName}:inline-token" -Status "fail" -Detail "Active agent-bus MCP entry contains an inline bearer token; use AGENT_BUS_AUTH_TOKEN or the agent-bus config file" -Path $Path
+            }
+        }
+    }
+
+    if ($entry.ContainsKey("env")) {
+        $entryEnv = $entry["env"]
+        if ($entryEnv.ContainsKey("AGENT_BUS_AUTH_TOKEN") -and -not [string]::IsNullOrWhiteSpace([string]$entryEnv["AGENT_BUS_AUTH_TOKEN"])) {
+            Add-CheckResult -Name "${ClientName}:inline-token-env" -Status "fail" -Detail "Active agent-bus MCP entry embeds AGENT_BUS_AUTH_TOKEN; use process env or ~/.config/agent-bus/config.json instead" -Path $Path
+        }
+    }
+
+    if ($entry.ContainsKey("args")) {
+        foreach ($arg in @($entry["args"])) {
+            if ([string]$arg -match 'Bearer\s+\S+' -or [string]$arg -match 'AGENT_BUS_AUTH_TOKEN=') {
+                Add-CheckResult -Name "${ClientName}:inline-token-args" -Status "fail" -Detail "Active agent-bus MCP args appear to contain bearer/auth-token material" -Path $Path
+            }
+        }
+    }
+
     if ($entry.ContainsKey("command")) {
         $command = [string]$entry["command"]
         if ($command -match 'agent-bus-mcp(\.exe)?$') {

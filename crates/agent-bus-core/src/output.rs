@@ -509,6 +509,10 @@ mod tests {
             pg_batches: None,
             pg_write_errors: None,
             pg_dropped_writes: None,
+            hub_identity: None,
+            redis_persistence: None,
+            backup_age_seconds: None,
+            postgres_replication_lag_seconds: None,
         };
         let toon = format_health_toon(&h);
         assert_eq!(toon, "ok=true r=561 p=492 v=1.0");
@@ -534,6 +538,10 @@ mod tests {
             pg_batches: None,
             pg_write_errors: None,
             pg_dropped_writes: None,
+            hub_identity: None,
+            redis_persistence: None,
+            backup_age_seconds: None,
+            postgres_replication_lag_seconds: None,
         };
         let toon = format_health_toon(&h);
         assert_eq!(toon, "ok=false r=? p=? v=1.0");

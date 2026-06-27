@@ -72,6 +72,11 @@ agent-bus read --agent codex --since-minutes 120
 agent-bus service --action status
 agent-bus service --action pause --reason "deploy maintenance"
 agent-bus service --action restart --reason "rotate agent-bus-http"
+agent-bus service --action backup
+agent-bus backup --output backups/agent-bus/manual.ndjson --since-minutes 1440
+agent-bus validate-backup --input backups/agent-bus/manual.ndjson
+agent-bus spool-send --from-agent codex --to-agent claude --topic status --body "queued while offline"
+agent-bus spool-replay --spool agent-bus-spool.ndjson
 pwsh -NoLogo -NoProfile -File build.ps1 -Release
 pwsh -NoLogo -NoProfile -File scripts\validate-agent-bus.ps1
 pwsh -NoLogo -NoProfile -File scripts\build-deploy.ps1
@@ -133,8 +138,11 @@ pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1 -DryRun
 - `agent-bus service --action status` reports both the Windows service state and the live HTTP admin maintenance state when the server is reachable.
 - `agent-bus service --action pause --reason "deploy maintenance"` puts the HTTP service into maintenance mode so mutating routes return `503` while reads, health, dashboard, SSE, and notification replay keep working.
 - `agent-bus service --action flush` forces the in-process PostgreSQL writer to drain before you archive data or rotate the binary.
+- `agent-bus service --action backup` writes an NDJSON backup under `AGENT_BUS_BACKUP_DIR` or `backups/agent-bus`.
 - `agent-bus service --action stop` requests pause + flush, then stops the Windows `AgentHub` service when it is installed. If no Windows service is present, it falls back to a graceful in-process stop for a standalone HTTP server.
 - `agent-bus service --action start` and `agent-bus service --action restart` manage the installed Windows service directly and then wait for `/health` to come back.
+- `agent-bus backup` and `agent-bus validate-backup` provide portable history exports that can be checked before restore or transfer.
+- `agent-bus spool-send` and `agent-bus spool-replay` provide local offline message queuing using the same NDJSON format as `batch-send`.
 - HTTP operators can use `GET /admin/service` and `POST /admin/service/control` directly. Supported control actions are `pause`, `resume`, `flush`, and `stop`.
 
 ## Operator Examples
@@ -267,6 +275,7 @@ agent-bus serve --transport mcp-http --port 8765
 - `pwsh -NoLogo -NoProfile -File scripts\sync-agent-bus-client-auth.ps1` copies the installed `AgentHub` service bearer token into `~\.config\agent-bus\config.json` without printing it, so same-machine CLI server-mode can authenticate.
 - `pwsh -NoLogo -NoProfile -File scripts\validate-agent-client-configs.ps1` verifies installed binaries, MCP client configs, same-machine auth-token alignment, IPv4 loopback URLs, and repo MCP examples.
 - `pwsh -NoLogo -NoProfile -File scripts\cross-machine-health.ps1 -Strict -CheckAuth` validates remote exposure when `AgentHub` is intentionally bound off-loopback.
+- `pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-remote-smoke.ps1 -BaseUrl http://localhost:8400` validates HTTP health plus CLI health, presence, read, and send for local or tailnet/headscale URLs.
 - `pwsh -NoLogo -NoProfile -File scripts\build-deploy.ps1 -TargetDir T:\RustCache\cargo-target\codex-http-deploy` rebuilds from an isolated release target dir, refreshes `%USERPROFILE%\bin\agent-bus.exe`, `%USERPROFILE%\bin\agent-bus-http.exe`, and `%USERPROFILE%\bin\agent-bus-mcp.exe`, then restarts the long-running HTTP service.
 - `pwsh -NoLogo -NoProfile -File scripts\build-deploy.ps1` rebuilds the release binaries, refreshes the installed binary paths, restarts the service, prints a health summary, and runs the SSE smoke test.
 - `pwsh -NoLogo -NoProfile -File scripts\setup-agent-hub-local.ps1` installs the local binaries and validates CLI health against Redis/PostgreSQL.

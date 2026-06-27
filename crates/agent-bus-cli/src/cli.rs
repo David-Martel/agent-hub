@@ -461,7 +461,8 @@ pub(crate) enum Cmd {
         - flush: request an immediate PostgreSQL writer flush.\n\
         - stop: gracefully stop the running HTTP server.\n\
         - start: start the configured Windows service.\n\
-        - restart: pause + flush + restart the configured Windows service.\n\n\
+        - restart: pause + flush + restart the configured Windows service.\n\
+        - backup: export recent history to AGENT_BUS_BACKUP_DIR or backups/agent-bus.\n\n\
         The command uses AGENT_BUS_SERVER_URL when set; otherwise it defaults to\n\
         http://localhost:8400 for admin requests. Windows service actions use\n\
         AGENT_BUS_SERVICE_NAME (default: AgentHub)."
@@ -470,7 +471,7 @@ pub(crate) enum Cmd {
         #[arg(
             long,
             default_value = "status",
-            help = "Action: status|pause|resume|flush|stop|start|restart"
+            help = "Action: status|pause|resume|flush|stop|start|restart|backup"
         )]
         action: String,
         #[arg(long, help = "Maintenance reason or operator note")]
@@ -488,6 +489,109 @@ pub(crate) enum Cmd {
             help = "Timeout for service state transitions / health wait"
         )]
         timeout_seconds: u64,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Export recent bus history as validated NDJSON.
+    #[command(long_about = "Export recent messages to an NDJSON backup file.\n\n\
+        The output is one protocol Message JSON object per line and can be\n\
+        checked with `agent-bus validate-backup`. Use filters to scope a backup\n\
+        by repo, session, tag, thread, or sender before moving artifacts between\n\
+        machines.")]
+    Backup {
+        #[arg(long, help = "Output NDJSON path")]
+        output: String,
+        #[arg(long, help = "Filter by sender agent ID")]
+        from_agent: Option<String>,
+        #[arg(long, help = "Filter by repository tag value (matches repo:<value>)")]
+        repo: Option<String>,
+        #[arg(long, help = "Filter by session tag value (matches session:<value>)")]
+        session: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append, help = "Filter by tag value (repeatable)")]
+        tag: Vec<String>,
+        #[arg(long, help = "Filter by exact thread ID")]
+        thread_id: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 1440,
+            help = "Time window in minutes [1-10080]"
+        )]
+        since_minutes: u64,
+        #[arg(long, default_value_t = 1000, help = "Max messages to export")]
+        limit: usize,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Validate an NDJSON backup created by `agent-bus backup`.
+    ValidateBackup {
+        #[arg(long, help = "Input NDJSON backup path")]
+        input: String,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Spool a send request to local NDJSON for later replay.
+    #[command(long_about = "Write a send request to an offline NDJSON spool.\n\n\
+        The spool format intentionally matches `batch-send`, so files can be\n\
+        inspected, versioned, copied across machines, and replayed with\n\
+        `agent-bus spool-replay` once Redis or the HTTP service is reachable.")]
+    SpoolSend {
+        #[arg(long, help = "Sender agent ID")]
+        from_agent: String,
+        #[arg(long, help = "Recipient agent ID or 'all' for broadcast")]
+        to_agent: String,
+        #[arg(long, help = "Message topic")]
+        topic: String,
+        #[arg(long, help = "Message body text")]
+        body: String,
+        #[arg(long, help = "Optional thread ID")]
+        thread_id: Option<String>,
+        #[arg(long, action = clap::ArgAction::Append, help = "Add a tag (repeatable)")]
+        tag: Vec<String>,
+        #[arg(
+            long,
+            default_value = "normal",
+            help = "Priority: low|normal|high|urgent"
+        )]
+        priority: String,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Request acknowledgement from recipient"
+        )]
+        request_ack: bool,
+        #[arg(long, help = "Reply-to agent ID")]
+        reply_to: Option<String>,
+        #[arg(long, help = "JSON metadata object")]
+        metadata: Option<String>,
+        #[arg(long, help = "Validate body against schema: finding|status|benchmark")]
+        schema: Option<String>,
+        #[arg(
+            long,
+            default_value = "agent-bus-spool.ndjson",
+            help = "Spool file path"
+        )]
+        spool: String,
+        #[arg(long, default_value = "compact", help = "Output format")]
+        encoding: Encoding,
+    },
+
+    /// Replay an offline spool created by `spool-send`.
+    SpoolReplay {
+        #[arg(
+            long,
+            default_value = "agent-bus-spool.ndjson",
+            help = "Spool file path"
+        )]
+        spool: String,
+        #[arg(
+            long,
+            default_value_t = false,
+            help = "Delete the spool after successful replay"
+        )]
+        delete_on_success: bool,
         #[arg(long, default_value = "compact", help = "Output format")]
         encoding: Encoding,
     },
@@ -1620,6 +1724,93 @@ mod tests {
             assert_eq!(timeout_seconds, 20);
         } else {
             panic!("expected Cmd::Service");
+        }
+    }
+
+    #[test]
+    fn parse_backup_filters() {
+        let cli = parse(&[
+            "agent-bus",
+            "backup",
+            "--output",
+            "backup.ndjson",
+            "--repo",
+            "agent-bus",
+            "--session",
+            "s1",
+            "--tag",
+            "type:status",
+            "--thread-id",
+            "t1",
+            "--since-minutes",
+            "30",
+            "--limit",
+            "25",
+        ])
+        .expect("backup must parse");
+
+        if let Cmd::Backup {
+            output,
+            repo,
+            session,
+            tag,
+            thread_id,
+            since_minutes,
+            limit,
+            ..
+        } = cli.command
+        {
+            assert_eq!(output, "backup.ndjson");
+            assert_eq!(repo, Some("agent-bus".to_owned()));
+            assert_eq!(session, Some("s1".to_owned()));
+            assert_eq!(tag, vec!["type:status".to_owned()]);
+            assert_eq!(thread_id, Some("t1".to_owned()));
+            assert_eq!(since_minutes, 30);
+            assert_eq!(limit, 25);
+        } else {
+            panic!("expected Cmd::Backup");
+        }
+    }
+
+    #[test]
+    fn parse_spool_send_and_replay() {
+        let cli = parse(&[
+            "agent-bus",
+            "spool-send",
+            "--from-agent",
+            "codex",
+            "--to-agent",
+            "claude",
+            "--topic",
+            "status",
+            "--body",
+            "offline",
+            "--tag",
+            "repo:agent-bus",
+            "--spool",
+            "spool.ndjson",
+        ])
+        .expect("spool-send must parse");
+        assert!(matches!(cli.command, Cmd::SpoolSend { .. }));
+
+        let cli = parse(&[
+            "agent-bus",
+            "spool-replay",
+            "--spool",
+            "spool.ndjson",
+            "--delete-on-success",
+        ])
+        .expect("spool-replay must parse");
+        if let Cmd::SpoolReplay {
+            spool,
+            delete_on_success,
+            ..
+        } = cli.command
+        {
+            assert_eq!(spool, "spool.ndjson");
+            assert!(delete_on_success);
+        } else {
+            panic!("expected Cmd::SpoolReplay");
         }
     }
 
