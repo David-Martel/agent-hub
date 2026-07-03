@@ -28,6 +28,13 @@ function Add-CheckResult {
         }) | Out-Null
 }
 
+function Test-PrivateNumericEndpoint {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    $privateIpv4 = '(?:192\.168\.|10\.|172\.(?:1[6-9]|2[0-9]|3[0-1])\.)'
+    return ($Text -match "(?i)(?:https?://|ws://|wss://|AGENT_BUS_SERVER_URL\s*[:=]\s*['""]?|server_url\s*[:=]\s*['""]?|httpUrl\s*[:=]\s*['""]?)$privateIpv4")
+}
+
 function Test-JsonSyntax {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -40,7 +47,7 @@ function Test-JsonSyntax {
         $raw = Get-Content -Path $Path -Raw
         $json = $raw | ConvertFrom-Json -AsHashtable -Depth 100
         Add-CheckResult -Name "json:$Path" -Status "ok" -Detail "JSON parsed" -Path $Path
-        if ($raw -match '192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.') {
+        if (Test-PrivateNumericEndpoint -Text $raw) {
             Add-CheckResult -Name "numeric-url:$Path" -Status "warn" -Detail "Private numeric IP found; prefer localhost or a stable hostname" -Path $Path
         }
         if ($raw -match 'Bearer\s+[A-Za-z0-9_\-\.]{12,}') {
@@ -73,13 +80,16 @@ function Test-TextConfig {
     else {
         Add-CheckResult -Name $Label -Status "warn" -Detail "Expected marker not found" -Path $Path
     }
-    if ($raw -match '192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.') {
+    if (Test-PrivateNumericEndpoint -Text $raw) {
         Add-CheckResult -Name "numeric-url:$Path" -Status "warn" -Detail "Private numeric IP found; prefer localhost or a stable hostname" -Path $Path
     }
 }
 
 function Get-AgentBusVersion {
-    param([Parameter(Mandatory = $true)][string]$CommandName)
+    param(
+        [Parameter(Mandatory = $true)][string]$CommandName,
+        [Parameter(Mandatory = $true)][string]$MinimumVersion
+    )
 
     $cmd = Get-Command $CommandName -ErrorAction SilentlyContinue
     if (-not $cmd) {
@@ -96,7 +106,7 @@ function Get-AgentBusVersion {
         $versionText = & $cmd.Source --version 2>$null | Select-Object -First 1
         if ($versionText -match '(\d+\.\d+\.\d+)') {
             $actual = [version]$Matches[1]
-            $minimum = [version]$MinimumAgentBusVersion
+            $minimum = [version]$MinimumVersion
             if ($actual -lt $minimum) {
                 Add-CheckResult -Name "version:$CommandName" -Status "fail" -Detail "Version $actual is older than required $minimum" -Path $cmd.Source
             }
@@ -274,7 +284,7 @@ function Test-AgentBusClientConfig {
     }
 }
 
-function Test-ExampleConfigs {
+function Test-ExampleConfig {
     $examplesRoot = Join-Path $repoRoot "examples/mcp"
     if (-not (Test-Path $examplesRoot)) {
         Add-CheckResult -Name "examples:mcp" -Status "missing" -Detail "examples/mcp not found" -Path $examplesRoot
@@ -283,7 +293,7 @@ function Test-ExampleConfigs {
 
     Get-ChildItem -Path $examplesRoot -File | ForEach-Object {
         $raw = Get-Content -Path $_.FullName -Raw
-        if ($raw -match '192\.168\.|10\.|172\.(1[6-9]|2[0-9]|3[0-1])\.') {
+        if (Test-PrivateNumericEndpoint -Text $raw) {
             Add-CheckResult -Name "examples:numeric-url:$($_.Name)" -Status "warn" -Detail "Private numeric IP found in example; prefer localhost or <hostname>" -Path $_.FullName
         }
         if ($raw -match 'Bearer\s+[A-Za-z0-9_\-\.]{12,}' -or $raw -match '"auth_token"\s*:\s*"[A-Za-z0-9_\-\.]{12,}"') {
@@ -294,7 +304,7 @@ function Test-ExampleConfigs {
 }
 
 foreach ($commandName in @("agent-bus", "agent-bus-mcp", "agent-bus-http")) {
-    Get-AgentBusVersion -CommandName $commandName
+    Get-AgentBusVersion -CommandName $commandName -MinimumVersion $MinimumAgentBusVersion
 }
 Test-AgentBusInstallShadowing
 
@@ -319,7 +329,7 @@ Test-JsonSyntax -Path (Join-Path $HomeDir ".antigravity/argv.json") | Out-Null
 Test-TextConfig -Path (Join-Path $HomeDir ".codex/config.toml") -Needle "[mcp_servers.agent_bus]" -Label "codex:agent-bus"
 Test-TextConfig -Path (Join-Path $HomeDir ".agents/AGENT_COORDINATION.md") -Needle "agent-bus" -Label "agents:coordination-doc"
 Test-TextConfig -Path (Join-Path $HomeDir ".codex/AGENT_COORDINATION.md") -Needle "agent-bus" -Label "codex:coordination-doc"
-Test-ExampleConfigs
+Test-ExampleConfig
 
 if ($ExpectedRedisUrl -match 'localhost') {
     Add-CheckResult -Name "defaults:redis-url" -Status "warn" -Detail "Redis default uses localhost; prefer 127.0.0.1 for IPv4-only Redis on Windows"
