@@ -139,7 +139,10 @@ jobs:
             echo "cargo not found; installing rustup stable toolchain"
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
           fi
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          # rustup-init respects CARGO_HOME (overridden above to a Linux
+          # workspace path), so its shims land in $CARGO_HOME/bin, not the
+          # default $HOME/.cargo/bin.
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --all --check
       - run: cargo test --workspace --lib --bins -- --test-threads=4
 
