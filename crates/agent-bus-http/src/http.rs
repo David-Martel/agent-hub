@@ -3804,8 +3804,14 @@ mod tests {
     }
 
     fn test_state() -> AppState {
+        // Use `new_lazy` (not `new`) so these unit tests don't require a live
+        // Redis instance: the handlers exercised via `test_state()` are all
+        // input-validation tests that return before any Redis I/O happens.
+        // `new` eagerly connects and would panic with "connection refused"
+        // on a runner with no local Redis at 127.0.0.1:6380.
         let settings = Settings::from_env();
-        let redis = RedisPool::new(&settings).expect("test state must build a Redis pool");
+        let redis =
+            RedisPool::new_lazy(&settings).expect("test state must build a lazy Redis pool");
         AppState {
             settings: Arc::new(settings),
             redis,
