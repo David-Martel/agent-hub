@@ -185,6 +185,51 @@ impl RedisPool {
         )))
     }
 
+    /// Create a new `RedisPool` without eagerly establishing a connection.
+    ///
+    /// Unlike [`RedisPool::new`], this does not block waiting for Redis to
+    /// answer: it validates the URL and builds the r2d2 pool with
+    /// `build_unchecked` (`min_idle(Some(0))`, so no background connection
+    /// attempts are scheduled either). The first real connection is only
+    /// attempted when [`RedisPool::get_connection`] is called.
+    ///
+    /// Intended for tests that exercise validation-only code paths (handlers
+    /// that reject bad input before touching Redis) on hosts without a local
+    /// Redis instance. Production call sites should keep using
+    /// [`RedisPool::new`], which fails fast at startup if Redis is
+    /// unreachable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the Redis URL is malformed (client
+    /// construction failure); never attempts a network connection.
+    pub fn new_lazy(settings: &Settings) -> Result<Self> {
+        let mut errors = Vec::new();
+        for redis_url in loopback_url_candidates(&settings.redis_url) {
+            match redis::Client::open(redis_url.as_str()) {
+                Ok(manager) => {
+                    let inner = r2d2::Pool::builder()
+                        .max_size(5)
+                        .min_idle(Some(0))
+                        .connection_timeout(std::time::Duration::from_millis(750))
+                        .build_unchecked(manager);
+                    return Ok(Self {
+                        inner,
+                        metrics: Arc::new(PoolMetrics::default()),
+                    });
+                }
+                Err(e) => errors.push(format!(
+                    "{}: client creation failed: {e}",
+                    redact_url(&redis_url)
+                )),
+            }
+        }
+        Err(crate::error::AgentBusError::Internal(format!(
+            "Redis client creation failed for all loopback candidates: {}",
+            errors.join("; ")
+        )))
+    }
+
     /// Obtain a pooled Redis connection.
     ///
     /// Blocks for up to 750 ms waiting for a free slot in the pool.  The
