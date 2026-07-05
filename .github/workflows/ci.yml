@@ -125,8 +125,24 @@ jobs:
     name: Ubuntu Build And Unit Tests
     runs-on: ["self-hosted", "Linux", "X64"]
     timeout-minutes: 30
+    env:
+      # Workflow-level CARGO_HOME/CARGO_TARGET_DIR above are Windows paths
+      # (T:\RustCache\...) for the Windows self-hosted runner used by the
+      # other jobs; this Linux runner needs its own Linux-native paths.
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            echo "cargo not found; installing rustup stable toolchain"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+          fi
+          # rustup-init respects CARGO_HOME (overridden above to a Linux
+          # workspace path), so its shims land in $CARGO_HOME/bin, not the
+          # default $HOME/.cargo/bin.
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --all --check
       - run: cargo test --workspace --lib --bins -- --test-threads=4
 
