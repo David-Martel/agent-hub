@@ -166,6 +166,10 @@ fn make_health() -> Health {
         pg_batches: Some(48),
         pg_write_errors: Some(0),
         pg_dropped_writes: Some(0),
+        hub_identity: None,
+        redis_persistence: None,
+        backup_age_seconds: None,
+        postgres_replication_lag_seconds: None,
     }
 }
 
