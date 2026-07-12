@@ -6,9 +6,9 @@ default runner labels rather than using the ambiguous `self-hosted` label.
 | Target | Runner labels | Intended host | Work |
 | --- | --- | --- | --- |
 | Linux x86-64 | `self-hosted`, `Linux`, `X64` | ASUSPRO13 | format, lint, unit, integration, and native builds |
-| Linux x86-64 Docker | `ubuntu-24.04` | GitHub-hosted Linux | unprivileged x86-64 container build |
+| Linux x86-64 Docker | `self-hosted`, `Windows`, `X64`, `docker-x64` | dtm-p1gen7 Docker Desktop | Linux-container build on the local Docker engine |
 | Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | Spark fleet | native and Docker builds |
-| Windows x86-64 | `windows-latest` until a Windows fleet runner is registered | GitHub-hosted Windows | Windows compile and release artifacts |
+| Windows x86-64 | `self-hosted`, `Windows`, `X64`, `local-build` | dtm-p1gen7 | Windows compile and release artifacts |
 
 Never put a Windows path such as `T:\RustCache` in workflow-level environment
 variables. Windows-only paths belong in a Windows job. Linux jobs use a private
@@ -44,12 +44,11 @@ workflow (`ci.yml`) is triggered only by pushes to branches in this repository
 and explicit manual dispatches. It must never regain a `pull_request` or
 `pull_request_target` trigger.
 
-All pull requests, including same-repository PRs, run through
-`pull-request.yml` exclusively on GitHub-hosted Linux and Windows runners. That
-workflow must never acquire self-hosted labels, fleet cache configuration, or
-Docker socket access. Same-repository branches receive fleet validation from
-their push event; fork code cannot execute on ASUS or Spark or populate/read
-the fleet cache.
+Same-repository pull requests run through `pull-request.yml` on the dedicated
+ASUS Linux and dtm-p1gen7 Windows runners. Every job is guarded by an exact
+head-repository equality check. Fork pull requests are skipped because
+untrusted fork code must never execute on ASUS, Spark, dtm-p1gen7, Docker, or
+the fleet cache. Do not use `pull_request_target` to work around that boundary.
 
 A network cache beyond this link-local Redis service may be enabled by
 configuring a supported authenticated sccache backend in the runner service
@@ -87,9 +86,10 @@ ARM64 jobs intentionally target the default `ARM64` label. A Spark registered
 without that label will not receive work and should be repaired at the runner,
 not worked around with an ambiguous workflow target.
 
-Only runners assigned Docker jobs need Docker socket access. The repository's
+Only runners assigned Docker jobs need Docker access. The repository's
 containerized ASUS runner deliberately has none; x86-64 Docker validation uses
-GitHub-hosted Linux, while Spark runners provide native ARM64 Docker coverage.
+dtm-p1gen7's Linux Docker engine, while Spark runners provide native ARM64
+Docker coverage.
 
 Trusted branch CI compiles every Criterion target but does not run full
 performance sampling on each push. Run benchmarks intentionally on an idle

@@ -3,3 +3,5 @@ self-hosted-runner:
     - fleet-build
     - qsfp
     - docker
+    - local-build
+    - docker-x64
