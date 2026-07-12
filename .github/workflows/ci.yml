@@ -82,27 +82,21 @@ jobs:
 
   smoke-functional:
     name: CLI And HTTP Smoke
-    runs-on: [self-hosted, Linux, X64]
-    needs: [test-integration]
+    runs-on: [self-hosted, Windows, X64, local-build]
+    needs: [windows]
     steps:
       - uses: actions/checkout@v7
-      - run: bash scripts/ci/setup-rust.sh
-      - name: Build release binary
-        run: cargo build --release --workspace --bins
-      - name: Stage HTTP variant
-        shell: bash
-        run: |
-          mkdir -p "${{ github.workspace }}/dist"
-          cp "$CARGO_TARGET_DIR/release/agent-bus-http" "${{ github.workspace }}/dist/agent-bus-http"
+      - shell: pwsh
+        run: ./scripts/ci/setup-rust.ps1
+      - name: Build release binaries
+        run: cargo build --locked --release --workspace --bins
       - name: Run functional smoke harness
-        shell: bash
+        shell: pwsh
         run: |
-          cargo test -p agent-bus --test integration_test --test http_integration_test \
-            --test channel_integration_test -- --test-threads=1
-        env:
-          AGENT_BUS_REDIS_URL: redis://localhost:6380/0
-          AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
-          AGENT_BUS_SERVER_HOST: localhost
+          ./scripts/test-agent-bus-functional.ps1 `
+            -CliPath "$env:CARGO_TARGET_DIR/release/agent-bus.exe" `
+            -HttpBinaryPath "$env:CARGO_TARGET_DIR/release/agent-bus-http.exe" `
+            -HttpPort 8412
 
   audit:
     name: Security Audit
