@@ -5,7 +5,8 @@ param(
     [ValidateSet("Any", "Healthy", "Degraded")]
     [string]$DatabaseMode = "Any",
     [int]$StartupTimeoutSeconds = 30,
-    [int]$TimeoutSeconds = 10
+    [int]$TimeoutSeconds = 10,
+    [string]$AuthToken = $env:AGENT_BUS_AUTH_TOKEN
 )
 
 $ErrorActionPreference = "Stop"
@@ -72,6 +73,17 @@ $ProbeId = [guid]::NewGuid().ToString("N")
 $ProbeBody = "HTTP smoke probe $ProbeId"
 $StdoutPath = New-TempFile -Prefix "agent-bus-http-stdout" -Extension ".log"
 $StderrPath = New-TempFile -Prefix "agent-bus-http-stderr" -Extension ".log"
+$ServerEnvironment = @{
+    AGENT_BUS_REDIS_URL = $env:AGENT_BUS_REDIS_URL
+    AGENT_BUS_DATABASE_URL = $env:AGENT_BUS_DATABASE_URL
+    AGENT_BUS_SERVER_HOST = $env:AGENT_BUS_SERVER_HOST
+    RUST_LOG = "error"
+}
+$RequestHeaders = @{}
+if (-not [string]::IsNullOrWhiteSpace($AuthToken)) {
+    $ServerEnvironment.AGENT_BUS_AUTH_TOKEN = $AuthToken
+    $RequestHeaders.Authorization = "Bearer $AuthToken"
+}
 
 $Process = Start-Process `
     -FilePath $BinaryPath `
@@ -80,12 +92,7 @@ $Process = Start-Process `
     -WindowStyle Hidden `
     -RedirectStandardOutput $StdoutPath `
     -RedirectStandardError $StderrPath `
-    -Environment @{
-        AGENT_BUS_REDIS_URL = $env:AGENT_BUS_REDIS_URL
-        AGENT_BUS_DATABASE_URL = $env:AGENT_BUS_DATABASE_URL
-        AGENT_BUS_SERVER_HOST = $env:AGENT_BUS_SERVER_HOST
-        RUST_LOG = "error"
-    }
+    -Environment $ServerEnvironment
 
 try {
     $Health = Wait-ForHealth -Url $BaseUrl.TrimEnd("/") -Process $Process -TimeoutSeconds $StartupTimeoutSeconds -StdoutPath $StdoutPath -StderrPath $StderrPath
@@ -119,24 +126,31 @@ try {
         schema = "status"
     } | ConvertTo-Json -Compress
 
-    Invoke-RestMethod -Method Post -Uri $MessageUrl -ContentType "application/json" -Body $Payload | Out-Null
+    Invoke-RestMethod -Method Post -Uri $MessageUrl -Headers $RequestHeaders -ContentType "application/json" -Body $Payload | Out-Null
     Start-Sleep -Milliseconds 600
 
-    $Messages = Invoke-RestMethod -Method Get -Uri $ReadUrl -TimeoutSec 15
+    $Messages = Invoke-RestMethod -Method Get -Uri $ReadUrl -Headers $RequestHeaders -TimeoutSec 15
     $MessageMatch = $Messages | Where-Object { $_.body -eq $ProbeBody } | Select-Object -First 1
     if (-not $MessageMatch) {
         throw "HTTP read path did not return the smoke probe for $Agent"
     }
 
-    $Notifications = Invoke-RestMethod -Method Get -Uri $NotificationsUrl -TimeoutSec 15
+    $Notifications = Invoke-RestMethod -Method Get -Uri $NotificationsUrl -Headers $RequestHeaders -TimeoutSec 15
     $NotificationMatch = $Notifications | Where-Object { $_.message.body -eq $ProbeBody -or $_.body -eq $ProbeBody } | Select-Object -First 1
     if (-not $NotificationMatch) {
         throw "HTTP replay path did not return the smoke probe for $Agent"
     }
 
-    & $sseSmokeScript -BaseUrl $BaseUrl -TimeoutSeconds $TimeoutSeconds -Agent $Agent
-    if ($LASTEXITCODE -ne 0) {
-        throw "SSE smoke sub-test failed for $BaseUrl"
+    $OriginalAuthToken = $env:AGENT_BUS_AUTH_TOKEN
+    try {
+        $env:AGENT_BUS_AUTH_TOKEN = $AuthToken
+        & $sseSmokeScript -BaseUrl $BaseUrl -TimeoutSeconds $TimeoutSeconds -Agent $Agent
+        if ($LASTEXITCODE -ne 0) {
+            throw "SSE smoke sub-test failed for $BaseUrl"
+        }
+    }
+    finally {
+        $env:AGENT_BUS_AUTH_TOKEN = $OriginalAuthToken
     }
 
     Write-Host "HTTP smoke ok: base_url=$BaseUrl agent=$Agent database_ok=$($Health.database_ok)"

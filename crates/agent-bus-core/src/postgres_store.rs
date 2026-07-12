@@ -1386,6 +1386,12 @@ fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>) {
 mod tests {
     use super::*;
 
+    /// Serializes tests that mutate the process-wide `PostgreSQL` state.
+    fn global_state_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
     /// `get_pg_client` must return `Ok(None)` immediately when `database_url`
     /// is not set — no TCP attempt, no mutex contention.
     #[test]
@@ -1422,6 +1428,9 @@ mod tests {
 
     #[test]
     fn pg_circuit_breaker_skips_when_open() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Ensure a clean state before the test.
         mark_pg_up();
         assert!(
@@ -1522,6 +1531,9 @@ mod tests {
     /// After `mark_pg_down` the circuit is open; `mark_pg_up` closes it.
     #[test]
     fn circuit_breaker_open_then_closed() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Reset to a known state first.
         mark_pg_up();
         assert!(
@@ -1545,6 +1557,9 @@ mod tests {
     /// When the circuit is open, `with_pg_retry` must not invoke the operation.
     #[test]
     fn circuit_breaker_suppresses_retries_when_open() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         mark_pg_down();
         assert!(is_pg_circuit_open());
 
@@ -1563,6 +1578,9 @@ mod tests {
     /// When the circuit is closed, `with_pg_retry` calls the operation normally.
     #[test]
     fn circuit_breaker_allows_retries_when_closed() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         mark_pg_up();
         assert!(!is_pg_circuit_open());
 
@@ -1671,6 +1689,9 @@ mod tests {
     /// and return `Ok` on the second attempt.
     #[test]
     fn with_pg_retry_succeeds_after_one_transient_failure() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Ensure the circuit is closed so the retry path is exercised.
         mark_pg_up();
 
@@ -1698,6 +1719,9 @@ mod tests {
     /// the circuit breaker, and returns the final error.
     #[test]
     fn with_pg_retry_exhausts_all_retries_and_opens_circuit() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Start with a closed circuit so retries are not suppressed.
         mark_pg_up();
         assert!(!is_pg_circuit_open());
@@ -1729,6 +1753,9 @@ mod tests {
     /// produce inconsistent final state.
     #[test]
     fn circuit_breaker_rapid_down_up_transitions_are_safe() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for i in 0..20_u32 {
             if i % 2 == 0 {
                 mark_pg_down();
@@ -1753,6 +1780,9 @@ mod tests {
     /// `mark_pg_down` and then immediately checking — no sleep needed.
     #[test]
     fn circuit_breaker_remains_open_within_cooldown_window() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         mark_pg_down();
         // Immediately after marking down, elapsed time is ~0 s, well within
         // the PG_CIRCUIT_BREAKER_SECONDS window.
@@ -1967,6 +1997,9 @@ mod tests {
     /// immediately without attempting a database connection.
     #[test]
     fn query_messages_by_tags_respects_circuit_breaker() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut settings = Settings::from_env();
         settings.database_url = Some("postgresql://localhost:5300/test".to_owned());
 
@@ -1989,6 +2022,9 @@ mod tests {
     /// empty vec (the inner PG client returns `None`).
     #[test]
     fn query_messages_by_tags_returns_empty_without_database_url() {
+        let _guard = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut settings = Settings::from_env();
         settings.database_url = None;
 
@@ -2046,14 +2082,6 @@ mod tests {
     // -----------------------------------------------------------------------
     // F1 (P9) — dropped-writes increment + backfill recovery regression test
     // -----------------------------------------------------------------------
-
-    /// Serialises the tests below that mutate the process-wide circuit breaker
-    /// and `dropped_writes` gauge so they cannot interleave with each other (or
-    /// with `pg_circuit_breaker_skips_when_open`) under the parallel test runner.
-    fn global_state_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
 
     /// REGRESSION (dropped-writes path): a `PostgreSQL` write attempted while the
     /// circuit breaker is open must increment `dropped_writes`, and the

@@ -1,0 +1,7 @@
+self-hosted-runner:
+  labels:
+    - fleet-build
+    - qsfp
+    - docker
+    - local-build
+    - docker-x64
