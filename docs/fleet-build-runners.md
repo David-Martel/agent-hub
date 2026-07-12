@@ -5,7 +5,8 @@ default runner labels rather than using the ambiguous `self-hosted` label.
 
 | Target | Runner labels | Intended host | Work |
 | --- | --- | --- | --- |
-| Linux x86-64 | `self-hosted`, `Linux`, `X64` | ASUSPRO13 | format, lint, unit, integration, native and Docker builds |
+| Linux x86-64 | `self-hosted`, `Linux`, `X64` | ASUSPRO13 | format, lint, unit, integration, and native builds |
+| Linux x86-64 Docker | `ubuntu-24.04` | GitHub-hosted Linux | unprivileged x86-64 container build |
 | Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | Spark fleet | native and Docker builds |
 | Windows x86-64 | `windows-latest` until a Windows fleet runner is registered | GitHub-hosted Windows | Windows compile and release artifacts |
 
@@ -78,11 +79,14 @@ the labels match the host:
 
 ```bash
 uname -m
-command -v cargo sccache docker
+command -v cargo sccache
 sccache --show-stats
-docker info >/dev/null
 ```
 
 ARM64 jobs intentionally target the default `ARM64` label. A Spark registered
 without that label will not receive work and should be repaired at the runner,
 not worked around with an ambiguous workflow target.
+
+Only runners assigned Docker jobs need Docker socket access. The repository's
+containerized ASUS runner deliberately has none; x86-64 Docker validation uses
+GitHub-hosted Linux, while Spark runners provide native ARM64 Docker coverage.

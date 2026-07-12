@@ -63,7 +63,7 @@ jobs:
       matrix:
         include:
           - name: linux-x64
-            runner: '["self-hosted","Linux","X64"]'
+            runner: '["ubuntu-24.04"]'
           - name: linux-arm64
             runner: '["self-hosted","Linux","ARM64","fleet-build"]'
     runs-on: ${{ fromJSON(matrix.runner) }}
