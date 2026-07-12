@@ -144,17 +144,9 @@ jobs:
           path: ${{ env.CARGO_TARGET_DIR }}/criterion
           if-no-files-found: ignore
 
-  cross-platform:
-    name: Docker Build (${{ matrix.name }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: linux-x64
-            runner: '["self-hosted","Linux","X64"]'
-          - name: linux-arm64
-            runner: '["self-hosted","Linux","ARM64","fleet-build"]'
-    runs-on: ${{ fromJSON(matrix.runner) }}
+  docker-x64:
+    name: Docker Build (linux-x64)
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
       - name: Validate Linux build + tests via Docker
@@ -164,4 +156,18 @@ jobs:
           docker info >/dev/null
           docker build -f docker/Dockerfile.linux -t agent-bus-linux-validate .
           printf '### Docker Build\n- Native %s image build and workspace tests passed\n' \
-            "${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"
+            "linux-x64" >> "$GITHUB_STEP_SUMMARY"
+
+  docker-arm64:
+    name: Docker Build (linux-arm64)
+    runs-on: [self-hosted, Linux, ARM64, fleet-build]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Validate Linux build + tests via Docker
+        shell: bash
+        run: |
+          command -v docker >/dev/null
+          docker info >/dev/null
+          docker build -f docker/Dockerfile.linux -t agent-bus-linux-validate .
+          printf '### Docker Build\n- Native %s image build and workspace tests passed\n' \
+            "linux-arm64" >> "$GITHUB_STEP_SUMMARY"
