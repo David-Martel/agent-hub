@@ -90,3 +90,8 @@ not worked around with an ambiguous workflow target.
 Only runners assigned Docker jobs need Docker socket access. The repository's
 containerized ASUS runner deliberately has none; x86-64 Docker validation uses
 GitHub-hosted Linux, while Spark runners provide native ARM64 Docker coverage.
+
+Trusted branch CI compiles every Criterion target but does not run full
+performance sampling on each push. Run benchmarks intentionally on an idle
+ASUS runner (or a dedicated manual workflow) so sampling does not serialize
+unrelated format, lint, integration, and smoke jobs.

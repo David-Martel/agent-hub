@@ -126,23 +126,14 @@ jobs:
       - run: cargo build --release --workspace --bins
 
   bench:
-    name: Benchmarks
+    name: Benchmark Compile
     runs-on: [self-hosted, Linux, X64]
     needs: [test-unit]
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
-      - run: cargo bench -p agent-bus --bench throughput -- --output-format bencher
-        continue-on-error: true
-      - run: cargo bench -p agent-bus --bench bus_benchmarks -- --noplot
-        continue-on-error: true
-      - name: Upload Criterion reports
-        uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: criterion-reports
-          path: ${{ env.CARGO_TARGET_DIR }}/criterion
-          if-no-files-found: ignore
+      - name: Compile benchmark targets
+        run: cargo bench --workspace --no-run
 
   docker-x64:
     name: Docker Build (linux-x64)
