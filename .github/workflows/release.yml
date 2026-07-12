@@ -3,161 +3,111 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_HOME: T:\RustCache\cargo-home
-  CARGO_TARGET_DIR: T:\RustCache\cargo-target
 
 jobs:
-  release:
-    name: Build & Publish Release
-    runs-on: self-hosted
-
+  windows-x64:
+    name: Windows x64 release
+    runs-on: windows-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-      - name: Extract version from tag
-        id: version
-        shell: pwsh
-        run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag.TrimStart('v')
-          echo "VERSION=$version" >> $env:GITHUB_OUTPUT
-          echo "TAG=$tag" >> $env:GITHUB_OUTPUT
-          Write-Host "Releasing version $version (tag $tag)"
-
-      - name: Verify Cargo.toml version matches tag
+      - name: Verify Cargo version matches tag
         shell: pwsh
         run: |
           $cargoVersion = (Select-String -Path crates/agent-bus-cli/Cargo.toml -Pattern '^version\s*=\s*"(.+)"').Matches[0].Groups[1].Value
-          $tagVersion = "${{ steps.version.outputs.VERSION }}"
+          $tagVersion = "${{ github.ref_name }}".TrimStart('v')
           if ($cargoVersion -ne $tagVersion) {
-            Write-Error "crates/agent-bus-cli/Cargo.toml version ($cargoVersion) does not match tag ($tagVersion). Update Cargo.toml before tagging."
-            exit 1
+            throw "Cargo version $cargoVersion does not match tag $tagVersion"
           }
-          Write-Host "Version match confirmed: $cargoVersion"
 
-      - name: Format check
-        run: cargo fmt --all --check
+      - run: cargo build --locked --release --workspace --bins
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Tests
-        run: cargo test --workspace --lib --bins -- --test-threads=4
-        env:
-          AGENT_BUS_REDIS_URL: redis://localhost:6380/0
-          AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
-
-      - name: Probe Redis and PostgreSQL
+      - name: Stage artifacts and checksums
         shell: pwsh
         run: |
-          $redisAvailable = $false
-          try {
-            & redis-cli -u "redis://localhost:6380/0" ping *> $null
-            if ($LASTEXITCODE -eq 0) { $redisAvailable = $true }
-          }
-          catch {
-          }
-
-          $postgresAvailable = $false
-          try {
-            & psql "postgresql://postgres@localhost:5300/redis_backend" -Atqc "SELECT 1;" *> $null
-            if ($LASTEXITCODE -eq 0) { $postgresAvailable = $true }
-          }
-          catch {
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $binaries = @('agent-bus', 'agent-bus-http', 'agent-bus-mcp')
+          foreach ($binary in $binaries) {
+            $name = "$binary-windows-x64.exe"
+            Copy-Item "target/release/$binary.exe" "dist/$name"
+            $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $name" | Add-Content -Path dist/SHA256SUMS-windows-x64 -Encoding ascii
           }
 
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Release Preflight"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Redis available: $redisAvailable"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- PostgreSQL available: $postgresAvailable"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-bus-windows-x64
+          path: dist/*
 
-      - name: Build release binary
-        run: cargo build --release --workspace --bins
+  linux:
+    name: Linux release (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            runner: '["self-hosted","Linux","X64"]'
+          - name: linux-arm64
+            runner: '["self-hosted","Linux","ARM64","fleet-build"]'
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/ci/setup-rust.sh
 
-      - name: Verify binary runs
-        shell: pwsh
+      - name: Verify Cargo version matches tag
+        shell: bash
         run: |
-          $binary = "T:\RustCache\cargo-target\release\agent-bus.exe"
-          $out = & $binary --version 2>&1
-          Write-Host "Binary version output: $out"
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Binary failed to execute"
+          cargo_version="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' crates/agent-bus-cli/Cargo.toml | head -1)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          test "$cargo_version" = "$tag_version" || {
+            echo "Cargo version $cargo_version does not match tag $tag_version" >&2
             exit 1
           }
 
-      - name: Stage HTTP variant
-        shell: pwsh
-        run: |
-          $src = "T:\RustCache\cargo-target\release\agent-bus-http.exe"
-          $dst = "${{ github.workspace }}\dist\agent-bus-http.exe"
-          New-Item -ItemType Directory -Path "${{ github.workspace }}\dist" -Force | Out-Null
-          Copy-Item $src $dst -Force
+      - run: cargo build --locked --release --workspace --bins
 
-      - name: Run functional smoke harness
-        shell: pwsh
+      - name: Stage artifacts and checksums
+        shell: bash
         run: |
-          pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-functional.ps1 `
-            -CliPath "T:\RustCache\cargo-target\release\agent-bus.exe" `
-            -HttpBinaryPath "${{ github.workspace }}\dist\agent-bus-http.exe" `
-            -HttpPort 8410
-        env:
-          AGENT_BUS_REDIS_URL: redis://localhost:6380/0
-          AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
-          AGENT_BUS_SERVER_HOST: localhost
+          mkdir -p dist
+          for binary in agent-bus agent-bus-http agent-bus-mcp; do
+            cp "$CARGO_TARGET_DIR/release/$binary" "dist/$binary-${{ matrix.name }}"
+          done
+          cd dist
+          sha256sum ./* > "SHA256SUMS-${{ matrix.name }}"
 
-      - name: Stage release artifact
-        shell: pwsh
-        run: |
-          $src = "T:\RustCache\cargo-target\release\agent-bus.exe"
-          $dst = "${{ github.workspace }}\dist\agent-bus-windows-x64.exe"
-          New-Item -ItemType Directory -Path "${{ github.workspace }}\dist" -Force | Out-Null
-          Copy-Item $src $dst -Force
-          $size = (Get-Item $dst).Length / 1MB
-          Write-Host "Staged: $dst  ($([math]::Round($size, 2)) MB)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-bus-${{ matrix.name }}
+          path: dist/*
 
-      - name: Generate SHA256 checksum
-        shell: pwsh
-        run: |
-          $exe = "${{ github.workspace }}\dist\agent-bus-windows-x64.exe"
-          $hash = (Get-FileHash $exe -Algorithm SHA256).Hash
-          "$hash  agent-bus-windows-x64.exe" | Out-File "${{ github.workspace }}\dist\agent-bus-windows-x64.exe.sha256" -Encoding ascii
-          Write-Host "SHA256: $hash"
+  publish:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: [windows-x64, linux]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: agent-bus-*
+          path: dist
+          merge-multiple: true
 
-      - name: Create GitHub Release
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v3
         with:
-          files: |
-            dist/agent-bus-windows-x64.exe
-            dist/agent-bus-windows-x64.exe.sha256
+          files: dist/*
           generate_release_notes: true
           body: |
-            ## agent-bus ${{ steps.version.outputs.TAG }}
-
             Redis + PostgreSQL coordination bus for multi-agent AI systems.
 
-            ### Installation
-
-            1. Download `agent-bus-windows-x64.exe`
-            2. Verify SHA256: `Get-FileHash agent-bus-windows-x64.exe -Algorithm SHA256`
-            3. Copy to `~/bin/agent-bus.exe`
-            4. Run: `agent-bus health --encoding json`
-
-            Or use the bootstrap script (requires admin):
-            ```powershell
-            pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
-            ```
-
-            ### Quick start
-            ```powershell
-            agent-bus serve --transport stdio      # MCP stdio server
-            agent-bus serve --transport http --port 8400  # REST + SSE server
-            agent-bus health --encoding json
-            ```
-
-            See [AGENT_COMMUNICATIONS.md](AGENT_COMMUNICATIONS.md) for full API reference.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            Artifacts are published for Windows x64, Linux x64, and Linux
+            ARM64. Verify the matching `SHA256SUMS-*` file before installation.

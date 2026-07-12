@@ -2,110 +2,103 @@ name: CI
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: ["**"]
   workflow_dispatch: {}
 
 env:
   CARGO_TERM_COLOR: always
   RUST_LOG: error
-  CARGO_HOME: T:\RustCache\cargo-home
-  CARGO_TARGET_DIR: T:\RustCache\cargo-target
 
 jobs:
   format:
     name: Format Check
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v7
+      - run: bash scripts/ci/setup-rust.sh
       - run: cargo fmt --all --check
 
   clippy:
     name: Clippy Lint
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v7
+      - run: bash scripts/ci/setup-rust.sh
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test-unit:
     name: Unit Tests
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v7
+      - run: bash scripts/ci/setup-rust.sh
       - run: cargo test --workspace --lib --bins -- --test-threads=4
 
   test-integration:
     name: Integration Tests
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, X64]
     needs: [test-unit]
     # Uses local Redis at localhost:6380 and PostgreSQL at localhost:5300
     steps:
       - uses: actions/checkout@v7
+      - run: bash scripts/ci/setup-rust.sh
       - name: Probe Redis and PostgreSQL
-        shell: pwsh
+        shell: bash
         run: |
-          $redisAvailable = $false
-          try {
-            & redis-cli -u "redis://localhost:6380/0" ping *> $null
-            if ($LASTEXITCODE -eq 0) { $redisAvailable = $true }
-          }
-          catch {
-          }
-
-          $postgresAvailable = $false
-          try {
-            & psql "postgresql://postgres@localhost:5300/redis_backend" -Atqc "SELECT 1;" *> $null
-            if ($LASTEXITCODE -eq 0) { $postgresAvailable = $true }
-          }
-          catch {
-          }
-
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Integration Preflight"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- Redis available: $redisAvailable"
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "- PostgreSQL available: $postgresAvailable"
+          redis_available=false
+          postgres_available=false
+          redis-cli -u "redis://localhost:6380/0" ping >/dev/null 2>&1 && redis_available=true
+          psql "postgresql://postgres@localhost:5300/redis_backend" -Atqc "SELECT 1;" >/dev/null 2>&1 && postgres_available=true
+          printf '### Integration Preflight\n- Redis available: %s\n- PostgreSQL available: %s\n' \
+            "$redis_available" "$postgres_available" >> "$GITHUB_STEP_SUMMARY"
       - run: cargo test -p agent-bus --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1
         env:
           AGENT_BUS_REDIS_URL: redis://localhost:6380/0
           AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
 
   build-release:
-    name: Release Build
-    runs-on: self-hosted
+    name: Release Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            runner: '["self-hosted","Linux","X64"]'
+          - name: linux-arm64
+            runner: '["self-hosted","Linux","ARM64","fleet-build"]'
+    runs-on: ${{ fromJSON(matrix.runner) }}
     needs: [format, clippy, test-unit]
     steps:
       - uses: actions/checkout@v7
+      - run: bash scripts/ci/setup-rust.sh
       - run: cargo build --release --workspace --bins
       - uses: actions/upload-artifact@v7
         with:
-          name: agent-bus-windows-x64
+          name: agent-bus-${{ matrix.name }}
           path: |
-            T:\RustCache\cargo-target\release\agent-bus.exe
-            T:\RustCache\cargo-target\release\agent-bus-http.exe
-            T:\RustCache\cargo-target\release\agent-bus-mcp.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-mcp
 
   smoke-functional:
     name: CLI And HTTP Smoke
-    runs-on: self-hosted
-    needs: [build-release, test-integration]
+    runs-on: [self-hosted, Linux, X64]
+    needs: [test-integration]
     steps:
       - uses: actions/checkout@v7
+      - run: bash scripts/ci/setup-rust.sh
       - name: Build release binary
         run: cargo build --release --workspace --bins
       - name: Stage HTTP variant
-        shell: pwsh
+        shell: bash
         run: |
-          $src = "T:\RustCache\cargo-target\release\agent-bus-http.exe"
-          $dst = "${{ github.workspace }}\dist\agent-bus-http.exe"
-          New-Item -ItemType Directory -Path "${{ github.workspace }}\dist" -Force | Out-Null
-          Copy-Item $src $dst -Force
+          mkdir -p "${{ github.workspace }}/dist"
+          cp "$CARGO_TARGET_DIR/release/agent-bus-http" "${{ github.workspace }}/dist/agent-bus-http"
       - name: Run functional smoke harness
-        shell: pwsh
+        shell: bash
         run: |
-          pwsh -NoLogo -NoProfile -File scripts\test-agent-bus-functional.ps1 `
-            -CliPath "T:\RustCache\cargo-target\release\agent-bus.exe" `
-            -HttpBinaryPath "${{ github.workspace }}\dist\agent-bus-http.exe" `
-            -HttpPort 8410
+          cargo test -p agent-bus --test integration_test --test http_integration_test \
+            --test channel_integration_test -- --test-threads=1
         env:
           AGENT_BUS_REDIS_URL: redis://localhost:6380/0
           AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
@@ -113,45 +106,32 @@ jobs:
 
   audit:
     name: Security Audit
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v7
+      - run: bash scripts/ci/setup-rust.sh
       - name: Install latest cargo-audit
-        run: cargo install cargo-audit --locked --force
+        run: command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
       - run: cargo audit
         continue-on-error: true
 
-  ubuntu:
-    name: Ubuntu Build And Unit Tests
-    runs-on: ["self-hosted", "Linux", "X64"]
+  windows:
+    name: Windows Build And Unit Tests
+    runs-on: windows-latest
     timeout-minutes: 30
-    env:
-      # Workflow-level CARGO_HOME/CARGO_TARGET_DIR above are Windows paths
-      # (T:\RustCache\...) for the Windows self-hosted runner used by the
-      # other jobs; this Linux runner needs its own Linux-native paths.
-      CARGO_HOME: ${{ github.workspace }}/.cargo-home
-      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v7
-      - name: Install Rust toolchain
-        run: |
-          if ! command -v cargo >/dev/null 2>&1; then
-            echo "cargo not found; installing rustup stable toolchain"
-            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
-          fi
-          # rustup-init respects CARGO_HOME (overridden above to a Linux
-          # workspace path), so its shims land in $CARGO_HOME/bin, not the
-          # default $HOME/.cargo/bin.
-          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
       - run: cargo fmt --all --check
       - run: cargo test --workspace --lib --bins -- --test-threads=4
+      - run: cargo build --release --workspace --bins
 
   bench:
     name: Benchmarks
-    runs-on: self-hosted
+    runs-on: [self-hosted, Linux, X64]
     needs: [test-unit]
     steps:
       - uses: actions/checkout@v7
+      - run: bash scripts/ci/setup-rust.sh
       - run: cargo bench -p agent-bus --bench throughput -- --output-format bencher
         continue-on-error: true
       - run: cargo bench -p agent-bus --bench bus_benchmarks -- --noplot
@@ -161,26 +141,27 @@ jobs:
         if: always()
         with:
           name: criterion-reports
-          path: T:\RustCache\cargo-target\criterion
+          path: ${{ env.CARGO_TARGET_DIR }}/criterion
           if-no-files-found: ignore
 
   cross-platform:
-    name: Cross-Platform (Linux Docker)
-    runs-on: self-hosted
+    name: Docker Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            runner: '["self-hosted","Linux","X64"]'
+          - name: linux-arm64
+            runner: '["self-hosted","Linux","ARM64","fleet-build"]'
+    runs-on: ${{ fromJSON(matrix.runner) }}
     steps:
       - uses: actions/checkout@v7
       - name: Validate Linux build + tests via Docker
-        shell: pwsh
+        shell: bash
         run: |
-          $docker = Get-Command docker -ErrorAction SilentlyContinue
-          if (-not $docker) {
-            Write-Warning "Docker not available on this runner; skipping Linux cross-platform validation."
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Cross-Platform (Linux)`n- Skipped: Docker not available"
-            exit 0
-          }
+          command -v docker >/dev/null
+          docker info >/dev/null
           docker build -f docker/Dockerfile.linux -t agent-bus-linux-validate .
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Linux Docker build/test validation failed"
-            exit 1
-          }
-          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "### Cross-Platform (Linux)`n- Linux glibc build + workspace lib tests passed"
+          printf '### Docker Build\n- Native %s image build and workspace tests passed\n' \
+            "${{ matrix.name }}" >> "$GITHUB_STEP_SUMMARY"

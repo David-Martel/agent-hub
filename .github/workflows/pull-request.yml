@@ -1,0 +1,35 @@
+name: Pull Request
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_LOG: error
+
+# SECURITY: This public-repository workflow must remain GitHub-hosted. Never
+# add self-hosted labels, fleet cache configuration, Docker socket access, or
+# pull_request_target to this file.
+jobs:
+  linux:
+    name: Hosted Linux Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --lib --bins -- --test-threads=4
+      - run: cargo build --locked --release --workspace --bins
+
+  windows:
+    name: Hosted Windows Validation
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --lib --bins -- --test-threads=4
+      - run: cargo build --locked --release --workspace --bins

@@ -282,6 +282,9 @@ agent-bus serve --transport mcp-http --port 8765
 - `pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1` installs the stdio MCP entry for Claude and Codex.
 - Use `-SkipSmoke` on either script when you only want build/restart validation.
 - These validations are intended to run on the local/self-hosted Windows machine; they do not depend on GitHub-hosted action minutes.
+- CI routes Linux x86-64 work to the ASUS runner and Linux ARM64 work to
+  explicitly labelled Spark runners. Windows validation uses a Windows runner;
+  see `docs/fleet-build-runners.md` for runner and cache requirements.
 
 ### CI And Release Coverage
 
