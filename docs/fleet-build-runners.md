@@ -50,11 +50,12 @@ workflow (`ci.yml`) is triggered only by pushes to branches in this repository
 and explicit manual dispatches. It must never regain a `pull_request` or
 `pull_request_target` trigger.
 
-Same-repository pull requests run through `pull-request.yml` on the dedicated
-ASUS Linux and dtm-p1gen7 Windows runners. Every job is guarded by an exact
-head-repository equality check. Fork pull requests are skipped because
-untrusted fork code must never execute on ASUS, Spark, dtm-p1gen7, Docker, or
-the fleet cache. Do not use `pull_request_target` to work around that boundary.
+Same-repository pull requests are validated by their trusted branch push
+through `ci.yml`; a duplicate `pull_request` workflow would spend the same
+fleet capacity twice. Fork code must never execute on ASUS, Spark,
+dtm-p1gen7, Docker, or the fleet cache. Review a fork without execution, then
+cherry-pick accepted commits onto a repository-owned branch to run the trusted
+push matrix. Do not use `pull_request_target` to work around that boundary.
 
 A network cache beyond this link-local Redis service may be enabled by
 configuring a supported authenticated sccache backend in the runner service
