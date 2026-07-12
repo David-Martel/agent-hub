@@ -11,6 +11,11 @@ $sccacheDir = Join-Path $cacheRoot "sccache"
 
 New-Item -ItemType Directory -Force -Path $cargoTarget, $sccacheDir | Out-Null
 
+$cargoPath = (& rustup which cargo).Trim()
+$rustcPath = (& rustup which rustc).Trim()
+$toolchainBin = Split-Path -Parent $cargoPath
+$env:PATH = "$toolchainBin;$($env:PATH)"
+
 $env:CARGO_TARGET_DIR = $cargoTarget
 $env:CARGO_INCREMENTAL = "0"
 $env:SCCACHE_DIR = $sccacheDir
@@ -40,6 +45,9 @@ if ($env:GITHUB_ENV) {
             Add-Content -Path $env:GITHUB_ENV -Encoding utf8
     }
 }
+if ($env:GITHUB_PATH) {
+    $toolchainBin | Add-Content -Path $env:GITHUB_PATH -Encoding utf8
+}
 
-cargo --version
-rustc --version
+& $cargoPath --version
+& $rustcPath --version
