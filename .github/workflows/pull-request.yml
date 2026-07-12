@@ -33,6 +33,8 @@ jobs:
     runs-on: [self-hosted, Windows, X64, local-build]
     steps:
       - uses: actions/checkout@v7
+      - shell: pwsh
+        run: ./scripts/ci/setup-rust.ps1
       - run: cargo fmt --all --check
       - run: cargo test --workspace --lib --bins -- --test-threads=4
       - run: cargo build --locked --release --workspace --bins

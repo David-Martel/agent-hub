@@ -37,6 +37,12 @@ changes; retire the previous prefix after active builds finish. Do not flush
 the entire Redis instance because other fleet repositories may have their own
 prefixes.
 
+The dtm-p1gen7 Windows runner uses `scripts/ci/setup-rust.ps1` with persistent
+Cargo and sccache directories under `%LOCALAPPDATA%\agent-hub-ci`. Its single
+dedicated listener serializes Windows jobs, so those target outputs are never
+written concurrently. Windows cache data remains local and is not mixed with
+Linux or ARM64 objects.
+
 ## Public-repository trust boundary
 
 Fleet runners and their Redis cache are trusted infrastructure. The fleet
