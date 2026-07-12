@@ -5,7 +5,8 @@ param(
     [switch]$SkipCli,
     [switch]$SkipHttp,
     [switch]$SkipForcedDegraded,
-    [switch]$RequirePostgres
+    [switch]$RequirePostgres,
+    [string]$HttpAuthToken
 )
 
 $ErrorActionPreference = "Stop"
@@ -86,7 +87,7 @@ if (-not $SkipCli) {
 }
 
 if (-not $SkipHttp) {
-    & $httpSmokeScript -BinaryPath $HttpBinaryPath -BaseUrl "http://localhost:$HttpPort" -Port $HttpPort -DatabaseMode $steadyState
+    & $httpSmokeScript -BinaryPath $HttpBinaryPath -BaseUrl "http://localhost:$HttpPort" -Port $HttpPort -DatabaseMode $steadyState -AuthToken $HttpAuthToken
 }
 
 if (-not $SkipForcedDegraded) {
@@ -101,7 +102,7 @@ if (-not $SkipForcedDegraded) {
 
     if (-not $SkipHttp) {
         Invoke-WithDatabaseUrl -DatabaseUrl $forcedDatabaseUrl -Script {
-            & $httpSmokeScript -BinaryPath $HttpBinaryPath -BaseUrl "http://localhost:$($HttpPort + 1)" -Port ($HttpPort + 1) -DatabaseMode "Degraded"
+            & $httpSmokeScript -BinaryPath $HttpBinaryPath -BaseUrl "http://localhost:$($HttpPort + 1)" -Port ($HttpPort + 1) -DatabaseMode "Degraded" -AuthToken $HttpAuthToken
         }
     }
 }

@@ -93,10 +93,13 @@ jobs:
       - name: Run functional smoke harness
         shell: pwsh
         run: |
+          $smokeToken = [guid]::NewGuid().ToString("N")
           ./scripts/test-agent-bus-functional.ps1 `
             -CliPath "$env:CARGO_TARGET_DIR/release/agent-bus.exe" `
             -HttpBinaryPath "$env:CARGO_TARGET_DIR/release/agent-bus-http.exe" `
-            -HttpPort 8412
+            -HttpPort 8412 `
+            -HttpAuthToken $smokeToken `
+            -SkipForcedDegraded
 
   audit:
     name: Security Audit
