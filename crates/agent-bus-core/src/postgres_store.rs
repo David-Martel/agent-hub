@@ -1386,7 +1386,7 @@ fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>) {
 mod tests {
     use super::*;
 
-    /// Serializes tests that mutate the process-wide PostgreSQL state.
+    /// Serializes tests that mutate the process-wide `PostgreSQL` state.
     fn global_state_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
