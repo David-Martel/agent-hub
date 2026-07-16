@@ -34,6 +34,11 @@
 #   --relay-bin <path>       Path to the agent-bus-relay.sh wrapper script used
 #                            by the relay unit (default: autodetect under
 #                            ~/.config/agent-bus-relay/agent-bus-relay.sh).
+#   --hub-url <url>          Central hub URL for the relay unit's --hub arg
+#                            (default: `server_url` from
+#                            ~/.config/agent-bus/config.json if present, else
+#                            a documented placeholder). Only used with
+#                            --with-relay-service.
 #   --dry-run                Print planned actions; make no changes.
 #   -h, --help                Show this help and exit.
 #
@@ -54,6 +59,7 @@ NO_VERIFY=0
 FORCE=0
 WITH_RELAY_SERVICE=0
 RELAY_BIN=""
+HUB_URL=""
 DRY_RUN=0
 
 # ── colours (disabled when not a tty) ─────────────────────────────────────────
@@ -90,11 +96,20 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { err "--relay-bin requires a path argument"; exit 2; }
             RELAY_BIN="$2"; shift 2 ;;
         --relay-bin=*) RELAY_BIN="${1#--relay-bin=}"; shift ;;
+        --hub-url)
+            [[ $# -ge 2 ]] || { err "--hub-url requires a URL argument"; exit 2; }
+            HUB_URL="$2"; shift 2 ;;
+        --hub-url=*) HUB_URL="${1#--hub-url=}"; shift ;;
         --dry-run) DRY_RUN=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) err "Unknown argument: $1"; usage; exit 2 ;;
     esac
 done
+
+# ── portable mtime helper (GNU `stat -c` on Linux, BSD `stat -f` on macOS) ────
+mtime_of() {
+    stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1" 2>/dev/null || echo -1
+}
 
 # ── cargo resolution (handles a broken rustup shim) ───────────────────────────
 # On this fleet, ~/.cargo/bin/cargo is a rustup shim. If rustup itself is
@@ -126,7 +141,7 @@ resolve_cargo() {
         local cargo_bin="${tc}bin/cargo"
         [[ -x "$cargo_bin" ]] || continue
         local mtime
-        mtime="$(stat -c '%Y' "$cargo_bin" 2>/dev/null || echo -1)"
+        mtime="$(mtime_of "$cargo_bin")"
         if (( mtime > best_mtime )) || { (( mtime == best_mtime )) && [[ "$tc" == *"stable-"* ]]; }; then
             best="$tc"
             best_mtime="$mtime"
@@ -174,6 +189,21 @@ run_build() {
 
 # ── verify binaries exist post-build ───────────────────────────────────────────
 verify_built_binaries() {
+    if [[ $DRY_RUN -eq 1 ]]; then
+        # Dry-run must never fail on a clean checkout with no target/release/
+        # yet: run_build() only *describes* the build in dry-run and doesn't
+        # actually produce binaries, so their absence here is expected, not
+        # an error. Report what's missing as information only.
+        local missing=0
+        for bin in "${BINARIES[@]}"; do
+            [[ -x "${TARGET_DIR}/${bin}" ]] || missing=1
+        done
+        if [[ $missing -eq 1 ]]; then
+            log "[dry-run] Note: one or more release binaries are not yet present under $TARGET_DIR (expected on a clean checkout; a real run builds them first)."
+        fi
+        return 0
+    fi
+
     local missing=0
     for bin in "${BINARIES[@]}"; do
         if [[ ! -x "${TARGET_DIR}/${bin}" ]]; then
@@ -225,6 +255,10 @@ deploy_binaries() {
         local dst="${BIN_DIR}/${bin}"
 
         if [[ ! -f "$src" ]]; then
+            if [[ $DRY_RUN -eq 1 ]]; then
+                log "  [dry-run] Would install new $dst (source not yet built: $src)."
+                continue
+            fi
             err "Built binary not found: $src"
             exit 1
         fi
@@ -334,6 +368,44 @@ verify_install() {
     ok "Health check passed."
 }
 
+# ── read `server_url` out of the agent-bus client config ─────────────────────
+# Tries jq, then python3, then a conservative grep/sed fallback so this works
+# even on a minimal box with neither jq nor python3 installed. Prints nothing
+# (and returns non-zero) if the field can't be found.
+hub_url_from_config() {
+    local config="$1"
+    [[ -f "$config" ]] || return 1
+
+    if command -v jq >/dev/null 2>&1; then
+        local v
+        v="$(jq -r '.server_url // empty' "$config" 2>/dev/null || true)"
+        [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        local v
+        v="$(python3 -c '
+import json,sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+    print(d.get("server_url") or "")
+except Exception:
+    pass
+' "$config" 2>/dev/null || true)"
+        [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
+    fi
+
+    # Fallback: grep the first "server_url": "..." occurrence. Good enough for
+    # the flat, hand-edited config.json this repo ships; not a general JSON parser.
+    local v
+    v="$(grep -oE '"server_url"[[:space:]]*:[[:space:]]*"[^"]*"' "$config" 2>/dev/null \
+        | head -n1 | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/')"
+    [[ -n "$v" ]] && { printf '%s' "$v"; return 0; }
+
+    return 1
+}
+
 # ── optional systemd --user relay service ─────────────────────────────────────
 install_relay_service() {
     if [[ $WITH_RELAY_SERVICE -eq 0 ]]; then
@@ -356,6 +428,23 @@ install_relay_service() {
 
     local config="${HOME}/.config/agent-bus/config.json"
 
+    # Resolve hub URL: --hub-url flag > client config's server_url > placeholder.
+    local hub_url="$HUB_URL"
+    local hub_url_source="--hub-url flag"
+    if [[ -z "$hub_url" ]]; then
+        if hub_url="$(hub_url_from_config "$config")" && [[ -n "$hub_url" ]]; then
+            hub_url_source="server_url in $config"
+        else
+            hub_url="http://CHANGE-ME-HUB-HOST:8400"
+            hub_url_source="placeholder (no --hub-url given and $config missing/unparseable)"
+        fi
+    fi
+    log "Relay hub URL: $hub_url (source: $hub_url_source)"
+    if [[ "$hub_url" == "http://CHANGE-ME-HUB-HOST:8400" ]]; then
+        warn "Using placeholder hub URL. Edit the rendered unit's ExecStart before starting the service,"
+        warn "or re-run with --hub-url <url>."
+    fi
+
     if [[ ! -x "$relay_bin" ]]; then
         warn "Relay wrapper script not found or not executable at: $relay_bin"
         warn "The relay unit will be installed but will fail to start until this script exists."
@@ -367,9 +456,10 @@ install_relay_service() {
 
     if [[ $DRY_RUN -eq 1 ]]; then
         log "[dry-run] Would render $template -> $unit_path"
-        log "[dry-run]   @MACHINE@ -> $machine"
-        log "[dry-run]   @BIN@     -> $relay_bin"
-        log "[dry-run]   @CONFIG@  -> $config"
+        log "[dry-run]   @MACHINE@  -> $machine"
+        log "[dry-run]   @BIN@      -> $relay_bin"
+        log "[dry-run]   @CONFIG@   -> $config"
+        log "[dry-run]   @HUB_URL@  -> $hub_url"
         log "[dry-run] Would run: systemctl --user daemon-reload"
         log "[dry-run] Would run: systemctl --user enable agent-bus-relay.service"
         log "[dry-run] Would run: loginctl enable-linger \$USER (if not already enabled)"
@@ -383,6 +473,7 @@ install_relay_service() {
         -e "s|@MACHINE@|${machine}|g" \
         -e "s|@BIN@|${relay_bin}|g" \
         -e "s|@CONFIG@|${config}|g" \
+        -e "s|@HUB_URL@|${hub_url}|g" \
         "$template" > "${unit_path}.tmp"
     mv -f "${unit_path}.tmp" "$unit_path"
     ok "Rendered relay unit -> $unit_path (machine=${machine})"
@@ -395,6 +486,11 @@ install_relay_service() {
     systemctl --user daemon-reload
     systemctl --user enable agent-bus-relay.service
     ok "Enabled agent-bus-relay.service (not started — start manually with: systemctl --user start agent-bus-relay.service)"
+
+    if ! command -v loginctl >/dev/null 2>&1; then
+        warn "loginctl not available; skipping linger (service will only run while a login session is active)."
+        return 0
+    fi
 
     local linger_state
     linger_state="$(loginctl show-user "$(whoami)" --property=Linger 2>/dev/null | cut -d= -f2 || echo "")"

@@ -3,15 +3,22 @@
 # the central agent-bus hub).
 #
 # Rendered by install.sh --with-relay-service, which substitutes:
-#   @MACHINE@ — this machine's short hostname (e.g. spark-0060)
-#   @BIN@     — full path to the agent-bus-relay.sh wrapper script that this
-#               unit executes (NOT the agent-bus binary itself — the wrapper
-#               resolves agent-bus via $AGENT_BUS_BIN, defaulting to
-#               ~/.local/bin/agent-bus)
-#   @CONFIG@  — full path to the agent-bus client config
-#               (~/.config/agent-bus/config.json), exported as
-#               AGENT_BUS_CONFIG for the relay process and any config-aware
-#               tooling it shells out to
+#   @MACHINE@  — this machine's short hostname (e.g. spark-0060)
+#   @BIN@      — full path to the agent-bus-relay.sh wrapper script that this
+#                unit executes (NOT the agent-bus binary itself — the wrapper
+#                resolves agent-bus via $AGENT_BUS_BIN, defaulting to
+#                ~/.local/bin/agent-bus)
+#   @CONFIG@   — full path to the agent-bus client config
+#                (~/.config/agent-bus/config.json), exported as
+#                AGENT_BUS_CONFIG for the relay process and any config-aware
+#                tooling it shells out to
+#   @HUB_URL@  — URL of the central agent-bus hub this relay federates with.
+#                install.sh resolves this from (in order): the --hub-url
+#                flag, the `server_url` field in @CONFIG@
+#                (~/.config/agent-bus/config.json — the real source of truth
+#                for which hub this client talks to), or else the literal
+#                placeholder "http://CHANGE-ME-HUB-HOST:8400" if neither is
+#                available (edit the rendered unit by hand in that case).
 #
 # This relay is OPTIONAL: this box is a client of the hub on asuspro13, not
 # the hub itself, so most machines only need the plain CLI/HTTP/MCP binaries
@@ -32,11 +39,12 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=AGENT_BUS_CONFIG=@CONFIG@
-# NOTE: --hub/--local/--loop/--window-min mirror the values hand-placed in the
-# original agent-bus-relay.service on this fleet. Adjust here if the central
-# hub's address or relay cadence changes; this template does not currently
-# parameterize them independently of @MACHINE@/@BIN@/@CONFIG@.
-ExecStart=@BIN@ --machine @MACHINE@ --hub http://192.168.50.79:8400 --local http://127.0.0.1:8400 --loop 10 --window-min 5
+# @HUB_URL@ is resolved by install.sh from --hub-url, then the client config's
+# `server_url` (the real source of truth — see ~/.config/agent-bus/config.json),
+# then a placeholder. --local/--loop/--window-min mirror the values hand-placed
+# in the original agent-bus-relay.service on this fleet; adjust here if the
+# relay cadence needs to change.
+ExecStart=@BIN@ --machine @MACHINE@ --hub @HUB_URL@ --local http://127.0.0.1:8400 --loop 10 --window-min 5
 Restart=on-failure
 RestartSec=5
 Nice=10
