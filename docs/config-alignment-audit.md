@@ -183,14 +183,14 @@ If HTTP transport must be kept (e.g., Claude is running on a different machine),
 }
 ```
 (Or replace with stdio if Gemini CLI supports it — check Gemini MCP client docs.)
-**Rationale:** Same as Change 5 — eliminate hard-coded IP and hard-coded token. Use stable hostname. The `SessionStar...
+**Rationale:** Same as Change 5 — eliminate hard-coded IP and hard-coded token. Use stable hostname. The `SessionStartup` configuration handles local loopback binding only.
 ---
 ### Change 7 — `C:/codedev/agent-bus/examples/mcp/gemini.settings.json` (example doc)
 Update to use hostname placeholder instead of `localhost` to set a better example for cross-machine setups:
 ```json
 "AGENT_BUS_SERVER_URL": "http://${AGENT_BUS_HOST:-localhost}:8400"
 ```
-Note the example files currently show `localhost` which is fine for single-machine use. Document the `AGENT_BUS_HOST`...
+Note the example files currently show `localhost` which is fine for single-machine use. Document the `AGENT_BUS_HOST` fallback mechanism in the README.
 ---
 ### Change 8 — `C:/codedev/agent-bus/examples/mcp/codex.config.toml` (example doc)
 Add a comment explaining the cross-machine URL pattern:
@@ -198,4 +198,13 @@ Add a comment explaining the cross-machine URL pattern:
 # For cross-machine access: set AGENT_BUS_SERVER_URL=http://<hostname>:8400 in the environment
 # and set AGENT_BUS_AUTH_TOKEN to the bearer token.
 [mcp_servers.agent_bus]
-... (32 lines truncated)
+command = "agent-bus-mcp"
+
+[mcp_servers.agent_bus.env]
+AGENT_BUS_REDIS_URL = "redis://127.0.0.1:6380/0"
+AGENT_BUS_DATABASE_URL = "postgresql://postgres@127.0.0.1:5300/redis_backend"
+AGENT_BUS_SERVER_URL = "http://localhost:8400"
+AGENT_BUS_SERVER_HOST = "localhost"
+AGENT_BUS_STARTUP_ENABLED = "false"
+RUST_LOG = "error"
+```
