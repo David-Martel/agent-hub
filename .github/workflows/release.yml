@@ -9,6 +9,7 @@ permissions:
   contents: read
 
 env:
+  AGENT_BUS_BUILD_REVISION: ${{ github.sha }}
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -30,6 +31,46 @@ jobs:
           }
 
       - run: cargo build --locked --release --workspace --bins
+
+      - name: Verify embedded runtime revision
+        shell: pwsh
+        run: |
+          $expectedPrefix = $env:AGENT_BUS_BUILD_REVISION.Substring(0, 12)
+          $cliVersion = & target/release/agent-bus.exe --version
+          if (-not $cliVersion.Contains($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "CLI build provenance mismatch: expected $expectedPrefix, got $cliVersion"
+          }
+
+          $env:AGENT_BUS_SERVER_HOST = "localhost"
+          $env:AGENT_BUS_SERVER_PORT = "8414"
+          $process = Start-Process `
+            -FilePath "$PWD/target/release/agent-bus-http.exe" `
+            -PassThru `
+            -WindowStyle Hidden
+          try {
+            $health = $null
+            for ($attempt = 1; $attempt -le 30; $attempt++) {
+              try {
+                $health = Invoke-RestMethod -Uri "http://localhost:8414/health" -TimeoutSec 2
+                break
+              } catch {
+                Start-Sleep -Milliseconds 500
+              }
+            }
+            if ($null -eq $health) {
+              throw "HTTP release artifact did not become healthy enough to report provenance"
+            }
+            if (-not ([string]$health.build_version).Contains(
+                $expectedPrefix,
+                [StringComparison]::OrdinalIgnoreCase
+              )) {
+              throw "HTTP build provenance mismatch: expected $expectedPrefix, got $($health.build_version)"
+            }
+          } finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force
+            }
+          }
 
       - name: Stage artifacts and checksums
         shell: pwsh
@@ -74,6 +115,33 @@ jobs:
           }
 
       - run: cargo build --locked --release --workspace --bins
+
+      - name: Verify embedded runtime revision
+        shell: bash
+        run: |
+          expected_prefix="${AGENT_BUS_BUILD_REVISION:0:12}"
+          cli_version="$("$CARGO_TARGET_DIR/release/agent-bus" --version)"
+          grep -Fqi "$expected_prefix" <<<"$cli_version" || {
+            echo "CLI build provenance mismatch: expected $expected_prefix, got $cli_version" >&2
+            exit 1
+          }
+
+          export AGENT_BUS_SERVER_HOST=localhost
+          export AGENT_BUS_SERVER_PORT=8414
+          "$CARGO_TARGET_DIR/release/agent-bus-http" >release-http.log 2>&1 &
+          http_pid=$!
+          trap 'kill "$http_pid" 2>/dev/null || true' EXIT
+          health=""
+          for _ in $(seq 1 30); do
+            health="$(curl --fail --silent http://localhost:8414/health 2>/dev/null || true)"
+            test -n "$health" && break
+            sleep 0.5
+          done
+          grep -Fqi "$expected_prefix" <<<"$health" || {
+            echo "HTTP build provenance mismatch: expected $expected_prefix, got $health" >&2
+            cat release-http.log >&2
+            exit 1
+          }
 
       - name: Stage artifacts and checksums
         shell: bash
