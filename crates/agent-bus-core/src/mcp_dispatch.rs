@@ -697,6 +697,7 @@ impl<'a> McpToolDispatch<'a> {
                     "schemas": ["finding", "status", "benchmark"],
                     "encoding_formats": ["json", "compact", "human", "toon"],
                     "server_version": env!("CARGO_PKG_VERSION"),
+                    "build_version": crate::build_info::BUILD_VERSION,
                     "mcp_spec_version": "2024-11-05",
                     "tools": tool_count,
                 }))
@@ -1137,6 +1138,13 @@ mod tests {
         let result = dispatch.dispatch_tool("negotiate", &serde_json::Map::new());
         let val = result.expect("negotiate tool failed");
         assert_eq!(val["protocol_version"], crate::models::PROTOCOL_VERSION);
+        assert_eq!(val["build_version"], crate::build_info::BUILD_VERSION);
+        assert!(
+            val["build_version"]
+                .as_str()
+                .is_some_and(|version| version.starts_with(env!("CARGO_PKG_VERSION"))),
+            "negotiate must report build provenance: {val}"
+        );
         assert!(val["transports"].as_array().is_some());
         assert!(val["schemas"].as_array().is_some());
     }

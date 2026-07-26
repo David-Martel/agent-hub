@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 
 pub mod agent_profile;
 pub mod bootstrap;
+pub mod build_info;
 pub mod channels;
 pub mod codex_bridge;
 pub mod error;

@@ -81,7 +81,7 @@ pub(crate) struct Cli {
 pub(crate) enum Cmd {
     /// Check Redis bus health and report runtime metadata.
     #[command(long_about = "Ping Redis and, when configured, PostgreSQL.\n\n\
-        Returns: ok, protocol_version, redis_url, database_url, database_ok,\n\
+        Returns: ok, protocol_version, build_version, redis_url, database_url, database_ok,\n\
         database_error, storage_ready, runtime, codec.\n\
         Use --encoding compact for CI/dashboards, --encoding json for debugging.")]
     Health {

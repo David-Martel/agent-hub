@@ -3781,6 +3781,7 @@ mod tests {
         Health {
             ok: redis_ok,
             protocol_version: PROTOCOL_VERSION.to_owned(),
+            build_version: agent_bus_core::build_info::BUILD_VERSION.to_owned(),
             redis_url: "redis://localhost:6380/0".to_owned(),
             database_url: Some("postgresql://localhost:5300/redis_backend".to_owned()),
             database_ok: Some(pg_ok),

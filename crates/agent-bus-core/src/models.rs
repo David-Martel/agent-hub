@@ -191,6 +191,8 @@ pub fn ack_deadline_seconds(priority: &str) -> u64 {
 pub struct Health {
     pub ok: bool,
     pub protocol_version: String,
+    /// Exact runtime source provenance; independent of protocol compatibility.
+    pub build_version: String,
     pub redis_url: String,
     pub database_url: Option<String>,
     pub database_ok: Option<bool>,
@@ -655,6 +657,7 @@ mod tests {
         Health {
             ok: true,
             protocol_version: PROTOCOL_VERSION.to_owned(),
+            build_version: crate::build_info::BUILD_VERSION.to_owned(),
             redis_url: "redis://localhost:6380/0".to_owned(),
             database_url: None,
             database_ok: None,
@@ -717,6 +720,7 @@ mod tests {
         // Mandatory fields must be present.
         assert_eq!(v["ok"], true);
         assert_eq!(v["protocol_version"], PROTOCOL_VERSION);
+        assert_eq!(v["build_version"], crate::build_info::BUILD_VERSION);
         assert_eq!(v["storage_ready"], false);
     }
 

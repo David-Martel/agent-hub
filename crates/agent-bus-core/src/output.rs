@@ -494,6 +494,7 @@ mod tests {
         let h = Health {
             ok: true,
             protocol_version: "1.0".to_owned(),
+            build_version: crate::build_info::BUILD_VERSION.to_owned(),
             redis_url: "redis://localhost".to_owned(),
             database_url: None,
             database_ok: None,
@@ -523,6 +524,7 @@ mod tests {
         let h = Health {
             ok: false,
             protocol_version: "1.0".to_owned(),
+            build_version: crate::build_info::BUILD_VERSION.to_owned(),
             redis_url: "redis://localhost".to_owned(),
             database_url: None,
             database_ok: None,

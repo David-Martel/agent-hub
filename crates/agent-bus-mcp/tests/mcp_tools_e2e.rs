@@ -97,6 +97,10 @@ fn negotiate_returns_capabilities() {
         val["protocol_version"].as_str().is_some() || val["protocol_version"].as_u64().is_some(),
         "negotiate must report a protocol_version: {val}"
     );
+    assert!(
+        val["build_version"].as_str().is_some(),
+        "negotiate must report build provenance: {val}"
+    );
     let transports = val["transports"]
         .as_array()
         .expect("transports must be an array");
