@@ -20,14 +20,28 @@ fn main() {
     };
     println!("cargo:rustc-env=AGENT_BUS_GIT_VERSION={version}");
 
-    // Rebuild when the checked-out commit moves.
-    if let Some(git_dir) = run_git(&["rev-parse", "--git-dir"]) {
-        let head = std::path::Path::new(&git_dir).join("HEAD");
-        if head.exists() {
-            println!("cargo:rerun-if-changed={}", head.display());
-        }
+    // A symbolic HEAD file does not change when its branch fast-forwards.
+    // Watch the resolved ref and packed refs as well so cached release builds
+    // cannot retain provenance from the previous deployed commit.
+    if let Some(head) = run_git(&["rev-parse", "--git-path", "HEAD"]) {
+        watch_if_present(&head);
+    }
+    if let Some(reference) = run_git(&["symbolic-ref", "-q", "HEAD"])
+        && let Some(reference_path) = run_git(&["rev-parse", "--git-path", &reference])
+    {
+        watch_if_present(&reference_path);
+    }
+    if let Some(packed_refs) = run_git(&["rev-parse", "--git-path", "packed-refs"]) {
+        watch_if_present(&packed_refs);
     }
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+fn watch_if_present(path: &str) {
+    let path = std::path::Path::new(path);
+    if path.exists() {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
 }
 
 fn with_date(rev: &str, date: Option<&str>) -> String {
