@@ -337,6 +337,15 @@ function Get-TomlStringTable {
     return $table
 }
 
+function Test-AgentBusDedicatedMcpCommand {
+    param([Parameter(Mandatory = $true)][string]$Command)
+
+    # Windows cannot replace a running executable. Atomic deployments may
+    # therefore use a version-suffixed binary and repoint new MCP sessions
+    # without terminating active agents.
+    return $Command -match '(?i)(?:^|[\\/])agent-bus-mcp(?:-[0-9a-z][0-9a-z._-]*)?(?:\.exe)?$'
+}
+
 function Test-CodexAgentBusToml {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -414,7 +423,7 @@ function Test-CodexAgentBusToml {
         return $null
     }
     Add-CheckResult -Name "codex:agent-bus" -Status "ok" -Detail "agent_bus MCP entry found (stdio)" -Path $Path
-    if ($command -match '(?i)(?:^|[\\/])agent-bus-mcp(?:\.exe)?$') {
+    if (Test-AgentBusDedicatedMcpCommand -Command $command) {
         Add-CheckResult -Name "codex:transport" -Status "ok" -Detail "Uses the dedicated agent-bus-mcp stdio binary" -Path $Path
     }
     elseif (
@@ -553,7 +562,7 @@ function Test-AgentBusJsonMcp {
 
     if ($entry.ContainsKey("command")) {
         $command = [string]$entry["command"]
-        if ($command -match 'agent-bus-mcp(\.exe)?$') {
+        if (Test-AgentBusDedicatedMcpCommand -Command $command) {
             Add-CheckResult -Name "${ClientName}:command" -Status "ok" -Detail "Uses dedicated MCP binary" -Path $Path
         }
         else {

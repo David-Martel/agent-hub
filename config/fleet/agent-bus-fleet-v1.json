@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "authority_machine": "asuspro13",
+  "expected_protocol_version": "1.0",
+  "expected_build_revision": "fd70c8d",
+  "expected_mcp_tool_count": 17,
+  "machines": [
+    {
+      "id": "dtm-p1gen7",
+      "connection": "local-windows",
+      "os": "windows",
+      "architecture": "x86_64",
+      "role": "client-dev-fallback",
+      "canonical_repo": "C:\\codedev\\agent-bus",
+      "cli_path": "C:\\Users\\david\\bin\\agent-bus.exe",
+      "config_path": "C:\\Users\\david\\.config\\agent-bus\\config.json",
+      "client_server_url": "http://asuspro13:8400",
+      "auth_source": "client-config",
+      "required_active_services": [
+        "AgentHub"
+      ],
+      "required_inactive_services": []
+    },
+    {
+      "id": "asuspro13",
+      "connection": "ssh-linux",
+      "ssh_host": "asuspro13",
+      "os": "linux",
+      "architecture": "x86_64",
+      "role": "authority",
+      "canonical_repo": "/home/damartel/dev/repos/agent-hub",
+      "cli_path": "/home/damartel/.local/bin/agent-bus",
+      "config_path": "/home/damartel/.config/agent-bus/config.json",
+      "client_server_url": "http://localhost:8400",
+      "allow_default_server_url": true,
+      "auth_source": "hub-env",
+      "required_config_mode": "600",
+      "required_active_services": [
+        "agent-bus-http.service"
+      ],
+      "required_inactive_services": [
+        "agent-bus-relay-dtm.service"
+      ]
+    },
+    {
+      "id": "spark-0060",
+      "connection": "ssh-linux",
+      "ssh_host": "spark-0060",
+      "os": "linux",
+      "architecture": "aarch64",
+      "role": "client-builder",
+      "canonical_repo": "/home/damartel/dev/repos/agent-hub",
+      "cli_path": "/home/damartel/.local/bin/agent-bus",
+      "config_path": "/home/damartel/.config/agent-bus/config.json",
+      "client_server_url": "http://asuspro13-p2p-spark-0060:8400",
+      "auth_source": "client-config",
+      "required_config_mode": "600",
+      "required_active_services": [],
+      "required_inactive_services": [
+        "agent-bus-relay.service"
+      ]
+    },
+    {
+      "id": "spark-3066",
+      "connection": "ssh-linux",
+      "ssh_host": "spark-3066",
+      "os": "linux",
+      "architecture": "aarch64",
+      "role": "client-builder",
+      "canonical_repo": "/home/damartel/dev/repos/agent-hub",
+      "cli_path": "/home/damartel/.local/bin/agent-bus",
+      "config_path": "/home/damartel/.config/agent-bus/config.json",
+      "client_server_url": "http://asuspro13-p2p-spark-3066:8400",
+      "auth_source": "client-config",
+      "required_config_mode": "600",
+      "required_active_services": [],
+      "required_inactive_services": [
+        "agenthub.service",
+        "agent-bus-relay.service"
+      ]
+    }
+  ]
+}

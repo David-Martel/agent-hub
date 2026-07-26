@@ -230,11 +230,61 @@ Before publication:
 
 ## Remaining Work
 
+### Deployment evidence (2026-07-26)
+
+- PR #45 and the follow-up provenance fix in PR #46 were squash-merged after
+  all format, Clippy, unit, integration, release, Docker, Windows, audit,
+  benchmark, MCP-config, and functional smoke jobs passed.
+- All four canonical checkouts and installed CLI/HTTP binaries report
+  `v0.5.0-20-gfd70c8d`. ASUS runs the dedicated `agent-bus-http` user service
+  on `0.0.0.0:8400`; its PostgreSQL and Redis counts increased across restart,
+  with zero dropped writes or PostgreSQL write errors.
+- Pre-centralization custom-format PostgreSQL dumps, Redis RDB validation,
+  installed binaries, unit/config snapshots, manifests, and checksums are
+  preserved on `dtm-p1gen7`, `asuspro13`, and `spark-3066`. Spark-0060 has a
+  matching non-data-bearing rollback snapshot.
+- The three historical databases had no overlapping message IDs in the
+  payload-free comparison (about 20,857 distinct IDs). They were not replayed,
+  renumbered, or deleted. Future traffic is routed to ASUS; historical sources
+  remain immutable inputs for the additive catalog.
+- Tagged send/read/ack probes succeeded from `dtm-p1gen7`, `spark-0060`, and
+  `spark-3066` through ASUS. Only after those acknowledgements were read back
+  were Spark-0060's invalid relay, Spark-3066's isolated hub, and ASUS's
+  temporary DTM relay disabled.
+- The local Windows deploy exposed two additional gates: persisted maintenance
+  state blocked the first SSE write, and an active MCP process locked the
+  unversioned executable. Maintenance was resumed and SSE passed; future MCP
+  sessions now use a hash-verified version-suffixed binary so no active agent
+  had to be terminated.
+- `config/fleet/agent-bus-fleet-v1.json` is the non-secret desired-state
+  inventory. `scripts/test-agent-bus-fleet.ps1` is a read-only doctor for
+  build, route, permission, storage, write-integrity, and service-role drift;
+  its offline schema fixtures run in Windows CI.
+
+### Concurrent and fleet builds
+
+Live concurrent builds in `agent-bus` and `vigil-utils` showed that CargoTools
+0.9.0 counts normal `sccache` compiler clients as multiple servers and can stop
+the shared daemon while other builds are active. The workstation also has
+`sccache` 0.15.0 and 0.16.0 on different PATH entries, and the global Cargo
+wrapper can override a requested no-cache build. Agent-bus retries now use an
+explicit Cargo `build.rustc-wrapper=""` override and never stop the shared
+daemon. The workstation module load order, canonical binary version, and
+telemetry wrapper still require repair outside this repository.
+
+The fleet build design should use isolated target namespaces and the existing
+GitHub runners: Windows/x64 on `dtm-p1gen7`, Linux/x64 on ASUS, and Linux/ARM64
+on both Spark machines. The dispatcher must record commit provenance, target,
+runner, cache version/path, cache health, test counts, and artifact hashes.
+Concurrent local builds should be a supported case, not a reason to
+consolidate or restart a shared cache server.
+
 - Add and migrate the history catalog tables without modifying current bus
   tables.
 - Implement four resumable provider adapters and redaction/quarantine policy.
 - Add machine identity to presence metadata by default.
-- Create a versioned fleet manifest and a read-only fleet doctor command.
+- Keep the versioned fleet manifest current in every deployment PR and run the
+  read-only doctor before retiring routes or services.
 - Add checksum/completeness validation to coordination backups.
 - Split liveness from authenticated readiness without changing existing
   `/health` behavior.

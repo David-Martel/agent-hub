@@ -122,6 +122,12 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo test --workspace --lib --bins -- --test-threads=4
       - run: cargo build --release --workspace --bins
+      - name: Validate concurrent build helper behavior
+        shell: pwsh
+        run: ./scripts/test-rust-build-common.ps1
+      - name: Validate fleet manifest and doctor fixtures
+        shell: pwsh
+        run: ./scripts/test-agent-bus-fleet-fixtures.ps1
       - name: Validate Codex MCP config parsing and launch environment
         shell: pwsh
         run: ./scripts/test-agent-client-config-validator.ps1
