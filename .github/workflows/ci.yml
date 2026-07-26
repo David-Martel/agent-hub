@@ -5,6 +5,10 @@ on:
     branches: ["**"]
   workflow_dispatch: {}
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_LOG: error
@@ -63,21 +67,58 @@ jobs:
         include:
           - name: linux-x64
             runner: '["self-hosted","Linux","X64"]'
-          - name: linux-arm64
+          - name: linux-arm64-1
+            runner: '["self-hosted","Linux","ARM64","fleet-build"]'
+          - name: linux-arm64-2
             runner: '["self-hosted","Linux","ARM64","fleet-build"]'
     runs-on: ${{ fromJSON(matrix.runner) }}
     needs: [format, clippy, test-unit]
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
+      - name: Record runner and cache provenance
+        shell: bash
+        run: |
+          mkdir -p "$CARGO_TARGET_DIR/release"
+          {
+            printf 'commit=%s\n' "$GITHUB_SHA"
+            printf 'runner=%s\n' "$RUNNER_NAME"
+            printf 'os=%s\n' "$RUNNER_OS"
+            printf 'arch=%s\n' "$RUNNER_ARCH"
+            printf 'cargo_target_dir=%s\n' "$CARGO_TARGET_DIR"
+            printf 'rustc_wrapper=%s\n' "${RUSTC_WRAPPER:-disabled}"
+            cargo --version
+            rustc --version
+            if command -v sccache >/dev/null 2>&1; then
+              command -v sccache
+              sccache --version
+              sccache --show-stats
+            fi
+          } | tee "$CARGO_TARGET_DIR/release/build-provenance.txt"
       - run: cargo build --release --workspace --bins
+      - name: Hash release binaries
+        shell: bash
+        run: |
+          cd "$CARGO_TARGET_DIR/release"
+          if command -v sccache >/dev/null 2>&1; then
+            {
+              printf '\npost_build_cache_stats:\n'
+              sccache --show-stats
+            } >> build-provenance.txt
+          fi
+          sha256sum agent-bus agent-bus-http agent-bus-mcp | tee artifact-sha256.txt
+          cat build-provenance.txt artifact-sha256.txt >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: agent-bus-${{ matrix.name }}
+          if-no-files-found: error
+          retention-days: 7
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-mcp
+            ${{ env.CARGO_TARGET_DIR }}/release/build-provenance.txt
+            ${{ env.CARGO_TARGET_DIR }}/release/artifact-sha256.txt
 
   smoke-functional:
     name: CLI And HTTP Smoke
@@ -85,17 +126,17 @@ jobs:
     needs: [windows]
     steps:
       - uses: actions/checkout@v7
-      - shell: pwsh
-        run: ./scripts/ci/setup-rust.ps1
-      - name: Build release binaries
-        run: cargo build --locked --release --workspace --bins
+      - uses: actions/download-artifact@v8
+        with:
+          name: agent-bus-windows-x64
+          path: ci-artifacts/windows-x64
       - name: Run functional smoke harness
         shell: pwsh
         run: |
           $smokeToken = [guid]::NewGuid().ToString("N")
           ./scripts/test-agent-bus-functional.ps1 `
-            -CliPath "$env:CARGO_TARGET_DIR/release/agent-bus.exe" `
-            -HttpBinaryPath "$env:CARGO_TARGET_DIR/release/agent-bus-http.exe" `
+            -CliPath "$PWD/ci-artifacts/windows-x64/agent-bus.exe" `
+            -HttpBinaryPath "$PWD/ci-artifacts/windows-x64/agent-bus-http.exe" `
             -HttpPort 8412 `
             -HttpAuthToken $smokeToken `
             -SkipForcedDegraded
@@ -161,6 +202,50 @@ jobs:
       - name: Validate Codex MCP config parsing and launch environment
         shell: pwsh
         run: ./scripts/test-agent-client-config-validator.ps1
+      - name: Record and upload Windows release provenance
+        shell: pwsh
+        run: |
+          $releaseDir = Join-Path $env:CARGO_TARGET_DIR "release"
+          $binaries = @("agent-bus.exe", "agent-bus-http.exe", "agent-bus-mcp.exe")
+          $provenancePath = Join-Path $releaseDir "build-provenance.txt"
+          $provenance = @(
+            "commit=$env:GITHUB_SHA"
+            "runner=$env:RUNNER_NAME"
+            "os=$env:RUNNER_OS"
+            "arch=$env:RUNNER_ARCH"
+            "cargo_target_dir=$env:CARGO_TARGET_DIR"
+            "rustc_wrapper=$env:RUSTC_WRAPPER"
+            (& cargo --version)
+            (& rustc --version)
+          )
+          if ($env:RUSTC_WRAPPER -and
+              (Test-Path -LiteralPath $env:RUSTC_WRAPPER -PathType Leaf)) {
+            $provenance += $env:RUSTC_WRAPPER
+            $provenance += (& $env:RUSTC_WRAPPER --version)
+            $provenance += (& $env:RUSTC_WRAPPER --show-stats)
+          } else {
+            $provenance += "sccache=disabled"
+          }
+          $provenance | Set-Content -LiteralPath $provenancePath -Encoding utf8
+          $hashPath = Join-Path $releaseDir "artifact-sha256.txt"
+          $binaries | ForEach-Object {
+            $path = Join-Path $releaseDir $_
+            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
+            "$hash  $_"
+          } | Set-Content -LiteralPath $hashPath -Encoding utf8
+          Get-Content -LiteralPath $provenancePath, $hashPath |
+            Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+      - uses: actions/upload-artifact@v7
+        with:
+          name: agent-bus-windows-x64
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-mcp.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/build-provenance.txt
+            ${{ env.CARGO_TARGET_DIR }}/release/artifact-sha256.txt
 
   bench:
     name: Benchmark Compile
@@ -174,19 +259,17 @@ jobs:
 
   docker-x64:
     name: Docker Build (linux-x64)
-    runs-on: [self-hosted, Windows, X64, docker-x64]
+    runs-on: [self-hosted, Linux, X64, docker]
     steps:
       - uses: actions/checkout@v7
       - name: Validate Linux build + tests via Docker
-        shell: pwsh
+        shell: bash
         run: |
-          Get-Command docker -ErrorAction Stop | Out-Null
-          docker info | Out-Null
+          command -v docker >/dev/null
+          docker info >/dev/null
           docker build -f docker/Dockerfile.linux -t agent-bus-linux-validate .
-          @(
-            '### Docker Build'
-            '- Native linux-x64 image build and workspace tests passed'
-          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          printf '### Docker Build\n- Native linux-x64 image build and workspace tests passed on %s\n' \
+            "$RUNNER_NAME" >> "$GITHUB_STEP_SUMMARY"
 
   docker-arm64:
     name: Docker Build (linux-arm64)

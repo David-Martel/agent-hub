@@ -40,7 +40,50 @@ if ! command -v cargo >/dev/null 2>&1; then
   source "$CARGO_HOME/env"
 fi
 
+if command -v rustup >/dev/null 2>&1; then
+  rustup component add rustfmt clippy
+fi
+
 mkdir -p "$CARGO_TARGET_DIR" "$SCCACHE_DIR"
+
+expected_sccache_version="0.16.0"
+install_sccache() {
+  local target_triple archive_name release_url temp_dir expected actual result
+  case "${RUNNER_ARCH:-}" in
+    X64) target_triple="x86_64-unknown-linux-musl" ;;
+    ARM64) target_triple="aarch64-unknown-linux-musl" ;;
+    *)
+      echo "warning: no pinned sccache artifact for RUNNER_ARCH=${RUNNER_ARCH:-unset}" >&2
+      return 1
+      ;;
+  esac
+  archive_name="sccache-v${expected_sccache_version}-${target_triple}.tar.gz"
+  release_url="https://github.com/mozilla/sccache/releases/download/v${expected_sccache_version}"
+  temp_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/sccache-install.XXXXXX")"
+  result=0
+  curl -fsSLo "$temp_dir/$archive_name" "$release_url/$archive_name" &&
+    curl -fsSLo "$temp_dir/$archive_name.sha256" "$release_url/$archive_name.sha256" &&
+    expected="$(tr -d '[:space:]' < "$temp_dir/$archive_name.sha256")" &&
+    actual="$(sha256sum "$temp_dir/$archive_name" | awk '{print $1}')" &&
+    [[ "$actual" == "$expected" ]] &&
+    tar -xzf "$temp_dir/$archive_name" --strip-components=1 -C "$temp_dir" &&
+    install -m 0755 "$temp_dir/sccache" "$HOME/.local/bin/sccache" ||
+    result=$?
+  rm -rf -- "$temp_dir"
+  return "$result"
+}
+
+installed_sccache_version="$(
+  sccache --version 2>/dev/null | awk '{print $2}' || true
+)"
+if [[ "$installed_sccache_version" != "$expected_sccache_version" ]]; then
+  if install_sccache; then
+    echo "Installed pinned sccache $expected_sccache_version"
+    hash -r
+  else
+    echo "warning: unable to install pinned sccache $expected_sccache_version" >&2
+  fi
+fi
 
 if command -v sccache >/dev/null 2>&1; then
   # Remote/object-store settings, when used, belong in the runner service
@@ -49,7 +92,8 @@ if command -v sccache >/dev/null 2>&1; then
   # caches used by other repositories on the same fleet host.
   sccache --stop-server >/dev/null 2>&1 || true
   if sccache --start-server >/dev/null 2>&1 && sccache --show-stats >/dev/null 2>&1; then
-    export RUSTC_WRAPPER="$(command -v sccache)"
+    RUSTC_WRAPPER="$(command -v sccache)"
+    export RUSTC_WRAPPER
     echo "sccache enabled ($RUSTC_WRAPPER; cache directory $SCCACHE_DIR)"
   else
     unset RUSTC_WRAPPER

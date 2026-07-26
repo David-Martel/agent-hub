@@ -272,12 +272,25 @@ explicit Cargo `build.rustc-wrapper=""` override and never stop the shared
 daemon. The workstation module load order, canonical binary version, and
 telemetry wrapper still require repair outside this repository.
 
-The fleet build design should use isolated target namespaces and the existing
-GitHub runners: Windows/x64 on `dtm-p1gen7`, Linux/x64 on ASUS, and Linux/ARM64
-on both Spark machines. The dispatcher must record commit provenance, target,
-runner, cache version/path, cache health, test counts, and artifact hashes.
-Concurrent local builds should be a supported case, not a reason to
-consolidate or restart a shared cache server.
+The fleet build dispatcher uses isolated target namespaces and the existing
+GitHub runners: Windows/x64 on `dtm-p1gen7`, Linux/x64 on ASUS, and two
+concurrent Linux/ARM64 slots across the Spark pair. Release jobs record commit,
+runner, architecture, toolchain, compiler-wrapper/cache state, and SHA-256
+artifact hashes. The Windows smoke lane downloads the already validated release
+artifact instead of compiling it again, and the Linux/x64 Docker lane runs on
+ASUS instead of competing with workstation Cargo builds. Concurrent local
+builds remain supported; no fleet lane consolidates or restarts a workstation
+cache server. Linux fleet jobs checksum-install `sccache` 0.16.0 when missing;
+the Windows CI lane selects the existing 0.16.0 Cargo-home binary explicitly.
+The checked-in `config/fleet/asuspro13-agenthub-runner.yml` is the canonical
+ASUS runner definition; its repo-scoped runner has the explicit `docker` label
+and read-only host CLI plus socket mounts required by the Linux/x64 Docker
+validation lane. Host Docker group 125 is granted explicitly, and named
+Cargo, rustup, local-bin, sccache, uv, and work volumes preserve the runner
+toolchain and caches across controlled recreates.
+`scripts/restart-asus-agenthub-runner.sh` obtains an ephemeral registration
+token with the authenticated GitHub CLI, recreates that one runner, and verifies
+the listener and socket mount without persisting the token.
 
 - The first catalog slice is implemented as an explicit-only, checksummed
   `agent_history` migration. It uses deterministic 32-byte identities,
