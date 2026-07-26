@@ -4,6 +4,8 @@ Structural execution plan:
 - See [`agents.TODO.md`](./agents.TODO.md) for remaining surface-thinning work.
 - Code-grounded status snapshot: [`docs/current-status-2026-06-13.md`](./docs/current-status-2026-06-13.md).
 - Phase 3 crate split plan: [`docs/phase3-crate-split-plan-2026-04-04.md`](./docs/phase3-crate-split-plan-2026-04-04.md) is complete.
+- Fleet and conversation-history reconciliation:
+  [`docs/fleet-reconciliation-and-history-plan-2026-07-25.md`](./docs/fleet-reconciliation-and-history-plan-2026-07-25.md).
 
 ## Current Baseline
 
@@ -148,5 +150,32 @@ is tracked in `agents.TODO.md` as CLI thin-surface cleanup.
 - [ ] Make `cargo audit` blocking once CI has proven the fresh `cargo-audit` install handles current RustSec CVSS data reliably. Workstation note: `cargo-audit 0.21.2` cannot parse CVSS 4.0 RustSec advisories; `cargo-audit 0.22.2` install also exposed global `sccache` transport failures and a failed final binary move, so keep audit best-effort until the tool install path is reliable.
 - [ ] Add token rotation support: multiple accepted bearer tokens or token-file input while preserving `AGENT_BUS_AUTH_TOKEN`.
 - [ ] Split unauthenticated liveness from authenticated readiness/full health without breaking existing `/health` clients.
-- [ ] Add native Linux install/service docs and scripts for systemd-managed `agent-bus-http`.
+- [x] Add native Linux install/service docs and scripts for systemd-managed `agent-bus-http`.
 - [ ] Add offline installation profile: preinstalled Rust/Cargo cache, Redis/PostgreSQL prerequisites, and no-internet runtime support statement.
+
+## P12 Fleet Reconciliation And History Durability (NEW — 2026-07-25)
+
+- [x] Inventory the canonical and duplicate checkouts, installed binary hashes,
+  client routes, and service topology on `dtm-p1gen7`, `asuspro13`,
+  `spark-0060`, and `spark-3066`.
+- [x] Reconcile PR #44, fix its `rmcp` 2.x API and Windows Docker shell
+  failures, pass all required checks, and squash-merge it.
+- [x] Add exact build provenance to health and negotiation so
+  semantic-version collisions do not conceal stale fleet binaries.
+- [x] Add a deterministic stdio MCP handshake/tool-list smoke and validate the
+  active Codex transport instead of checking a marker only.
+- [x] Correct shared workstation guidance that treated the dedicated HTTP
+  server binary as a client-command alias.
+- [ ] Deploy the merged binaries and dedicated HTTP user service to the fleet,
+  disable invalid client-local hub/relay units, and prove cross-machine
+  send/read/ack without count regression.
+- [ ] Add additive machine identity metadata and a versioned fleet manifest.
+- [ ] Add separately migrated history catalog tables with deterministic IDs,
+  source cursors, hashes, and parser/policy versions.
+- [ ] Implement resumable Codex, Claude, Antigravity, and Gemini history
+  adapters plus secret redaction and quarantine.
+- [x] Create an empty `Agent History Backups` Drive container; upload no raw
+  history before redaction and restore gates pass.
+- [ ] Publish only sanitized, checksummed history shards to the private
+  `davidmartel07@gmail.com` Drive archive and validate download/restore.
+- [ ] Add backup completeness/checksum validation and a tested restore drill.
