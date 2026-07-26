@@ -4,12 +4,22 @@ param(
     [string]$ExpectedRedisUrl = "redis://127.0.0.1:6380/0",
     [string]$ExpectedDatabaseUrl = "postgresql://postgres@127.0.0.1:5300/redis_backend",
     [string]$MinimumAgentBusVersion = "0.5.0",
-    [switch]$Strict
+    [switch]$Strict,
+    [switch]$SkipMcpSmoke,
+    [int]$ExpectedMcpToolCount = 17,
+    [int]$McpSmokeTimeoutSeconds = 5,
+    [string]$CodexConfigPath = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$resolvedCodexConfigPath = if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) {
+    Join-Path $HomeDir ".codex/config.toml"
+}
+else {
+    $CodexConfigPath
+}
 $results = New-Object System.Collections.Generic.List[object]
 
 function Add-CheckResult {
@@ -99,7 +109,7 @@ function Get-AgentBusVersion {
 
     Add-CheckResult -Name "binary:$CommandName" -Status "ok" -Detail "Resolved command" -Path $cmd.Source
     if ($CommandName -ne "agent-bus") {
-        Add-CheckResult -Name "version:$CommandName" -Status "ok" -Detail "Version inherited from the validated workspace install; stdio/service binary is not invoked for --version" -Path $cmd.Source
+        Add-CheckResult -Name "version:$CommandName" -Status "skipped" -Detail "Server binary is not invoked with --version; validate its runtime identity through the applicable smoke or health endpoint" -Path $cmd.Source
         return
     }
     try {
@@ -120,6 +130,170 @@ function Get-AgentBusVersion {
     }
     catch {
         Add-CheckResult -Name "version:$CommandName" -Status "warn" -Detail $_.Exception.Message -Path $cmd.Source
+    }
+}
+
+function Get-TomlStringValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Body,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $escapedName = [regex]::Escape($Name)
+    $pattern = '(?m)^\s*{0}\s*=\s*(?<quote>["''])(?<value>.*?)\k<quote>\s*(?:#.*)?$' -f $escapedName
+    $match = [regex]::Match($Body, $pattern)
+    if (-not $match.Success) {
+        return $null
+    }
+    return $match.Groups["value"].Value
+}
+
+function Get-TomlBareValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Body,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $escapedName = [regex]::Escape($Name)
+    $match = [regex]::Match($Body, "(?m)^\s*$escapedName\s*=\s*(?<value>[^#\r\n]+)")
+    if (-not $match.Success) {
+        return $null
+    }
+    return $match.Groups["value"].Value.Trim()
+}
+
+function Test-CodexAgentBusToml {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        Add-CheckResult -Name "codex:agent-bus" -Status "missing" -Detail "File not found" -Path $Path
+        return
+    }
+
+    $raw = Get-Content -Path $Path -Raw
+    if (Test-PrivateNumericEndpoint -Text $raw) {
+        Add-CheckResult -Name "numeric-url:$Path" -Status "warn" -Detail "Private numeric IP found; prefer localhost or a stable hostname" -Path $Path
+    }
+
+    $sectionPattern = '(?ms)^\s*\[mcp_servers\.agent_bus\]\s*(?<body>.*?)(?=^\s*\[|\z)'
+    $sections = [regex]::Matches($raw, $sectionPattern)
+    if ($sections.Count -eq 0) {
+        Add-CheckResult -Name "codex:agent-bus" -Status "warn" -Detail "agent_bus MCP server entry not found" -Path $Path
+        return
+    }
+    if ($sections.Count -gt 1) {
+        Add-CheckResult -Name "codex:agent-bus-sections" -Status "fail" -Detail "Multiple agent_bus MCP sections found" -Path $Path
+        return
+    }
+
+    $body = $sections[0].Groups["body"].Value
+    $url = Get-TomlStringValue -Body $body -Name "url"
+    $command = Get-TomlStringValue -Body $body -Name "command"
+    $enabled = Get-TomlBareValue -Body $body -Name "enabled"
+    $commandArgs = Get-TomlBareValue -Body $body -Name "args"
+
+    if ($enabled -and $enabled -match '^(?i:false)$') {
+        Add-CheckResult -Name "codex:agent-bus-enabled" -Status "warn" -Detail "agent_bus MCP entry is disabled" -Path $Path
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($url)) {
+        Add-CheckResult -Name "codex:agent-bus" -Status "ok" -Detail "agent_bus MCP entry found (streamable HTTP)" -Path $Path
+        if ($url -match '^https?://(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::|/|$)') {
+            Add-CheckResult -Name "codex:transport" -Status "warn" -Detail "Local HTTP MCP depends on AgentHub startup; prefer the dedicated agent-bus-mcp stdio binary for same-machine Codex" -Path $Path
+        }
+        else {
+            Add-CheckResult -Name "codex:transport" -Status "ok" -Detail "HTTP MCP uses a non-loopback endpoint" -Path $Path
+        }
+        return [pscustomobject]@{
+            Transport = "http"
+            Url       = $url
+            Command   = $null
+            Arguments = @()
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($command)) {
+        Add-CheckResult -Name "codex:agent-bus" -Status "fail" -Detail "agent_bus MCP entry has neither url nor command" -Path $Path
+        return $null
+    }
+
+    $arguments = @(
+        [regex]::Matches([string]$commandArgs, '["''](?<value>.*?)["'']') |
+            ForEach-Object { $_.Groups["value"].Value }
+    )
+    Add-CheckResult -Name "codex:agent-bus" -Status "ok" -Detail "agent_bus MCP entry found (stdio)" -Path $Path
+    if ($command -match '(?i)(?:^|[\\/])agent-bus-mcp(?:\.exe)?$') {
+        Add-CheckResult -Name "codex:transport" -Status "ok" -Detail "Uses the dedicated agent-bus-mcp stdio binary" -Path $Path
+    }
+    elseif (
+        $command -match '(?i)(?:^|[\\/])agent-bus(?:\.exe)?$' -and
+        $commandArgs -match '(?i)\bserve\b' -and
+        $commandArgs -match '(?i)\bstdio\b'
+    ) {
+        Add-CheckResult -Name "codex:transport" -Status "warn" -Detail "Uses the compatible agent-bus serve --transport stdio fallback instead of the dedicated MCP binary" -Path $Path
+    }
+    else {
+        Add-CheckResult -Name "codex:transport" -Status "fail" -Detail "Stdio command is not the dedicated agent-bus-mcp binary or the supported CLI fallback" -Path $Path
+    }
+    return [pscustomobject]@{
+        Transport = "stdio"
+        Url       = $null
+        Command   = $command
+        Arguments = $arguments
+    }
+}
+
+function Test-AgentBusMcpSmoke {
+    param(
+        [switch]$Skip,
+        $ActiveTransport,
+        [Parameter(Mandatory = $true)][int]$ExpectedToolCount,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $smokeScript = Join-Path $PSScriptRoot "test-agent-bus-mcp-smoke.ps1"
+    if ($Skip) {
+        Add-CheckResult -Name "mcp-smoke:stdio" -Status "skipped" -Detail "Skipped by -SkipMcpSmoke" -Path $smokeScript
+        return
+    }
+    if ($null -eq $ActiveTransport) {
+        Add-CheckResult -Name "mcp-smoke:active" -Status "fail" -Detail "Active Codex agent_bus transport could not be resolved" -Path $smokeScript
+        return
+    }
+    if ($ActiveTransport.Transport -ne "stdio") {
+        Add-CheckResult -Name "mcp-smoke:active" -Status "warn" -Detail "Active Codex transport is HTTP; stdio smoke was not substituted for the configured endpoint" -Path $ActiveTransport.Url
+        return
+    }
+    if (-not (Test-Path $smokeScript)) {
+        Add-CheckResult -Name "mcp-smoke:stdio" -Status "fail" -Detail "MCP smoke script not found" -Path $smokeScript
+        return
+    }
+
+    $mcpCommand = Get-Command $ActiveTransport.Command -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $mcpCommand) {
+        Add-CheckResult -Name "mcp-smoke:active" -Status "fail" -Detail "Configured Codex MCP command not found" -Path $ActiveTransport.Command
+        return
+    }
+
+    try {
+        $smokeOutput = & $smokeScript `
+            -Command $mcpCommand.Source `
+            -ArgumentList @($ActiveTransport.Arguments) `
+            -TimeoutSeconds $TimeoutSeconds `
+            -ExpectedToolCount $ExpectedToolCount
+        $smoke = $smokeOutput | ConvertFrom-Json -Depth 100
+        if (-not $smoke.ok) {
+            throw "MCP smoke did not report success."
+        }
+        Add-CheckResult `
+            -Name "mcp-smoke:active" `
+            -Status "ok" `
+            -Detail "Initialize/tools-list passed; protocol=$($smoke.protocolVersion), server=$($smoke.serverName) $($smoke.serverVersion), tools=$($smoke.toolCount)" `
+            -Path $mcpCommand.Source
+    }
+    catch {
+        Add-CheckResult -Name "mcp-smoke:active" -Status "fail" -Detail "Configured Codex MCP stdio smoke failed: $($_.Exception.Message)" -Path $mcpCommand.Source
     }
 }
 
@@ -307,6 +481,12 @@ foreach ($commandName in @("agent-bus", "agent-bus-mcp", "agent-bus-http")) {
     Get-AgentBusVersion -CommandName $commandName -MinimumVersion $MinimumAgentBusVersion
 }
 Test-AgentBusInstallShadowing
+$codexMcpTransport = Test-CodexAgentBusToml -Path $resolvedCodexConfigPath
+Test-AgentBusMcpSmoke `
+    -Skip:$SkipMcpSmoke `
+    -ActiveTransport $codexMcpTransport `
+    -ExpectedToolCount $ExpectedMcpToolCount `
+    -TimeoutSeconds $McpSmokeTimeoutSeconds
 
 $serviceAuthState = Get-AgentHubServiceAuthState -ServiceName "AgentHub"
 if ($serviceAuthState.installed) {
@@ -326,7 +506,6 @@ Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".claude/mcp.json") -ClientName "
 Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".claude.json") -ClientName "claude-legacy"
 Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".gemini/settings.json") -ClientName "gemini"
 Test-JsonSyntax -Path (Join-Path $HomeDir ".antigravity/argv.json") | Out-Null
-Test-TextConfig -Path (Join-Path $HomeDir ".codex/config.toml") -Needle "[mcp_servers.agent_bus]" -Label "codex:agent-bus"
 Test-TextConfig -Path (Join-Path $HomeDir ".agents/AGENT_COORDINATION.md") -Needle "agent-bus" -Label "agents:coordination-doc"
 Test-TextConfig -Path (Join-Path $HomeDir ".codex/AGENT_COORDINATION.md") -Needle "agent-bus" -Label "codex:coordination-doc"
 Test-ExampleConfig
