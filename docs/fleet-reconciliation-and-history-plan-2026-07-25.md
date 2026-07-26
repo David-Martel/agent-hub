@@ -279,8 +279,20 @@ runner, cache version/path, cache health, test counts, and artifact hashes.
 Concurrent local builds should be a supported case, not a reason to
 consolidate or restart a shared cache server.
 
-- Add and migrate the history catalog tables without modifying current bus
-  tables.
+- The first catalog slice is implemented as an explicit-only, checksummed
+  `agent_history` migration. It uses deterministic 32-byte identities,
+  parser/policy provenance, source cursors, redacted locators, and a
+  transaction-scoped advisory lock without modifying current bus tables or
+  message-backup formats.
+- Apply the catalog migration to the authoritative hub only after the merged
+  binary passes a disposable-database migration/rollback drill. Do not ingest
+  provider history until redaction, quarantine, resumable cursor, and distinct
+  catalog backup/restore gates are implemented.
+- The 2026-07-26 local drill passed against a named disposable PostgreSQL
+  database: migration apply/reapply, fixed schema snapshot, checksum round-trip,
+  bus-table separation, nullable artifact deduplication, read-only status, and
+  CLI no-op migration were verified; the disposable database was then removed.
+  CI repeats the contract test with a run-scoped database and cleanup trap.
 - Implement four resumable provider adapters and redaction/quarantine policy.
 - Add machine identity to presence metadata by default.
 - Keep the versioned fleet manifest current in every deployment PR and run the

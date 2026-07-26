@@ -185,7 +185,7 @@ is tracked in `agents.TODO.md` as CLI thin-surface cleanup.
 - [x] Add a versioned, non-secret fleet manifest and read-only fleet doctor
   covering authoritative routes, build provenance, config permissions, storage
   readiness, write integrity, and expected active/inactive services.
-- [ ] Add separately migrated history catalog tables with deterministic IDs,
+- [x] Add separately migrated history catalog tables with deterministic IDs,
   source cursors, hashes, and parser/policy versions.
 - [ ] Implement resumable Codex, Claude, Antigravity, and Gemini history
   adapters plus secret redaction and quarantine.

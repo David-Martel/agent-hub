@@ -1,5 +1,6 @@
 //! CLI command implementations.
 
+use agent_bus_core::history_catalog::{history_catalog_status, migrate_history_catalog};
 use anyhow::{Context as _, Result, anyhow};
 
 use crate::models::{MAX_HISTORY_MINUTES, Message, Presence};
@@ -151,6 +152,24 @@ pub(crate) struct CompactContextArgs<'a> {
 // ---------------------------------------------------------------------------
 // Command implementations
 // ---------------------------------------------------------------------------
+
+pub(crate) fn cmd_history_migrate(settings: &Settings, encoding: &Encoding) -> Result<()> {
+    let mut client = crate::postgres_store::connect_postgres(settings)?
+        .context("history migrate requires a configured PostgreSQL database URL")?;
+    let report =
+        migrate_history_catalog(&mut client).context("failed to migrate history catalog")?;
+    output(&report, encoding);
+    Ok(())
+}
+
+pub(crate) fn cmd_history_status(settings: &Settings, encoding: &Encoding) -> Result<()> {
+    let mut client = crate::postgres_store::connect_postgres(settings)?
+        .context("history status requires a configured PostgreSQL database URL")?;
+    let status =
+        history_catalog_status(&mut client).context("failed to read history catalog status")?;
+    output(&status, encoding);
+    Ok(())
+}
 
 pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_storage: bool) {
     #[cfg(feature = "server-mode")]

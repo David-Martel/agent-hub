@@ -55,7 +55,6 @@ jobs:
         env:
           AGENT_BUS_REDIS_URL: redis://localhost:6380/0
           AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
-
   build-release:
     name: Release Build (${{ matrix.name }})
     strategy:
@@ -122,6 +121,37 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo test --workspace --lib --bins -- --test-threads=4
       - run: cargo build --release --workspace --bins
+      - name: History catalog migration contract
+        shell: pwsh
+        run: |
+          $historyDb = "agent_bus_history_ci_$($env:GITHUB_RUN_ID)_$($env:GITHUB_RUN_ATTEMPT)"
+          if ($historyDb -notmatch '^agent_bus_history_ci_[0-9]+_[0-9]+$') {
+            throw "Refusing unsafe disposable database name: $historyDb"
+          }
+          $createdb = Get-Command createdb.exe -ErrorAction Stop
+          $dropdb = Get-Command dropdb.exe -ErrorAction Stop
+          & $dropdb.Source -h 127.0.0.1 -p 5300 -U postgres --if-exists $historyDb
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to remove stale disposable database $historyDb"
+          }
+          try {
+            & $createdb.Source -h 127.0.0.1 -p 5300 -U postgres $historyDb
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to create disposable database $historyDb"
+            }
+            $env:AGENT_BUS_TEST_DATABASE_URL =
+              "postgresql://postgres@127.0.0.1:5300/$historyDb"
+            cargo test -p agent-bus-core --test history_catalog_postgres -- --nocapture
+            if ($LASTEXITCODE -ne 0) {
+              throw "History catalog migration contract failed"
+            }
+          } finally {
+            Remove-Item Env:AGENT_BUS_TEST_DATABASE_URL -ErrorAction SilentlyContinue
+            & $dropdb.Source -h 127.0.0.1 -p 5300 -U postgres --if-exists $historyDb
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to remove disposable database $historyDb"
+            }
+          }
       - name: Validate concurrent build helper behavior
         shell: pwsh
         run: ./scripts/test-rust-build-common.ps1
