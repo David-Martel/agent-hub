@@ -145,6 +145,22 @@ pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1 -DryRun
 - `agent-bus spool-send` and `agent-bus spool-replay` provide local offline message queuing using the same NDJSON format as `batch-send`.
 - HTTP operators can use `GET /admin/service` and `POST /admin/service/control` directly. Supported control actions are `pause`, `resume`, `flush`, and `stop`.
 
+## Sanitized Agent History Catalog
+
+- `agent-bus history status --encoding json` inspects the separately versioned
+  `agent_history` PostgreSQL schema without creating or changing it.
+- `agent-bus history migrate` is the only migration entrypoint. Normal health,
+  message reads/writes, and service startup never create catalog objects.
+- Catalog migrations are transaction-serialized, checksum-verified, and refuse
+  to continue if an applied migration name or checksum has drifted.
+- Source, session, event, and sanitized-artifact identities are deterministic
+  32-byte hashes scoped by their provider identity and relevant parser or
+  redaction-policy version. Raw filesystem paths are not stored.
+- Existing `backup` and `validate-backup` commands remain coordination-message
+  NDJSON only. They do not silently include catalog records; catalog backup and
+  restore require a distinct, checksummed format before provider ingestion is
+  enabled.
+
 ## Operator Examples
 
 - Good: `agent-bus compact-context --agent claude --repo wezterm --tag planning --thread-id wezterm-joint-plan-20260324 --since-minutes 120 --max-tokens 2000`

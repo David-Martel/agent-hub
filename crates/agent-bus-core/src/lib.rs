@@ -8,6 +8,7 @@ pub mod build_info;
 pub mod channels;
 pub mod codex_bridge;
 pub mod error;
+pub mod history_catalog;
 pub mod journal;
 pub mod mcp_dispatch;
 pub mod models;

@@ -78,6 +78,20 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
+pub(crate) enum HistoryCmd {
+    /// Apply pending, checksum-verified history catalog migrations.
+    Migrate {
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+    /// Inspect history catalog migration state without modifying `PostgreSQL`.
+    Status {
+        #[arg(long, default_value = "compact", value_enum, help = "Output format")]
+        encoding: Encoding,
+    },
+}
+
+#[derive(Subcommand)]
 pub(crate) enum Cmd {
     /// Check Redis bus health and report runtime metadata.
     #[command(long_about = "Ping Redis and, when configured, PostgreSQL.\n\n\
@@ -95,6 +109,10 @@ pub(crate) enum Cmd {
         )]
         require_storage: bool,
     },
+
+    /// Manage the separately migrated sanitized-history catalog.
+    #[command(subcommand)]
+    History(HistoryCmd),
 
     /// Post a message to the coordination bus.
     #[command(
@@ -1295,6 +1313,29 @@ mod tests {
         let cli = parse(&["agent-bus", "health", "--encoding", "json"])
             .expect("health --encoding json must parse");
         assert!(matches!(cli.command, Cmd::Health { .. }));
+    }
+
+    #[test]
+    fn parse_history_migrate() {
+        let cli = parse(&["agent-bus", "history", "migrate", "--encoding", "json"])
+            .expect("history migrate must parse");
+        assert!(matches!(
+            cli.command,
+            Cmd::History(HistoryCmd::Migrate {
+                encoding: Encoding::Json
+            })
+        ));
+    }
+
+    #[test]
+    fn parse_history_status() {
+        let cli = parse(&["agent-bus", "history", "status"]).expect("history status must parse");
+        assert!(matches!(
+            cli.command,
+            Cmd::History(HistoryCmd::Status {
+                encoding: Encoding::Compact
+            })
+        ));
     }
 
     // ------------------------------------------------------------------
