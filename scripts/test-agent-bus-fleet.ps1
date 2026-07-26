@@ -31,6 +31,15 @@ function Test-SafeFleetIdentifier {
     return $Value -match '^[0-9A-Za-z._@-]+$'
 }
 
+function ConvertTo-PosixShellLiteral {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ($Path -notmatch '^/[0-9A-Za-z._/+-]+$') {
+        throw "Unsafe absolute POSIX path in fleet manifest: $Path"
+    }
+    return "'$Path'"
+}
+
 function Invoke-RemoteFleetCommand {
     param(
         [Parameter(Mandatory = $true)][string]$HostName,
@@ -47,18 +56,29 @@ function Invoke-RemoteFleetCommand {
     return ($output -join "`n").Trim()
 }
 
-function Test-BuildRevision {
+function Test-BuildRevisionMatch {
     param(
-        [Parameter(Mandatory = $true)][string]$Machine,
         [Parameter(Mandatory = $true)][string]$VersionText,
         [Parameter(Mandatory = $true)][string]$Revision
     )
 
-    if ($VersionText -match "(?i)-g$([regex]::Escape($Revision))(?:[ )-]|$)") {
-        Add-FleetCheck -Machine $Machine -Check "build-revision" -Status "ok" -Detail "Reports g$Revision"
+    return $VersionText -notmatch '(?i)-dirty(?:[ )]|$)' -and
+        $VersionText -match "(?i)-g$([regex]::Escape($Revision))(?:[ )]|$)"
+}
+
+function Test-BuildRevision {
+    param(
+        [Parameter(Mandatory = $true)][string]$Machine,
+        [Parameter(Mandatory = $true)][string]$VersionText,
+        [Parameter(Mandatory = $true)][string]$Revision,
+        [string]$CheckName = "build-revision"
+    )
+
+    if (Test-BuildRevisionMatch -VersionText $VersionText -Revision $Revision) {
+        Add-FleetCheck -Machine $Machine -Check $CheckName -Status "ok" -Detail "Reports clean g$Revision"
     }
     else {
-        Add-FleetCheck -Machine $Machine -Check "build-revision" -Status "fail" -Detail "Expected g$Revision; observed '$VersionText'"
+        Add-FleetCheck -Machine $Machine -Check $CheckName -Status "fail" -Detail "Expected clean g$Revision; observed '$VersionText'"
     }
 }
 
@@ -66,7 +86,8 @@ function Test-HealthDocument {
     param(
         [Parameter(Mandatory = $true)][string]$Machine,
         [Parameter(Mandatory = $true)]$Health,
-        [Parameter(Mandatory = $true)][string]$ProtocolVersion
+        [Parameter(Mandatory = $true)][string]$ProtocolVersion,
+        [Parameter(Mandatory = $true)][string]$Revision
     )
 
     if ($Health.ok -eq $true -and $Health.storage_ready -eq $true) {
@@ -81,6 +102,11 @@ function Test-HealthDocument {
     else {
         Add-FleetCheck -Machine $Machine -Check "protocol" -Status "fail" -Detail "Expected $ProtocolVersion; observed '$($Health.protocol_version)'"
     }
+    Test-BuildRevision `
+        -Machine $Machine `
+        -VersionText ([string]$Health.build_version) `
+        -Revision $Revision `
+        -CheckName "service-build-revision"
     if ($Health.pg_dropped_writes -eq 0 -and $Health.pg_write_errors -eq 0) {
         Add-FleetCheck -Machine $Machine -Check "write-integrity" -Status "ok" -Detail "No dropped PostgreSQL writes or write errors"
     }
@@ -135,6 +161,16 @@ foreach ($machine in $machines) {
     }
     if ([string]::IsNullOrWhiteSpace([string]$machine.canonical_repo)) {
         throw "canonical_repo is required for $machineId."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$machine.cli_path)) {
+        throw "cli_path is required for $machineId."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$machine.config_path)) {
+        throw "config_path is required for $machineId."
+    }
+    if ($machine.connection -eq "ssh-linux") {
+        ConvertTo-PosixShellLiteral -Path ([string]$machine.cli_path) | Out-Null
+        ConvertTo-PosixShellLiteral -Path ([string]$machine.config_path) | Out-Null
     }
     if ([string]$machine.client_server_url -notmatch '^http://[0-9A-Za-z._-]+:[0-9]+$') {
         throw "client_server_url must be a stable HTTP hostname and port for $machineId."
@@ -192,7 +228,7 @@ else {
                         $env:AGENT_BUS_SERVER_URL = $priorServerUrl
                     }
                 }
-                Test-HealthDocument -Machine $machineId -Health $health -ProtocolVersion $manifest.expected_protocol_version
+                Test-HealthDocument -Machine $machineId -Health $health -ProtocolVersion $manifest.expected_protocol_version -Revision $revision
 
                 foreach ($serviceName in @($machine.required_active_services)) {
                     $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
@@ -217,10 +253,15 @@ else {
             }
             else {
                 $hostName = [string]$machine.ssh_host
-                $versionText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText '"$HOME/.local/bin/agent-bus" --version'
+                $cliShell = ConvertTo-PosixShellLiteral -Path ([string]$machine.cli_path)
+                $configShell = ConvertTo-PosixShellLiteral -Path ([string]$machine.config_path)
+                $hubEnvPath = ([string]$machine.config_path) -replace '/[^/]+$', '/hub.env'
+                $hubEnvShell = ConvertTo-PosixShellLiteral -Path $hubEnvPath
+
+                $versionText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "$cliShell --version"
                 Test-BuildRevision -Machine $machineId -VersionText $versionText -Revision $revision
 
-                $configSummaryText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText 'jq -c ''{server_url,auth_token_present:((.auth_token|type)=="string" and (.auth_token|length)>0)}'' "$HOME/.config/agent-bus/config.json"'
+                $configSummaryText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "jq -c '{server_url,auth_token_present:((.auth_token|type)==`"string`" and (.auth_token|length)>0)}' $configShell"
                 $configSummary = $configSummaryText | ConvertFrom-Json
                 $effectiveServerUrl = [string]$configSummary.server_url
                 if ([string]::IsNullOrWhiteSpace($effectiveServerUrl) -and $machine.allow_default_server_url -eq $true) {
@@ -234,7 +275,7 @@ else {
                 }
                 $authSourcePresent = $configSummary.auth_token_present -eq $true
                 if ($machine.auth_source -eq "hub-env") {
-                    $hubEnvAuth = Invoke-RemoteFleetCommand -HostName $hostName -CommandText 'if grep -Eq ''^AGENT_BUS_AUTH_TOKEN=.+$'' "$HOME/.config/agent-bus/hub.env"; then echo true; else echo false; fi'
+                    $hubEnvAuth = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "if grep -Eq '^AGENT_BUS_AUTH_TOKEN=.+$' $hubEnvShell; then echo true; else echo false; fi"
                     $authSourcePresent = $hubEnvAuth -eq "true"
                 }
                 if ($authSourcePresent) {
@@ -245,7 +286,7 @@ else {
                 }
 
                 if (-not [string]::IsNullOrWhiteSpace([string]$machine.required_config_mode)) {
-                    $mode = Invoke-RemoteFleetCommand -HostName $hostName -CommandText 'stat -c %a "$HOME/.config/agent-bus/config.json"'
+                    $mode = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "stat -c %a $configShell"
                     if ($mode -eq [string]$machine.required_config_mode) {
                         Add-FleetCheck -Machine $machineId -Check "config-mode" -Status "ok" -Detail $mode
                     }
@@ -254,9 +295,9 @@ else {
                     }
                 }
 
-                $healthText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText '"$HOME/.local/bin/agent-bus" health --encoding json'
+                $healthText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "$cliShell health --encoding json"
                 $health = $healthText | ConvertFrom-Json
-                Test-HealthDocument -Machine $machineId -Health $health -ProtocolVersion $manifest.expected_protocol_version
+                Test-HealthDocument -Machine $machineId -Health $health -ProtocolVersion $manifest.expected_protocol_version -Revision $revision
 
                 foreach ($serviceName in @($machine.required_active_services)) {
                     if (-not (Test-SafeFleetIdentifier -Value $serviceName)) {
