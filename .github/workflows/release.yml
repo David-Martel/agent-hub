@@ -42,7 +42,7 @@ jobs:
           }
 
           $env:AGENT_BUS_SERVER_HOST = "localhost"
-          $env:AGENT_BUS_SERVER_PORT = "8414"
+          $env:AGENT_BUS_HTTP_PORT = "8414"
           $process = Start-Process `
             -FilePath "$PWD/target/release/agent-bus-http.exe" `
             -PassThru `
@@ -127,7 +127,7 @@ jobs:
           }
 
           export AGENT_BUS_SERVER_HOST=localhost
-          export AGENT_BUS_SERVER_PORT=8414
+          export AGENT_BUS_HTTP_PORT=8414
           "$CARGO_TARGET_DIR/release/agent-bus-http" >release-http.log 2>&1 &
           http_pid=$!
           trap 'kill "$http_pid" 2>/dev/null || true' EXIT
