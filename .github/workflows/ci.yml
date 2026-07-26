@@ -140,13 +140,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Validate Linux build + tests via Docker
-        shell: bash
+        shell: pwsh
         run: |
-          command -v docker >/dev/null
-          docker info >/dev/null
+          Get-Command docker -ErrorAction Stop | Out-Null
+          docker info | Out-Null
           docker build -f docker/Dockerfile.linux -t agent-bus-linux-validate .
-          printf '### Docker Build\n- Native %s image build and workspace tests passed\n' \
-            "linux-x64" >> "$GITHUB_STEP_SUMMARY"
+          @(
+            '### Docker Build'
+            '- Native linux-x64 image build and workspace tests passed'
+          ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
   docker-arm64:
     name: Docker Build (linux-arm64)
