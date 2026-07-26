@@ -28,6 +28,10 @@
 #   --no-verify              Skip ALL post-install verification (version + health).
 #   --force                  Redeploy binaries even if sha256 already matches.
 #   --bin-dir <path>         Override the deploy directory (default: ~/.local/bin).
+#   --with-http-service      Render packaging/systemd/agent-bus-http.service.in
+#                            and install it via `systemctl --user` (enabled,
+#                            NOT started or restarted). The unit uses the
+#                            dedicated agent-bus-http binary.
 #   --with-relay-service     Render packaging/systemd/agent-bus-relay.service.in
 #                            with this machine's hostname and install it via
 #                            `systemctl --user` (enabled, NOT started).
@@ -57,6 +61,7 @@ SKIP_BUILD=0
 NO_VERIFY_HEALTH=0
 NO_VERIFY=0
 FORCE=0
+WITH_HTTP_SERVICE=0
 WITH_RELAY_SERVICE=0
 RELAY_BIN=""
 HUB_URL=""
@@ -91,6 +96,7 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { err "--bin-dir requires a path argument"; exit 2; }
             BIN_DIR="$2"; shift 2 ;;
         --bin-dir=*) BIN_DIR="${1#--bin-dir=}"; shift ;;
+        --with-http-service) WITH_HTTP_SERVICE=1; shift ;;
         --with-relay-service) WITH_RELAY_SERVICE=1; shift ;;
         --relay-bin)
             [[ $# -ge 2 ]] || { err "--relay-bin requires a path argument"; exit 2; }
@@ -406,6 +412,156 @@ except Exception:
     return 1
 }
 
+# ── systemd --user helpers ────────────────────────────────────────────────────
+ensure_user_service_linger() {
+    if ! command -v loginctl >/dev/null 2>&1; then
+        warn "loginctl not available; skipping linger (service will only run while a login session is active)."
+        return 0
+    fi
+
+    local linger_state
+    linger_state="$(loginctl show-user "$(whoami)" --property=Linger 2>/dev/null | cut -d= -f2 || echo "")"
+    if [[ "$linger_state" == "yes" ]]; then
+        log "Linger already enabled for $(whoami); user services will run without an active login session."
+    else
+        log "Enabling linger for $(whoami) (systemctl --user services survive logout)..."
+        if loginctl enable-linger "$(whoami)" 2>/dev/null; then
+            ok "Linger enabled."
+        else
+            warn "Could not enable linger (may require polkit/root). Run manually: loginctl enable-linger $(whoami)"
+        fi
+    fi
+}
+
+# Service configuration may contain bearer auth material. Refuse to install a
+# unit that would read a group/world-accessible config or EnvironmentFile.
+require_private_service_config() {
+    local path="$1"
+    local label="$2"
+    [[ -e "$path" ]] || return 0
+
+    if [[ ! -f "$path" ]]; then
+        err "$label must be a regular file: $path"
+        exit 1
+    fi
+
+    local mode=""
+    mode="$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path" 2>/dev/null || true)"
+    if [[ ! "$mode" =~ ^[0-7]{3,4}$ ]]; then
+        warn "Could not verify permissions for $label at $path; ensure it is owner-readable only."
+        return 0
+    fi
+
+    local group_digit="${mode: -2:1}"
+    local other_digit="${mode: -1}"
+    if [[ "$group_digit" != "0" || "$other_digit" != "0" ]]; then
+        err "$label may contain auth material and must not be group/world accessible: $path (mode $mode)"
+        err "Fix with: chmod 600 '$path'"
+        exit 1
+    fi
+}
+
+escape_sed_replacement() {
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//&/\\&}"
+    value="${value//|/\\|}"
+    printf '%s' "$value"
+}
+
+preflight_http_service() {
+    if [[ $WITH_HTTP_SERVICE -eq 0 ]]; then
+        return 0
+    fi
+
+    local template="${REPO_ROOT}/packaging/systemd/agent-bus-http.service.in"
+    if [[ ! -f "$template" ]]; then
+        err "HTTP service template not found: $template"
+        exit 1
+    fi
+
+    require_private_service_config \
+        "${HOME}/.config/agent-bus/config.json" \
+        "agent-bus config"
+    require_private_service_config \
+        "${HOME}/.config/agent-bus/hub.env" \
+        "agent-bus HTTP EnvironmentFile"
+}
+
+# ── optional dedicated systemd --user HTTP service ────────────────────────────
+install_http_service() {
+    if [[ $WITH_HTTP_SERVICE -eq 0 ]]; then
+        return 0
+    fi
+
+    # Verification may create or replace config.json after the early preflight.
+    # Re-check at the last responsible moment before rendering/enabling the unit.
+    require_private_service_config \
+        "${HOME}/.config/agent-bus/config.json" \
+        "agent-bus config"
+    require_private_service_config \
+        "${HOME}/.config/agent-bus/hub.env" \
+        "agent-bus HTTP EnvironmentFile"
+
+    local template="${REPO_ROOT}/packaging/systemd/agent-bus-http.service.in"
+    local http_bin="${BIN_DIR}/agent-bus-http"
+    local config="${HOME}/.config/agent-bus/config.json"
+    local env_file="${HOME}/.config/agent-bus/hub.env"
+    local unit_dir="${HOME}/.config/systemd/user"
+    local unit_path="${unit_dir}/agent-bus-http.service"
+
+    if [[ $DRY_RUN -eq 1 ]]; then
+        log "[dry-run] Would render $template -> $unit_path"
+        log "[dry-run]   @HTTP_BIN@ -> $http_bin"
+        log "[dry-run]   @CONFIG@   -> $config"
+        log "[dry-run]   @ENV_FILE@ -> $env_file (optional; contents never embedded)"
+        log "[dry-run] Would run: systemctl --user daemon-reload"
+        log "[dry-run] Would run: systemctl --user enable agent-bus-http.service"
+        log "[dry-run] Would run: loginctl enable-linger \$USER (if not already enabled)"
+        log "[dry-run] Would NOT start or restart the service."
+        return 0
+    fi
+
+    if [[ ! -x "$http_bin" ]]; then
+        err "Dedicated HTTP binary not found or not executable after deployment: $http_bin"
+        exit 1
+    fi
+
+    mkdir -p "$unit_dir"
+
+    local http_bin_sed config_sed env_file_sed
+    http_bin_sed="$(escape_sed_replacement "$http_bin")"
+    config_sed="$(escape_sed_replacement "$config")"
+    env_file_sed="$(escape_sed_replacement "$env_file")"
+    sed \
+        -e "s|@HTTP_BIN@|${http_bin_sed}|g" \
+        -e "s|@CONFIG@|${config_sed}|g" \
+        -e "s|@ENV_FILE@|${env_file_sed}|g" \
+        "$template" > "${unit_path}.tmp"
+
+    if [[ -f "$unit_path" ]] && cmp -s "${unit_path}.tmp" "$unit_path"; then
+        rm -f "${unit_path}.tmp"
+        log "HTTP unit already up-to-date: $unit_path"
+    else
+        chmod 644 "${unit_path}.tmp"
+        mv -f "${unit_path}.tmp" "$unit_path"
+        ok "Rendered dedicated HTTP unit -> $unit_path"
+    fi
+
+    if ! command -v systemctl >/dev/null 2>&1; then
+        warn "systemctl not found; skipping daemon-reload/enable. Unit file was written but not installed."
+        return 0
+    fi
+
+    systemctl --user daemon-reload
+    systemctl --user enable agent-bus-http.service
+    ok "Enabled agent-bus-http.service (not started or restarted)."
+    log "Activate the installed unit explicitly with: systemctl --user start agent-bus-http.service"
+    log "Reload an already-running hub explicitly with: systemctl --user restart agent-bus-http.service"
+
+    ensure_user_service_linger
+}
+
 # ── optional systemd --user relay service ─────────────────────────────────────
 install_relay_service() {
     if [[ $WITH_RELAY_SERVICE -eq 0 ]]; then
@@ -487,23 +643,7 @@ install_relay_service() {
     systemctl --user enable agent-bus-relay.service
     ok "Enabled agent-bus-relay.service (not started — start manually with: systemctl --user start agent-bus-relay.service)"
 
-    if ! command -v loginctl >/dev/null 2>&1; then
-        warn "loginctl not available; skipping linger (service will only run while a login session is active)."
-        return 0
-    fi
-
-    local linger_state
-    linger_state="$(loginctl show-user "$(whoami)" --property=Linger 2>/dev/null | cut -d= -f2 || echo "")"
-    if [[ "$linger_state" == "yes" ]]; then
-        log "Linger already enabled for $(whoami); user services will run without an active login session."
-    else
-        log "Enabling linger for $(whoami) (systemctl --user services survive logout)..."
-        if loginctl enable-linger "$(whoami)" 2>/dev/null; then
-            ok "Linger enabled."
-        else
-            warn "Could not enable linger (may require polkit/root). Run manually: loginctl enable-linger $(whoami)"
-        fi
-    fi
+    ensure_user_service_linger
 }
 
 # ── main ───────────────────────────────────────────────────────────────────────
@@ -511,11 +651,13 @@ main() {
     log "agent-hub installer starting (repo: $REPO_ROOT)"
     [[ $DRY_RUN -eq 1 ]] && warn "DRY RUN — no files, binaries, or services will be changed."
 
+    preflight_http_service
     run_build
     verify_built_binaries
     deploy_binaries
     create_exe_symlinks
     verify_install
+    install_http_service
     install_relay_service
 
     ok "Install complete."

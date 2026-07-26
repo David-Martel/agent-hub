@@ -65,9 +65,7 @@ impl ServerHandler for AgentBusMcpServer {
                 .enable_tools()
                 .build(),
         )
-        .with_server_info(
-            Implementation::new("agent-bus", env!("CARGO_PKG_VERSION")),
-        )
+        .with_server_info(Implementation::new("agent-bus", env!("CARGO_PKG_VERSION")))
         .with_instructions(
             "Agent Hub coordination bus (Redis + PostgreSQL). MANDATORY PROTOCOL: \
              (1) set_presence on session start with your agent ID and capabilities. \

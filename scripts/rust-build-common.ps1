@@ -330,6 +330,7 @@ function Invoke-AgentBusRawCargo {
     $cargoArgs += $Command
     $cargoArgs += $AdditionalArgs
 
+    $capturedCargoOutput = @()
     $output = & cargo @cargoArgs 2>&1 | Tee-Object -Variable capturedCargoOutput
     $exitCode = $LASTEXITCODE
     if (-not $output -and $capturedCargoOutput) {

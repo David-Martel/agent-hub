@@ -30,6 +30,48 @@ Re-running is idempotent: binaries are compared by sha256 before copying,
 and unchanged binaries/symlinks are skipped with a log line rather than
 rewritten.
 
+## Adding the authoritative HTTP hub service
+
+Install and enable a dedicated `systemd --user` hub unit with:
+
+```bash
+./install.sh --with-http-service --dry-run
+./install.sh --with-http-service
+```
+
+This renders
+[`systemd/agent-bus-http.service.in`](systemd/agent-bus-http.service.in) to
+`~/.config/systemd/user/agent-bus-http.service`. The unit:
+
+- runs `~/.local/bin/agent-bus-http --port 8400` directly;
+- pins Redis and PostgreSQL to loopback defaults;
+- loads the normal `~/.config/agent-bus/config.json`;
+- optionally loads `~/.config/agent-bus/hub.env`; and
+- is enabled, but is never automatically started or restarted by the installer.
+
+The unit template never embeds a bearer token. The preferred remote-hub setup
+keeps bind/auth overrides in the optional `hub.env`:
+
+```bash
+AGENT_BUS_SERVER_HOST=0.0.0.0
+AGENT_BUS_ALLOW_REMOTE=true
+AGENT_BUS_AUTH_TOKEN=<from-secret-store>
+```
+
+The same settings can instead be supplied as `server_host`, `allow_remote`, and
+`auth_token` in `config.json`; environment variables take precedence.
+
+Keep both configuration sources owner-only (`chmod 600`). The installer refuses
+group/world-accessible files when `--with-http-service` is requested. Review and
+activate the unit explicitly:
+
+```bash
+systemctl --user cat agent-bus-http.service
+systemctl --user start agent-bus-http.service
+# For a running hub after a binary/unit update:
+systemctl --user restart agent-bus-http.service
+```
+
 ## Update
 
 Re-run the installer after pulling new commits:
@@ -100,4 +142,6 @@ path.
 | File | Purpose |
 |------|---------|
 | [`../install.sh`](../install.sh) | Main POSIX installer (build, deploy, symlink, verify, optional relay) |
+| [`systemd/agent-bus-http.service.in`](systemd/agent-bus-http.service.in) | Dedicated authoritative HTTP hub unit |
 | [`systemd/agent-bus-relay.service.in`](systemd/agent-bus-relay.service.in) | Template for the optional federation relay unit |
+| [`tests/install-http-service-test.sh`](tests/install-http-service-test.sh) | HTTP unit rendering, idempotency, permission, and no-auto-start regression test |

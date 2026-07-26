@@ -17,6 +17,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+if ($ServerHost -notin @("localhost", "127.0.0.1", "::1", "[::1]")) {
+    throw "ServerHost must be a loopback host for stdio MCP clients. Use ServerUrl for remote client routing."
+}
+
 function Resolve-AgentBusCommand {
     param([string]$Requested)
 
@@ -92,7 +96,7 @@ if ($ValidateOnly) {
     if (-not (Test-Path $validator)) {
         throw "Validator not found at $validator"
     }
-    & $validator -ExpectedServerUrl $ServerUrl -ExpectedRedisUrl $RedisUrl -ExpectedDatabaseUrl $DatabaseUrl
+    & $validator -CodexConfigPath $CodexConfigPath -ExpectedServerUrl $ServerUrl -ExpectedRedisUrl $RedisUrl -ExpectedDatabaseUrl $DatabaseUrl
     exit $LASTEXITCODE
 }
 
@@ -212,5 +216,5 @@ if ($Gemini) {
 
 $validator = Join-Path $PSScriptRoot "validate-agent-client-configs.ps1"
 if (Test-Path $validator) {
-    & $validator -ExpectedServerUrl $ServerUrl -ExpectedRedisUrl $RedisUrl -ExpectedDatabaseUrl $DatabaseUrl
+    & $validator -CodexConfigPath $CodexConfigPath -ExpectedServerUrl $ServerUrl -ExpectedRedisUrl $RedisUrl -ExpectedDatabaseUrl $DatabaseUrl
 }

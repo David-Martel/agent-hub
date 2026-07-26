@@ -4,12 +4,23 @@ param(
     [string]$ExpectedRedisUrl = "redis://127.0.0.1:6380/0",
     [string]$ExpectedDatabaseUrl = "postgresql://postgres@127.0.0.1:5300/redis_backend",
     [string]$MinimumAgentBusVersion = "0.5.0",
-    [switch]$Strict
+    [switch]$Strict,
+    [switch]$SkipMcpSmoke,
+    [int]$ExpectedMcpToolCount = 17,
+    [int]$McpSmokeTimeoutSeconds = 5,
+    [string]$CodexConfigPath = "",
+    [switch]$CodexOnly
 )
 
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
+$resolvedCodexConfigPath = if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) {
+    Join-Path $HomeDir ".codex/config.toml"
+}
+else {
+    $CodexConfigPath
+}
 $results = New-Object System.Collections.Generic.List[object]
 
 function Add-CheckResult {
@@ -99,7 +110,7 @@ function Get-AgentBusVersion {
 
     Add-CheckResult -Name "binary:$CommandName" -Status "ok" -Detail "Resolved command" -Path $cmd.Source
     if ($CommandName -ne "agent-bus") {
-        Add-CheckResult -Name "version:$CommandName" -Status "ok" -Detail "Version inherited from the validated workspace install; stdio/service binary is not invoked for --version" -Path $cmd.Source
+        Add-CheckResult -Name "version:$CommandName" -Status "skipped" -Detail "Server binary is not invoked with --version; validate its runtime identity through the applicable smoke or health endpoint" -Path $cmd.Source
         return
     }
     try {
@@ -120,6 +131,365 @@ function Get-AgentBusVersion {
     }
     catch {
         Add-CheckResult -Name "version:$CommandName" -Status "warn" -Detail $_.Exception.Message -Path $cmd.Source
+    }
+}
+
+function ConvertFrom-TomlBasicString {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    if ($Value -match '\\U[0-9A-Fa-f]{8}') {
+        throw "TOML eight-digit Unicode escapes are not supported by this validator."
+    }
+    $withoutSupportedEscapes = [regex]::Replace(
+        $Value,
+        '\\(?:[btnfr"\\]|u[0-9A-Fa-f]{4})',
+        ""
+    )
+    if ($withoutSupportedEscapes.Contains('\')) {
+        throw "Unsupported or incomplete TOML basic-string escape."
+    }
+    return [System.Text.Json.JsonSerializer]::Deserialize(
+        ('"' + $Value + '"'),
+        [string]
+    )
+}
+
+function Get-TomlSectionBody {
+    param(
+        [Parameter(Mandatory = $true)][string]$Document,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $escapedName = [regex]::Escape($Name)
+    $pattern = "(?ms)^\s*\[$escapedName\]\s*(?<body>.*?)(?=^\s*\[|\z)"
+    $sections = [regex]::Matches($Document, $pattern)
+    if ($sections.Count -gt 1) {
+        throw "Multiple [$Name] TOML sections found."
+    }
+    if ($sections.Count -eq 0) {
+        return $null
+    }
+    return $sections[0].Groups["body"].Value
+}
+
+function Get-TomlStringValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Body,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $escapedName = [regex]::Escape($Name)
+    $pattern = '(?m)^\s*{0}\s*=\s*(?:"(?<basic>(?:\\.|[^"\\])*)"|''(?<literal>[^'']*)'')\s*(?:#.*)?$' -f $escapedName
+    $match = [regex]::Match($Body, $pattern)
+    if (-not $match.Success) {
+        return $null
+    }
+    if ($match.Groups["literal"].Success) {
+        return $match.Groups["literal"].Value
+    }
+    return ConvertFrom-TomlBasicString -Value $match.Groups["basic"].Value
+}
+
+function Get-TomlValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Body,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $escapedName = [regex]::Escape($Name)
+    $pattern = @'
+(?msx)
+^\s*{0}\s*=\s*
+(?<value>
+    \[
+        (?:
+            "(?:\\.|[^"\\])*"
+            | '(?:[^']*)'
+            | \#[^\r\n]*(?:\r?\n|\z)
+            | [^"'\]]
+        )*
+    \]
+    | [^#\r\n]+
+)
+[ \t]*(?:\#[^\r\n]*)?\r?$
+'@ -f $escapedName
+    $match = [regex]::Match($Body, $pattern)
+    if (-not $match.Success) {
+        return $null
+    }
+    return $match.Groups["value"].Value.Trim()
+}
+
+function ConvertFrom-TomlStringArray {
+    param([AllowNull()][string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return @()
+    }
+    if (-not $Value.Trim().StartsWith("[") -or -not $Value.Trim().EndsWith("]")) {
+        throw "Expected a TOML array."
+    }
+
+    $source = $Value.Trim()
+    $values = New-Object System.Collections.Generic.List[string]
+    $index = 1
+    $expectValue = $true
+    while ($index -lt ($source.Length - 1)) {
+        while ($index -lt ($source.Length - 1) -and [char]::IsWhiteSpace($source[$index])) {
+            $index++
+        }
+        if ($index -ge ($source.Length - 1)) {
+            break
+        }
+        if ($source[$index] -eq '#') {
+            while ($index -lt ($source.Length - 1) -and $source[$index] -notin @("`r", "`n")) {
+                $index++
+            }
+            continue
+        }
+        if ($source[$index] -eq ',') {
+            if ($expectValue) {
+                throw "Unexpected comma in TOML string array."
+            }
+            $expectValue = $true
+            $index++
+            continue
+        }
+        if (-not $expectValue) {
+            throw "Missing comma in TOML string array."
+        }
+
+        $quote = $source[$index]
+        if ($quote -notin @('"', "'")) {
+            throw "Only quoted strings are supported in the Codex args array."
+        }
+        $index++
+        $buffer = [System.Text.StringBuilder]::new()
+        $closed = $false
+        while ($index -lt ($source.Length - 1)) {
+            $character = $source[$index]
+            if ($quote -eq '"' -and $character -eq '\') {
+                if (($index + 1) -ge ($source.Length - 1)) {
+                    throw "Incomplete escape in TOML basic string."
+                }
+                [void]$buffer.Append($character)
+                $index++
+                [void]$buffer.Append($source[$index])
+                $index++
+                continue
+            }
+            if ($character -eq $quote) {
+                $closed = $true
+                $index++
+                break
+            }
+            [void]$buffer.Append($character)
+            $index++
+        }
+        if (-not $closed) {
+            throw "Unterminated string in TOML args array."
+        }
+
+        if ($quote -eq '"') {
+            $values.Add((ConvertFrom-TomlBasicString -Value $buffer.ToString()))
+        }
+        else {
+            $values.Add($buffer.ToString())
+        }
+        $expectValue = $false
+    }
+    if ($expectValue -and $values.Count -gt 0) {
+        # A trailing comma is valid TOML.
+        return @($values)
+    }
+    return @($values)
+}
+
+function Get-TomlStringTable {
+    param([AllowNull()][string]$Body)
+
+    $table = @{}
+    if ([string]::IsNullOrWhiteSpace($Body)) {
+        return $table
+    }
+
+    $pattern = '^\s*(?<name>[A-Za-z0-9_-]+)\s*=\s*(?:"(?<basic>(?:\\.|[^"\\])*)"|''(?<literal>[^'']*)'')\s*(?:#.*)?$'
+    foreach ($line in $Body -split '\r?\n') {
+        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^\s*#') {
+            continue
+        }
+        $match = [regex]::Match($line, $pattern)
+        if (-not $match.Success) {
+            throw "Unsupported or malformed entry in [mcp_servers.agent_bus.env]."
+        }
+        $name = $match.Groups["name"].Value
+        if ($table.ContainsKey($name)) {
+            throw "Duplicate '$name' entry in [mcp_servers.agent_bus.env]."
+        }
+        $value = if ($match.Groups["literal"].Success) {
+            $match.Groups["literal"].Value
+        }
+        else {
+            ConvertFrom-TomlBasicString -Value $match.Groups["basic"].Value
+        }
+        $table[$name] = $value
+    }
+    return $table
+}
+
+function Test-CodexAgentBusToml {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path $Path)) {
+        Add-CheckResult -Name "codex:agent-bus" -Status "missing" -Detail "File not found" -Path $Path
+        return
+    }
+
+    $raw = Get-Content -Path $Path -Raw
+    if (Test-PrivateNumericEndpoint -Text $raw) {
+        Add-CheckResult -Name "numeric-url:$Path" -Status "warn" -Detail "Private numeric IP found; prefer localhost or a stable hostname" -Path $Path
+    }
+
+    try {
+        $body = Get-TomlSectionBody -Document $raw -Name "mcp_servers.agent_bus"
+        $environmentBody = Get-TomlSectionBody -Document $raw -Name "mcp_servers.agent_bus.env"
+        $environment = Get-TomlStringTable -Body $environmentBody
+    }
+    catch {
+        Add-CheckResult -Name "codex:agent-bus-sections" -Status "fail" -Detail $_.Exception.Message -Path $Path
+        return
+    }
+    if ($null -eq $body) {
+        Add-CheckResult -Name "codex:agent-bus" -Status "warn" -Detail "agent_bus MCP server entry not found" -Path $Path
+        return
+    }
+
+    $url = Get-TomlStringValue -Body $body -Name "url"
+    $command = Get-TomlStringValue -Body $body -Name "command"
+    $enabled = Get-TomlValue -Body $body -Name "enabled"
+    $commandArgs = Get-TomlValue -Body $body -Name "args"
+    $argsAssignmentPresent = $body -match '(?m)^\s*args\s*='
+    if ($argsAssignmentPresent -and [string]::IsNullOrWhiteSpace($commandArgs)) {
+        Add-CheckResult -Name "codex:args" -Status "fail" -Detail "The agent_bus args assignment is malformed or unsupported" -Path $Path
+        return $null
+    }
+    if (
+        $environment.ContainsKey("AGENT_BUS_AUTH_TOKEN") -and
+        -not [string]::IsNullOrWhiteSpace([string]$environment["AGENT_BUS_AUTH_TOKEN"])
+    ) {
+        Add-CheckResult -Name "codex:inline-token-env" -Status "fail" -Detail "Active agent-bus MCP entry embeds AGENT_BUS_AUTH_TOKEN; use process env or ~/.config/agent-bus/config.json instead" -Path $Path
+    }
+
+    if ($enabled -and $enabled -match '^(?i:false)$') {
+        Add-CheckResult -Name "codex:agent-bus-enabled" -Status "warn" -Detail "agent_bus MCP entry is disabled" -Path $Path
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($url)) {
+        Add-CheckResult -Name "codex:agent-bus" -Status "ok" -Detail "agent_bus MCP entry found (streamable HTTP)" -Path $Path
+        if ($url -match '^https?://(?:localhost|127\.0\.0\.1|\[?::1\]?)(?::|/|$)') {
+            Add-CheckResult -Name "codex:transport" -Status "warn" -Detail "Local HTTP MCP depends on AgentHub startup; prefer the dedicated agent-bus-mcp stdio binary for same-machine Codex" -Path $Path
+        }
+        else {
+            Add-CheckResult -Name "codex:transport" -Status "ok" -Detail "HTTP MCP uses a non-loopback endpoint" -Path $Path
+        }
+        return [pscustomobject]@{
+            Transport = "http"
+            Url       = $url
+            Command   = $null
+            Arguments = @()
+            Environment = $environment
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($command)) {
+        Add-CheckResult -Name "codex:agent-bus" -Status "fail" -Detail "agent_bus MCP entry has neither url nor command" -Path $Path
+        return $null
+    }
+
+    try {
+        $arguments = @(ConvertFrom-TomlStringArray -Value $commandArgs)
+    }
+    catch {
+        Add-CheckResult -Name "codex:args" -Status "fail" -Detail "Could not parse agent_bus args: $($_.Exception.Message)" -Path $Path
+        return $null
+    }
+    Add-CheckResult -Name "codex:agent-bus" -Status "ok" -Detail "agent_bus MCP entry found (stdio)" -Path $Path
+    if ($command -match '(?i)(?:^|[\\/])agent-bus-mcp(?:\.exe)?$') {
+        Add-CheckResult -Name "codex:transport" -Status "ok" -Detail "Uses the dedicated agent-bus-mcp stdio binary" -Path $Path
+    }
+    elseif (
+        $command -match '(?i)(?:^|[\\/])agent-bus(?:\.exe)?$' -and
+        $arguments.Count -ge 3 -and
+        $arguments[0] -eq "serve" -and
+        $arguments[1] -eq "--transport" -and
+        $arguments[2] -eq "stdio"
+    ) {
+        Add-CheckResult -Name "codex:transport" -Status "warn" -Detail "Uses the compatible agent-bus serve --transport stdio fallback instead of the dedicated MCP binary" -Path $Path
+    }
+    else {
+        Add-CheckResult -Name "codex:transport" -Status "fail" -Detail "Stdio command is not the dedicated agent-bus-mcp binary or the supported CLI fallback" -Path $Path
+    }
+    return [pscustomobject]@{
+        Transport = "stdio"
+        Url       = $null
+        Command   = $command
+        Arguments = $arguments
+        Environment = $environment
+    }
+}
+
+function Test-AgentBusMcpSmoke {
+    param(
+        [switch]$Skip,
+        $ActiveTransport,
+        [Parameter(Mandatory = $true)][int]$ExpectedToolCount,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $smokeScript = Join-Path $PSScriptRoot "test-agent-bus-mcp-smoke.ps1"
+    if ($Skip) {
+        Add-CheckResult -Name "mcp-smoke:stdio" -Status "skipped" -Detail "Skipped by -SkipMcpSmoke" -Path $smokeScript
+        return
+    }
+    if ($null -eq $ActiveTransport) {
+        Add-CheckResult -Name "mcp-smoke:active" -Status "fail" -Detail "Active Codex agent_bus transport could not be resolved" -Path $smokeScript
+        return
+    }
+    if ($ActiveTransport.Transport -ne "stdio") {
+        Add-CheckResult -Name "mcp-smoke:active" -Status "warn" -Detail "Active Codex transport is HTTP; stdio smoke was not substituted for the configured endpoint" -Path $ActiveTransport.Url
+        return
+    }
+    if (-not (Test-Path $smokeScript)) {
+        Add-CheckResult -Name "mcp-smoke:stdio" -Status "fail" -Detail "MCP smoke script not found" -Path $smokeScript
+        return
+    }
+
+    $mcpCommand = Get-Command $ActiveTransport.Command -CommandType Application -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if (-not $mcpCommand) {
+        Add-CheckResult -Name "mcp-smoke:active" -Status "fail" -Detail "Configured Codex MCP command not found" -Path $ActiveTransport.Command
+        return
+    }
+
+    try {
+        $smokeOutput = & $smokeScript `
+            -Command $mcpCommand.Source `
+            -ArgumentList @($ActiveTransport.Arguments) `
+            -EnvironmentVariables $ActiveTransport.Environment `
+            -TimeoutSeconds $TimeoutSeconds `
+            -ExpectedToolCount $ExpectedToolCount
+        $smoke = $smokeOutput | ConvertFrom-Json -Depth 100
+        if (-not $smoke.ok) {
+            throw "MCP smoke did not report success."
+        }
+        Add-CheckResult `
+            -Name "mcp-smoke:active" `
+            -Status "ok" `
+            -Detail "Initialize/tools-list passed; protocol=$($smoke.protocolVersion), server=$($smoke.serverName) $($smoke.serverVersion), tools=$($smoke.toolCount)" `
+            -Path $mcpCommand.Source
+    }
+    catch {
+        Add-CheckResult -Name "mcp-smoke:active" -Status "fail" -Detail "Configured Codex MCP stdio smoke failed: $($_.Exception.Message)" -Path $mcpCommand.Source
     }
 }
 
@@ -303,49 +673,57 @@ function Test-ExampleConfig {
     Add-CheckResult -Name "examples:mcp" -Status "ok" -Detail "Scanned examples/mcp for literal tokens and private numeric IPs" -Path $examplesRoot
 }
 
-foreach ($commandName in @("agent-bus", "agent-bus-mcp", "agent-bus-http")) {
-    Get-AgentBusVersion -CommandName $commandName -MinimumVersion $MinimumAgentBusVersion
-}
-Test-AgentBusInstallShadowing
+$codexMcpTransport = Test-CodexAgentBusToml -Path $resolvedCodexConfigPath
+Test-AgentBusMcpSmoke `
+    -Skip:$SkipMcpSmoke `
+    -ActiveTransport $codexMcpTransport `
+    -ExpectedToolCount $ExpectedMcpToolCount `
+    -TimeoutSeconds $McpSmokeTimeoutSeconds
 
-$serviceAuthState = Get-AgentHubServiceAuthState -ServiceName "AgentHub"
-if ($serviceAuthState.installed) {
-    Add-CheckResult -Name "service:AgentHub" -Status "ok" -Detail "Service installed; authToken=$($serviceAuthState.authToken); allowRemote=$($serviceAuthState.allowRemote)" -Path $serviceAuthState.path
-}
-else {
-    Add-CheckResult -Name "service:AgentHub" -Status "warn" -Detail "AgentHub service registry entry was not found" -Path $serviceAuthState.path
-}
+if (-not $CodexOnly) {
+    foreach ($commandName in @("agent-bus", "agent-bus-mcp", "agent-bus-http")) {
+        Get-AgentBusVersion -CommandName $commandName -MinimumVersion $MinimumAgentBusVersion
+    }
+    Test-AgentBusInstallShadowing
 
-$homeBinCli = Join-Path $HomeDir "bin/agent-bus.exe"
-if ($IsWindows -and -not (Test-Path $homeBinCli)) {
-    Add-CheckResult -Name "install:home-bin-cli" -Status "warn" -Detail "Documented ~/bin/agent-bus.exe is missing; command may be resolving from another path" -Path $homeBinCli
-}
+    $serviceAuthState = Get-AgentHubServiceAuthState -ServiceName "AgentHub"
+    if ($serviceAuthState.installed) {
+        Add-CheckResult -Name "service:AgentHub" -Status "ok" -Detail "Service installed; authToken=$($serviceAuthState.authToken); allowRemote=$($serviceAuthState.allowRemote)" -Path $serviceAuthState.path
+    }
+    else {
+        Add-CheckResult -Name "service:AgentHub" -Status "warn" -Detail "AgentHub service registry entry was not found" -Path $serviceAuthState.path
+    }
 
-Test-AgentBusClientConfig -Path (Join-Path $HomeDir ".config/agent-bus/config.json") -ServiceAuthState $serviceAuthState
-Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".claude/mcp.json") -ClientName "claude"
-Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".claude.json") -ClientName "claude-legacy"
-Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".gemini/settings.json") -ClientName "gemini"
-Test-JsonSyntax -Path (Join-Path $HomeDir ".antigravity/argv.json") | Out-Null
-Test-TextConfig -Path (Join-Path $HomeDir ".codex/config.toml") -Needle "[mcp_servers.agent_bus]" -Label "codex:agent-bus"
-Test-TextConfig -Path (Join-Path $HomeDir ".agents/AGENT_COORDINATION.md") -Needle "agent-bus" -Label "agents:coordination-doc"
-Test-TextConfig -Path (Join-Path $HomeDir ".codex/AGENT_COORDINATION.md") -Needle "agent-bus" -Label "codex:coordination-doc"
-Test-ExampleConfig
+    $homeBinCli = Join-Path $HomeDir "bin/agent-bus.exe"
+    if ($IsWindows -and -not (Test-Path $homeBinCli)) {
+        Add-CheckResult -Name "install:home-bin-cli" -Status "warn" -Detail "Documented ~/bin/agent-bus.exe is missing; command may be resolving from another path" -Path $homeBinCli
+    }
 
-if ($ExpectedRedisUrl -match 'localhost') {
-    Add-CheckResult -Name "defaults:redis-url" -Status "warn" -Detail "Redis default uses localhost; prefer 127.0.0.1 for IPv4-only Redis on Windows"
-}
-else {
-    Add-CheckResult -Name "defaults:redis-url" -Status "ok" -Detail "Redis default is loopback-family explicit"
-}
+    Test-AgentBusClientConfig -Path (Join-Path $HomeDir ".config/agent-bus/config.json") -ServiceAuthState $serviceAuthState
+    Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".claude/mcp.json") -ClientName "claude"
+    Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".claude.json") -ClientName "claude-legacy"
+    Test-AgentBusJsonMcp -Path (Join-Path $HomeDir ".gemini/settings.json") -ClientName "gemini"
+    Test-JsonSyntax -Path (Join-Path $HomeDir ".antigravity/argv.json") | Out-Null
+    Test-TextConfig -Path (Join-Path $HomeDir ".agents/AGENT_COORDINATION.md") -Needle "agent-bus" -Label "agents:coordination-doc"
+    Test-TextConfig -Path (Join-Path $HomeDir ".codex/AGENT_COORDINATION.md") -Needle "agent-bus" -Label "codex:coordination-doc"
+    Test-ExampleConfig
 
-if ($ExpectedDatabaseUrl -match 'localhost') {
-    Add-CheckResult -Name "defaults:database-url" -Status "warn" -Detail "Database default uses localhost; prefer 127.0.0.1 when avoiding dual-stack ambiguity"
-}
-else {
-    Add-CheckResult -Name "defaults:database-url" -Status "ok" -Detail "Database default is loopback-family explicit"
-}
+    if ($ExpectedRedisUrl -match 'localhost') {
+        Add-CheckResult -Name "defaults:redis-url" -Status "warn" -Detail "Redis default uses localhost; prefer 127.0.0.1 for IPv4-only Redis on Windows"
+    }
+    else {
+        Add-CheckResult -Name "defaults:redis-url" -Status "ok" -Detail "Redis default is loopback-family explicit"
+    }
 
-Add-CheckResult -Name "defaults:server-url" -Status "ok" -Detail "Expected MCP HTTP URL is $ExpectedServerUrl"
+    if ($ExpectedDatabaseUrl -match 'localhost') {
+        Add-CheckResult -Name "defaults:database-url" -Status "warn" -Detail "Database default uses localhost; prefer 127.0.0.1 when avoiding dual-stack ambiguity"
+    }
+    else {
+        Add-CheckResult -Name "defaults:database-url" -Status "ok" -Detail "Database default is loopback-family explicit"
+    }
+
+    Add-CheckResult -Name "defaults:server-url" -Status "ok" -Detail "Expected MCP HTTP URL is $ExpectedServerUrl"
+}
 
 $results | Format-Table -AutoSize
 

@@ -1,0 +1,28 @@
+# agent-bus-http.service.in — dedicated systemd --user HTTP hub unit.
+#
+# Rendered and enabled (but never started or restarted) by:
+#   ./install.sh --with-http-service
+#
+# The unit contains no bearer token. Remote binding/auth can be supplied by
+# either @CONFIG@ or the optional @ENV_FILE@. Keep either file mode 0600 when
+# it contains auth material. EnvironmentFile values take precedence over the
+# matching Environment defaults below.
+
+[Unit]
+Description=Agent Bus HTTP hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+UMask=0077
+Environment="AGENT_BUS_CONFIG=@CONFIG@"
+Environment="AGENT_BUS_REDIS_URL=redis://127.0.0.1:6380/0"
+Environment="AGENT_BUS_DATABASE_URL=postgresql://postgres@127.0.0.1:5300/redis_backend"
+EnvironmentFile=-@ENV_FILE@
+ExecStart="@HTTP_BIN@" --port 8400
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

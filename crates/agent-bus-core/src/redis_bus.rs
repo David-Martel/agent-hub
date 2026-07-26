@@ -2500,6 +2500,7 @@ pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
     Health {
         ok,
         protocol_version: PROTOCOL_VERSION.to_owned(),
+        build_version: crate::build_info::BUILD_VERSION.to_owned(),
         redis_url: redact_url(&settings.redis_url),
         database_url: settings.database_url.as_deref().map(redact_url),
         database_ok,
@@ -2573,6 +2574,7 @@ pub fn health_error_fallback() -> Health {
     Health {
         ok: false,
         protocol_version: PROTOCOL_VERSION.to_owned(),
+        build_version: crate::build_info::BUILD_VERSION.to_owned(),
         redis_url: "unknown".to_owned(),
         database_url: None,
         database_ok: None,
