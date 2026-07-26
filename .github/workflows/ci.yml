@@ -63,12 +63,15 @@ jobs:
             echo "Refusing unsafe disposable database name: $history_db" >&2
             exit 1
           fi
+          admin_url="postgresql://postgres@localhost:5300/postgres"
           cleanup() {
-            PGHOST=localhost PGPORT=5300 PGUSER=postgres dropdb --if-exists "$history_db"
+            psql "$admin_url" -v ON_ERROR_STOP=1 \
+              -c "drop database if exists \"$history_db\""
           }
           trap cleanup EXIT
           cleanup
-          PGHOST=localhost PGPORT=5300 PGUSER=postgres createdb "$history_db"
+          psql "$admin_url" -v ON_ERROR_STOP=1 \
+            -c "create database \"$history_db\""
           AGENT_BUS_TEST_DATABASE_URL="postgresql://postgres@localhost:5300/$history_db" \
             cargo test -p agent-bus-core --test history_catalog_postgres -- --nocapture
 
