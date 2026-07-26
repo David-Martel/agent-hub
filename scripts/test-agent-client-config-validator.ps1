@@ -118,6 +118,34 @@ RUST_LOG = "error"
 "@ | Set-Content -LiteralPath $validEnvironmentPath -Encoding utf8
     Invoke-CodexFixtureValidation -ConfigPath $validEnvironmentPath -Strict
 
+    $versionedMcpPath = Join-Path $fixtureRoot "agent-bus-mcp-fd70c8d$(if ($IsWindows) { '.exe' })"
+    Copy-Item -LiteralPath $McpBinaryPath -Destination $versionedMcpPath
+    $versionedMcpConfigPath = Join-Path $fixtureRoot "versioned-mcp-command.toml"
+    @"
+[mcp_servers.agent_bus]
+command = "$(ConvertTo-TomlBasicString -Value $versionedMcpPath)"
+args = []
+
+[mcp_servers.agent_bus.env]
+AGENT_BUS_STARTUP_ENABLED = "false"
+RUST_LOG = "error"
+"@ | Set-Content -LiteralPath $versionedMcpConfigPath -Encoding utf8
+    Invoke-CodexFixtureValidation -ConfigPath $versionedMcpConfigPath -Strict
+
+    $invalidMcpNamePath = Join-Path $fixtureRoot "agent-bus-mcp-$(if ($IsWindows) { '.exe' })"
+    Copy-Item -LiteralPath $McpBinaryPath -Destination $invalidMcpNamePath
+    $invalidMcpNameConfigPath = Join-Path $fixtureRoot "invalid-versioned-mcp-command.toml"
+    @"
+[mcp_servers.agent_bus]
+command = "$(ConvertTo-TomlBasicString -Value $invalidMcpNamePath)"
+args = []
+
+[mcp_servers.agent_bus.env]
+AGENT_BUS_STARTUP_ENABLED = "false"
+RUST_LOG = "error"
+"@ | Set-Content -LiteralPath $invalidMcpNameConfigPath -Encoding utf8
+    Assert-ConfigRejected -ConfigPath $invalidMcpNameConfigPath
+
     $invalidEnvironmentPath = Join-Path $fixtureRoot "invalid-environment.toml"
     @"
 [mcp_servers.agent_bus]

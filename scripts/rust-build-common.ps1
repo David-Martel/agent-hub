@@ -9,30 +9,15 @@ function Initialize-AgentBusSccacheServer {
         [switch]$ResetStats
     )
 
-    $needsRestart = $false
-
     try {
         $probeOutput = & $SccachePath --show-stats 2>&1
         if ($LASTEXITCODE -ne 0 -or ($probeOutput -join "`n") -match "Mismatch of client/server versions") {
-            $needsRestart = $true
+            Write-Warning "sccache is unavailable or version-mismatched; leaving the shared daemon untouched."
+            return $false
         }
     }
     catch {
-        $needsRestart = $true
-    }
-
-    if ($needsRestart) {
-        try {
-            & $SccachePath --stop-server *> $null
-        }
-        catch {
-        }
-    }
-
-    try {
-        & $SccachePath --start-server *> $null
-    }
-    catch {
+        Write-Warning "sccache health probe failed; leaving the shared daemon untouched: $($_.Exception.Message)"
         return $false
     }
 
@@ -41,19 +26,8 @@ function Initialize-AgentBusSccacheServer {
             & $SccachePath --zero-stats *> $null
         }
         catch {
+            Write-Warning "Could not reset shared sccache statistics; continuing without changing daemon state."
         }
-    }
-
-    try {
-        $verifyOutput = & $SccachePath --show-stats 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "sccache was found but did not pass health verification: $(($verifyOutput -join "`n").Trim())"
-            return $false
-        }
-    }
-    catch {
-        Write-Warning "sccache was found but did not pass health verification: $($_.Exception.Message)"
-        return $false
     }
 
     return $true
@@ -298,21 +272,34 @@ function Test-AgentBusSccacheTransportFailure {
     return $joinedOutput -match "sccache: error: failed to execute compile" -or
         $joinedOutput -match "Failed to send data to or receive data from server" -or
         $joinedOutput -match "Failed to read response header" -or
-        $joinedOutput -match "Mismatch of client/server versions"
+        $joinedOutput -match "Mismatch of client/server versions" -or
+        $joinedOutput -match "sccache: error: timed out" -or
+        $joinedOutput -match "sccache server not running" -or
+        $joinedOutput -match "Failed to bind socket" -or
+        $joinedOutput -match "os error (?:10048|10054)"
+}
+
+function Test-AgentBusWritableHealth {
+    param(
+        [Parameter(Mandatory = $true)]
+        [object]$Health
+    )
+
+    return $Health.ok -eq $true -and $Health.maintenance.write_blocked -ne $true
+}
+
+function Disable-AgentBusSccacheForCargoSteps {
+    Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+    $script:AgentBusDisableSccacheForCargoSteps = $true
 }
 
 function Restart-AgentBusBuildWithoutSccache {
-    if ($env:RUSTC_WRAPPER) {
-        try {
-            & $env:RUSTC_WRAPPER --stop-server *> $null
-        }
-        catch {
-        }
-    }
-
-    Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-    $script:AgentBusDisableSccacheForCargoSteps = $true
-    Write-Warning "sccache failed during compilation; retrying this cargo step once with Cargo rustc-wrapper disabled."
+    # A workstation may have several independent Cargo builds sharing one
+    # sccache server. Never stop that server here: doing so severs unrelated
+    # compiler clients. The Cargo config override below is sufficient to make
+    # this retry independent of the shared daemon.
+    Disable-AgentBusSccacheForCargoSteps
+    Write-Warning "sccache failed during compilation; leaving the shared daemon untouched and retrying this cargo step once with Cargo rustc-wrapper disabled."
 }
 
 function Invoke-AgentBusRawCargo {

@@ -90,7 +90,6 @@ $buildEnvState = Use-AgentBusRustBuildEnv `
     -PreferLldLink `
     -PreferFastLink:($FastRelease -or -not $Release) `
     -EnableIncremental:($FastRelease -or -not $Release) `
-    -ResetSccacheStats `
     -ShowSummary
 
 $useNextest = (-not $DisableNextest) -and [bool](Get-AgentBusCommandPath -Name "cargo-nextest")

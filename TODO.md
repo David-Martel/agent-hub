@@ -147,7 +147,8 @@ is tracked in `agents.TODO.md` as CLI thin-surface cleanup.
 - [x] Add `--dry-run` / `-DryRun` previews for high-risk installers, build/deploy validation, Docker cross-validation, MCP client config installation, service removal/log rotation, and bus write smoke helpers.
 - [x] Extend Redis pub/sub consumers to use deterministic loopback URL candidates so `localhost` works with IPv4-only or IPv6-only loopback backends.
 - [x] Make HTTP bind address formatting IPv6-literal safe and add an offline `/support` page with health, loopback, recovery, and remote-auth guidance.
-- [ ] Make `cargo audit` blocking once CI has proven the fresh `cargo-audit` install handles current RustSec CVSS data reliably. Workstation note: `cargo-audit 0.21.2` cannot parse CVSS 4.0 RustSec advisories; `cargo-audit 0.22.2` install also exposed global `sccache` transport failures and a failed final binary move, so keep audit best-effort until the tool install path is reliable.
+- [x] Make `cargo audit` blocking after validating `cargo-audit 0.22.2` against
+  current RustSec CVSS 4.0 advisories on CI and the Windows workstation.
 - [ ] Add token rotation support: multiple accepted bearer tokens or token-file input while preserving `AGENT_BUS_AUTH_TOKEN`.
 - [ ] Split unauthenticated liveness from authenticated readiness/full health without breaking existing `/health` clients.
 - [x] Add native Linux install/service docs and scripts for systemd-managed `agent-bus-http`.
@@ -166,10 +167,24 @@ is tracked in `agents.TODO.md` as CLI thin-surface cleanup.
   active Codex transport instead of checking a marker only.
 - [x] Correct shared workstation guidance that treated the dedicated HTTP
   server binary as a client-command alias.
-- [ ] Deploy the merged binaries and dedicated HTTP user service to the fleet,
+- [x] Deploy the merged binaries and dedicated HTTP user service to the fleet,
   disable invalid client-local hub/relay units, and prove cross-machine
   send/read/ack without count regression.
-- [ ] Add additive machine identity metadata and a versioned fleet manifest.
+- [x] Make Windows deploys resume persisted maintenance state before write
+  smoke validation, accept version-suffixed MCP binaries for lock-safe atomic
+  client upgrades, and make no-sccache retries leave shared compiler clients
+  untouched.
+- [ ] Repair workstation CargoTools concurrency: identify only the actual
+  sccache server, preserve the host-specific `SCCACHE_DISABLE` implementation
+  across module load order, standardize one sccache version/path, and fix
+  `cargo-route.ps1` exit-code telemetry under concurrent builds.
+- [ ] Add a fleet build dispatcher that uses the existing x64/ARM64 GitHub
+  runners and isolated target namespaces on `asuspro13`, `spark-0060`, and
+  `spark-3066`, with per-platform provenance and cache-health evidence.
+- [ ] Add additive machine identity metadata.
+- [x] Add a versioned, non-secret fleet manifest and read-only fleet doctor
+  covering authoritative routes, build provenance, config permissions, storage
+  readiness, write integrity, and expected active/inactive services.
 - [ ] Add separately migrated history catalog tables with deterministic IDs,
   source cursors, hashes, and parser/policy versions.
 - [ ] Implement resumable Codex, Claude, Antigravity, and Gemini history

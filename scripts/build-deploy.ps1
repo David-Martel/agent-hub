@@ -85,8 +85,11 @@ $buildEnvState = Use-AgentBusRustBuildEnv `
     -TargetDir $resolvedTargetDir `
     -PreferSccache:(-not $DisableSccache) `
     -PreferLldLink `
-    -ResetSccacheStats `
     -ShowSummary
+
+if ($DisableSccache) {
+    Disable-AgentBusSccacheForCargoSteps
+}
 
 $cliTargetBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus"
 $httpTargetBinary = Find-AgentBusBuiltBinary -WorkspaceRoot $repoRoot -TargetDir $resolvedTargetDir -BinaryName "agent-bus-http"
@@ -170,14 +173,11 @@ Set-AgentBusAuthTokenForChildProcesses
 try {
     if (-not $SkipBuild) {
         Write-Host "Building release binary..."
-        Push-Location $repoRoot
-        try {
-            & cargo build --release --bins
-            if ($LASTEXITCODE -ne 0) { throw "cargo build --release --bins failed" }
-        }
-        finally {
-            Pop-Location
-        }
+        Invoke-AgentBusCargo `
+            -Label "Build release binaries" `
+            -Command "build" `
+            -AdditionalArgs @("--release", "--bins") `
+            -WorkDir $repoRoot
         Write-Host "Build complete."
     }
 
@@ -275,25 +275,34 @@ try {
         if ($svc) {
             Write-Host "Starting $serviceName service via built-in control..."
             & $cliTargetBinary service --action start --service-name $serviceName --base-url "http://localhost:8400" --timeout-seconds 15 --encoding compact | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Service start failed"
+            }
+            & $cliTargetBinary service --action resume --reason "build-deploy complete" --service-name $serviceName --base-url "http://localhost:8400" --timeout-seconds 15 --encoding compact | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+                throw "Service resume failed"
+            }
 
             # Health check
             $deadline = (Get-Date).AddSeconds(10)
             $health = $null
+            $healthValidated = $false
             do {
                 try {
                     $health = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 3
-                    if ($health.ok -eq $true) {
+                    if (Test-AgentBusWritableHealth -Health $health) {
                         Write-Host "`nService healthy:"
                         Get-HealthSummary -Health $health | ForEach-Object { Write-Host $_ }
                         Write-ServerVersionDiagnostics
+                        $healthValidated = $true
                         break
                     }
                 }
                 catch { Start-Sleep -Seconds 1 }
             } while ((Get-Date) -lt $deadline)
 
-            if ($null -eq $health -or $health.ok -ne $true) {
-                Write-Warning "Service started but health check timed out"
+            if (-not $healthValidated) {
+                throw "Service started but writable health validation timed out."
             }
         }
         else {

@@ -5,6 +5,8 @@ param(
     [ValidateSet("Any", "Healthy", "Degraded")]
     [string]$DatabaseMode = "Any",
     [int]$StartupTimeoutSeconds = 30,
+    [ValidateRange(1, 5)]
+    [int]$StartupAttempts = 2,
     [int]$TimeoutSeconds = 10,
     [string]$AuthToken = $env:AGENT_BUS_AUTH_TOKEN
 )
@@ -71,8 +73,7 @@ $Agent = "http-smoke-{0}" -f ([guid]::NewGuid().ToString("N").Substring(0, 8))
 $Sender = "$Agent-sender"
 $ProbeId = [guid]::NewGuid().ToString("N")
 $ProbeBody = "HTTP smoke probe $ProbeId"
-$StdoutPath = New-TempFile -Prefix "agent-bus-http-stdout" -Extension ".log"
-$StderrPath = New-TempFile -Prefix "agent-bus-http-stderr" -Extension ".log"
+$TempPaths = [System.Collections.Generic.List[string]]::new()
 $ServerEnvironment = @{
     AGENT_BUS_REDIS_URL = $env:AGENT_BUS_REDIS_URL
     AGENT_BUS_DATABASE_URL = $env:AGENT_BUS_DATABASE_URL
@@ -85,17 +86,45 @@ if (-not [string]::IsNullOrWhiteSpace($AuthToken)) {
     $RequestHeaders.Authorization = "Bearer $AuthToken"
 }
 
-$Process = Start-Process `
-    -FilePath $BinaryPath `
-    -ArgumentList @("serve", "--transport", "http", "--port", $Port.ToString()) `
-    -PassThru `
-    -WindowStyle Hidden `
-    -RedirectStandardOutput $StdoutPath `
-    -RedirectStandardError $StderrPath `
-    -Environment $ServerEnvironment
-
+$Process = $null
+$Health = $null
 try {
-    $Health = Wait-ForHealth -Url $BaseUrl.TrimEnd("/") -Process $Process -TimeoutSeconds $StartupTimeoutSeconds -StdoutPath $StdoutPath -StderrPath $StderrPath
+    for ($attempt = 1; $attempt -le $StartupAttempts; $attempt++) {
+        $StdoutPath = New-TempFile -Prefix "agent-bus-http-stdout" -Extension ".log"
+        $StderrPath = New-TempFile -Prefix "agent-bus-http-stderr" -Extension ".log"
+        $TempPaths.Add($StdoutPath)
+        $TempPaths.Add($StderrPath)
+        $Process = Start-Process `
+            -FilePath $BinaryPath `
+            -ArgumentList @("serve", "--transport", "http", "--port", $Port.ToString()) `
+            -PassThru `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $StdoutPath `
+            -RedirectStandardError $StderrPath `
+            -Environment $ServerEnvironment
+
+        try {
+            $Health = Wait-ForHealth -Url $BaseUrl.TrimEnd("/") -Process $Process -TimeoutSeconds $StartupTimeoutSeconds -StdoutPath $StdoutPath -StderrPath $StderrPath
+            break
+        }
+        catch {
+            $startupFailure = $_
+            if ($Process -and -not $Process.HasExited) {
+                Stop-Process -Id $Process.Id -Force -ErrorAction SilentlyContinue
+            }
+            $knownTransient = $startupFailure.Exception.Message -match
+                'Redis client creation failed|Redis r2d2 pool creation failed|timed out waiting for connection'
+            if (-not $knownTransient -or $attempt -eq $StartupAttempts) {
+                throw
+            }
+            Write-Warning "HTTP smoke startup hit transient Redis pool contention; retrying ($attempt/$StartupAttempts)."
+            Start-Sleep -Seconds 2
+        }
+    }
+
+    if ($null -eq $Health) {
+        throw "HTTP server did not produce a health document after $StartupAttempts attempts."
+    }
 
     if (-not $Health.ok) {
         throw "HTTP health check failed. Redis is required for HTTP smoke tests."
@@ -162,5 +191,8 @@ finally {
         }
         catch {
         }
+    }
+    foreach ($tempPath in $TempPaths) {
+        Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
     }
 }
