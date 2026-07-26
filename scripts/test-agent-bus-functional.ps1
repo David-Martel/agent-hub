@@ -6,7 +6,7 @@ param(
     [switch]$SkipHttp,
     [switch]$SkipForcedDegraded,
     [switch]$RequirePostgres,
-    [string]$HttpAuthToken
+    [string]$HttpAuthToken = $env:AGENT_BUS_AUTH_TOKEN
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +21,19 @@ if (-not $env:AGENT_BUS_DATABASE_URL) {
 }
 if (-not $env:AGENT_BUS_SERVER_HOST) {
     $env:AGENT_BUS_SERVER_HOST = "localhost"
+}
+if ([string]::IsNullOrWhiteSpace($HttpAuthToken)) {
+    $clientConfigPath = Join-Path $HOME ".config/agent-bus/config.json"
+    if (Test-Path $clientConfigPath) {
+        try {
+            $clientConfig = Get-Content -LiteralPath $clientConfigPath -Raw |
+                ConvertFrom-Json -Depth 100
+            $HttpAuthToken = [string]$clientConfig.auth_token
+        }
+        catch {
+            Write-Verbose "Agent-bus client config could not be parsed for HTTP smoke authentication."
+        }
+    }
 }
 
 function Write-SummaryLine {
@@ -49,13 +62,32 @@ function Invoke-WithDatabaseUrl {
         [scriptblock]$Script
     )
 
-    $original = $env:AGENT_BUS_DATABASE_URL
+    $originalDatabaseUrl = $env:AGENT_BUS_DATABASE_URL
+    $originalServerUrl = $env:AGENT_BUS_SERVER_URL
+    $originalConfig = $env:AGENT_BUS_CONFIG
+    $directConfig = [System.IO.Path]::GetTempFileName()
+    [System.IO.File]::WriteAllText($directConfig, "{}")
     $env:AGENT_BUS_DATABASE_URL = $DatabaseUrl
+    $env:AGENT_BUS_CONFIG = $directConfig
+    Remove-Item Env:AGENT_BUS_SERVER_URL -ErrorAction SilentlyContinue
     try {
         & $Script
     }
     finally {
-        $env:AGENT_BUS_DATABASE_URL = $original
+        $env:AGENT_BUS_DATABASE_URL = $originalDatabaseUrl
+        if ($null -eq $originalServerUrl) {
+            Remove-Item Env:AGENT_BUS_SERVER_URL -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:AGENT_BUS_SERVER_URL = $originalServerUrl
+        }
+        if ($null -eq $originalConfig) {
+            Remove-Item Env:AGENT_BUS_CONFIG -ErrorAction SilentlyContinue
+        }
+        else {
+            $env:AGENT_BUS_CONFIG = $originalConfig
+        }
+        Remove-Item -LiteralPath $directConfig -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -91,7 +123,9 @@ if (-not $SkipHttp) {
 }
 
 if (-not $SkipForcedDegraded) {
-    $forcedDatabaseUrl = "postgresql://postgres@localhost:1/redis_backend"
+    # Use an explicit loopback address so the forced outage is deterministic
+    # and does not multiply connection retries across IPv4/IPv6 candidates.
+    $forcedDatabaseUrl = "postgresql://postgres@127.0.0.1:1/redis_backend"
     Write-SummaryLine "- Forced degraded PostgreSQL smoke: enabled"
 
     if (-not $SkipCli) {
@@ -102,7 +136,13 @@ if (-not $SkipForcedDegraded) {
 
     if (-not $SkipHttp) {
         Invoke-WithDatabaseUrl -DatabaseUrl $forcedDatabaseUrl -Script {
-            & $httpSmokeScript -BinaryPath $HttpBinaryPath -BaseUrl "http://localhost:$($HttpPort + 1)" -Port ($HttpPort + 1) -DatabaseMode "Degraded" -AuthToken $HttpAuthToken
+            & $httpSmokeScript `
+                -BinaryPath $HttpBinaryPath `
+                -BaseUrl "http://localhost:$($HttpPort + 1)" `
+                -Port ($HttpPort + 1) `
+                -DatabaseMode "Degraded" `
+                -StartupTimeoutSeconds 90 `
+                -AuthToken $HttpAuthToken
         }
     }
 }
