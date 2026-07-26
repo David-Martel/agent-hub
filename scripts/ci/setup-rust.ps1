@@ -6,7 +6,13 @@ $cacheRoot = if ($env:AGENT_HUB_CI_CACHE_ROOT) {
 } else {
     Join-Path $env:LOCALAPPDATA "agent-hub-ci"
 }
-$cargoTarget = Join-Path $cacheRoot "target"
+$jobNamespace = if ($env:GITHUB_JOB) {
+    $env:GITHUB_JOB -replace '[^A-Za-z0-9_.-]', '_'
+} else {
+    "local"
+}
+$archNamespace = if ($env:RUNNER_ARCH) { $env:RUNNER_ARCH } else { "unknown" }
+$cargoTarget = Join-Path $cacheRoot "target\$jobNamespace-$archNamespace"
 $sccacheDir = Join-Path $cacheRoot "sccache"
 
 New-Item -ItemType Directory -Force -Path $cargoTarget, $sccacheDir | Out-Null
@@ -21,13 +27,27 @@ $env:CARGO_INCREMENTAL = "0"
 $env:SCCACHE_DIR = $sccacheDir
 $env:SCCACHE_SERVER_PORT = "4228"
 
-$sccache = Get-Command sccache -ErrorAction SilentlyContinue
+$pinnedSccache = Join-Path $env:USERPROFILE ".cargo\bin\sccache.exe"
+$sccache = if (Test-Path -LiteralPath $pinnedSccache -PathType Leaf) {
+    Get-Item -LiteralPath $pinnedSccache
+} else {
+    Get-Command sccache -ErrorAction SilentlyContinue
+}
 if ($sccache) {
-    & $sccache.Source --stop-server 2>$null | Out-Null
-    & $sccache.Source --start-server | Out-Null
-    & $sccache.Source --show-stats | Out-Null
-    $env:RUSTC_WRAPPER = $sccache.Source
-    Write-Host "sccache enabled ($($sccache.Source); cache directory $sccacheDir)"
+    $sccachePath = if ($sccache -is [System.IO.FileInfo]) {
+        $sccache.FullName
+    } else {
+        $sccache.Source
+    }
+    $sccacheVersion = (& $sccachePath --version).Trim()
+    if ($sccacheVersion -ne "sccache 0.16.0") {
+        Write-Warning "Expected sccache 0.16.0, found $sccacheVersion at $sccachePath"
+    }
+    & $sccachePath --stop-server 2>$null | Out-Null
+    & $sccachePath --start-server | Out-Null
+    & $sccachePath --show-stats | Out-Null
+    $env:RUSTC_WRAPPER = $sccachePath
+    Write-Host "sccache enabled ($sccachePath; cache directory $sccacheDir)"
 } else {
     Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
     Write-Warning "sccache is unavailable; continuing with persistent Cargo outputs"

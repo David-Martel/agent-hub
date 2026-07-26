@@ -178,9 +178,9 @@ is tracked in `agents.TODO.md` as CLI thin-surface cleanup.
   sccache server, preserve the host-specific `SCCACHE_DISABLE` implementation
   across module load order, standardize one sccache version/path, and fix
   `cargo-route.ps1` exit-code telemetry under concurrent builds.
-- [ ] Add a fleet build dispatcher that uses the existing x64/ARM64 GitHub
-  runners and isolated target namespaces on `asuspro13`, `spark-0060`, and
-  `spark-3066`, with per-platform provenance and cache-health evidence.
+- [x] Dispatch release builds across the Windows/x64, Linux/x64, and two
+  Linux/ARM64 fleet runner slots with isolated target namespaces, per-runner
+  cache/provenance evidence, binary hashes, and reusable platform artifacts.
 - [ ] Add additive machine identity metadata.
 - [x] Add a versioned, non-secret fleet manifest and read-only fleet doctor
   covering authoritative routes, build provenance, config permissions, storage

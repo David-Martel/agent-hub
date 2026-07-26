@@ -6,7 +6,7 @@ default runner labels rather than using the ambiguous `self-hosted` label.
 | Target | Runner labels | Intended host | Work |
 | --- | --- | --- | --- |
 | Linux x86-64 | `self-hosted`, `Linux`, `X64` | ASUSPRO13 | format, lint, unit, integration, and native builds |
-| Linux x86-64 Docker | `self-hosted`, `Windows`, `X64`, `docker-x64` | dtm-p1gen7 Docker Desktop | Linux-container build on the local Docker engine |
+| Linux x86-64 Docker | `self-hosted`, `Linux`, `X64`, `docker` | ASUSPRO13 | Linux-container build on the ASUS Docker engine |
 | Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | Spark fleet | native and Docker builds |
 | Windows x86-64 | `self-hosted`, `Windows`, `X64`, `local-build` | dtm-p1gen7 | Windows compile and release artifacts |
 
@@ -94,9 +94,12 @@ without that label will not receive work and should be repaired at the runner,
 not worked around with an ambiguous workflow target.
 
 Only runners assigned Docker jobs need Docker access. The repository's
-containerized ASUS runner deliberately has none; x86-64 Docker validation uses
-dtm-p1gen7's Linux Docker engine, while Spark runners provide native ARM64
-Docker coverage.
+containerized ASUS runner mounts the host Docker CLI and socket and carries the
+explicit `docker` label for x86-64 validation. Spark runners provide native
+ARM64 Docker coverage. The Windows runner does not service Linux Docker jobs.
+Use `scripts/restart-asus-agenthub-runner.sh` for replacement; it refuses to
+interrupt a busy runner, removes an idle stale registration, initializes volume
+ownership, and verifies that the listener process retains the socket group.
 
 Trusted branch CI compiles every Criterion target but does not run full
 performance sampling on each push. Run benchmarks intentionally on an idle
