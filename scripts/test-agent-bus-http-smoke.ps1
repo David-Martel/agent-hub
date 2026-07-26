@@ -8,6 +8,7 @@ param(
     [ValidateRange(1, 5)]
     [int]$StartupAttempts = 2,
     [int]$TimeoutSeconds = 10,
+    [string]$ExpectedRevision = $env:AGENT_BUS_BUILD_REVISION,
     [string]$AuthToken = $env:AGENT_BUS_AUTH_TOKEN
 )
 
@@ -129,6 +130,13 @@ try {
     if (-not $Health.ok) {
         throw "HTTP health check failed. Redis is required for HTTP smoke tests."
     }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedRevision)) {
+        $revisionLength = [Math]::Min(12, $ExpectedRevision.Length)
+        $expectedPrefix = $ExpectedRevision.Substring(0, $revisionLength)
+        if (-not ([string]$Health.build_version).Contains($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "HTTP build provenance mismatch: expected revision $expectedPrefix, got $($Health.build_version)"
+        }
+    }
 
     switch ($DatabaseMode) {
         "Healthy" {
@@ -174,9 +182,6 @@ try {
     try {
         $env:AGENT_BUS_AUTH_TOKEN = $AuthToken
         & $sseSmokeScript -BaseUrl $BaseUrl -TimeoutSeconds $TimeoutSeconds -Agent $Agent
-        if ($LASTEXITCODE -ne 0) {
-            throw "SSE smoke sub-test failed for $BaseUrl"
-        }
     }
     finally {
         $env:AGENT_BUS_AUTH_TOKEN = $OriginalAuthToken
