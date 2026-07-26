@@ -1,6 +1,7 @@
 param(
     [string]$Command = "agent-bus-mcp",
     [string[]]$ArgumentList = @(),
+    [hashtable]$EnvironmentVariables = @{},
     [int]$TimeoutSeconds = 5,
     [string]$ExpectedProtocolVersion = "2024-11-05",
     [string]$ExpectedServerName = "agent-bus",
@@ -74,8 +75,20 @@ $processInfo.RedirectStandardInput = $true
 $processInfo.RedirectStandardOutput = $true
 $processInfo.RedirectStandardError = $true
 $processInfo.CreateNoWindow = $true
-$processInfo.Environment["AGENT_BUS_STARTUP_ENABLED"] = "false"
-$processInfo.Environment["RUST_LOG"] = "error"
+foreach ($entry in $EnvironmentVariables.GetEnumerator()) {
+    if ($null -eq $entry.Value) {
+        $processInfo.Environment.Remove([string]$entry.Key)
+    }
+    else {
+        $processInfo.Environment[[string]$entry.Key] = [string]$entry.Value
+    }
+}
+if (-not $EnvironmentVariables.ContainsKey("AGENT_BUS_STARTUP_ENABLED")) {
+    $processInfo.Environment["AGENT_BUS_STARTUP_ENABLED"] = "false"
+}
+if (-not $EnvironmentVariables.ContainsKey("RUST_LOG")) {
+    $processInfo.Environment["RUST_LOG"] = "error"
+}
 
 $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $processInfo

@@ -123,6 +123,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo test --workspace --lib --bins -- --test-threads=4
       - run: cargo build --release --workspace --bins
+      - name: Validate Codex MCP config parsing and launch environment
+        shell: pwsh
+        run: ./scripts/test-agent-client-config-validator.ps1
 
   bench:
     name: Benchmark Compile
