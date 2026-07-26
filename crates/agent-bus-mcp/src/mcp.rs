@@ -9,7 +9,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, Content, Implementation, InitializeResult,
+    CallToolRequestParams, CallToolResult, ContentBlock, Implementation, InitializeResult,
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
 };
 
@@ -45,12 +45,12 @@ impl AgentBusMcpServer {
         tool_definitions().into_iter().map(to_rmcp_tool).collect()
     }
 
-    fn json_to_text(value: &serde_json::Value) -> Content {
-        Content::text(serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_owned()))
+    fn json_to_text(value: &serde_json::Value) -> ContentBlock {
+        ContentBlock::text(serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_owned()))
     }
 
     fn err_content<E: std::fmt::Display>(e: &E) -> CallToolResult {
-        CallToolResult::error(vec![Content::text(format!("Error: {e:#}"))])
+        CallToolResult::error(vec![ContentBlock::text(format!("Error: {e:#}"))])
     }
 
     fn ok_content(value: &serde_json::Value) -> CallToolResult {
