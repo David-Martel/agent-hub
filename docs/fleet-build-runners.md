@@ -43,6 +43,14 @@ dedicated listener serializes Windows jobs, so those target outputs are never
 written concurrently. Windows cache data remains local and is not mixed with
 Linux or ARM64 objects.
 
+Every CI release artifact includes the immutable workflow commit, runner, target
+directory, toolchain, exact cache executable/version, cache statistics, and
+SHA-256 hashes. CI exports that commit as `AGENT_BUS_BUILD_REVISION`; the build
+scripts rerun when it changes, and the downloaded-artifact HTTP smoke rejects
+a `/health` revision mismatch. This prevents a warm Cargo cache from publishing
+stale runtime identity. Tagged GitHub Release builds export the same immutable
+revision and verify it in both the CLI and HTTP binaries before publication.
+
 ## Public-repository trust boundary
 
 Fleet runners and their Redis cache are trusted infrastructure. The fleet

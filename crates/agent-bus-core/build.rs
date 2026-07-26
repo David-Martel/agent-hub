@@ -6,14 +6,21 @@ fn main() {
     let describe = run_git(&["describe", "--tags", "--always", "--dirty", "--match", "v*"]);
     let short = run_git(&["rev-parse", "--short=12", "HEAD"]);
     let date = run_git(&["log", "-1", "--format=%cs"]);
+    let explicit_revision = std::env::var("AGENT_BUS_BUILD_REVISION")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
 
-    let revision = match (describe, short) {
-        (Some(value), _) | (_, Some(value)) if !value.is_empty() => {
-            with_date(&value, date.as_deref())
-        }
-        _ => "unknown".to_owned(),
+    let revision = match explicit_revision {
+        Some(value) => with_date(value.trim(), date.as_deref()),
+        None => match (describe, short) {
+            (Some(value), _) | (_, Some(value)) if !value.is_empty() => {
+                with_date(&value, date.as_deref())
+            }
+            _ => "unknown".to_owned(),
+        },
     };
     println!("cargo:rustc-env=AGENT_BUS_CORE_GIT_VERSION={revision}");
+    println!("cargo:rerun-if-env-changed=AGENT_BUS_BUILD_REVISION");
 
     if let Some(head) = run_git(&["rev-parse", "--git-path", "HEAD"]) {
         watch_if_present(&head);

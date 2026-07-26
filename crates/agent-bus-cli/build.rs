@@ -12,13 +12,20 @@ fn main() {
     let describe = run_git(&["describe", "--tags", "--always", "--dirty", "--match", "v*"]);
     let short = run_git(&["rev-parse", "--short=12", "HEAD"]);
     let date = run_git(&["log", "-1", "--format=%cs"]); // committer date, YYYY-MM-DD
+    let explicit_revision = std::env::var("AGENT_BUS_BUILD_REVISION")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
 
-    let version = match (describe, short) {
-        (Some(d), _) if !d.is_empty() => with_date(&d, date.as_deref()),
-        (_, Some(h)) if !h.is_empty() => with_date(&h, date.as_deref()),
-        _ => "unknown".to_string(),
+    let version = match explicit_revision {
+        Some(value) => with_date(value.trim(), date.as_deref()),
+        None => match (describe, short) {
+            (Some(d), _) if !d.is_empty() => with_date(&d, date.as_deref()),
+            (_, Some(h)) if !h.is_empty() => with_date(&h, date.as_deref()),
+            _ => "unknown".to_string(),
+        },
     };
     println!("cargo:rustc-env=AGENT_BUS_GIT_VERSION={version}");
+    println!("cargo:rerun-if-env-changed=AGENT_BUS_BUILD_REVISION");
 
     // A symbolic HEAD file does not change when its branch fast-forwards.
     // Watch the resolved ref and packed refs as well so cached release builds

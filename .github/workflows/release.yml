@@ -9,6 +9,7 @@ permissions:
   contents: read
 
 env:
+  AGENT_BUS_BUILD_REVISION: ${{ github.sha }}
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -31,14 +32,29 @@ jobs:
 
       - run: cargo build --locked --release --workspace --bins
 
+      - name: Verify embedded runtime revision
+        shell: pwsh
+        run: |
+          $expectedPrefix = $env:AGENT_BUS_BUILD_REVISION.Substring(0, 12)
+          $releaseDir = Join-Path $env:CARGO_TARGET_DIR "release"
+          $cliVersion = & (Join-Path $releaseDir "agent-bus.exe") --version
+          if (-not $cliVersion.Contains($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "CLI build provenance mismatch: expected $expectedPrefix, got $cliVersion"
+          }
+          $httpVersion = & (Join-Path $releaseDir "agent-bus-http.exe") --version
+          if (-not $httpVersion.Contains($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "HTTP build provenance mismatch: expected $expectedPrefix, got $httpVersion"
+          }
+
       - name: Stage artifacts and checksums
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $releaseDir = Join-Path $env:CARGO_TARGET_DIR "release"
           $binaries = @('agent-bus', 'agent-bus-http', 'agent-bus-mcp')
           foreach ($binary in $binaries) {
             $name = "$binary-windows-x64.exe"
-            Copy-Item "target/release/$binary.exe" "dist/$name"
+            Copy-Item (Join-Path $releaseDir "${binary}.exe") "dist/$name"
             $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $name" | Add-Content -Path dist/SHA256SUMS-windows-x64 -Encoding ascii
           }
@@ -74,6 +90,21 @@ jobs:
           }
 
       - run: cargo build --locked --release --workspace --bins
+
+      - name: Verify embedded runtime revision
+        shell: bash
+        run: |
+          expected_prefix="${AGENT_BUS_BUILD_REVISION:0:12}"
+          cli_version="$("$CARGO_TARGET_DIR/release/agent-bus" --version)"
+          grep -Fqi "$expected_prefix" <<<"$cli_version" || {
+            echo "CLI build provenance mismatch: expected $expected_prefix, got $cli_version" >&2
+            exit 1
+          }
+          http_version="$("$CARGO_TARGET_DIR/release/agent-bus-http" --version)"
+          grep -Fqi "$expected_prefix" <<<"$http_version" || {
+            echo "HTTP build provenance mismatch: expected $expected_prefix, got $http_version" >&2
+            exit 1
+          }
 
       - name: Stage artifacts and checksums
         shell: bash
