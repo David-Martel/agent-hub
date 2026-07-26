@@ -4,6 +4,17 @@ use agent_bus_core::{bootstrap, maybe_announce_startup};
 use anyhow::{Context, Result};
 
 fn main() -> Result<()> {
+    if std::env::args()
+        .skip(1)
+        .any(|arg| arg == "--version" || arg == "-V")
+    {
+        println!(
+            "agent-bus-http {}",
+            agent_bus_core::build_info::BUILD_VERSION
+        );
+        return Ok(());
+    }
+
     let handle = std::thread::Builder::new()
         .name("agent-bus-http-main".to_owned())
         .stack_size(8 * 1024 * 1024)
