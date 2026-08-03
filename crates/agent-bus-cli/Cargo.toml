@@ -25,7 +25,7 @@ serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal", "net", "sync", "time"] }
-rmcp = { version = "2", features = ["server", "transport-async-rw"] }
+rmcp = { version = "3", features = ["server", "transport-async-rw"] }
 axum = { version = "0.8", features = ["macros"] }
 tokio-stream = "0.1"
 tower-http = { version = "0.7", features = ["cors", "trace"] }
@@ -34,7 +34,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 mimalloc = "0.1"
 lz4_flex = "0.14"
-base64 = "0.22"
+base64 = "0.23"
 smallvec = { version = "1", features = ["serde"] }
 rmp-serde = "1"
 regex-lite = "0.1"
