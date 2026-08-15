@@ -314,6 +314,42 @@ status_line = ["model"]
         throw "Installer moved the managed parent tables after agent-bus tool configuration."
     }
 
+    $legacyIndentedSuffixPath = Join-Path $fixtureRoot "legacy-indented-suffix.toml"
+    @"
+model = "gpt-5.6-sol"
+
+# Shared Redis-backed agent coordination bus
+[mcp_servers.agent_bus]
+command = "stale"
+args = []
+
+[mcp_servers.agent_bus.env]
+AGENT_BUS_STARTUP_ENABLED = "false"
+
+  [windows]
+sandbox = "elevated"
+
+  [tui]
+status_line = ["model"]
+"@ | Set-Content -LiteralPath $legacyIndentedSuffixPath -Encoding utf8
+
+    & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+        -Claude:$false `
+        -Codex:$true `
+        -Gemini:$false `
+        -CodexConfigPath $legacyIndentedSuffixPath `
+        -CommandPath $McpBinaryPath `
+        -NoBackup
+
+    $legacyIndentedSuffixContent = Get-Content -LiteralPath $legacyIndentedSuffixPath -Raw
+    if ($legacyIndentedSuffixContent -notmatch '(?m)^\s+\[windows\]\r?$' -or
+        $legacyIndentedSuffixContent -notmatch '(?m)^\s+\[tui\]\r?$') {
+        throw "Installer removed an indented TOML section following a legacy agent-bus block."
+    }
+    if ([regex]::Matches($legacyIndentedSuffixContent, '(?m)^# BEGIN agent-bus MCP').Count -ne 1) {
+        throw "Legacy upgrade did not produce exactly one managed agent-bus block."
+    }
+
     Write-Output "Agent client config validator fixtures passed."
 }
 finally {

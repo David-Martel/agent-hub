@@ -1,8 +1,8 @@
 param(
     [string]$HomeDir = $HOME,
     [string]$ExpectedServerUrl = "http://localhost:8400",
-    [string]$ExpectedRedisUrl = "redis://127.0.0.1:6380/0",
-    [string]$ExpectedDatabaseUrl = "postgresql://postgres@127.0.0.1:5300/redis_backend",
+    [string]$ExpectedRedisUrl = "redis://localhost:6380/0",
+    [string]$ExpectedDatabaseUrl = "postgresql://postgres@localhost:5300/redis_backend",
     [string]$MinimumAgentBusVersion = "0.5.0",
     [switch]$Strict,
     [switch]$SkipMcpSmoke,

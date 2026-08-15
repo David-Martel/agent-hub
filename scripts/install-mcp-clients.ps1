@@ -192,7 +192,7 @@ RUST_LOG = "error"
         )
         $content = [regex]::Replace(
             $content,
-            '(?ms)^\[mcp_servers\.agent_bus(?:\.env)?\]\r?\n.*?(?=^\[|\z)',
+            '(?ms)^\[mcp_servers\.agent_bus(?:\.env)?\]\r?\n.*?(?=^[ \t]*\[|\z)',
             ''
         )
         $content = $content.TrimEnd()
