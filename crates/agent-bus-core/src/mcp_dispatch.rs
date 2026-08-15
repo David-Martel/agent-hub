@@ -483,13 +483,13 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
-/// Reject arguments that are not declared by a tool's input schema.
+/// Reject arguments that do not satisfy a tool's input schema.
 ///
 /// # Errors
 ///
 /// Returns [`crate::error::AgentBusError::InvalidParams`] when one or more
-/// argument names are unknown, or an internal error when the tool does not
-/// exist.
+/// argument names are missing/unknown, values violate declared constraints,
+/// or an internal error when the tool does not exist.
 pub fn validate_tool_arguments(name: &str, args: &serde_json::Map<String, Value>) -> Result<()> {
     let tool = tool_definitions()
         .into_iter()
@@ -526,13 +526,95 @@ pub fn validate_tool_arguments(name: &str, args: &serde_json::Map<String, Value>
         .map(String::as_str)
         .collect();
     unknown.sort_unstable();
-    if unknown.is_empty() {
+    if !unknown.is_empty() {
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "unknown argument(s) for {name}: {}",
+            unknown.join(", ")
+        )));
+    }
+
+    let mut violations = Vec::new();
+    for (key, value) in args {
+        if let Some(property_schema) = properties.get(key) {
+            validate_schema_value(key, value, property_schema, &mut violations);
+        }
+    }
+    violations.sort_unstable();
+    if violations.is_empty() {
         return Ok(());
     }
     Err(crate::error::AgentBusError::InvalidParams(format!(
-        "unknown argument(s) for {name}: {}",
-        unknown.join(", ")
+        "invalid argument(s) for {name}: {}",
+        violations.join("; ")
     )))
+}
+
+fn validate_schema_value(key: &str, value: &Value, schema: &Value, violations: &mut Vec<String>) {
+    let expected_type = schema.get("type").and_then(Value::as_str);
+    if let Some(expected) = expected_type
+        && !value_matches_schema_type(value, expected)
+    {
+        violations.push(format!("{key} must be {expected}"));
+        return;
+    }
+
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
+        && !allowed.contains(value)
+    {
+        violations.push(format!("{key} is not an allowed value"));
+    }
+
+    if expected_type == Some("integer") {
+        let actual = json_integer_as_i128(value);
+        if let Some(actual) = actual {
+            if schema
+                .get("minimum")
+                .and_then(json_integer_as_i128)
+                .is_some_and(|minimum| actual < minimum)
+            {
+                violations.push(format!("{key} is below the minimum"));
+            }
+            if schema
+                .get("maximum")
+                .and_then(json_integer_as_i128)
+                .is_some_and(|maximum| actual > maximum)
+            {
+                violations.push(format!("{key} exceeds the maximum"));
+            }
+        }
+    }
+
+    if expected_type == Some("array")
+        && let (Some(items), Some(values)) = (schema.get("items"), value.as_array())
+    {
+        for (index, item) in values.iter().enumerate() {
+            if let Some(item_type) = items.get("type").and_then(Value::as_str)
+                && !value_matches_schema_type(item, item_type)
+            {
+                violations.push(format!("{key}[{index}] must be {item_type}"));
+            }
+        }
+    }
+}
+
+fn json_integer_as_i128(value: &Value) -> Option<i128> {
+    value
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
+}
+
+fn value_matches_schema_type(value: &Value, expected: &str) -> bool {
+    match expected {
+        "array" => value.is_array(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "null" => value.is_null(),
+        "number" => value.is_number(),
+        "object" => value.is_object(),
+        "string" => value.is_string(),
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,6 +1258,64 @@ mod tests {
     }
 
     #[test]
+    fn validation_rejects_schema_invalid_argument_values() {
+        let cases = [
+            (
+                "post_message",
+                serde_json::json!({
+                    "sender": 42,
+                    "recipient": "codex",
+                    "topic": "status",
+                    "body": "body"
+                }),
+                "sender must be string",
+            ),
+            (
+                "list_messages",
+                serde_json::json!({"limit": "1"}),
+                "limit must be integer",
+            ),
+            (
+                "post_message",
+                serde_json::json!({
+                    "sender": "claude",
+                    "recipient": "codex",
+                    "topic": "status",
+                    "body": "body",
+                    "priority": "immediate"
+                }),
+                "priority is not an allowed value",
+            ),
+            (
+                "list_messages",
+                serde_json::json!({"tag": ["repo:agent-bus", 7]}),
+                "tag[1] must be string",
+            ),
+            (
+                "list_messages",
+                serde_json::json!({"limit": 501}),
+                "limit exceeds the maximum",
+            ),
+        ];
+
+        for (tool, raw_args, expected) in cases {
+            let args = raw_args
+                .as_object()
+                .expect("test arguments must be objects");
+            let error = validate_tool_arguments(tool, args)
+                .expect_err("schema-invalid values must be rejected");
+            assert!(matches!(
+                error,
+                crate::error::AgentBusError::InvalidParams(_)
+            ));
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected validation error for {tool}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn post_message_schema_has_required_fields() {
         let tools = tool_definitions();
         let tool = tools
@@ -1295,7 +1435,12 @@ mod tests {
             args.as_object().expect("args must be object"),
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unsupported"));
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            crate::error::AgentBusError::InvalidParams(_)
+        ));
+        assert!(error.to_string().contains("not an allowed value"));
     }
 
     #[test]

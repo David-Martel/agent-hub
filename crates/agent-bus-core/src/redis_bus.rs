@@ -2000,6 +2000,7 @@ pub fn bus_list_messages_from_redis_with_filters(
         reason = "since_minutes is bounded to <=10080 by validation"
     )]
     let cutoff = Utc::now() - chrono::Duration::minutes(since_minutes as i64);
+    let stream_start = format!("{}-0", cutoff.timestamp_millis().max(0));
 
     let mut messages: Vec<Message> = Vec::new();
     let mut page_end = "+".to_owned();
@@ -2007,7 +2008,7 @@ pub fn bus_list_messages_from_redis_with_filters(
         let raw: Vec<redis::Value> = redis::cmd("XREVRANGE")
             .arg(&settings.stream_key)
             .arg(&page_end)
-            .arg("-")
+            .arg(&stream_start)
             .arg("COUNT")
             .arg(page_size)
             .query(conn)
@@ -2018,7 +2019,6 @@ pub fn bus_list_messages_from_redis_with_filters(
             break;
         };
 
-        let mut cutoff_reached = false;
         for (stream_id, fields) in entries {
             let mut msg = decode_stream_entry(&fields);
 
@@ -2027,8 +2027,7 @@ pub fn bus_list_messages_from_redis_with_filters(
                 chrono::DateTime::parse_from_rfc3339(&msg.timestamp_utc.replace('Z', "+00:00"))
                 && ts < cutoff
             {
-                cutoff_reached = true;
-                break;
+                continue;
             }
 
             if !message_matches_filters(
@@ -2050,7 +2049,7 @@ pub fn bus_list_messages_from_redis_with_filters(
             }
         }
 
-        if cutoff_reached || entry_count < page_size {
+        if entry_count < page_size {
             break;
         }
         page_end = format!("({oldest_stream_id}");
@@ -3475,7 +3474,7 @@ mod tests {
     }
 
     #[test]
-    fn topic_pagination_stops_when_page_reaches_time_cutoff() {
+    fn topic_pagination_keeps_valid_older_stream_entry_after_stale_payloads() {
         let mut settings = Settings::from_env();
         settings.stream_key = format!("agent_bus:test:topic-cutoff:{}", Uuid::new_v4());
         let Ok(mut conn) = connect(&settings) else {
@@ -3535,10 +3534,9 @@ mod tests {
         let _: redis::RedisResult<i64> =
             redis::cmd("DEL").arg(&settings.stream_key).query(&mut conn);
 
-        assert!(
-            result.is_empty(),
-            "the scan must stop at the first out-of-window entry instead of reading older pages"
-        );
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].topic, "rare-topic");
+        assert_eq!(result[0].body, "target");
     }
 
     #[test]
