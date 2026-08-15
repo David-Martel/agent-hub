@@ -71,6 +71,15 @@ if ($DryRun) {
 
 $nssmPath = (Get-Command nssm -ErrorAction Stop).Source
 
+function Invoke-NssmCommand {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+
+    & $nssmPath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "nssm $($Arguments[0]) failed with exit code $LASTEXITCODE."
+    }
+}
+
 # Verify binary exists
 if (-not (Test-Path $binaryPath)) {
     throw "agent-bus binary not found at $binaryPath. Build with: cargo build --release"
@@ -90,17 +99,24 @@ if ($existing) {
         Stop-Service -Name $ServiceName -Force
         $existing.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
     }
-    & $nssmPath remove $ServiceName confirm | Out-Null
-    Start-Sleep -Seconds 2
+    Invoke-NssmCommand -Arguments @("remove", $ServiceName, "confirm") | Out-Null
+    $removeDeadline = (Get-Date).AddSeconds(15)
+    do {
+        Start-Sleep -Milliseconds 200
+        $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    } while ($existing -and (Get-Date) -lt $removeDeadline)
+    if ($existing) {
+        throw "Service '$ServiceName' still exists after nssm removal."
+    }
 }
 
 # Install service — run Rust binary DIRECTLY (no PowerShell wrapper)
 Write-Host "Installing $ServiceName service..."
-& $nssmPath install $ServiceName $binaryPath "serve" "--transport" "http" "--port" "$Port"
-& $nssmPath set $ServiceName DisplayName $DisplayName
-& $nssmPath set $ServiceName Description "Agent Hub coordination service (Redis + PostgreSQL). HTTP REST + SSE at ${ServerHost}:$Port$(if ($AllowRemote) { ' (remote-enabled, bearer auth)' })"
-& $nssmPath set $ServiceName Start SERVICE_AUTO_START
-& $nssmPath set $ServiceName AppDirectory (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
+Invoke-NssmCommand -Arguments @("install", $ServiceName, $binaryPath, "serve", "--transport", "http", "--port", "$Port")
+Invoke-NssmCommand -Arguments @("set", $ServiceName, "DisplayName", $DisplayName)
+Invoke-NssmCommand -Arguments @("set", $ServiceName, "Description", "Agent Hub coordination service (Redis + PostgreSQL). HTTP REST + SSE at ${ServerHost}:$Port$(if ($AllowRemote) { ' (remote-enabled, bearer auth)' })")
+Invoke-NssmCommand -Arguments @("set", $ServiceName, "Start", "SERVICE_AUTO_START")
+Invoke-NssmCommand -Arguments @("set", $ServiceName, "AppDirectory", (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)))
 
 # Environment variables. Redis/PostgreSQL stay pinned to 127.0.0.1 (loopback) in
 # all modes; only the HTTP server binds off-loopback when -AllowRemote is set.
@@ -116,18 +132,26 @@ $envPairs.Add("AGENT_BUS_SERVICE_NAME=$ServiceName")
 $envPairs.Add("AGENT_BUS_STARTUP_ENABLED=true")
 $envPairs.Add("AGENT_BUS_STREAM_MAXLEN=100000")
 $envPairs.Add("RUST_LOG=warn")
-& $nssmPath set $ServiceName AppEnvironmentExtra @($envPairs.ToArray())
+$environmentArguments = @("set", $ServiceName, "AppEnvironmentExtra") + @($envPairs.ToArray())
+Invoke-NssmCommand -Arguments $environmentArguments
 
 # Logging with rotation
-& $nssmPath set $ServiceName AppStdout $stdoutLog
-& $nssmPath set $ServiceName AppStderr $stderrLog
-& $nssmPath set $ServiceName AppRotateFiles 1
-& $nssmPath set $ServiceName AppRotateOnline 1
-& $nssmPath set $ServiceName AppRotateSeconds 86400
-& $nssmPath set $ServiceName AppRotateBytes 10485760
+Invoke-NssmCommand -Arguments @("set", $ServiceName, "AppStdout", $stdoutLog)
+Invoke-NssmCommand -Arguments @("set", $ServiceName, "AppStderr", $stderrLog)
+Invoke-NssmCommand -Arguments @("set", $ServiceName, "AppRotateFiles", "1")
+Invoke-NssmCommand -Arguments @("set", $ServiceName, "AppRotateOnline", "1")
+Invoke-NssmCommand -Arguments @("set", $ServiceName, "AppRotateSeconds", "86400")
+Invoke-NssmCommand -Arguments @("set", $ServiceName, "AppRotateBytes", "10485760")
 
 # Automatic restart on failure (3 attempts, 5s delay each, reset after 24h)
 & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/5000
+if ($LASTEXITCODE -ne 0) {
+    throw "sc.exe failure configuration failed with exit code $LASTEXITCODE."
+}
+
+if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
+    throw "Service '$ServiceName' was not registered after installation."
+}
 
 Write-Host "Service installed: $ServiceName"
 
