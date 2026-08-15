@@ -272,6 +272,84 @@ AGENT_BUS_STARTUP_ENABLED = "false"
         throw "Installer mutated the Codex config before rejecting an unsafe ServerHost."
     }
 
+    $managedSuffixPath = Join-Path $fixtureRoot "managed-suffix.toml"
+    @"
+model = "gpt-5.6-sol"
+
+# BEGIN agent-bus MCP (managed by scripts/install-mcp-clients.ps1)
+[mcp_servers.agent_bus]
+command = "stale"
+args = []
+
+[mcp_servers.agent_bus.env]
+AGENT_BUS_STARTUP_ENABLED = "false"
+# END agent-bus MCP (managed by scripts/install-mcp-clients.ps1)
+
+[mcp_servers.agent_bus.tools.post_message]
+approval_mode = "approve"
+
+[windows]
+sandbox = "elevated"
+
+[tui]
+status_line = ["model"]
+"@ | Set-Content -LiteralPath $managedSuffixPath -Encoding utf8
+
+    & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+        -Claude:$false `
+        -Codex:$true `
+        -Gemini:$false `
+        -CodexConfigPath $managedSuffixPath `
+        -CommandPath $McpBinaryPath `
+        -NoBackup
+
+    $managedSuffixContent = Get-Content -LiteralPath $managedSuffixPath -Raw
+    if ($managedSuffixContent -notmatch '(?m)^\[windows\]\r?$' -or $managedSuffixContent -notmatch '(?m)^\[tui\]\r?$') {
+        throw "Installer removed configuration following the managed agent-bus block."
+    }
+    if ([regex]::Matches($managedSuffixContent, '(?m)^# BEGIN agent-bus MCP').Count -ne 1) {
+        throw "Installer did not produce exactly one managed agent-bus block."
+    }
+    if ($managedSuffixContent.IndexOf('# END agent-bus MCP') -gt $managedSuffixContent.IndexOf('[mcp_servers.agent_bus.tools.post_message]')) {
+        throw "Installer moved the managed parent tables after agent-bus tool configuration."
+    }
+
+    $legacyIndentedSuffixPath = Join-Path $fixtureRoot "legacy-indented-suffix.toml"
+    @"
+model = "gpt-5.6-sol"
+
+# Shared Redis-backed agent coordination bus
+[mcp_servers.agent_bus]
+command = "stale"
+args = []
+
+[mcp_servers.agent_bus.env]
+AGENT_BUS_STARTUP_ENABLED = "false"
+
+  [windows]
+sandbox = "elevated"
+
+  [tui]
+status_line = ["model"]
+"@ | Set-Content -LiteralPath $legacyIndentedSuffixPath -Encoding utf8
+
+    & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+        -Claude:$false `
+        -Codex:$true `
+        -Gemini:$false `
+        -CodexConfigPath $legacyIndentedSuffixPath `
+        -CommandPath $McpBinaryPath `
+        -NoBackup
+
+    $legacyIndentedSuffixContent = Get-Content -LiteralPath $legacyIndentedSuffixPath -Raw
+    if ($legacyIndentedSuffixContent -notmatch '(?m)^\s+\[windows\]\r?$' -or
+        $legacyIndentedSuffixContent -notmatch '(?m)^\s+\[tui\]\r?$') {
+        throw "Installer removed an indented TOML section following a legacy agent-bus block."
+    }
+    if ([regex]::Matches($legacyIndentedSuffixContent, '(?m)^# BEGIN agent-bus MCP').Count -ne 1) {
+        throw "Legacy upgrade did not produce exactly one managed agent-bus block."
+    }
+
     Write-Output "Agent client config validator fixtures passed."
 }
 finally {

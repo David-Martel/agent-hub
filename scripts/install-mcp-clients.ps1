@@ -5,8 +5,8 @@ param(
     [string]$ClaudeConfigPath = (Join-Path (Join-Path $HOME ".claude") "mcp.json"),
     [string]$CodexConfigPath = (Join-Path (Join-Path $HOME ".codex") "config.toml"),
     [string]$GeminiConfigPath = (Join-Path (Join-Path $HOME ".gemini") "settings.json"),
-    [string]$RedisUrl = "redis://127.0.0.1:6380/0",
-    [string]$DatabaseUrl = "postgresql://postgres@127.0.0.1:5300/redis_backend",
+    [string]$RedisUrl = "redis://localhost:6380/0",
+    [string]$DatabaseUrl = "postgresql://postgres@localhost:5300/redis_backend",
     [string]$ServerUrl = "http://localhost:8400",
     [string]$ServerHost = "localhost",
     [string]$CommandPath = "",
@@ -176,16 +176,31 @@ RUST_LOG = "error"
         ""
     }
 
-    $sectionStartPattern = '(?ms)(# BEGIN agent-bus MCP \(managed by scripts/install-mcp-clients\.ps1\)|# Shared Redis-backed agent coordination bus|\[mcp_servers\.agent_bus(?:\.env)?\])'
-    $existingStart = [regex]::Match($content, $sectionStartPattern)
-    if ($existingStart.Success) {
-        $content = $content.Substring(0, $existingStart.Index)
+    $managedBlockPattern = '(?ms)^# BEGIN agent-bus MCP \(managed by scripts/install-mcp-clients\.ps1\)\r?\n.*?^# END agent-bus MCP \(managed by scripts/install-mcp-clients\.ps1\)\r?\n?'
+    if ([regex]::IsMatch($content, $managedBlockPattern)) {
+        $replacement = $managedBlock.TrimEnd() + "`r`n`r`n"
+        $content = [regex]::Replace($content, $managedBlockPattern, $replacement, 1)
     }
-    $content = $content.TrimEnd()
-    if ($content) {
-        $content += "`r`n`r`n"
+    else {
+        # Upgrade legacy unbounded installs without deleting unrelated sections
+        # that follow agent-bus. Match only the exact base/env tables; custom
+        # tool-approval tables and the rest of config.toml remain intact.
+        $content = [regex]::Replace(
+            $content,
+            '(?ms)^# Shared Redis-backed agent coordination bus\r?\n(?=\[mcp_servers\.agent_bus\])',
+            ''
+        )
+        $content = [regex]::Replace(
+            $content,
+            '(?ms)^\[mcp_servers\.agent_bus(?:\.env)?\]\r?\n.*?(?=^[ \t]*\[|\z)',
+            ''
+        )
+        $content = $content.TrimEnd()
+        if ($content) {
+            $content += "`r`n`r`n"
+        }
+        $content += $managedBlock
     }
-    $content += $managedBlock
 
     Set-Content -Path $CodexConfigPath -Value $content -Encoding UTF8
     Write-Host "Updated Codex MCP config at $CodexConfigPath"
