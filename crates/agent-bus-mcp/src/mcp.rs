@@ -45,6 +45,10 @@ impl AgentBusMcpServer {
         tool_definitions().into_iter().map(to_rmcp_tool).collect()
     }
 
+    fn is_known_tool(name: &str) -> bool {
+        tool_definitions().iter().any(|tool| tool.name == name)
+    }
+
     fn json_to_text(value: &serde_json::Value) -> ContentBlock {
         ContentBlock::text(serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_owned()))
     }
@@ -92,6 +96,10 @@ impl ServerHandler for AgentBusMcpServer {
         request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        if !Self::is_known_tool(&request.name) {
+            return Err(rmcp::ErrorData::invalid_params("tool not found", None));
+        }
+
         let args = request.arguments.as_ref();
         let empty = serde_json::Map::new();
         let args_map = args.unwrap_or(&empty);
@@ -168,6 +176,12 @@ mod tests {
         let result = dispatch.dispatch_tool("nonexistent_tool", &serde_json::Map::new());
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("unknown tool"));
+    }
+
+    #[test]
+    fn known_tool_lookup_rejects_unknown_names() {
+        assert!(AgentBusMcpServer::is_known_tool("bus_health"));
+        assert!(!AgentBusMcpServer::is_known_tool("nonexistent_tool"));
     }
 
     #[test]

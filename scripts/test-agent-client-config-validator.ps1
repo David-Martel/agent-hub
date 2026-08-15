@@ -304,7 +304,7 @@ status_line = ["model"]
         -NoBackup
 
     $managedSuffixContent = Get-Content -LiteralPath $managedSuffixPath -Raw
-    if ($managedSuffixContent -notmatch '(?m)^\[windows\]$' -or $managedSuffixContent -notmatch '(?m)^\[tui\]$') {
+    if ($managedSuffixContent -notmatch '(?m)^\[windows\]\r?$' -or $managedSuffixContent -notmatch '(?m)^\[tui\]\r?$') {
         throw "Installer removed configuration following the managed agent-bus block."
     }
     if ([regex]::Matches($managedSuffixContent, '(?m)^# BEGIN agent-bus MCP').Count -ne 1) {
