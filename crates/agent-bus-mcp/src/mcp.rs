@@ -238,7 +238,12 @@ mod tests {
             args.as_object().expect("args must be object"),
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unsupported"));
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            agent_bus_core::error::AgentBusError::InvalidParams(_)
+        ));
+        assert!(error.to_string().contains("not an allowed value"));
     }
 
     #[test]
