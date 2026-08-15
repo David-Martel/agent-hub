@@ -718,17 +718,17 @@ if (-not $CodexOnly) {
     Test-ExampleConfig
 
     if ($ExpectedRedisUrl -match 'localhost') {
-        Add-CheckResult -Name "defaults:redis-url" -Status "warn" -Detail "Redis default uses localhost; prefer 127.0.0.1 for IPv4-only Redis on Windows"
+        Add-CheckResult -Name "defaults:redis-url" -Status "ok" -Detail "Redis default uses the portable localhost route"
     }
     else {
-        Add-CheckResult -Name "defaults:redis-url" -Status "ok" -Detail "Redis default is loopback-family explicit"
+        Add-CheckResult -Name "defaults:redis-url" -Status "warn" -Detail "Redis default uses a numeric loopback; prefer localhost for portable client routing"
     }
 
     if ($ExpectedDatabaseUrl -match 'localhost') {
-        Add-CheckResult -Name "defaults:database-url" -Status "warn" -Detail "Database default uses localhost; prefer 127.0.0.1 when avoiding dual-stack ambiguity"
+        Add-CheckResult -Name "defaults:database-url" -Status "ok" -Detail "Database default uses the portable localhost route"
     }
     else {
-        Add-CheckResult -Name "defaults:database-url" -Status "ok" -Detail "Database default is loopback-family explicit"
+        Add-CheckResult -Name "defaults:database-url" -Status "warn" -Detail "Database default uses a numeric loopback; prefer localhost for portable client routing"
     }
 
     Add-CheckResult -Name "defaults:server-url" -Status "ok" -Detail "Expected MCP HTTP URL is $ExpectedServerUrl"
