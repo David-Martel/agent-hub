@@ -13,7 +13,9 @@ use rmcp::model::{
     InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
 };
 
-use agent_bus_core::mcp_dispatch::{McpToolDispatch, ToolDefinition, tool_definitions};
+use agent_bus_core::mcp_dispatch::{
+    McpToolDispatch, ToolDefinition, tool_definitions, validate_tool_arguments,
+};
 use agent_bus_core::settings::Settings;
 
 /// Convert a [`ToolDefinition`] into an `rmcp::model::Tool`.
@@ -103,10 +105,16 @@ impl ServerHandler for AgentBusMcpServer {
         let args = request.arguments.as_ref();
         let empty = serde_json::Map::new();
         let args_map = args.unwrap_or(&empty);
+        if let Err(error) = validate_tool_arguments(&request.name, args_map) {
+            return Err(rmcp::ErrorData::invalid_params(error.to_string(), None));
+        }
 
         let dispatch = McpToolDispatch::new(&self.settings);
         match dispatch.dispatch_tool(&request.name, args_map) {
             Ok(ref value) => Ok(Self::ok_content(value).into()),
+            Err(agent_bus_core::error::AgentBusError::InvalidParams(message)) => {
+                Err(rmcp::ErrorData::invalid_params(message, None))
+            }
             Err(e) => Ok(Self::err_content(&e).into()),
         }
     }
@@ -422,6 +430,10 @@ mod tests {
             .expect("list_messages schema must have properties");
 
         assert!(props.contains_key("repo"), "list_messages must expose repo");
+        assert!(
+            props.contains_key("topic"),
+            "list_messages must expose topic"
+        );
         assert!(
             props.contains_key("session"),
             "list_messages must expose session"

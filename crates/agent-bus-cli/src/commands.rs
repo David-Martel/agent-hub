@@ -75,6 +75,7 @@ pub(crate) struct SendArgs<'a> {
 pub(crate) struct ReadArgs<'a> {
     pub(crate) agent: &'a Option<String>,
     pub(crate) from_agent: &'a Option<String>,
+    pub(crate) topic: &'a Option<String>,
     pub(crate) repo: &'a Option<String>,
     pub(crate) session: &'a Option<String>,
     pub(crate) tags: &'a [String],
@@ -123,6 +124,7 @@ fn list_filtered_messages(
                 session: filters.session,
                 tags: filters.tags,
                 thread_id: filters.thread_id,
+                topic: filters.topic,
             },
         },
     )?)
@@ -434,6 +436,7 @@ pub(crate) fn cmd_read(settings: &Settings, args: &ReadArgs<'_>) -> Result<()> {
         session: args.session.as_deref(),
         tags: args.tags,
         thread_id: args.thread_id.as_deref(),
+        topic: args.topic.as_deref(),
     };
 
     #[cfg(feature = "server-mode")]
@@ -450,6 +453,9 @@ pub(crate) fn cmd_read(settings: &Settings, args: &ReadArgs<'_>) -> Result<()> {
             }
             if let Some(from) = args.from_agent.as_deref() {
                 query.append_pair("from", from);
+            }
+            if let Some(topic) = args.topic.as_deref() {
+                query.append_pair("topic", topic);
             }
             if let Some(repo) = args.repo.as_deref() {
                 query.append_pair("repo", repo);
@@ -710,6 +716,7 @@ pub(crate) fn cmd_export(
         session: session.as_deref(),
         tags,
         thread_id: thread_id.as_deref(),
+        topic: None,
     };
     let msgs = list_filtered_messages(
         settings,
@@ -839,6 +846,7 @@ pub(crate) fn cmd_journal(
         session: session.as_deref(),
         tags,
         thread_id: thread_id.as_deref(),
+        topic: None,
     };
     let messages = list_filtered_messages(
         settings,
@@ -918,6 +926,7 @@ pub(crate) fn cmd_backup(
         session,
         tags,
         thread_id,
+        topic: None,
     };
     let messages = list_filtered_messages(
         settings,
@@ -1551,6 +1560,7 @@ pub(crate) fn cmd_dedup(
         session,
         tags: &[],
         thread_id: None,
+        topic: None,
     };
     let msgs =
         list_filtered_messages(settings, None, agent, since_minutes, 10_000, true, &filters)?;
@@ -1806,6 +1816,7 @@ pub(crate) fn cmd_compact_context(
                 session: args.session.as_deref(),
                 tags: args.tags,
                 thread_id: args.thread_id.as_deref(),
+                topic: None,
             },
             since_minutes: args.since_minutes,
             max_tokens: args.max_tokens,
@@ -2249,6 +2260,7 @@ mod tests {
             session,
             tags: &tags,
             thread_id,
+            topic: None,
         };
 
         assert!(message_matches_filters(&msg, &filters));
@@ -2266,6 +2278,7 @@ mod tests {
             session,
             tags: &tags,
             thread_id,
+            topic: None,
         };
 
         assert!(!message_matches_filters(&msg, &filters));
@@ -2282,6 +2295,7 @@ mod tests {
             session,
             tags: &tags,
             thread_id,
+            topic: None,
         };
 
         let expanded = extra_filter_fetch_limit(10, &filters);

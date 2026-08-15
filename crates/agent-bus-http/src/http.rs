@@ -453,6 +453,8 @@ pub(crate) struct HttpReadQuery {
     pub(crate) agent: Option<String>,
     pub(crate) from: Option<String>,
     #[serde(default)]
+    pub(crate) topic: Option<String>,
+    #[serde(default)]
     pub(crate) repo: Option<String>,
     #[serde(default)]
     pub(crate) session: Option<String>,
@@ -494,6 +496,7 @@ pub(crate) async fn http_read_handler(
     let limit = params.limit.clamp(1, 500);
     let agent = params.agent;
     let from = params.from;
+    let topic = params.topic;
     let repo = params.repo;
     let session = params.session;
     let tag = params.tag;
@@ -512,6 +515,7 @@ pub(crate) async fn http_read_handler(
             session: session.as_deref(),
             tags: &tag,
             thread_id: thread_id.as_deref(),
+            topic: topic.as_deref(),
         };
         list_messages_live(
             &mut conn,
@@ -990,6 +994,11 @@ fn dispatch_mcp_method(
             match dispatch.dispatch_tool(&tool_name, &args) {
                 Ok(value) => {
                     serde_json::json!({"result": {"content": [{"type": "text", "text": serde_json::to_string_pretty(&value).unwrap_or_default()}]}})
+                }
+                Err(agent_bus_core::error::AgentBusError::InvalidParams(message)) => {
+                    serde_json::json!({
+                        "error": {"code": -32602, "message": message}
+                    })
                 }
                 Err(e) => serde_json::json!({
                     "error": {"code": -32603, "message": format!("{e:#}")}
@@ -2365,6 +2374,7 @@ async fn http_compact_context_handler(
                     session: session.as_deref(),
                     tags: &tags,
                     thread_id: thread_id.as_deref(),
+                    topic: None,
                 },
                 since_minutes: since,
                 max_tokens,
@@ -4272,13 +4282,35 @@ mod tests {
             }),
         );
 
-        assert_eq!(response["error"]["code"], -32603);
+        assert_eq!(response["error"]["code"], -32602);
         assert!(
             response["error"]["message"]
                 .as_str()
                 .unwrap_or_default()
                 .contains("agent"),
             "validation errors should mention the missing required field"
+        );
+    }
+
+    #[test]
+    fn dispatch_mcp_method_rejects_unknown_tool_arguments_as_invalid_params() {
+        let settings = agent_bus_core::settings::Settings::from_env();
+        let response = dispatch_mcp_method(
+            &settings,
+            "tools/call",
+            &serde_json::json!({
+                "name": "negotiate",
+                "arguments": {"z_unknown": true, "a_unknown": false}
+            }),
+        );
+
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("a_unknown, z_unknown"),
+            "unknown argument names should be sorted for deterministic diagnostics"
         );
     }
 

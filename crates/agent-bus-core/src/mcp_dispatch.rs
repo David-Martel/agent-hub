@@ -70,6 +70,7 @@ pub mod schemas {
         let mut schema = serde_json::Map::new();
         schema.insert("type".to_owned(), serde_json::json!("object"));
         schema.insert("properties".to_owned(), props);
+        schema.insert("additionalProperties".to_owned(), serde_json::json!(false));
         if !required.is_empty() {
             schema.insert(
                 "required".to_owned(),
@@ -107,6 +108,7 @@ pub mod schemas {
             serde_json::json!({
                 "agent":          {"type": "string"},
                 "sender":         {"type": "string"},
+                "topic":          {"type": "string"},
                 "repo":           {"type": "string"},
                 "session":        {"type": "string"},
                 "tag":            {"type": "array", "items": {"type": "string"}},
@@ -400,7 +402,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "list_messages".to_owned(),
-            description: "List recent messages from the bus, optionally filtered by recipient, sender, repo, session, tag, or thread_id.".to_owned(),
+            description: "List recent messages from the bus, optionally filtered by recipient, sender, topic, repo, session, tag, or thread_id.".to_owned(),
             schema: schemas::list_messages(),
         },
         ToolDefinition {
@@ -481,6 +483,58 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// Reject arguments that are not declared by a tool's input schema.
+///
+/// # Errors
+///
+/// Returns [`crate::error::AgentBusError::InvalidParams`] when one or more
+/// argument names are unknown, or an internal error when the tool does not
+/// exist.
+pub fn validate_tool_arguments(name: &str, args: &serde_json::Map<String, Value>) -> Result<()> {
+    let tool = tool_definitions()
+        .into_iter()
+        .find(|tool| tool.name == name)
+        .ok_or_else(|| crate::error::AgentBusError::Internal(format!("unknown tool: {name}")))?;
+    let properties = tool
+        .schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            crate::error::AgentBusError::Internal(format!(
+                "tool schema has no properties object: {name}"
+            ))
+        })?;
+    let mut missing: Vec<&str> = tool
+        .schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|key| !args.contains_key(*key))
+        .collect();
+    missing.sort_unstable();
+    if !missing.is_empty() {
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "missing required argument(s) for {name}: {}",
+            missing.join(", ")
+        )));
+    }
+    let mut unknown: Vec<&str> = args
+        .keys()
+        .filter(|key| !properties.contains_key(*key))
+        .map(String::as_str)
+        .collect();
+    unknown.sort_unstable();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    Err(crate::error::AgentBusError::InvalidParams(format!(
+        "unknown argument(s) for {name}: {}",
+        unknown.join(", ")
+    )))
+}
+
 // ---------------------------------------------------------------------------
 // McpToolDispatch
 // ---------------------------------------------------------------------------
@@ -519,6 +573,7 @@ impl<'a> McpToolDispatch<'a> {
         args: &serde_json::Map<String, Value>,
     ) -> Result<Value> {
         let settings = self.settings;
+        validate_tool_arguments(name, args)?;
 
         match name {
             "bus_health" => {
@@ -575,6 +630,7 @@ impl<'a> McpToolDispatch<'a> {
             "list_messages" => {
                 let agent = get_str(args, "agent");
                 let sender = get_str(args, "sender");
+                let topic = get_str(args, "topic");
                 let repo = get_str(args, "repo");
                 let session = get_str(args, "session");
                 let tags = get_string_array(args, "tag");
@@ -587,6 +643,7 @@ impl<'a> McpToolDispatch<'a> {
                     session,
                     tags: &tags,
                     thread_id,
+                    topic,
                 };
                 let msgs = list_messages_history(
                     settings,
@@ -1001,6 +1058,7 @@ impl<'a> McpToolDispatch<'a> {
                             session,
                             tags: &tags,
                             thread_id,
+                            topic: None,
                         },
                     },
                 )?;
@@ -1085,6 +1143,36 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    #[test]
+    fn all_tool_schemas_reject_additional_properties() {
+        for tool in tool_definitions() {
+            assert_eq!(
+                tool.schema.get("additionalProperties"),
+                Some(&Value::Bool(false)),
+                "tool '{}' schema must reject additional properties",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_rejects_unknown_arguments_before_execution() {
+        let settings = crate::settings::Settings::from_env();
+        let dispatch = McpToolDispatch::new(&settings);
+        let args = serde_json::json!({"topic": "retrospective", "typo": true})
+            .as_object()
+            .expect("test arguments must be an object")
+            .clone();
+        let error = dispatch
+            .dispatch_tool("bus_health", &args)
+            .expect_err("unknown arguments must be rejected");
+        assert!(matches!(
+            error,
+            crate::error::AgentBusError::InvalidParams(_)
+        ));
+        assert!(error.to_string().contains("topic, typo"));
     }
 
     #[test]

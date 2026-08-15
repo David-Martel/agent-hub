@@ -717,6 +717,7 @@ pub fn list_messages_postgres_with_filters(
     since_minutes: u64,
     limit: usize,
     include_broadcast: bool,
+    topic: Option<&str>,
     thread_id: Option<&str>,
     required_tags: &[&str],
 ) -> Result<Vec<Message>> {
@@ -734,6 +735,7 @@ pub fn list_messages_postgres_with_filters(
         })?;
         let agent_filter = agent.map(str::to_owned);
         let sender_filter = from_agent.map(str::to_owned);
+        let topic_filter = topic.map(str::to_owned);
         let thread_filter = thread_id.map(str::to_owned);
         let tag_filter: Option<serde_json::Value> = if required_tags.is_empty() {
             None
@@ -748,10 +750,11 @@ pub fn list_messages_postgres_with_filters(
                  where timestamp_utc >= now() - ($1::bigint * interval '1 minute') \
                    and ($2::text is null or sender = $2) \
                    and ($3::text is null or recipient = $3 or ($4 and recipient = 'all')) \
-                   and ($5::text is null or thread_id = $5) \
-                   and ($6::jsonb is null or tags @> $6::jsonb) \
+                   and ($5::text is null or topic = $5) \
+                   and ($6::text is null or thread_id = $6) \
+                   and ($7::jsonb is null or tags @> $7::jsonb) \
                  order by timestamp_utc desc \
-                 limit $7",
+                 limit $8",
                 settings.message_table
             ),
             &[
@@ -759,6 +762,7 @@ pub fn list_messages_postgres_with_filters(
                 &sender_filter,
                 &agent_filter,
                 &include_broadcast,
+                &topic_filter,
                 &thread_filter,
                 &tag_filter,
                 &limit,
@@ -790,6 +794,7 @@ pub fn list_messages_postgres(
         limit,
         include_broadcast,
         None,
+        None,
         &[],
     )
 }
@@ -814,6 +819,7 @@ pub fn list_messages_postgres_scoped(
     since_minutes: u64,
     limit: usize,
     include_broadcast: bool,
+    topic: Option<&str>,
     thread_id: Option<&str>,
     repo: Option<&str>,
     session: Option<&str>,
@@ -828,6 +834,7 @@ pub fn list_messages_postgres_scoped(
         since_minutes,
         limit,
         include_broadcast,
+        topic,
         thread_id,
         &scoped_tag_refs,
     )
@@ -857,6 +864,7 @@ pub fn list_messages_by_tag(
         since_minutes,
         limit,
         true,
+        None,
         None,
         &tags,
     )
@@ -904,6 +912,7 @@ pub fn query_messages_by_tags(
         since_minutes,
         limit,
         true, // include_broadcast
+        None, // topic
         thread_id,
         tags,
     )

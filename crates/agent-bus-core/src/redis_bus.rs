@@ -802,6 +802,7 @@ pub fn message_matches_filters(
     agent: Option<&str>,
     from_agent: Option<&str>,
     include_broadcast: bool,
+    topic: Option<&str>,
     thread_id: Option<&str>,
     required_tags: &[&str],
 ) -> bool {
@@ -814,6 +815,9 @@ pub fn message_matches_filters(
         if !to_matches && !broadcast_matches {
             return false;
         }
+    }
+    if topic.is_some_and(|filter| msg.topic != filter) {
+        return false;
     }
     if let Some(thread_filter) = thread_id
         && msg.thread_id.as_deref() != Some(thread_filter)
@@ -1954,6 +1958,7 @@ pub fn bus_list_messages_from_redis(
         limit,
         include_broadcast,
         None,
+        None,
         &[],
     )
 }
@@ -1975,23 +1980,20 @@ pub fn bus_list_messages_from_redis_with_filters(
     since_minutes: u64,
     limit: usize,
     include_broadcast: bool,
+    topic: Option<&str>,
     thread_id: Option<&str>,
     required_tags: &[&str],
 ) -> Result<Vec<Message>> {
-    let fetch_multiplier = if thread_id.is_some() || !required_tags.is_empty() {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let fetch_multiplier = if topic.is_some() || thread_id.is_some() || !required_tags.is_empty() {
         XREVRANGE_OVERFETCH_FACTOR.saturating_mul(2)
     } else {
         XREVRANGE_OVERFETCH_FACTOR
     };
-    let fetch_count = (limit.saturating_mul(fetch_multiplier)).max(XREVRANGE_MIN_FETCH);
-    let raw: Vec<redis::Value> = redis::cmd("XREVRANGE")
-        .arg(&settings.stream_key)
-        .arg("+")
-        .arg("-")
-        .arg("COUNT")
-        .arg(fetch_count)
-        .query(conn)
-        .map_err(|e| crate::error::AgentBusError::Internal(format!("XREVRANGE failed: {e}")))?;
+    let page_size = (limit.saturating_mul(fetch_multiplier)).max(XREVRANGE_MIN_FETCH);
 
     #[expect(
         clippy::cast_possible_wrap,
@@ -2000,33 +2002,58 @@ pub fn bus_list_messages_from_redis_with_filters(
     let cutoff = Utc::now() - chrono::Duration::minutes(since_minutes as i64);
 
     let mut messages: Vec<Message> = Vec::new();
-    for (stream_id, fields) in parse_xrange_result(&raw) {
-        let mut msg = decode_stream_entry(&fields);
+    let mut page_end = "+".to_owned();
+    'pages: loop {
+        let raw: Vec<redis::Value> = redis::cmd("XREVRANGE")
+            .arg(&settings.stream_key)
+            .arg(&page_end)
+            .arg("-")
+            .arg("COUNT")
+            .arg(page_size)
+            .query(conn)
+            .map_err(|e| crate::error::AgentBusError::Internal(format!("XREVRANGE failed: {e}")))?;
+        let entries = parse_xrange_result(&raw);
+        let entry_count = entries.len();
+        let Some(oldest_stream_id) = entries.last().map(|(id, _)| id.clone()) else {
+            break;
+        };
 
-        // time-based cutoff
-        if let Ok(ts) =
-            chrono::DateTime::parse_from_rfc3339(&msg.timestamp_utc.replace('Z', "+00:00"))
-            && ts < cutoff
-        {
-            continue;
+        let mut cutoff_reached = false;
+        for (stream_id, fields) in entries {
+            let mut msg = decode_stream_entry(&fields);
+
+            // time-based cutoff
+            if let Ok(ts) =
+                chrono::DateTime::parse_from_rfc3339(&msg.timestamp_utc.replace('Z', "+00:00"))
+                && ts < cutoff
+            {
+                cutoff_reached = true;
+                break;
+            }
+
+            if !message_matches_filters(
+                &msg,
+                agent,
+                from_agent,
+                include_broadcast,
+                topic,
+                thread_id,
+                required_tags,
+            ) {
+                continue;
+            }
+
+            msg.stream_id = Some(stream_id);
+            messages.push(msg);
+            if messages.len() >= limit {
+                break 'pages;
+            }
         }
 
-        if !message_matches_filters(
-            &msg,
-            agent,
-            from_agent,
-            include_broadcast,
-            thread_id,
-            required_tags,
-        ) {
-            continue;
-        }
-
-        msg.stream_id = Some(stream_id);
-        messages.push(msg);
-        if messages.len() >= limit {
+        if cutoff_reached || entry_count < page_size {
             break;
         }
+        page_end = format!("({oldest_stream_id}");
     }
 
     // XREVRANGE returns newest first; reverse to get chronological
@@ -2110,6 +2137,7 @@ pub fn bus_list_messages_with_filters(
     since_minutes: u64,
     limit: usize,
     include_broadcast: bool,
+    topic: Option<&str>,
     thread_id: Option<&str>,
     required_tags: &[&str],
 ) -> Result<Vec<Message>> {
@@ -2123,7 +2151,7 @@ pub fn bus_list_messages_with_filters(
     if settings.database_url.is_some() && !is_pg_circuit_open() {
         // When only tags/thread are specified (no agent/sender filters), use
         // the dedicated tag-query function that skips agent/sender columns.
-        if has_tags && agent.is_none() && from_agent.is_none() {
+        if has_tags && topic.is_none() && agent.is_none() && from_agent.is_none() {
             tracing::debug!(
                 tags = ?required_tags,
                 ?thread_id,
@@ -2157,6 +2185,7 @@ pub fn bus_list_messages_with_filters(
             since_minutes,
             limit,
             include_broadcast,
+            topic,
             thread_id,
             required_tags,
         ) {
@@ -2183,6 +2212,7 @@ pub fn bus_list_messages_with_filters(
         since_minutes,
         limit,
         include_broadcast,
+        topic,
         thread_id,
         required_tags,
     )
@@ -2255,7 +2285,15 @@ pub fn bus_list_messages_since_id_with_filters(
         let mut msg = decode_stream_entry(&fields);
 
         // Include only messages addressed to this agent or broadcast.
-        if !message_matches_filters(&msg, Some(agent), None, true, thread_id, required_tags) {
+        if !message_matches_filters(
+            &msg,
+            Some(agent),
+            None,
+            true,
+            None,
+            thread_id,
+            required_tags,
+        ) {
             continue;
         }
 
@@ -3384,6 +3422,7 @@ mod tests {
             Some("codex"),
             Some("claude"),
             true,
+            None,
             Some("thread-1"),
             &["repo:agent-bus", "session:s1"],
         ));
@@ -3397,6 +3436,7 @@ mod tests {
             Some("codex"),
             Some("claude"),
             true,
+            None,
             Some("thread-2"),
             &["repo:agent-bus"],
         ));
@@ -3405,9 +3445,100 @@ mod tests {
             Some("codex"),
             Some("claude"),
             true,
+            None,
             Some("thread-1"),
             &["repo:other"],
         ));
+    }
+
+    #[test]
+    fn message_matches_filters_uses_exact_topic() {
+        let msg = sample_message();
+        assert!(message_matches_filters(
+            &msg,
+            Some("codex"),
+            Some("claude"),
+            true,
+            Some("status"),
+            Some("thread-1"),
+            &["repo:agent-bus"],
+        ));
+        assert!(!message_matches_filters(
+            &msg,
+            Some("codex"),
+            Some("claude"),
+            true,
+            Some("Status"),
+            Some("thread-1"),
+            &["repo:agent-bus"],
+        ));
+    }
+
+    #[test]
+    fn topic_pagination_stops_when_page_reaches_time_cutoff() {
+        let mut settings = Settings::from_env();
+        settings.stream_key = format!("agent_bus:test:topic-cutoff:{}", Uuid::new_v4());
+        let Ok(mut conn) = connect(&settings) else {
+            eprintln!("SKIP: Redis not available for topic pagination cutoff test");
+            return;
+        };
+
+        let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
+        let old = "2000-01-01T00:00:00.000000Z";
+        let _: String = redis::cmd("XADD")
+            .arg(&settings.stream_key)
+            .arg("*")
+            .arg("timestamp_utc")
+            .arg(&now)
+            .arg("from")
+            .arg("claude")
+            .arg("to")
+            .arg("codex")
+            .arg("topic")
+            .arg("rare-topic")
+            .arg("body")
+            .arg("target")
+            .query(&mut conn)
+            .expect("target XADD must succeed");
+
+        for index in 0..XREVRANGE_MIN_FETCH {
+            let _: String = redis::cmd("XADD")
+                .arg(&settings.stream_key)
+                .arg("*")
+                .arg("timestamp_utc")
+                .arg(old)
+                .arg("from")
+                .arg("claude")
+                .arg("to")
+                .arg("codex")
+                .arg("topic")
+                .arg("other-topic")
+                .arg("body")
+                .arg(format!("filler-{index}"))
+                .query(&mut conn)
+                .expect("filler XADD must succeed");
+        }
+
+        let result = bus_list_messages_from_redis_with_filters(
+            &mut conn,
+            &settings,
+            Some("codex"),
+            None,
+            60,
+            1,
+            true,
+            Some("rare-topic"),
+            None,
+            &[],
+        )
+        .expect("filtered read must succeed");
+        let _: redis::RedisResult<i64> =
+            redis::cmd("DEL").arg(&settings.stream_key).query(&mut conn);
+
+        assert!(
+            result.is_empty(),
+            "the scan must stop at the first out-of-window entry instead of reading older pages"
+        );
     }
 
     #[test]
