@@ -164,13 +164,15 @@ pub(crate) enum Cmd {
     #[command(long_about = "Query the Redis Stream for recent messages.\n\n\
         Messages are returned in chronological order (oldest first).\n\
         Use --agent to filter by recipient, --from-agent to filter by sender.\n\
-        Use --repo, --session, --tag, and --thread-id for message metadata filters.\n\
+        Use --topic, --repo, --session, --tag, and --thread-id for message filters.\n\
         Broadcast messages (to='all') are included by default.")]
     Read {
         #[arg(long, help = "Filter by recipient agent ID")]
         agent: Option<String>,
         #[arg(long, help = "Filter by sender agent ID")]
         from_agent: Option<String>,
+        #[arg(long, help = "Filter by exact message topic")]
+        topic: Option<String>,
         #[arg(long, help = "Filter by repository tag value (matches repo:<value>)")]
         repo: Option<String>,
         #[arg(long, help = "Filter by session tag value (matches session:<value>)")]
@@ -1506,6 +1508,7 @@ mod tests {
             session,
             tag,
             thread_id,
+            topic,
             ..
         } = cli.command
         {
@@ -1517,6 +1520,7 @@ mod tests {
             assert!(session.is_none());
             assert!(tag.is_empty());
             assert!(thread_id.is_none());
+            assert!(topic.is_none());
         } else {
             panic!("expected Cmd::Read");
         }
@@ -1529,6 +1533,8 @@ mod tests {
             "read",
             "--repo",
             "agent-bus",
+            "--topic",
+            "retrospective",
             "--session",
             "sprint-42",
             "--tag",
@@ -1545,10 +1551,12 @@ mod tests {
             session,
             tag,
             thread_id,
+            topic,
             ..
         } = cli.command
         {
             assert_eq!(repo, Some("agent-bus".to_owned()));
+            assert_eq!(topic, Some("retrospective".to_owned()));
             assert_eq!(session, Some("sprint-42".to_owned()));
             assert_eq!(
                 tag,

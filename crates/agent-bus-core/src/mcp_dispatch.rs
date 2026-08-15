@@ -70,6 +70,7 @@ pub mod schemas {
         let mut schema = serde_json::Map::new();
         schema.insert("type".to_owned(), serde_json::json!("object"));
         schema.insert("properties".to_owned(), props);
+        schema.insert("additionalProperties".to_owned(), serde_json::json!(false));
         if !required.is_empty() {
             schema.insert(
                 "required".to_owned(),
@@ -107,6 +108,7 @@ pub mod schemas {
             serde_json::json!({
                 "agent":          {"type": "string"},
                 "sender":         {"type": "string"},
+                "topic":          {"type": "string"},
                 "repo":           {"type": "string"},
                 "session":        {"type": "string"},
                 "tag":            {"type": "array", "items": {"type": "string"}},
@@ -400,7 +402,7 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "list_messages".to_owned(),
-            description: "List recent messages from the bus, optionally filtered by recipient, sender, repo, session, tag, or thread_id.".to_owned(),
+            description: "List recent messages from the bus, optionally filtered by recipient, sender, topic, repo, session, tag, or thread_id.".to_owned(),
             schema: schemas::list_messages(),
         },
         ToolDefinition {
@@ -481,6 +483,140 @@ pub fn tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
+/// Reject arguments that do not satisfy a tool's input schema.
+///
+/// # Errors
+///
+/// Returns [`crate::error::AgentBusError::InvalidParams`] when one or more
+/// argument names are missing/unknown, values violate declared constraints,
+/// or an internal error when the tool does not exist.
+pub fn validate_tool_arguments(name: &str, args: &serde_json::Map<String, Value>) -> Result<()> {
+    let tool = tool_definitions()
+        .into_iter()
+        .find(|tool| tool.name == name)
+        .ok_or_else(|| crate::error::AgentBusError::Internal(format!("unknown tool: {name}")))?;
+    let properties = tool
+        .schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            crate::error::AgentBusError::Internal(format!(
+                "tool schema has no properties object: {name}"
+            ))
+        })?;
+    let mut missing: Vec<&str> = tool
+        .schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|key| !args.contains_key(*key))
+        .collect();
+    missing.sort_unstable();
+    if !missing.is_empty() {
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "missing required argument(s) for {name}: {}",
+            missing.join(", ")
+        )));
+    }
+    let mut unknown: Vec<&str> = args
+        .keys()
+        .filter(|key| !properties.contains_key(*key))
+        .map(String::as_str)
+        .collect();
+    unknown.sort_unstable();
+    if !unknown.is_empty() {
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "unknown argument(s) for {name}: {}",
+            unknown.join(", ")
+        )));
+    }
+
+    let mut violations = Vec::new();
+    for (key, value) in args {
+        if let Some(property_schema) = properties.get(key) {
+            validate_schema_value(key, value, property_schema, &mut violations);
+        }
+    }
+    violations.sort_unstable();
+    if violations.is_empty() {
+        return Ok(());
+    }
+    Err(crate::error::AgentBusError::InvalidParams(format!(
+        "invalid argument(s) for {name}: {}",
+        violations.join("; ")
+    )))
+}
+
+fn validate_schema_value(key: &str, value: &Value, schema: &Value, violations: &mut Vec<String>) {
+    let expected_type = schema.get("type").and_then(Value::as_str);
+    if let Some(expected) = expected_type
+        && !value_matches_schema_type(value, expected)
+    {
+        violations.push(format!("{key} must be {expected}"));
+        return;
+    }
+
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array)
+        && !allowed.contains(value)
+    {
+        violations.push(format!("{key} is not an allowed value"));
+    }
+
+    if expected_type == Some("integer") {
+        let actual = json_integer_as_i128(value);
+        if let Some(actual) = actual {
+            if schema
+                .get("minimum")
+                .and_then(json_integer_as_i128)
+                .is_some_and(|minimum| actual < minimum)
+            {
+                violations.push(format!("{key} is below the minimum"));
+            }
+            if schema
+                .get("maximum")
+                .and_then(json_integer_as_i128)
+                .is_some_and(|maximum| actual > maximum)
+            {
+                violations.push(format!("{key} exceeds the maximum"));
+            }
+        }
+    }
+
+    if expected_type == Some("array")
+        && let (Some(items), Some(values)) = (schema.get("items"), value.as_array())
+    {
+        for (index, item) in values.iter().enumerate() {
+            if let Some(item_type) = items.get("type").and_then(Value::as_str)
+                && !value_matches_schema_type(item, item_type)
+            {
+                violations.push(format!("{key}[{index}] must be {item_type}"));
+            }
+        }
+    }
+}
+
+fn json_integer_as_i128(value: &Value) -> Option<i128> {
+    value
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
+}
+
+fn value_matches_schema_type(value: &Value, expected: &str) -> bool {
+    match expected {
+        "array" => value.is_array(),
+        "boolean" => value.is_boolean(),
+        "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+        "null" => value.is_null(),
+        "number" => value.is_number(),
+        "object" => value.is_object(),
+        "string" => value.is_string(),
+        _ => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // McpToolDispatch
 // ---------------------------------------------------------------------------
@@ -519,6 +655,7 @@ impl<'a> McpToolDispatch<'a> {
         args: &serde_json::Map<String, Value>,
     ) -> Result<Value> {
         let settings = self.settings;
+        validate_tool_arguments(name, args)?;
 
         match name {
             "bus_health" => {
@@ -575,6 +712,7 @@ impl<'a> McpToolDispatch<'a> {
             "list_messages" => {
                 let agent = get_str(args, "agent");
                 let sender = get_str(args, "sender");
+                let topic = get_str(args, "topic");
                 let repo = get_str(args, "repo");
                 let session = get_str(args, "session");
                 let tags = get_string_array(args, "tag");
@@ -587,6 +725,7 @@ impl<'a> McpToolDispatch<'a> {
                     session,
                     tags: &tags,
                     thread_id,
+                    topic,
                 };
                 let msgs = list_messages_history(
                     settings,
@@ -1001,6 +1140,7 @@ impl<'a> McpToolDispatch<'a> {
                             session,
                             tags: &tags,
                             thread_id,
+                            topic: None,
                         },
                     },
                 )?;
@@ -1083,6 +1223,94 @@ mod tests {
                 Some("object"),
                 "tool '{}' schema must have \"type\": \"object\"",
                 tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn all_tool_schemas_reject_additional_properties() {
+        for tool in tool_definitions() {
+            assert_eq!(
+                tool.schema.get("additionalProperties"),
+                Some(&Value::Bool(false)),
+                "tool '{}' schema must reject additional properties",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_rejects_unknown_arguments_before_execution() {
+        let settings = crate::settings::Settings::from_env();
+        let dispatch = McpToolDispatch::new(&settings);
+        let args = serde_json::json!({"topic": "retrospective", "typo": true})
+            .as_object()
+            .expect("test arguments must be an object")
+            .clone();
+        let error = dispatch
+            .dispatch_tool("bus_health", &args)
+            .expect_err("unknown arguments must be rejected");
+        assert!(matches!(
+            error,
+            crate::error::AgentBusError::InvalidParams(_)
+        ));
+        assert!(error.to_string().contains("topic, typo"));
+    }
+
+    #[test]
+    fn validation_rejects_schema_invalid_argument_values() {
+        let cases = [
+            (
+                "post_message",
+                serde_json::json!({
+                    "sender": 42,
+                    "recipient": "codex",
+                    "topic": "status",
+                    "body": "body"
+                }),
+                "sender must be string",
+            ),
+            (
+                "list_messages",
+                serde_json::json!({"limit": "1"}),
+                "limit must be integer",
+            ),
+            (
+                "post_message",
+                serde_json::json!({
+                    "sender": "claude",
+                    "recipient": "codex",
+                    "topic": "status",
+                    "body": "body",
+                    "priority": "immediate"
+                }),
+                "priority is not an allowed value",
+            ),
+            (
+                "list_messages",
+                serde_json::json!({"tag": ["repo:agent-bus", 7]}),
+                "tag[1] must be string",
+            ),
+            (
+                "list_messages",
+                serde_json::json!({"limit": 501}),
+                "limit exceeds the maximum",
+            ),
+        ];
+
+        for (tool, raw_args, expected) in cases {
+            let args = raw_args
+                .as_object()
+                .expect("test arguments must be objects");
+            let error = validate_tool_arguments(tool, args)
+                .expect_err("schema-invalid values must be rejected");
+            assert!(matches!(
+                error,
+                crate::error::AgentBusError::InvalidParams(_)
+            ));
+            assert!(
+                error.to_string().contains(expected),
+                "unexpected validation error for {tool}: {error}"
             );
         }
     }
@@ -1207,7 +1435,12 @@ mod tests {
             args.as_object().expect("args must be object"),
         );
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("unsupported"));
+        let error = result.unwrap_err();
+        assert!(matches!(
+            error,
+            crate::error::AgentBusError::InvalidParams(_)
+        ));
+        assert!(error.to_string().contains("not an allowed value"));
     }
 
     #[test]

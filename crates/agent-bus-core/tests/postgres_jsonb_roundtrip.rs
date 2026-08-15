@@ -120,11 +120,12 @@ fn message_metadata_jsonb_survives_pg_round_trip() {
     let required_tags = [repo_tag.as_str()];
     let rows = list_messages_postgres_with_filters(
         &settings,
-        None, // agent
-        None, // from_agent
-        60,   // since_minutes — generous window
-        50,   // limit
-        true, // include_broadcast
+        None,                     // agent
+        None,                     // from_agent
+        60,                       // since_minutes — generous window
+        50,                       // limit
+        true,                     // include_broadcast
+        Some("jsonb-regression"), // exact topic filter
         Some(thread_id.as_str()),
         &required_tags,
     )
@@ -209,6 +210,7 @@ fn empty_metadata_object_round_trips_as_object() {
         60,
         50,
         true,
+        None,
         None,
         &required_tags,
     )

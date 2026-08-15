@@ -31,6 +31,7 @@ pub struct MessageFilters<'a> {
     pub session: Option<&'a str>,
     pub tags: &'a [String],
     pub thread_id: Option<&'a str>,
+    pub topic: Option<&'a str>,
 }
 
 impl MessageFilters<'_> {
@@ -41,6 +42,7 @@ impl MessageFilters<'_> {
             && self.session.is_none()
             && self.tags.is_empty()
             && self.thread_id.is_none()
+            && self.topic.is_none()
     }
 
     /// Returns `true` when the filters contain at least one tag-based or
@@ -87,6 +89,10 @@ pub fn message_matches_filters(msg: &Message, filters: &MessageFilters<'_>) -> b
         .thread_id
         .is_some_and(|thread_id| msg.thread_id.as_deref() != Some(thread_id))
     {
+        return false;
+    }
+
+    if filters.topic.is_some_and(|topic| msg.topic != topic) {
         return false;
     }
 
@@ -146,6 +152,7 @@ mod tests {
             session: None,
             tags: &[],
             thread_id: None,
+            topic: None,
         };
         assert!(filters.is_empty());
         assert!(!filters.has_meaningful_tag_filters());
@@ -162,6 +169,7 @@ mod tests {
             session: None,
             tags: &[],
             thread_id: None,
+            topic: None,
         };
         assert!(!filters.is_empty());
         assert!(filters.has_meaningful_tag_filters());
@@ -174,6 +182,7 @@ mod tests {
             session: Some("s1"),
             tags: &[],
             thread_id: None,
+            topic: None,
         };
         assert!(filters.has_meaningful_tag_filters());
     }
@@ -186,6 +195,7 @@ mod tests {
             session: None,
             tags: &tags,
             thread_id: None,
+            topic: None,
         };
         assert!(filters.has_meaningful_tag_filters());
     }
@@ -197,8 +207,22 @@ mod tests {
             session: None,
             tags: &[],
             thread_id: Some("t-42"),
+            topic: None,
         };
         assert!(filters.has_meaningful_tag_filters());
+    }
+
+    #[test]
+    fn topic_filter_is_nonempty_but_not_tag_based() {
+        let filters = MessageFilters {
+            repo: None,
+            session: None,
+            tags: &[],
+            thread_id: None,
+            topic: Some("status"),
+        };
+        assert!(!filters.is_empty());
+        assert!(!filters.has_meaningful_tag_filters());
     }
 
     // -------------------------------------------------------------------
@@ -213,6 +237,7 @@ mod tests {
             session: None,
             tags: &[],
             thread_id: None,
+            topic: None,
         };
         assert!(message_matches_filters(&msg, &filters));
     }
@@ -225,6 +250,7 @@ mod tests {
             session: None,
             tags: &[],
             thread_id: None,
+            topic: None,
         };
         assert!(!message_matches_filters(&msg, &filters));
     }
@@ -237,6 +263,7 @@ mod tests {
             session: Some("s1"),
             tags: &[],
             thread_id: None,
+            topic: None,
         };
         assert!(message_matches_filters(&msg, &filters));
     }
@@ -249,6 +276,7 @@ mod tests {
             session: None,
             tags: &[],
             thread_id: Some("t-42"),
+            topic: None,
         };
         assert!(message_matches_filters(&msg, &filters));
     }
@@ -261,6 +289,7 @@ mod tests {
             session: None,
             tags: &[],
             thread_id: Some("t-99"),
+            topic: None,
         };
         assert!(!message_matches_filters(&msg, &filters));
     }
@@ -273,8 +302,29 @@ mod tests {
             session: None,
             tags: &[],
             thread_id: None,
+            topic: None,
         };
         assert!(message_matches_filters(&msg, &filters));
+    }
+
+    #[test]
+    fn message_matches_filters_uses_exact_topic() {
+        let msg = make_message(&[], None);
+        let matching = MessageFilters {
+            repo: None,
+            session: None,
+            tags: &[],
+            thread_id: None,
+            topic: Some("status"),
+        };
+        assert!(message_matches_filters(&msg, &matching));
+
+        let wrong_case = MessageFilters {
+            topic: Some("Status"),
+            ..matching
+        };
+
+        assert!(!message_matches_filters(&msg, &wrong_case));
     }
 
     // -------------------------------------------------------------------
@@ -289,6 +339,7 @@ mod tests {
             session: Some("s1"),
             tags: &tags,
             thread_id: None,
+            topic: None,
         };
         let scoped = scoped_required_tags(&filters);
         assert_eq!(scoped, vec!["repo:agent-bus", "session:s1", "wave:1"]);
@@ -301,6 +352,7 @@ mod tests {
             session: None,
             tags: &[],
             thread_id: None,
+            topic: None,
         };
         let scoped = scoped_required_tags(&filters);
         assert!(scoped.is_empty());
@@ -317,6 +369,7 @@ mod tests {
             session: None,
             tags: &[],
             thread_id: None,
+            topic: None,
         };
         assert_eq!(extra_filter_fetch_limit(10, &filters), 10);
     }
@@ -329,6 +382,7 @@ mod tests {
             session: None,
             tags: &tags,
             thread_id: None,
+            topic: None,
         };
         let result = extra_filter_fetch_limit(10, &filters);
         assert!(

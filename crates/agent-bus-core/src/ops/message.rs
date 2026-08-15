@@ -264,6 +264,7 @@ pub fn list_messages_history(
         request.since_minutes,
         request.limit,
         request.include_broadcast,
+        request.filters.topic,
         request.filters.thread_id,
         &required_tag_refs,
     )
@@ -289,6 +290,7 @@ pub fn list_messages_live(
         request.since_minutes,
         request.limit,
         request.include_broadcast,
+        request.filters.topic,
         request.filters.thread_id,
         &required_tag_refs,
     )

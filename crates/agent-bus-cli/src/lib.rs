@@ -196,6 +196,7 @@ fn run(args: Vec<OsString>) -> Result<()> {
         Cmd::Read {
             ref agent,
             ref from_agent,
+            ref topic,
             ref repo,
             ref session,
             ref tag,
@@ -211,6 +212,7 @@ fn run(args: Vec<OsString>) -> Result<()> {
                 &ReadArgs {
                     agent,
                     from_agent,
+                    topic,
                     repo,
                     session,
                     tags: tag,

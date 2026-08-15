@@ -94,6 +94,7 @@ pub fn check_inbox(
                 Some(agent),
                 None,
                 true,
+                None,
                 thread_id,
                 &required_tag_refs,
             )
@@ -199,6 +200,7 @@ pub fn compact_context(
                 session: request.filters.session,
                 tags: request.filters.tags,
                 thread_id: request.filters.thread_id,
+                topic: None,
             },
         },
     )?;
@@ -383,6 +385,7 @@ pub fn summarize_session(
                 session: request.session,
                 tags: &empty_tags,
                 thread_id: None,
+                topic: None,
             },
         },
     )?;
@@ -416,6 +419,7 @@ pub fn summarize_inbox(
                 session: request.session,
                 tags: &empty_tags,
                 thread_id: None,
+                topic: None,
             },
         },
     )?;
@@ -471,6 +475,7 @@ pub fn summarize_thread(
                 session: None,
                 tags: &empty_tags,
                 thread_id: Some(request.thread_id),
+                topic: None,
             },
         },
     )?;
@@ -521,6 +526,7 @@ pub fn compact_thread(
                 session: None,
                 tags: &empty_tags,
                 thread_id: Some(request.thread_id),
+                topic: None,
             },
         },
     )?;

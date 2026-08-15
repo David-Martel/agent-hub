@@ -807,7 +807,7 @@ async fn toon_format_matches_spec() {
 }
 
 #[tokio::test]
-async fn read_filters_apply_to_repo_session_tag_and_thread_id() {
+async fn read_filters_apply_to_topic_repo_session_tag_and_thread_id() {
     let client = http_client();
     if !service_available(&client).await {
         eprintln!("SKIP: agent-bus not running at {BASE_URL}");
@@ -841,7 +841,7 @@ async fn read_filters_apply_to_repo_session_tag_and_thread_id() {
 
     let resp = client
         .get(format!(
-            "{BASE_URL}/messages?agent={recipient}&repo={repo}&session={session}&thread_id={thread_id}&since=1&limit=10"
+            "{BASE_URL}/messages?agent={recipient}&topic=filter-test&repo={repo}&session={session}&thread_id={thread_id}&since=1&limit=10"
         ))
         .send()
         .await
@@ -860,6 +860,7 @@ async fn read_filters_apply_to_repo_session_tag_and_thread_id() {
     assert_eq!(msg["from"], sender);
     assert_eq!(msg["to"], recipient);
     assert_eq!(msg["thread_id"], thread_id);
+    assert_eq!(msg["topic"], "filter-test");
     assert!(
         msg["tags"]
             .as_array()
@@ -872,6 +873,18 @@ async fn read_filters_apply_to_repo_session_tag_and_thread_id() {
             .any(|t| t == &json!(format!("session:{session}")))),
         "session tag missing"
     );
+
+    let wrong_topic = client
+        .get(format!(
+            "{BASE_URL}/messages?agent={recipient}&topic=Filter-Test&repo={repo}&session={session}&thread_id={thread_id}&since=1&limit=10"
+        ))
+        .send()
+        .await
+        .expect("wrong-topic filtered read failed");
+    assert_eq!(wrong_topic.status(), StatusCode::OK);
+    let wrong_topic_messages: serde_json::Value =
+        wrong_topic.json().await.expect("wrong-topic response JSON");
+    assert_eq!(wrong_topic_messages, json!([]));
 }
 
 #[tokio::test]
