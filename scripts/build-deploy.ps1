@@ -167,9 +167,145 @@ function Set-AgentBusAuthTokenForChildProcesses {
     }
 }
 
+function Copy-AgentBusBinary {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    try {
+        Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    }
+    catch {
+        throw "$Label deployment failed for '$Destination'. The existing binary may be in use. $($_.Exception.Message)"
+    }
+
+    $sourceHash = (Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash
+    $destinationHash = (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash
+    if ($sourceHash -ne $destinationHash) {
+        throw "$Label deployment verification failed for '$Destination': source and destination hashes differ."
+    }
+}
+
+function Get-NssmSetting {
+    param(
+        [Parameter(Mandatory = $true)][string]$NssmPath,
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [Parameter(Mandatory = $true)][string]$Setting
+    )
+
+    $output = @(& $NssmPath get $ServiceName $Setting)
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not capture NSSM setting '$Setting' for $ServiceName."
+    }
+    return $output
+}
+
+function Invoke-NssmChecked {
+    param(
+        [Parameter(Mandatory = $true)][string]$NssmPath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    & $NssmPath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "nssm $($Arguments[0]) failed with exit code $LASTEXITCODE."
+    }
+}
+
+function Restore-AgentBusServiceSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$NssmPath,
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [Parameter(Mandatory = $true)]$Snapshot,
+        [Parameter(Mandatory = $true)][string]$RollbackBinaryPath
+    )
+
+    $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($existing) {
+        if ($existing.Status -ne "Stopped") {
+            Stop-Service -Name $ServiceName -Force
+            $existing.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(30))
+        }
+        Invoke-NssmChecked -NssmPath $NssmPath -Arguments @("remove", $ServiceName, "confirm") | Out-Null
+        $removeDeadline = (Get-Date).AddSeconds(15)
+        do {
+            Start-Sleep -Milliseconds 200
+            $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        } while ($existing -and (Get-Date) -lt $removeDeadline)
+        if ($existing) {
+            throw "Service '$ServiceName' still exists during rollback."
+        }
+    }
+
+    $restoredApplication = $Snapshot.Application
+    try {
+        Copy-AgentBusBinary -Source $RollbackBinaryPath -Destination $restoredApplication -Label "Service rollback restore"
+    }
+    catch {
+        Write-Warning "Could not restore the original service binary path; using the verified rollback copy directly."
+        $restoredApplication = $RollbackBinaryPath
+    }
+    Invoke-NssmChecked -NssmPath $NssmPath -Arguments @("install", $ServiceName, $restoredApplication) | Out-Null
+    Invoke-NssmChecked -NssmPath $NssmPath -Arguments @("set", $ServiceName, "AppParameters", $Snapshot.AppParameters) | Out-Null
+    foreach ($setting in @("DisplayName", "Description", "Start", "AppDirectory", "AppStdout", "AppStderr", "AppRotateFiles", "AppRotateOnline", "AppRotateSeconds", "AppRotateBytes")) {
+        Invoke-NssmChecked -NssmPath $NssmPath -Arguments @("set", $ServiceName, $setting, [string]$Snapshot.$setting) | Out-Null
+    }
+    $environmentEntries = @($Snapshot.AppEnvironmentExtra | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($environmentEntries.Count -gt 0) {
+        $environmentArguments = @("set", $ServiceName, "AppEnvironmentExtra") + $environmentEntries
+        Invoke-NssmChecked -NssmPath $NssmPath -Arguments $environmentArguments | Out-Null
+    }
+    else {
+        Invoke-NssmChecked -NssmPath $NssmPath -Arguments @("reset", $ServiceName, "AppEnvironmentExtra") | Out-Null
+    }
+    & sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/5000/restart/5000 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "sc.exe failure configuration failed during rollback with exit code $LASTEXITCODE."
+    }
+    if (-not (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue)) {
+        throw "Service '$ServiceName' was not registered during rollback."
+    }
+    return $restoredApplication
+}
+
 Set-AgentBusAuthTokenForChildProcesses
 
 # Step 1: Build
+$serviceWasRunning = $false
+$serviceExisted = $false
+$serviceMutationStarted = $false
+$previousServiceBinaryPath = $null
+$previousServiceRollbackBinaryPath = $null
+$previousServiceSnapshot = $null
+$keepRollbackBinary = $false
+if (-not $SkipService) {
+    $initialService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($initialService) {
+        $serviceExisted = $true
+        $serviceWasRunning = $initialService.Status -eq "Running"
+        $nssmPath = (Get-Command nssm -ErrorAction Stop).Source
+        $previousServiceBinaryPath = ([string](Get-NssmSetting -NssmPath $nssmPath -ServiceName $serviceName -Setting "Application" | Select-Object -Last 1)).Trim()
+        if ([string]::IsNullOrWhiteSpace($previousServiceBinaryPath)) {
+            throw "Could not capture the existing $serviceName binary path before deployment."
+        }
+        if (-not (Test-Path -LiteralPath $previousServiceBinaryPath)) {
+            throw "Existing $serviceName binary was not found at '$previousServiceBinaryPath'."
+        }
+        $rollbackFileName = "agent-bus-http-rollback-$([guid]::NewGuid().ToString('N')).exe"
+        $previousServiceRollbackBinaryPath = Join-Path (Split-Path -Parent $previousServiceBinaryPath) $rollbackFileName
+        Copy-AgentBusBinary -Source $previousServiceBinaryPath -Destination $previousServiceRollbackBinaryPath -Label "Service rollback"
+        $previousServiceSnapshot = [pscustomobject]@{
+            Application        = $previousServiceBinaryPath
+            AppParameters      = [string](Get-NssmSetting -NssmPath $nssmPath -ServiceName $serviceName -Setting "AppParameters" | Select-Object -Last 1)
+            AppEnvironmentExtra = @(Get-NssmSetting -NssmPath $nssmPath -ServiceName $serviceName -Setting "AppEnvironmentExtra")
+        }
+        foreach ($setting in @("DisplayName", "Description", "Start", "AppDirectory", "AppStdout", "AppStderr", "AppRotateFiles", "AppRotateOnline", "AppRotateSeconds", "AppRotateBytes")) {
+            $previousServiceSnapshot | Add-Member -NotePropertyName $setting -NotePropertyValue ([string](Get-NssmSetting -NssmPath $nssmPath -ServiceName $serviceName -Setting $setting | Select-Object -Last 1))
+        }
+    }
+}
 try {
     if (-not $SkipBuild) {
         Write-Host "Building release binary..."
@@ -196,6 +332,14 @@ try {
     }
     $cliSize = (Get-Item $cliTargetBinary).Length / 1MB
     $httpSize = (Get-Item $httpTargetBinary).Length / 1MB
+    $versionOutput = & $httpTargetBinary --version
+    if ($LASTEXITCODE -ne 0) {
+        throw "Built HTTP binary version check failed with exit code $LASTEXITCODE."
+    }
+    $expectedBuildVersion = ([string]($versionOutput | Select-Object -Last 1)) -replace '^agent-bus-http\s+', ''
+    if ([string]::IsNullOrWhiteSpace($expectedBuildVersion)) {
+        throw "Could not determine the built HTTP binary version."
+    }
     Write-Host "CLI binary:  $cliTargetBinary ($([math]::Round($cliSize, 1)) MB)"
     Write-Host "HTTP binary: $httpTargetBinary ($([math]::Round($httpSize, 1)) MB)"
 
@@ -203,9 +347,13 @@ try {
     if (-not $SkipService) {
         $svc = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
         if ($svc -and $svc.Status -eq "Running") {
+            $serviceMutationStarted = $true
             Write-Host "Pausing and stopping $serviceName service via built-in maintenance controls..."
             try {
                 & $cliTargetBinary service --action pause --reason "build-deploy maintenance" --base-url "http://localhost:8400" --service-name $serviceName --encoding compact | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Built-in service pause failed with exit code $LASTEXITCODE."
+                }
             }
             catch {
                 Write-Warning "Could not pause service via HTTP admin endpoint. Continuing with direct stop."
@@ -214,49 +362,40 @@ try {
 
             try {
                 & $cliTargetBinary service --action stop --reason "build-deploy maintenance" --base-url "http://localhost:8400" --service-name $serviceName --encoding compact | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Built-in service stop failed with exit code $LASTEXITCODE."
+                }
+                $svc = Get-Service -Name $serviceName -ErrorAction Stop
+                $svc.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
             }
             catch {
                 Write-Warning "Built-in service stop failed; falling back to Stop-Service."
                 Write-Warning $_.Exception.Message
                 Stop-Service -Name $serviceName -Force
-                Start-Sleep -Seconds 2
+                $svc = Get-Service -Name $serviceName -ErrorAction Stop
+                $svc.WaitForStatus("Stopped", [TimeSpan]::FromSeconds(15))
             }
         }
     }
 
     # Step 4: Deploy binaries
+    if ($serviceExisted) {
+        $serviceMutationStarted = $true
+    }
     if ($CliDeployPath -and ($CliDeployPath -ne $DeployPath)) {
         Write-Host "Deploying CLI binary to $CliDeployPath..."
-        try {
-            Copy-Item -Path $cliTargetBinary -Destination $CliDeployPath -Force
-            Write-Host "CLI deploy complete."
-        }
-        catch {
-            Write-Warning "Could not replace $CliDeployPath. Keeping the existing CLI binary because it is likely in use."
-            Write-Warning $_.Exception.Message
-        }
+        Copy-AgentBusBinary -Source $cliTargetBinary -Destination $CliDeployPath -Label "CLI"
+        Write-Host "CLI deploy complete."
     }
 
     Write-Host "Deploying HTTP/service binary to $deployPath..."
-    try {
-        Copy-Item -Path $httpTargetBinary -Destination $deployPath -Force
-        Write-Host "HTTP/service deploy complete."
-    }
-    catch {
-        Write-Warning "Could not replace $deployPath. Keeping the existing HTTP binary because it is likely in use."
-        Write-Warning $_.Exception.Message
-    }
+    Copy-AgentBusBinary -Source $httpTargetBinary -Destination $deployPath -Label "HTTP/service"
+    Write-Host "HTTP/service deploy complete."
 
     if ($McpDeployPath) {
         Write-Host "Deploying MCP binary to $McpDeployPath..."
-        try {
-            Copy-Item -Path $mcpTargetBinary -Destination $McpDeployPath -Force
-            Write-Host "MCP deploy complete."
-        }
-        catch {
-            Write-Warning "Could not replace $McpDeployPath. Keeping the existing MCP binary because it is likely in use."
-            Write-Warning $_.Exception.Message
-        }
+        Copy-AgentBusBinary -Source $mcpTargetBinary -Destination $McpDeployPath -Label "MCP"
+        Write-Host "MCP deploy complete."
     }
 
     # Step 5: Reinstall/start service
@@ -266,6 +405,7 @@ try {
         }
 
         Write-Host "Reinstalling $serviceName service against $deployPath$(if ($AllowRemote) { ' (remote-enabled)' })..."
+        $serviceMutationStarted = $true
         & $installServiceScript -ServiceName $serviceName -BinaryPath $deployPath -ForceReinstall -StartService:$false -AllowRemote:$AllowRemote
         if ($LASTEXITCODE -ne 0) {
             throw "Service reinstall failed"
@@ -291,6 +431,9 @@ try {
                 try {
                     $health = Invoke-RestMethod -Uri $healthUrl -Method Get -TimeoutSec 3
                     if (Test-AgentBusWritableHealth -Health $health) {
+                        if ([string]$health.build_version -ne $expectedBuildVersion) {
+                            throw "Service build version '$($health.build_version)' does not match deployed build '$expectedBuildVersion'."
+                        }
                         Write-Host "`nService healthy:"
                         Get-HealthSummary -Health $health | ForEach-Object { Write-Host $_ }
                         Write-ServerVersionDiagnostics
@@ -306,7 +449,7 @@ try {
             }
         }
         else {
-            Write-Host "Service '$serviceName' not installed. Run install-agent-hub-service.ps1 first."
+            throw "Service '$serviceName' was not installed after deployment."
         }
     }
 
@@ -324,7 +467,42 @@ try {
 
     Write-Host "Done."
 }
+catch {
+    if (-not $SkipService -and $serviceExisted -and $serviceMutationStarted) {
+        try {
+            Write-Warning "Deployment failed after changing $serviceName; restoring the previous service configuration."
+            $keepRollbackBinary = $true
+            $restoredApplication = Restore-AgentBusServiceSnapshot `
+                -NssmPath $nssmPath `
+                -ServiceName $serviceName `
+                -Snapshot $previousServiceSnapshot `
+                -RollbackBinaryPath $previousServiceRollbackBinaryPath
+            $keepRollbackBinary = $restoredApplication -eq $previousServiceRollbackBinaryPath
+            $recoveryService = Get-Service -Name $serviceName -ErrorAction Stop
+            if ($serviceWasRunning) {
+                Start-Service -Name $serviceName
+                $recoveryService.WaitForStatus("Running", [TimeSpan]::FromSeconds(15))
+                & $cliTargetBinary service --action resume --reason "build-deploy recovery" --service-name $serviceName --base-url "http://localhost:8400" --timeout-seconds 15 --encoding compact | Out-Null
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Service recovery resume failed with exit code $LASTEXITCODE."
+                }
+            }
+        }
+        catch {
+            Write-Warning "Could not restore $serviceName after deployment failure: $($_.Exception.Message)"
+        }
+    }
+    throw
+}
 finally {
+    if ($previousServiceRollbackBinaryPath -and -not $keepRollbackBinary -and (Test-Path -LiteralPath $previousServiceRollbackBinaryPath)) {
+        try {
+            Remove-Item -LiteralPath $previousServiceRollbackBinaryPath -Force
+        }
+        catch {
+            Write-Warning "Could not remove unused rollback binary '$previousServiceRollbackBinaryPath': $($_.Exception.Message)"
+        }
+    }
     Write-AgentBusSccacheStats
     Restore-AgentBusRustBuildEnv -State $buildEnvState
 }
