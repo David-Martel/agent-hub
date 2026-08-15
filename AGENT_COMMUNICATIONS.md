@@ -492,7 +492,7 @@ If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), thes
 |----------|---------|----------------|
 | `bus_health` | Check Redis + PG status | (none) |
 | `post_message` | Send a message | `sender`, `recipient`, `topic`, `body`, `tags[]`, `schema`, `thread_id`, `priority`, `request_ack` |
-| `list_messages` | Read messages | `agent` (recipient filter), `sender`, `since_minutes`, `limit`, `include_broadcast` |
+| `list_messages` | Read messages | `agent` (recipient filter), `sender`, `topic`, `repo`, `session`, `tag`, `thread_id`, `since_minutes`, `limit`, `include_broadcast` |
 | `ack_message` | Acknowledge a message | `agent`, `message_id`, `body` |
 | `set_presence` | Register agent availability | `agent`, `status`, `capabilities[]`, `ttl_seconds`, `metadata` |
 | `list_presence` | List all active agents | (none) |
@@ -509,6 +509,9 @@ If agent-bus is registered in your MCP config (Claude Code, Codex, Gemini), thes
 | `check_inbox` | Cursor-based inbox polling for only new messages | `agent`, `limit`, `reset_cursor` |
 
 Use `check_inbox` for routine follow-up polling; it advances a per-agent cursor and avoids repeatedly re-reading the same bus history.
+
+MCP and HTTP payloads use `sender` / `recipient`; the equivalent CLI flags are
+`--from-agent` / `--to-agent`. These names are intentionally transport-specific.
 
 **Schema validation is enforced on `post_message`** when the `schema` parameter is provided.
 
