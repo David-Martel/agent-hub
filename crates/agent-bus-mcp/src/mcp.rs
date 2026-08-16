@@ -9,8 +9,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ContentBlock, Implementation, InitializeResult,
-    ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
+    InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
 };
 
 use agent_bus_core::mcp_dispatch::{McpToolDispatch, ToolDefinition, tool_definitions};
@@ -84,26 +84,32 @@ impl ServerHandler for AgentBusMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> Result<ListToolsResult, rmcp::ErrorData> {
-        Ok(ListToolsResult {
-            tools: Self::tool_list(),
-            next_cursor: None,
-            meta: None,
-        })
+        // rmcp 0.24 added `result_type`, `ttl_ms` and `cache_scope` to every
+        // paginated result (SEP-2322 / SEP-2549). `with_all_items` is the
+        // constructor that fills them with the spec-correct defaults
+        // (`result_type: Some(COMPLETE)`, the rest `None`) — preferred over a
+        // struct literal so a future field addition does not break the build again.
+        Ok(ListToolsResult::with_all_items(Self::tool_list()))
     }
 
+    // rmcp 0.24 widened this return type from `CallToolResult` to the
+    // `CallToolResponse` enum, whose other variants cover the MRTR flows
+    // (client input required, SEP-2663 task materialization). agent-bus
+    // dispatch is synchronous and always completes in-place, so every path
+    // here is `Complete` — produced via the `From<CallToolResult>` impl.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<CallToolResult, rmcp::ErrorData> {
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
         let args = request.arguments.as_ref();
         let empty = serde_json::Map::new();
         let args_map = args.unwrap_or(&empty);
 
         let dispatch = McpToolDispatch::new(&self.settings);
         match dispatch.dispatch_tool(&request.name, args_map) {
-            Ok(ref value) => Ok(Self::ok_content(value)),
-            Err(e) => Ok(Self::err_content(&e)),
+            Ok(ref value) => Ok(Self::ok_content(value).into()),
+            Err(e) => Ok(Self::err_content(&e).into()),
         }
     }
 }
