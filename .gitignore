@@ -56,3 +56,6 @@ errors.json
 build.log
 build.log.err
 .cargo/config.override.toml
+
+# --- managed: wip-audit gitignore gaps 2026-08-19 ---
+.Codex/state/
