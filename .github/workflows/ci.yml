@@ -155,7 +155,8 @@ jobs:
   windows:
     name: Windows Build And Unit Tests
     runs-on: [self-hosted, Windows, X64, local-build]
-    timeout-minutes: 30
+    # Cold test compilation consumed 26 minutes before release and fixture checks.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - shell: pwsh

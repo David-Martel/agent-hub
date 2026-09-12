@@ -53,3 +53,14 @@ preflight. Use the raw CargoTools route and an isolated target, or explicitly
 coordinate shared-cache build sequencing. The required repository Lefthook hooks
 and deterministic Codex attribution hook were installed in the repository's
 existing local hook directory; shared Git guard files were verified unchanged.
+
+## Measured Windows build budget
+
+Run `34711785457` at `1cacddb` passed all 11 Linux jobs, including 789 unit
+tests and 60 integration tests. Its first Windows attempt also passed all 789
+unit tests before the runner was interrupted during release compilation.
+The retry's cold test compilation alone consumed more than 26 minutes, leaving
+the 30-minute job budget insufficient for release binaries and the remaining
+database, helper, fleet, MCP, and provenance fixtures. The Windows job budget is
+now 60 minutes. Every build command, test assertion, runner label, and fixture
+remains unchanged; the revised commit still requires its own successful CI run.
