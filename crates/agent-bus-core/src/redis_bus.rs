@@ -23,7 +23,9 @@ use crate::postgres_store::{
     list_messages_postgres_with_filters, persist_presence_postgres, pg_metrics, probe_postgres,
     query_messages_by_tags,
 };
-use crate::settings::{Settings, loopback_url_candidates, redact_url};
+use crate::settings::{
+    Settings, loopback_url_candidates, redact_url, refuse_live_bus_in_unit_tests,
+};
 use crate::validation::infer_schema_from_topic;
 
 /// Open a new synchronous Redis connection using the URL from `settings`.
@@ -34,6 +36,7 @@ use crate::validation::infer_schema_from_topic;
 pub fn connect(settings: &Settings) -> Result<redis::Connection> {
     let mut errors = Vec::new();
     for redis_url in loopback_url_candidates(&settings.redis_url) {
+        refuse_live_bus_in_unit_tests(&redis_url);
         let client = match redis::Client::open(redis_url.as_str()) {
             Ok(client) => client,
             Err(e) => {
@@ -151,6 +154,7 @@ impl RedisPool {
     pub fn new(settings: &Settings) -> Result<Self> {
         let mut errors = Vec::new();
         for redis_url in loopback_url_candidates(&settings.redis_url) {
+            refuse_live_bus_in_unit_tests(&redis_url);
             let manager = match redis::Client::open(redis_url.as_str()) {
                 Ok(manager) => manager,
                 Err(e) => {
@@ -206,6 +210,7 @@ impl RedisPool {
     pub fn new_lazy(settings: &Settings) -> Result<Self> {
         let mut errors = Vec::new();
         for redis_url in loopback_url_candidates(&settings.redis_url) {
+            refuse_live_bus_in_unit_tests(&redis_url);
             match redis::Client::open(redis_url.as_str()) {
                 Ok(manager) => {
                     let inner = r2d2::Pool::builder()
@@ -3473,14 +3478,12 @@ mod tests {
         ));
     }
 
+    #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
     #[test]
     fn topic_pagination_keeps_valid_older_stream_entry_after_stale_payloads() {
-        let mut settings = Settings::from_env();
+        let mut settings = crate::test_support::backend_settings();
         settings.stream_key = format!("agent_bus:test:topic-cutoff:{}", Uuid::new_v4());
-        let Ok(mut conn) = connect(&settings) else {
-            eprintln!("SKIP: Redis not available for topic pagination cutoff test");
-            return;
-        };
+        let mut conn = connect(&settings).expect("Redis unreachable via AGENT_BUS_TEST_REDIS_URL");
 
         let now = Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string();
         let old = "2000-01-01T00:00:00.000000Z";
@@ -3567,7 +3570,7 @@ mod tests {
 
     #[test]
     fn health_codec_field_is_accurate() {
-        let s = Settings::from_env();
+        let s = crate::test_support::offline_settings();
         let h = bus_health(&s, None);
         assert_eq!(h.codec, "serde_json");
         assert_eq!(h.runtime, "rust-native");
@@ -4309,41 +4312,36 @@ mod tests {
         assert!(err.to_string().contains("NUL"), "got: {err}");
     }
 
-    /// Returns a live Redis connection, or `None` when Redis is unavailable so
-    /// callers can skip gracefully (established skip idiom).
-    fn try_test_conn() -> Option<redis::Connection> {
-        connect(&Settings::from_env()).ok()
+    /// A connection to the disposable test Redis. Panics when
+    /// `AGENT_BUS_TEST_REDIS_URL` is unset or unreachable -- never skips.
+    fn test_conn() -> redis::Connection {
+        connect(&crate::test_support::backend_settings())
+            .expect("Redis unreachable via AGENT_BUS_TEST_REDIS_URL")
     }
 
+    #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
     #[test]
     fn emit_resource_event_rejects_nul_in_agent() {
-        let Some(mut conn) = try_test_conn() else {
-            eprintln!("SKIP: Redis not available");
-            return;
-        };
+        let mut conn = test_conn();
         let err = emit_resource_event(&mut conn, "claim", "cla\x00ude", "src/main.rs")
             .expect_err("NUL in resource-event agent must be rejected before XADD");
         assert!(err.to_string().contains("NUL"), "got: {err}");
     }
 
+    #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
     #[test]
     fn emit_resource_event_rejects_nul_in_resource() {
-        let Some(mut conn) = try_test_conn() else {
-            eprintln!("SKIP: Redis not available");
-            return;
-        };
+        let mut conn = test_conn();
         let err = emit_resource_event(&mut conn, "claim", "claude", "src/ma\x00in.rs")
             .expect_err("NUL in resource-event resource must be rejected before XADD");
         assert!(err.to_string().contains("NUL"), "got: {err}");
     }
 
+    #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
     #[test]
     fn bus_set_presence_rejects_nul_in_status() {
-        let Some(mut conn) = try_test_conn() else {
-            eprintln!("SKIP: Redis not available");
-            return;
-        };
-        let settings = Settings::from_env();
+        let mut conn = test_conn();
+        let settings = crate::test_support::backend_settings();
         let meta = serde_json::Value::Object(serde_json::Map::new());
         let err = bus_set_presence(
             &mut conn,

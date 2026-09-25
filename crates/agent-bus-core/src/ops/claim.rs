@@ -276,8 +276,9 @@ mod tests {
 
     /// Construct a [`Settings`] from the environment/config file.  This never
     /// connects to Redis — it only reads env vars and the optional config JSON.
+    /// Backends unreachable by construction: validation runs, I/O fails.
     fn test_settings() -> Settings {
-        Settings::from_env()
+        crate::test_support::offline_settings()
     }
 
     // -- parse_resource_scope ---------------------------------------------------
@@ -595,16 +596,15 @@ mod tests {
                     status: Some(status),
                 },
             );
-            // The call will likely fail with a Redis connection error, but it
-            // should NOT fail with a status-parsing error.
-            if let Err(ref err) = result {
-                let msg = err.to_string();
-                assert!(
-                    !msg.contains("unknown claim status"),
-                    "status '{status}' should be accepted but got: {msg}"
-                );
-            }
-            // If it somehow succeeds (unlikely without Redis), that is also fine.
+            // Backends are offline, so the call must fail -- at connect, after
+            // the status has been parsed, not with a status-parsing error.
+            let msg = result
+                .expect_err("offline backend: list_claims must fail at connect")
+                .to_string();
+            assert!(
+                !msg.contains("unknown claim status"),
+                "status '{status}' should be accepted but got: {msg}"
+            );
         }
     }
 }
