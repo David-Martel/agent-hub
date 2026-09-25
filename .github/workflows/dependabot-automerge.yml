@@ -1,0 +1,195 @@
+# Dependabot merge intelligence (ci-accel-20260924, workstream A).
+#
+# Auto-merges a Dependabot PR ONLY when ALL of these hold:
+#   1. It is a semver patch or minor bump (dependabot/fetch-metadata's
+#      update-type), or a pinned grouped update whose group name does not
+#      itself signal a major bump.
+#   2. It is NOT a semver-major bump.
+#   3. None of the touched dependency names match DENY_LIST_REGEX (CUDA,
+#      torch, ROS, TensorRT, cuDNN/cuBLAS and similar get a label plus a
+#      changelog/risk comment instead of auto-merge).
+#   4. Every required check passes -- enforced by GitHub itself, not by this
+#      workflow: `gh pr merge --auto` only *arms* native auto-merge, which
+#      GitHub completes once required checks are green and branch protection
+#      is satisfied. This workflow never polls check status itself and never
+#      force-merges a red or pending PR.
+#
+# Runs on self-hosted runners only (the $0 posture). DRY_RUN prints the
+# decision and exits without calling `gh pr merge` or `gh pr edit` -- used to
+# validate the policy logic against a real, already-open Dependabot PR before
+# trusting it to actually merge anything.
+#
+# This is deployed as an identical small per-repo workflow (not a
+# cross-repo `workflow_call`) because this account's Actions "access" level
+# for reusable workflows is `none` on the producer repo (vigil-utils) as of
+# 2026-09-25 -- verified via `gh api repos/David-Martel/vigil-utils/actions/permissions/access`.
+# Changing that is a separate, deliberate follow-up; until then a shared
+# reusable workflow would silently fail to resolve for every caller. The
+# canonical copy of this file lives in vigil-utils at
+# docs/ci/dependabot-automerge.yml for reference; keep per-repo copies
+# byte-identical except for the `runs-on` labels if a repo's runner labels
+# differ.
+
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to evaluate (manual test/dry-run trigger)"
+        required: true
+        type: number
+      dry_run:
+        description: "Print the decision without merging or labeling"
+        required: false
+        type: boolean
+        default: true
+
+permissions:
+  pull-requests: write
+  contents: write
+
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    if: github.event_name == 'workflow_dispatch' || github.actor == 'dependabot[bot]'
+    runs-on: [self-hosted, Linux, X64]
+    env:
+      # (?i) case-insensitive; anchors avoid over-matching unrelated crates
+      # that merely contain a substring (e.g. "roslibpy" is not ROS core).
+      DENY_LIST_REGEX: '(?i)(^|[-_])(torch|cuda|cudnn|cublas|tensorrt|nvidia|nvinfer)([-_]|$)|(^|[-_])ros[-_2]|(^|[-_])rclpy([-_]|$)'
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+    steps:
+      - name: Dependabot metadata
+        id: meta
+        if: github.event_name != 'workflow_dispatch'
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ github.token }}
+
+      # workflow_dispatch has no pull_request event payload for
+      # fetch-metadata to read, so the manual/dry-run path derives the same
+      # two fields (update-type, dependency-names) from the PR's own title,
+      # which Dependabot writes in a fixed, parseable format
+      # ("build(deps): bump <dep> from X.Y.Z to A.B.C" / "bump the <group> group").
+      - name: Derive metadata from PR title (manual dispatch only)
+        id: meta_manual
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title=$(gh pr view "$PR_NUMBER" --json title --jq '.title')
+          echo "pr_title=$title" >> "$GITHUB_OUTPUT"
+          # Best-effort semver classification from "from X to Y" in the title.
+          from_ver=$(echo "$title" | grep -oP 'from \K[0-9][0-9A-Za-z.+-]*' || true)
+          to_ver=$(echo "$title" | grep -oP 'to \K[0-9][0-9A-Za-z.+-]*' || true)
+          dep_name=$(echo "$title" | grep -oP 'bump \K[^ ]+(?= from)' || echo "$title" | grep -oP 'bump the \K[^ ]+(?= group)' || true)
+          update_type="version-update:semver-patch"
+          if [[ -n "$from_ver" && -n "$to_ver" ]]; then
+            from_major=$(echo "$from_ver" | cut -d. -f1)
+            to_major=$(echo "$to_ver" | cut -d. -f1)
+            from_minor=$(echo "$from_ver" | cut -d. -f2)
+            to_minor=$(echo "$to_ver" | cut -d. -f2)
+            if [[ "$from_major" != "$to_major" ]]; then
+              update_type="version-update:semver-major"
+            elif [[ "$from_minor" != "$to_minor" ]]; then
+              update_type="version-update:semver-minor"
+            fi
+          fi
+          echo "update-type=$update_type" >> "$GITHUB_OUTPUT"
+          echo "dependency-names=$dep_name" >> "$GITHUB_OUTPUT"
+          echo "[dry-run metadata] title='$title' update_type=$update_type dep=$dep_name"
+
+      - name: Decide policy
+        id: policy
+        env:
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type || steps.meta_manual.outputs.update-type }}
+          DEP_NAMES: ${{ steps.meta.outputs.dependency-names || steps.meta_manual.outputs.dependency-names }}
+        run: |
+          set -euo pipefail
+          echo "update_type=$UPDATE_TYPE"
+          echo "dep_names=$DEP_NAMES"
+          is_major=false
+          case "$UPDATE_TYPE" in
+            *semver-major*) is_major=true ;;
+          esac
+          denied=false
+          if [[ -n "$DEP_NAMES" ]] && echo "$DEP_NAMES" | grep -Eq "$DENY_LIST_REGEX"; then
+            denied=true
+          fi
+          decision=automerge
+          reason=""
+          if [[ "$is_major" == true ]]; then
+            decision=hold
+            reason="semver-major bump ($UPDATE_TYPE)"
+          elif [[ "$denied" == true ]]; then
+            decision=hold
+            reason="deny-listed dependency ($DEP_NAMES matched $DENY_LIST_REGEX)"
+          fi
+          {
+            echo "is_major=$is_major"
+            echo "denied=$denied"
+            echo "decision=$decision"
+            echo "reason=$reason"
+          } >> "$GITHUB_OUTPUT"
+          echo "DECISION: $decision ${reason:+($reason)}"
+
+      - name: Hold -- label and comment (real runs only)
+        if: steps.policy.outputs.decision == 'hold' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_NUMBER" --add-label "dependabot-hold" || \
+            gh label create "dependabot-hold" --color "B60205" \
+              --description "Held from auto-merge: major bump or deny-listed dependency" \
+              --repo "${{ github.repository }}" && \
+            gh pr edit "$PR_NUMBER" --add-label "dependabot-hold"
+          BODY_FILE=$(mktemp)
+          {
+            echo "Auto-merge withheld: ${{ steps.policy.outputs.reason }}."
+            echo ""
+            echo "Update type: \`${{ steps.meta.outputs.update-type || steps.meta_manual.outputs.update-type }}\`"
+            echo "Dependency: \`${{ steps.meta.outputs.dependency-names || steps.meta_manual.outputs.dependency-names }}\`"
+            echo ""
+            echo "Please review the changelog/release notes and merge manually."
+          } > "$BODY_FILE"
+          gh pr comment "$PR_NUMBER" --body-file "$BODY_FILE"
+
+      - name: Automerge -- enable native GitHub auto-merge (real runs only)
+        if: steps.policy.outputs.decision == 'automerge' && env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh pr merge "$PR_NUMBER" --auto --squash
+
+      - name: Dry-run report (no mutation)
+        if: env.DRY_RUN == 'true'
+        env:
+          DECISION: ${{ steps.policy.outputs.decision }}
+          UPDATE_TYPE_OUT: ${{ steps.meta.outputs.update-type || steps.meta_manual.outputs.update-type }}
+          DEP_NAMES_OUT: ${{ steps.meta.outputs.dependency-names || steps.meta_manual.outputs.dependency-names }}
+          REASON: ${{ steps.policy.outputs.reason }}
+        run: |
+          set -euo pipefail
+          would_run="gh pr edit + gh pr comment (hold)"
+          if [[ "$DECISION" == "automerge" ]]; then
+            would_run="gh pr merge $PR_NUMBER --auto --squash"
+          fi
+          {
+            echo "### Dependabot auto-merge dry-run"
+            echo "PR: #$PR_NUMBER"
+            echo "update_type: $UPDATE_TYPE_OUT"
+            echo "dependency_names: $DEP_NAMES_OUT"
+            echo "decision: $DECISION"
+            echo "reason: $REASON"
+            echo "Would have run: $would_run"
+          } >> "$GITHUB_STEP_SUMMARY"
