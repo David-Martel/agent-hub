@@ -491,8 +491,9 @@ mod tests {
 
     /// Construct a [`Settings`] from the environment/config file.  This never
     /// connects to Redis — it only reads env vars and the optional config JSON.
+    /// Backends unreachable by construction: validation runs, I/O fails.
     fn test_settings() -> Settings {
-        Settings::from_env()
+        crate::test_support::offline_settings()
     }
 
     fn valid_push_request() -> PushTaskCardRequest<'static> {
@@ -566,14 +567,14 @@ mod tests {
             let mut req = valid_push_request();
             req.priority = priority;
             let result = push_task_card(&settings, &req);
-            // Will fail on Redis connect, but should NOT fail on validation.
-            if let Err(ref err) = result {
-                let msg = err.to_string();
-                assert!(
-                    !msg.contains("invalid task priority"),
-                    "priority '{priority}' should be accepted but got: {msg}"
-                );
-            }
+            // Backends are offline: must fail at connect, not on validation.
+            let msg = result
+                .expect_err("offline backend: push_task_card must fail at connect")
+                .to_string();
+            assert!(
+                !msg.contains("invalid task priority"),
+                "priority '{priority}' should be accepted but got: {msg}"
+            );
         }
     }
 

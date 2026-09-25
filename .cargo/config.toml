@@ -6,7 +6,10 @@ ab-fast  = "build -p agent-bus -p agent-bus-http -p agent-bus-mcp --profile fast
 
 # Test aliases
 ab-test   = "test --workspace --lib"
-ab-itest  = "test -p agent-bus --test http_integration_test --test channel_integration_test -- --test-threads=1"
+# Backend tests are #[ignore]d and need AGENT_BUS_TEST_{REDIS,DATABASE,SERVER}_URL
+# pointing at disposable backends (never the live 6380/5300/8400; see
+# crates/agent-bus-core/tests/support/backend_env.rs).
+ab-itest  = "test --workspace --tests -- --ignored --test-threads=1"
 ab-clippy = "clippy --workspace --all-targets"
 ab-nextest = "nextest run --workspace"
 
