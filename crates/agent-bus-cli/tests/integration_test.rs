@@ -1,35 +1,55 @@
-//! Integration tests requiring a running Redis instance.
-//! Skipped gracefully if Redis is not available.
+//! Integration tests for the `agent-bus` CLI against real Redis/PostgreSQL.
+//!
+//! Every backend test is `#[ignore]`d and runs only with `-- --ignored`, against
+//! the disposable backends named by `AGENT_BUS_TEST_*` (see
+//! `crates/agent-bus-core/tests/support/backend_env.rs`). An unset variable or an
+//! unreachable backend FAILS the test; nothing here skips or defaults to the
+//! live bus.
 
 use std::process::Command;
+
+#[path = "../../agent-bus-core/tests/support/backend_env.rs"]
+mod backend_env;
+
+use backend_env::{DATABASE_URL_VAR, REDIS_URL_VAR, SERVER_URL_VAR, backend_url};
 
 fn agent_bus_binary() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
     cmd.env_remove("AGENT_BUS_SERVER_URL");
-    cmd.env("AGENT_BUS_REDIS_URL", "redis://127.0.0.1:6380/0");
-    cmd.env(
-        "AGENT_BUS_DATABASE_URL",
-        "postgresql://postgres@127.0.0.1:5300/redis_backend",
-    );
+    // Keep the developer's ~/.config/agent-bus/config.json (which may name a
+    // server_url or token for the real hub) out of the child's settings.
+    cmd.env("AGENT_BUS_CONFIG", isolated_config_path());
+    cmd.env("AGENT_BUS_REDIS_URL", backend_url(REDIS_URL_VAR));
+    cmd.env("AGENT_BUS_DATABASE_URL", backend_url(DATABASE_URL_VAR));
     cmd.env("AGENT_BUS_STREAM_KEY", "agent_bus:test:messages");
     cmd.env("AGENT_BUS_CHANNEL", "agent_bus:test:events");
     cmd.env("AGENT_BUS_PRESENCE_PREFIX", "agent_bus:test:presence:");
     cmd
 }
 
-fn redis_available() -> bool {
-    agent_bus_binary()
-        .args(["health", "--encoding", "compact"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+fn isolated_config_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("agent-bus-test-config-{}.json", std::process::id()))
 }
 
+/// Fail (not skip) when the configured backend cannot serve `health`.
+fn require_backend() {
+    let output = agent_bus_binary()
+        .args(["health", "--encoding", "compact"])
+        .output()
+        .expect("failed to run agent-bus health");
+    assert!(
+        output.status.success(),
+        "backend unreachable via {REDIS_URL_VAR}: agent-bus health exited {} -- stdout: {} stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn health_returns_ok_when_redis_available() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
     let output = agent_bus_binary()
         .args(["health", "--encoding", "compact"])
         .output()
@@ -39,12 +59,10 @@ fn health_returns_ok_when_redis_available() {
     assert!(stdout.contains(r#""ok":true"#));
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn send_and_read_round_trip() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
     let send = agent_bus_binary()
         .args([
             "send",
@@ -84,12 +102,10 @@ fn send_and_read_round_trip() {
     assert!(stdout.contains("hello-from-integration-test"));
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn presence_set_and_list() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
     let set = agent_bus_binary()
         .args([
             "presence",
@@ -118,7 +134,8 @@ fn presence_set_and_list() {
 #[test]
 fn invalid_settings_rejected() {
     let output = Command::new(env!("CARGO_BIN_EXE_agent-bus"))
-        .env("AGENT_BUS_REDIS_URL", "redis://remote-host:6380/0")
+        .env("AGENT_BUS_CONFIG", isolated_config_path())
+        .env("AGENT_BUS_REDIS_URL", "redis://remote-host:16380/0")
         .args(["health", "--encoding", "compact"])
         .output()
         .expect("failed to run");
@@ -128,12 +145,10 @@ fn invalid_settings_rejected() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn cli_server_mode_send_and_read_round_trip() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
 
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -141,7 +156,7 @@ fn cli_server_mode_send_and_read_round_trip() {
         .as_millis();
 
     let send = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .env("AGENT_BUS_SERVER_URL", backend_url(SERVER_URL_VAR))
         .args([
             "send",
             "--from-agent",
@@ -165,7 +180,7 @@ fn cli_server_mode_send_and_read_round_trip() {
     );
 
     let read = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .env("AGENT_BUS_SERVER_URL", backend_url(SERVER_URL_VAR))
         .args([
             "read",
             "--agent",
@@ -183,12 +198,10 @@ fn cli_server_mode_send_and_read_round_trip() {
     assert!(stdout.contains("hello-via-server-mode"));
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn cli_server_mode_batch_send_round_trip() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
 
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -207,7 +220,7 @@ fn cli_server_mode_batch_send_round_trip() {
 
     let batch_path = batch_file.to_string_lossy().into_owned();
     let send = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .env("AGENT_BUS_SERVER_URL", backend_url(SERVER_URL_VAR))
         .args(["batch-send", "--file", &batch_path, "--encoding", "compact"])
         .output()
         .expect("batch-send failed");
@@ -222,7 +235,7 @@ fn cli_server_mode_batch_send_round_trip() {
     assert!(stdout.contains(r#""sent":2"#));
 
     let read = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .env("AGENT_BUS_SERVER_URL", backend_url(SERVER_URL_VAR))
         .args([
             "read",
             "--agent",

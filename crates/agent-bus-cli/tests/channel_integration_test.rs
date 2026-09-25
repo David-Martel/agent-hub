@@ -1,8 +1,12 @@
 //! End-to-end channel integration tests.
 //!
 //! Exercises direct messages, group lifecycles, resource claim/resolve, and
-//! ownership-topic send via the compiled `agent-bus` binary.  Every test guards
-//! on [`redis_available`] and skips gracefully when Redis is not reachable.
+//! ownership-topic send via the compiled `agent-bus` binary.  Every backend test
+//! is `#[ignore]`d and runs only with `-- --ignored`, against the disposable
+//! backends named by `AGENT_BUS_TEST_*` (see
+//! `crates/agent-bus-core/tests/support/backend_env.rs`). An unset variable or an
+//! unreachable backend FAILS the test; nothing here skips or defaults to the
+//! live bus.
 //!
 //! Each test generates a unique suffix via `uuid::Uuid::new_v4().as_simple()`
 //! so parallel runs never share Redis keys.
@@ -10,10 +14,15 @@
 //! # Running
 //!
 //! ```text
-//! cargo test --test channel_integration_test
+//! cargo test --test channel_integration_test -- --ignored
 //! ```
 
 use std::process::Command;
+
+#[path = "../../agent-bus-core/tests/support/backend_env.rs"]
+mod backend_env;
+
+use backend_env::{DATABASE_URL_VAR, REDIS_URL_VAR, SERVER_URL_VAR, backend_url};
 
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 
@@ -25,23 +34,33 @@ fn agent_bus_binary() -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
     // Use the test-isolated stream/presence keys so we don't pollute production data.
     cmd.env_remove("AGENT_BUS_SERVER_URL");
-    cmd.env("AGENT_BUS_REDIS_URL", "redis://127.0.0.1:6380/0");
+    // Keep the developer's ~/.config/agent-bus/config.json (which may name a
+    // server_url or token for the real hub) out of the child's settings.
     cmd.env(
-        "AGENT_BUS_DATABASE_URL",
-        "postgresql://postgres@127.0.0.1:5300/redis_backend",
+        "AGENT_BUS_CONFIG",
+        std::env::temp_dir().join(format!("agent-bus-test-config-{}.json", std::process::id())),
     );
+    cmd.env("AGENT_BUS_REDIS_URL", backend_url(REDIS_URL_VAR));
+    cmd.env("AGENT_BUS_DATABASE_URL", backend_url(DATABASE_URL_VAR));
     cmd.env("AGENT_BUS_STREAM_KEY", "agent_bus:test:messages");
     cmd.env("AGENT_BUS_CHANNEL", "agent_bus:test:events");
     cmd.env("AGENT_BUS_PRESENCE_PREFIX", "agent_bus:test:presence:");
     cmd
 }
 
-/// Returns `true` when Redis is reachable and the binary exits successfully.
-fn redis_available() -> bool {
-    agent_bus_binary()
+/// Fail (not skip) when the configured backend cannot serve `health`.
+fn require_backend() {
+    let output = agent_bus_binary()
         .args(["health", "--encoding", "compact"])
         .output()
-        .is_ok_and(|o| o.status.success())
+        .expect("failed to run agent-bus health");
+    assert!(
+        output.status.success(),
+        "backend unreachable via {REDIS_URL_VAR}: agent-bus health exited {} -- stdout: {} stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 /// Generate a UUID-based unique suffix suitable for resource/group names.
@@ -74,12 +93,10 @@ fn http_client() -> reqwest::blocking::Client {
 
 /// Post a direct message from `agent-a` to `agent-b`, read it back, and verify
 /// the body is present in the output.
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn channel_direct_message_round_trip() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
 
     let suffix = unique_id();
     let agent_a = format!("test-a-{suffix}");
@@ -143,12 +160,10 @@ fn channel_direct_message_round_trip() {
 
 /// Create a named group, post a message to it, read it back, and verify the
 /// body is present.  The group name is UUID-derived so it is unique per run.
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn channel_group_lifecycle() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
 
     // Group names must be alphanumerics + hyphens + underscores.
     // Uuid::as_simple() gives 32 hex chars — prefix with "grp" so it is clearly
@@ -158,31 +173,24 @@ fn channel_group_lifecycle() {
     let sender = format!("test-sender-{suffix}");
     let body = format!("group-body-{suffix}");
 
-    // Create the group first (required before post-group).
-    // Use the HTTP API or MCP tool in real usage; here we use the HTTP server
-    // if available, otherwise skip the group creation step and rely on the CLI
-    // post-group to fail gracefully (the group must exist).
-    //
-    // Since the CLI `post-group` requires the group to exist, we create it via
-    // the HTTP server. If the HTTP server is not running we still test the error
-    // path (non-zero exit) and skip assertion on body.
-    let http_base = "http://localhost:8400";
+    // Create the group first (required before post-group). The CLI has no
+    // group-create verb, so this goes through the HTTP server; a failure there
+    // fails the test rather than silently skipping the body assertion.
+    let http_base = backend_url(SERVER_URL_VAR);
     let create_resp = http_client()
-        .post(format!("{http_base}/channels/groups/{group}"))
+        .post(format!("{http_base}/channels/groups"))
         .json(&serde_json::json!({
+            "name": group,
             "created_by": sender,
             "members": [sender]
         }))
-        .send();
-
-    let http_available = create_resp.is_ok_and(|r| r.status().is_success());
-
-    if !http_available {
-        // Fall back: create group directly via a synthetic SADD by calling the
-        // binary in a mode that implicitly creates — post-group returns an error
-        // if the group does not exist. We skip the body assertion only.
-        eprintln!("INFO: HTTP server not available; skipping group-create step");
-    }
+        .send()
+        .unwrap_or_else(|e| panic!("group create via {SERVER_URL_VAR}={http_base} failed: {e}"));
+    assert!(
+        create_resp.status().is_success(),
+        "group create returned {}",
+        create_resp.status()
+    );
 
     // Post a message to the group (succeeds only when group exists).
     let post = agent_bus_binary()
@@ -199,16 +207,6 @@ fn channel_group_lifecycle() {
         ])
         .output()
         .expect("post-group failed to run");
-
-    if !http_available {
-        // Without the HTTP server we cannot create the group; expect failure.
-        eprintln!(
-            "INFO: post-group result (http unavailable): exit={} stderr={}",
-            post.status,
-            String::from_utf8_lossy(&post.stderr)
-        );
-        return;
-    }
 
     assert!(
         post.status.success(),
@@ -249,12 +247,10 @@ fn channel_group_lifecycle() {
 
 /// Claim a unique resource, list claims and verify it appears, then resolve it
 /// and verify the winner.
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn claim_and_resolve() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
 
     let suffix = unique_id();
     // Use a path-like resource name that is valid on both Unix and Windows.
@@ -336,12 +332,10 @@ fn claim_and_resolve() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn renew_and_release_claim_round_trip() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
 
     let suffix = unique_id();
     let resource = format!("src/test-lease-{suffix}.rs");
@@ -414,12 +408,10 @@ fn renew_and_release_claim_round_trip() {
     assert!(release_stdout.contains("\"claims\":[]") || release_stdout.contains("\"claims\": []"));
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn knock_command_posts_message() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
 
     let suffix = unique_id();
     let sender = format!("knock-sender-{suffix}");
@@ -477,12 +469,10 @@ fn knock_command_posts_message() {
 /// Send a message with `topic=ownership` and verify the bus accepts it without
 /// error.  This exercises the schema auto-inference path (`status` schema) on
 /// the ownership topic.
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn ownership_via_topic() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_backend();
 
     let suffix = unique_id();
     let from_agent = format!("test-owner-{suffix}");

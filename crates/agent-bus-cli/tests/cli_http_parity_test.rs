@@ -15,11 +15,14 @@
 //! 3. thread-summary — main-stream messages tagged with a unique `thread_id`
 //!    are aggregated by the CLI `summarize-thread` command.
 //!
-//! Prerequisites: the agent-bus HTTP server must be running at `localhost:8400`
-//! with the default Redis (`:6380`). All tests skip gracefully when the server
-//! is not reachable. The CLI subprocesses are run with **default settings** (no
-//! `AGENT_BUS_STREAM_KEY` override) so they target the same Redis keys as the
-//! running server.
+//! Prerequisites: an agent-bus HTTP server at `AGENT_BUS_TEST_SERVER_URL`,
+//! backed by the Redis/PostgreSQL named by `AGENT_BUS_TEST_REDIS_URL` /
+//! `AGENT_BUS_TEST_DATABASE_URL` (see
+//! `crates/agent-bus-core/tests/support/backend_env.rs`). Every test is
+//! `#[ignore]`d; an unset variable or an unreachable server FAILS it. The CLI
+//! subprocesses point at the same backends but keep the **default** stream keys
+//! (no `AGENT_BUS_STREAM_KEY` override) so they target the same Redis keys as
+//! the server.
 //!
 //! Isolation: every test derives unique agent / thread / repo names from a
 //! millisecond timestamp plus an atomic counter.
@@ -27,7 +30,7 @@
 //! # Running
 //!
 //! ```text
-//! cargo test -p agent-bus --test cli_http_parity_test -- --test-threads=1
+//! cargo test -p agent-bus --test cli_http_parity_test -- --ignored --test-threads=1
 //! ```
 
 use std::process::Command;
@@ -37,7 +40,12 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 
-const BASE_URL: &str = "http://localhost:8400";
+#[path = "../../agent-bus-core/tests/support/backend_env.rs"]
+mod backend_env;
+
+use backend_env::{DATABASE_URL_VAR, REDIS_URL_VAR, SERVER_URL_VAR, TestServerUrl, backend_url};
+
+const BASE_URL: TestServerUrl = TestServerUrl;
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -54,9 +62,17 @@ fn unique_suffix() -> String {
     format!("{ms}-{n}")
 }
 
-/// Returns `true` when the HTTP server is reachable.
-fn http_available(client: &reqwest::blocking::Client) -> bool {
-    client.get(format!("{BASE_URL}/health")).send().is_ok()
+/// Fail (not skip) when the HTTP server does not answer `/health`.
+fn require_http(client: &reqwest::blocking::Client) {
+    let resp = client
+        .get(format!("{BASE_URL}/health"))
+        .send()
+        .unwrap_or_else(|e| panic!("agent-bus HTTP unreachable via {SERVER_URL_VAR}: {e}"));
+    assert!(
+        resp.status().is_success(),
+        "agent-bus HTTP /health returned {}",
+        resp.status()
+    );
 }
 
 fn http_client() -> reqwest::blocking::Client {
@@ -75,23 +91,30 @@ fn http_client() -> reqwest::blocking::Client {
         .expect("failed to build HTTP test client")
 }
 
-/// The CLI binary, with **default** settings so its Redis keys match the
-/// running HTTP server.
+/// The CLI binary, pointed at the test backends with **default** stream keys
+/// so its Redis keys match the HTTP server under test. The developer's
+/// config.json is kept out so it cannot redirect the child to the real hub.
 fn agent_bus_binary() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_agent-bus"))
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
+    cmd.env_remove("AGENT_BUS_SERVER_URL");
+    cmd.env(
+        "AGENT_BUS_CONFIG",
+        std::env::temp_dir().join(format!("agent-bus-test-config-{}.json", std::process::id())),
+    );
+    cmd.env("AGENT_BUS_REDIS_URL", backend_url(REDIS_URL_VAR));
+    cmd.env("AGENT_BUS_DATABASE_URL", backend_url(DATABASE_URL_VAR));
+    cmd
 }
 
 // ---------------------------------------------------------------------------
 // 1. read-direct parity over real direct-channel traffic
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL + AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn read_direct_parity_cli_and_http() {
     let client = http_client();
-    if !http_available(&client) {
-        eprintln!("SKIP: agent-bus HTTP not running at {BASE_URL}");
-        return;
-    }
+    require_http(&client);
 
     let suffix = unique_suffix();
     let agent_a = format!("parity-a-{suffix}");
@@ -181,6 +204,7 @@ fn read_direct_parity_cli_and_http() {
 // 2. compact-context parity (CLI vs HTTP) over main-stream messages
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL + AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -188,10 +212,7 @@ fn read_direct_parity_cli_and_http() {
 )]
 fn compact_context_parity_cli_and_http() {
     let client = http_client();
-    if !http_available(&client) {
-        eprintln!("SKIP: agent-bus HTTP not running at {BASE_URL}");
-        return;
-    }
+    require_http(&client);
 
     let suffix = unique_suffix();
     let recipient = format!("compact-parity-{suffix}");
@@ -308,6 +329,7 @@ fn compact_context_parity_cli_and_http() {
 // 3. thread-summary flow (CLI) over main-stream thread traffic
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL + AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -315,10 +337,7 @@ fn compact_context_parity_cli_and_http() {
 )]
 fn summarize_thread_aggregates_thread_traffic() {
     let client = http_client();
-    if !http_available(&client) {
-        eprintln!("SKIP: agent-bus HTTP not running at {BASE_URL}");
-        return;
-    }
+    require_http(&client);
 
     let suffix = unique_suffix();
     let thread_id = format!("summary-thread-{suffix}");

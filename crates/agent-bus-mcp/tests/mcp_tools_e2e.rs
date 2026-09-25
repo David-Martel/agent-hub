@@ -7,11 +7,11 @@
 //! `check_inbox`, channel create/post/read, claim/renew/release/resolve, and
 //! `negotiate`.
 //!
-//! Prerequisites: a live Redis on `:6380` and (for `check_inbox` / durable
-//! history) `PostgreSQL` on `:5300`, i.e. the agent-bus defaults. Every test
-//! guards on [`backend_available`] and skips cleanly when Redis is unreachable,
-//! mirroring the service-availability idiom in
-//! `crates/agent-bus-cli/tests/http_integration_test.rs`.
+//! Prerequisites: the disposable Redis and `PostgreSQL` named by
+//! `AGENT_BUS_TEST_REDIS_URL` / `AGENT_BUS_TEST_DATABASE_URL` (see
+//! `crates/agent-bus-core/tests/support/backend_env.rs`). Every backend test is
+//! `#[ignore]`d; an unset variable or an unreachable backend FAILS it rather
+//! than skipping, and nothing defaults to the live bus.
 //!
 //! Test isolation: each test derives unique agent / resource / group names from
 //! a millisecond-precision timestamp plus an atomic counter, and uses a
@@ -21,7 +21,7 @@
 //! # Running
 //!
 //! ```text
-//! cargo test -p agent-bus-mcp --test mcp_tools_e2e -- --test-threads=1
+//! cargo test -p agent-bus-mcp --test mcp_tools_e2e -- --ignored --test-threads=1
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,6 +31,11 @@ use agent_bus_core::mcp_dispatch::McpToolDispatch;
 use agent_bus_core::redis_bus::connect;
 use agent_bus_core::settings::Settings;
 use serde_json::{Map, Value, json};
+
+#[path = "../../agent-bus-core/tests/support/backend_env.rs"]
+mod backend_env;
+
+use backend_env::{DATABASE_URL_VAR, REDIS_URL_VAR, backend_url};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -53,8 +58,8 @@ fn unique_suffix() -> String {
 }
 
 /// Build [`Settings`] pinned to test-isolated stream/presence keys so we never
-/// pollute production streams. `PostgreSQL` is left at the default so the
-/// durable history path (used by `check_inbox`) is exercised when PG is up.
+/// pollute production streams. Used as-is only by tests that never connect;
+/// backend tests go through [`backend_settings`].
 fn test_settings() -> Settings {
     let mut s = Settings::from_env();
     "agent_bus:test:mcp_e2e:messages".clone_into(&mut s.stream_key);
@@ -63,9 +68,18 @@ fn test_settings() -> Settings {
     s
 }
 
-/// Returns `true` when Redis is reachable, so tests can skip gracefully.
-fn backend_available(settings: &Settings) -> bool {
-    connect(settings).is_ok()
+/// [`test_settings`] pointed at the disposable test backends. Fails (not
+/// skips) when a variable is unset or Redis is unreachable. `PostgreSQL` is
+/// required too, so the durable history path (used by `check_inbox`) is always
+/// exercised rather than silently falling back to Redis-only.
+fn backend_settings() -> Settings {
+    let mut s = test_settings();
+    s.redis_url = backend_url(REDIS_URL_VAR);
+    s.database_url = Some(backend_url(DATABASE_URL_VAR));
+    if let Err(e) = connect(&s) {
+        panic!("Redis unreachable via {REDIS_URL_VAR}: {e}");
+    }
+    s
 }
 
 /// Convenience: dispatch a tool with a JSON object argument.
@@ -124,13 +138,10 @@ fn negotiate_returns_capabilities() {
 // check_inbox — cursor-based durable delivery via the dispatch path
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn check_inbox_delivers_posted_message_then_advances_cursor() {
-    let settings = test_settings();
-    if !backend_available(&settings) {
-        eprintln!("SKIP: Redis not reachable for check_inbox test");
-        return;
-    }
+    let settings = backend_settings();
     let dispatch = McpToolDispatch::new(&settings);
 
     let suffix = unique_suffix();
@@ -199,13 +210,10 @@ fn check_inbox_delivers_posted_message_then_advances_cursor() {
 // Channels: create_channel (group) -> post_to_channel -> read_channel
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn channel_group_create_post_read_round_trip() {
-    let settings = test_settings();
-    if !backend_available(&settings) {
-        eprintln!("SKIP: Redis not reachable for channel group test");
-        return;
-    }
+    let settings = backend_settings();
     let dispatch = McpToolDispatch::new(&settings);
 
     let suffix = unique_suffix().replace('-', "");
@@ -264,13 +272,10 @@ fn channel_group_create_post_read_round_trip() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn channel_direct_post_and_read_round_trip() {
-    let settings = test_settings();
-    if !backend_available(&settings) {
-        eprintln!("SKIP: Redis not reachable for direct channel test");
-        return;
-    }
+    let settings = backend_settings();
     let dispatch = McpToolDispatch::new(&settings);
 
     let suffix = unique_suffix();
@@ -315,13 +320,10 @@ fn channel_direct_post_and_read_round_trip() {
 // Claims: claim_resource -> renew_claim -> release_claim
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn claim_renew_release_round_trip() {
-    let settings = test_settings();
-    if !backend_available(&settings) {
-        eprintln!("SKIP: Redis not reachable for claim lifecycle test");
-        return;
-    }
+    let settings = backend_settings();
     let dispatch = McpToolDispatch::new(&settings);
 
     let suffix = unique_suffix();
@@ -379,13 +381,10 @@ fn claim_renew_release_round_trip() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn claim_resolve_names_winner() {
-    let settings = test_settings();
-    if !backend_available(&settings) {
-        eprintln!("SKIP: Redis not reachable for claim resolve test");
-        return;
-    }
+    let settings = backend_settings();
     let dispatch = McpToolDispatch::new(&settings);
 
     let suffix = unique_suffix();
