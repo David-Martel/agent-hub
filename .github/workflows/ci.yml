@@ -1,8 +1,13 @@
 name: CI
 
 on:
+  # PRs need their own check contexts; before this trigger a PR had none, so
+  # nothing could be required and a merge proved nothing. Push is narrowed to
+  # main so a PR branch is not built twice (the concurrency group is keyed on
+  # github.ref, which differs between the push and the PR merge ref).
+  pull_request:
   push:
-    branches: ["**"]
+    branches: [main]
   workflow_dispatch: {}
 
 concurrency:
@@ -43,23 +48,120 @@ jobs:
     name: Integration Tests
     runs-on: [self-hosted, Linux, X64]
     needs: [test-unit]
-    # Uses local Redis at localhost:6380 and PostgreSQL at localhost:5300
+    timeout-minutes: 30
+    # Backend tests are #[ignore]d and run only here, against disposable Redis,
+    # PostgreSQL and agent-bus-http started by this job. They FAIL when a
+    # backend is unreachable or its variable is unset; the old job probed
+    # localhost:6380 inside the runner container, found nothing, and reported
+    # 60 early-returning tests as passes. The live bus ports (6380/5300/8400)
+    # are refused by tests/support/backend_env.rs even if named explicitly.
+    #
+    # The runner is itself a container using the host's Docker socket, so
+    # `services:` would publish on the HOST's network namespace, not this
+    # job's loopback. Instead the backends join the runner container's own
+    # network namespace (--network container:<self>), which makes them
+    # 127.0.0.1 here -- as Settings::validate requires -- and invisible to the
+    # host's live bus on 6380/5300.
+    env:
+      AGENT_BUS_TEST_REDIS_URL: redis://127.0.0.1:16380/0
+      AGENT_BUS_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:15300/agent_bus_ci
+      AGENT_BUS_TEST_SERVER_URL: http://127.0.0.1:18400
+      # Backend tests counted in this checkout; a lower count means tests were
+      # silently lost (renamed out of #[ignore], filtered, not compiled).
+      MIN_BACKEND_TESTS: "69"
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
-      - name: Probe Redis and PostgreSQL
+      - name: Start disposable Redis and PostgreSQL
         shell: bash
         run: |
-          redis_available=false
-          postgres_available=false
-          redis-cli -u "redis://localhost:6380/0" ping >/dev/null 2>&1 && redis_available=true
-          psql "postgresql://postgres@localhost:5300/redis_backend" -Atqc "SELECT 1;" >/dev/null 2>&1 && postgres_available=true
-          printf '### Integration Preflight\n- Redis available: %s\n- PostgreSQL available: %s\n' \
-            "$redis_available" "$postgres_available" >> "$GITHUB_STEP_SUMMARY"
-      - run: cargo test -p agent-bus --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1
-        env:
-          AGENT_BUS_REDIS_URL: redis://localhost:6380/0
-          AGENT_BUS_DATABASE_URL: postgresql://postgres@localhost:5300/redis_backend
+          set -euo pipefail
+          self="$(cat /etc/hostname)"
+          docker inspect --format '{{.Name}}' "$self"
+          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
+          redis_ctr="ci-redis-$suffix"
+          pg_ctr="ci-pg-$suffix"
+          printf 'CI_REDIS_CTR=%s\nCI_PG_CTR=%s\n' "$redis_ctr" "$pg_ctr" >> "$GITHUB_ENV"
+          docker run -d --name "$redis_ctr" --network "container:$self" \
+            redis:7-alpine redis-server --port 16380 --bind 127.0.0.1 --save "" --appendonly no
+          docker run -d --name "$pg_ctr" --network "container:$self" \
+            -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=agent_bus_ci -e PGPORT=15300 \
+            postgres:16 -c listen_addresses=127.0.0.1
+          for _ in $(seq 1 60); do
+            if docker exec "$redis_ctr" redis-cli -p 16380 ping 2>/dev/null | grep -qx PONG &&
+               docker exec "$pg_ctr" pg_isready -h 127.0.0.1 -p 15300 -q; then
+              echo "Redis :16380 and PostgreSQL :15300 ready"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::disposable Redis/PostgreSQL did not become ready in 60s"
+          docker logs "$redis_ctr" || true
+          docker logs "$pg_ctr" || true
+          exit 1
+      - name: Start disposable agent-bus-http
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p agent-bus-http
+          # Bind an explicit IPv4 loopback: the default host "localhost"
+          # resolves to ::1 first in this container, so the server bound
+          # IPv6-only and never answered 127.0.0.1 (first run of this job).
+          env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_AUTH_TOKEN \
+            AGENT_BUS_SERVER_HOST=127.0.0.1 \
+            AGENT_BUS_CONFIG="$RUNNER_TEMP/agent-bus-ci-config.json" \
+            AGENT_BUS_REDIS_URL="$AGENT_BUS_TEST_REDIS_URL" \
+            AGENT_BUS_DATABASE_URL="$AGENT_BUS_TEST_DATABASE_URL" \
+            nohup "$CARGO_TARGET_DIR/debug/agent-bus-http" --port 18400 \
+            > "$RUNNER_TEMP/agent-bus-http.log" 2>&1 &
+          echo "CI_HTTP_PID=$!" >> "$GITHUB_ENV"
+          for _ in $(seq 1 60); do
+            if curl -fsS "$AGENT_BUS_TEST_SERVER_URL/health" >/dev/null 2>&1; then
+              curl -fsS "$AGENT_BUS_TEST_SERVER_URL/health"
+              echo
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::agent-bus-http did not answer /health in 60s"
+          cat "$RUNNER_TEMP/agent-bus-http.log"
+          exit 1
+      - name: Show listeners in this job's network namespace
+        shell: bash
+        run: |
+          set -euo pipefail
+          listeners="$(docker exec "$CI_REDIS_CTR" netstat -ltn)"
+          printf '%s\n' "$listeners"
+          if printf '%s\n' "$listeners" | grep -Eq '[:.](6380|5300|8400)[[:space:]]'; then
+            echo "::error::a live-bus port is listening in the test namespace"
+            exit 1
+          fi
+      - name: Backend tests (ignored tests only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --workspace --tests --no-fail-fast -- --ignored --test-threads=1 \
+            2>&1 | tee "$RUNNER_TEMP/backend-tests.log"
+          passed="$(grep -E '^test result:' "$RUNNER_TEMP/backend-tests.log" |
+            awk '{s += $4} END {print s + 0}')"
+          printf '### Backend tests\n- passed: %s (floor %s)\n' "$passed" "$MIN_BACKEND_TESTS" \
+            >> "$GITHUB_STEP_SUMMARY"
+          if (( passed < MIN_BACKEND_TESTS )); then
+            echo "::error::only $passed backend tests passed; expected at least $MIN_BACKEND_TESTS"
+            exit 1
+          fi
+      - name: Stop disposable backends
+        if: always()
+        shell: bash
+        run: |
+          if [[ -n "${CI_HTTP_PID:-}" ]]; then
+            kill "$CI_HTTP_PID" 2>/dev/null || true
+            tail -n 50 "$RUNNER_TEMP/agent-bus-http.log" 2>/dev/null || true
+          fi
+          for ctr in "${CI_REDIS_CTR:-}" "${CI_PG_CTR:-}"; do
+            [[ -n "$ctr" ]] && docker rm -f "$ctr" >/dev/null 2>&1 || true
+          done
+
   build-release:
     name: Release Build (${{ matrix.name }})
     strategy:
@@ -162,6 +264,9 @@ jobs:
       - shell: pwsh
         run: ./scripts/ci/setup-rust.ps1
       - run: cargo fmt --all --check
+      # Same strictness as the Linux clippy job: cfg(windows) code is only
+      # linted here, so a warning in it must fail this job.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --lib --bins -- --test-threads=4
       - run: cargo build --release --workspace --bins
       - name: History catalog migration contract

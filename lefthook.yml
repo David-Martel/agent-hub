@@ -4,41 +4,58 @@
 skip_output:
   - meta
 
+# No `root:` on these commands. lefthook 2 treats `root: "."` as a path
+# filter that matches no staged/pushed file ("no files for inspection"), so
+# every command carrying it was skipped on every commit and push.
+
 pre-commit:
   parallel: true
   commands:
     rust-fmt:
-      root: "."
       glob: "*.rs"
       run: cargo fmt -- --check
 
     rust-clippy:
-      root: "."
       glob: "*.rs"
       env:
         RUSTC_WRAPPER: ""
       run: cargo clippy --all-targets --quiet -- -D warnings
 
-    ast-grep-rust:
-      root: "."
-      glob: "*.rs"
-      run: sg scan --config ~/.claude/sgconfig.yml {staged_files} 2>/dev/null; exit 0
-
 pre-push:
   parallel: true
   commands:
+    # Backend tests are #[ignore]d (CI's test-integration job runs them).
+    # Unit tests that call Settings::from_env() would otherwise reach the
+    # live bus on this host (6380/5300), so pin both to a closed port.
     rust-test:
-      root: "."
       glob: "*.rs"
       env:
         RUSTC_WRAPPER: ""
-      run: cargo test --quiet
+        AGENT_BUS_REDIS_URL: redis://127.0.0.1:1/0
+        AGENT_BUS_DATABASE_URL: postgresql://postgres@127.0.0.1:1/none
+      run: env -u AGENT_BUS_SERVER_URL cargo test --workspace --quiet
 
+    # Blocking. A missing cargo-audit is a failure, not a skip: a gate that
+    # cannot run must say so rather than pass.
     rust-audit:
-      root: "."
-      run: cargo audit --quiet 2>/dev/null; exit 0
+      run: |
+        command -v cargo-audit >/dev/null 2>&1 || {
+          echo "ERROR: cargo-audit is not installed (cargo install cargo-audit --locked)" >&2
+          exit 1
+        }
+        cargo audit
 
 commit-msg:
   commands:
+    # Advisory on purpose: a non-conventional subject only warns. But the
+    # check itself failing (unreadable message file, grep error) is an error:
+    # grep exits 1 for "no match" and >1 for "could not run".
     conventional:
-      run: "grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)' {1} || echo 'WARNING: Consider conventional commit format'; exit 0"
+      run: |
+        rc=0
+        grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)' "{1}" || rc=$?
+        case "$rc" in
+          0) ;;
+          1) echo "WARNING: Consider conventional commit format" ;;
+          *) echo "ERROR: conventional-commit check could not run (grep exit $rc)" >&2; exit "$rc" ;;
+        esac

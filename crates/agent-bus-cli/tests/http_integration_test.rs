@@ -1,7 +1,10 @@
 //! End-to-end HTTP integration tests against the running agent-bus service.
 //!
-//! Prerequisites: the agent-bus HTTP server must be running at `localhost:8400`.
-//! All tests skip gracefully when the server is not reachable.
+//! Prerequisites: an agent-bus HTTP server at `AGENT_BUS_TEST_SERVER_URL` (see
+//! `crates/agent-bus-core/tests/support/backend_env.rs`). Every server test is
+//! `#[ignore]`d; an unset variable or an unreachable server FAILS it. Some tests
+//! pause and resume the service via `/admin/service/control`, so this must be a
+//! disposable server -- the live-port guard refuses the fleet hub's :8400.
 //!
 //! Tests are isolated by using unique agent/resource names derived from
 //! `std::time::SystemTime` so concurrent runs do not interfere.
@@ -13,7 +16,7 @@
 //! sufficient for sequential runs but can collide under aggressive parallelism):
 //!
 //! ```text
-//! cargo test --test http_integration_test -- --test-threads=1
+//! cargo test --test http_integration_test -- --ignored --test-threads=1
 //! ```
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -26,7 +29,12 @@ use serde_json::{Value, json};
 // Helpers
 // ---------------------------------------------------------------------------
 
-const BASE_URL: &str = "http://localhost:8400";
+#[path = "../../agent-bus-core/tests/support/backend_env.rs"]
+mod backend_env;
+
+use backend_env::{SERVER_URL_VAR, TestServerUrl};
+
+const BASE_URL: TestServerUrl = TestServerUrl;
 
 /// Returns a millisecond-precision timestamp string suitable for unique IDs.
 fn unique_suffix() -> u64 {
@@ -67,22 +75,33 @@ fn blocking_http_client() -> reqwest::blocking::Client {
         .expect("failed to build blocking HTTP test client")
 }
 
-/// Returns a reqwest client and `true` when the service is reachable.
-///
-/// All test bodies should call this at the top and return early on `false`.
-async fn service_available(client: &reqwest::Client) -> bool {
-    client
+/// Fail (not skip) when the HTTP server does not answer `/health`.
+async fn require_service(client: &reqwest::Client) {
+    let resp = client
         .get(format!("{BASE_URL}/health"))
         .send()
         .await
-        .is_ok()
+        .unwrap_or_else(|e| panic!("agent-bus HTTP unreachable via {SERVER_URL_VAR}: {e}"));
+    assert!(
+        resp.status().is_success(),
+        "agent-bus HTTP /health returned {}",
+        resp.status()
+    );
 }
 
-async fn admin_control_available(client: &reqwest::Client) -> bool {
-    match client.get(format!("{BASE_URL}/admin/service")).send().await {
-        Ok(resp) => resp.status() != StatusCode::NOT_FOUND,
-        Err(_) => false,
-    }
+/// Fail (not skip) when the server under test lacks `/admin/service`: the
+/// server is built from this checkout, so a missing route is a regression.
+async fn require_admin_control(client: &reqwest::Client) {
+    let resp = client
+        .get(format!("{BASE_URL}/admin/service"))
+        .send()
+        .await
+        .expect("GET /admin/service failed");
+    assert_ne!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "server under test does not expose /admin/service"
+    );
 }
 
 struct MaintenanceResumeGuard {
@@ -122,13 +141,11 @@ impl Drop for MaintenanceResumeGuard {
 // 1. Health endpoint
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .get(format!("{BASE_URL}/health"))
@@ -145,13 +162,11 @@ async fn health_endpoint_returns_ok() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn health_toon_encoding_returns_text() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .get(format!("{BASE_URL}/health?encoding=toon"))
@@ -175,13 +190,11 @@ async fn health_toon_encoding_returns_text() {
     assert!(text.contains("r="), "TOON health missing r= field: {text}");
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn health_json_contains_pool_metrics() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .get(format!("{BASE_URL}/health"))
@@ -202,17 +215,12 @@ async fn health_json_contains_pool_metrics() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn service_control_pause_blocks_writes_until_resume() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
-    if !admin_control_available(&client).await {
-        eprintln!("SKIP: running HTTP service at {BASE_URL} does not expose /admin/service yet");
-        return;
-    }
+    require_service(&client).await;
+    require_admin_control(&client).await;
 
     let mut resume_guard = MaintenanceResumeGuard::inactive();
     let pause_resp = client
@@ -279,13 +287,11 @@ async fn service_control_pause_blocks_writes_until_resume() {
 // 2. Message send/read round-trip
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn post_message_returns_id() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resp = client
@@ -308,13 +314,11 @@ async fn post_message_returns_id() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn direct_message_creates_replayable_notification() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("http-tester-{ts}");
@@ -386,13 +390,11 @@ async fn direct_message_creates_replayable_notification() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn knock_endpoint_creates_knock_notification() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("knock-sender-{ts}");
@@ -443,13 +445,11 @@ async fn knock_endpoint_creates_knock_notification() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn claim_renew_release_round_trip_via_http() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resource = format!("http-lease-{ts}");
@@ -504,13 +504,11 @@ async fn claim_renew_release_round_trip_via_http() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn compact_context_respects_repo_tag_and_thread_filters() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("compact-recv-{ts}");
@@ -577,13 +575,11 @@ async fn compact_context_respects_repo_tag_and_thread_filters() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn post_message_missing_sender_returns_400() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .post(format!("{BASE_URL}/messages"))
@@ -610,13 +606,11 @@ async fn post_message_missing_sender_returns_400() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn post_message_empty_sender_returns_400() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .post(format!("{BASE_URL}/messages"))
@@ -642,13 +636,11 @@ async fn post_message_empty_sender_returns_400() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn post_message_empty_body_returns_400() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .post(format!("{BASE_URL}/messages"))
@@ -669,13 +661,11 @@ async fn post_message_empty_body_returns_400() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn get_messages_returns_array() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .get(format!("{BASE_URL}/messages"))
@@ -691,13 +681,11 @@ async fn get_messages_returns_array() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn get_messages_toon_encoding_returns_text() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     // First send a message so we have something to read back.
     let ts = unique_suffix();
@@ -748,13 +736,11 @@ async fn get_messages_toon_encoding_returns_text() {
 // 3. TOON encoding E2E
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn toon_format_matches_spec() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let from_agent = format!("toon-sender-{ts}");
@@ -806,13 +792,11 @@ async fn toon_format_matches_spec() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn read_filters_apply_to_topic_repo_session_tag_and_thread_id() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("filter-sender-{ts}");
@@ -887,13 +871,11 @@ async fn read_filters_apply_to_topic_repo_session_tag_and_thread_id() {
     assert_eq!(wrong_topic_messages, json!([]));
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn toon_body_truncated_at_120_chars() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("toon-trunc-{ts}");
@@ -921,9 +903,9 @@ async fn toon_body_truncated_at_120_chars() {
         .expect("read failed");
 
     let text = resp.text().await.expect("response not text");
-    if text.is_empty() {
-        return; // No messages to check — timing window, not a failure.
-    }
+    // The message was written synchronously above; an empty read is a failure,
+    // not a timing window to pass over.
+    assert!(!text.is_empty(), "sent message was not readable back");
 
     for line in text.lines() {
         // Extract the body portion (everything after the last '] ' or after '#topic ')
@@ -948,13 +930,11 @@ async fn toon_body_truncated_at_120_chars() {
     }
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn toon_shows_tags_in_brackets() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("toon-tags-{ts}");
@@ -981,9 +961,9 @@ async fn toon_shows_tags_in_brackets() {
         .expect("read failed");
 
     let text = resp.text().await.expect("response not text");
-    if text.is_empty() {
-        return;
-    }
+    // The message was written synchronously above; an empty read is a failure,
+    // not a timing window to pass over.
+    assert!(!text.is_empty(), "sent message was not readable back");
 
     let line = text
         .lines()
@@ -999,13 +979,11 @@ async fn toon_shows_tags_in_brackets() {
 // 4. LZ4 compression E2E
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn large_body_is_compressed_and_decompressed() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("lz4-test-{ts}");
@@ -1070,13 +1048,11 @@ async fn large_body_is_compressed_and_decompressed() {
     // is that the body round-trips correctly.
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn small_body_not_compressed() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("no-lz4-{ts}");
@@ -1111,13 +1087,11 @@ async fn small_body_not_compressed() {
 // 5. Batch endpoint tests
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn batch_send_three_messages_returns_three_ids() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resp = client
@@ -1146,13 +1120,11 @@ async fn batch_send_three_messages_returns_three_ids() {
     }
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn batch_send_empty_array_returns_400() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .post(format!("{BASE_URL}/messages/batch"))
@@ -1168,13 +1140,11 @@ async fn batch_send_empty_array_returns_400() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn batch_send_over_100_messages_returns_400() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let messages: Vec<Value> = (0..=100)
         .map(|i| {
@@ -1210,13 +1180,11 @@ async fn batch_send_over_100_messages_returns_400() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn batch_ack_valid_ids_returns_ok() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     // Send two messages first to get real IDs.
     let ts = unique_suffix();
@@ -1261,13 +1229,11 @@ async fn batch_ack_valid_ids_returns_ok() {
 // 6. Channel endpoint tests
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn direct_channel_send_and_read() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("direct-sender-{ts}");
@@ -1318,13 +1284,11 @@ async fn direct_channel_send_and_read() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn escalate_channel_sets_high_priority() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resp = client
@@ -1367,13 +1331,11 @@ async fn escalate_channel_sets_high_priority() {
 /// This test registers a presence record, posts an escalation, then checks the
 /// `to` field of the returned message. It is self-contained — the presence
 /// record expires on its own TTL.
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn escalate_routes_to_orchestrator_when_present() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let orch_agent = format!("orchestrator-{ts}");
@@ -1434,13 +1396,11 @@ async fn escalate_routes_to_orchestrator_when_present() {
 
 /// Verify that batch send returns 400 (not 422) when the messages array field
 /// is missing from the request body. This covers Deviation 1 for the batch endpoint.
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn batch_send_missing_messages_field_returns_400() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     // Send a body that is missing the required `messages` field entirely.
     let resp = client
@@ -1465,13 +1425,11 @@ async fn batch_send_missing_messages_field_returns_400() {
 
 /// Verify that batch ack returns 400 (not 422) when the required `agent` field
 /// is missing. This covers Deviation 1 for the batch-ack endpoint.
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn batch_ack_missing_agent_field_returns_400() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     // Omit the required `agent` field.
     let resp = client
@@ -1494,13 +1452,11 @@ async fn batch_ack_missing_agent_field_returns_400() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn arbitrate_first_claim_granted() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resource = format!("test-resource-{ts}");
@@ -1531,13 +1487,11 @@ async fn arbitrate_first_claim_granted() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn arbitrate_second_claim_is_contested() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resource = format!("contested-resource-{ts}");
@@ -1572,13 +1526,11 @@ async fn arbitrate_second_claim_is_contested() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn arbitrate_get_state_shows_claims() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resource = format!("state-check-resource-{ts}");
@@ -1607,13 +1559,11 @@ async fn arbitrate_get_state_shows_claims() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn arbitrate_resolve_sets_winner() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resource = format!("resolve-resource-{ts}");
@@ -1668,13 +1618,11 @@ async fn arbitrate_resolve_sets_winner() {
 // 7. Presence endpoint tests
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn put_presence_returns_200() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("presence-test-{ts}");
@@ -1704,13 +1652,11 @@ async fn put_presence_returns_200() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn get_presence_returns_array() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .get(format!("{BASE_URL}/presence"))
@@ -1726,13 +1672,11 @@ async fn get_presence_returns_array() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn get_presence_toon_encoding() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     // First register a presence so we have something to show.
     let ts = unique_suffix();
@@ -1771,13 +1715,11 @@ async fn get_presence_toon_encoding() {
 // 8. Required-ACK (pending-acks) tests
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn pending_ack_message_appears_in_pending_list() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("ack-sender-{ts}");
@@ -1824,13 +1766,11 @@ async fn pending_ack_message_appears_in_pending_list() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn acknowledged_message_removed_from_pending() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("ack-cycle-sender-{ts}");
@@ -1882,13 +1822,11 @@ async fn acknowledged_message_removed_from_pending() {
 // 9. Input validation edge cases
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn post_message_invalid_priority_returns_400() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .post(format!("{BASE_URL}/messages"))
@@ -1910,13 +1848,11 @@ async fn post_message_invalid_priority_returns_400() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn post_message_missing_recipient_returns_400() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .post(format!("{BASE_URL}/messages"))
@@ -1938,13 +1874,11 @@ async fn post_message_missing_recipient_returns_400() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn batch_send_message_with_bad_priority_returns_400() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .post(format!("{BASE_URL}/messages/batch"))
@@ -1972,17 +1906,14 @@ async fn batch_send_message_with_bad_priority_returns_400() {
 // 10. MCP Streamable HTTP transport (basic smoke tests)
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn mcp_get_returns_tool_list() {
     // The long-running HTTP service exposes MCP Streamable HTTP at /mcp.
     let client = http_client();
     let mcp_url = format!("{BASE_URL}/mcp");
 
-    let ok = client.get(&mcp_url).send().await.is_ok();
-    if !ok {
-        eprintln!("SKIP: agent-bus HTTP MCP endpoint not running at {mcp_url}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client.get(&mcp_url).send().await.expect("GET /mcp failed");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -2002,13 +1933,11 @@ async fn mcp_get_returns_tool_list() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn mcp_post_initialize_round_trip() {
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .post(format!("{BASE_URL}/mcp"))
@@ -2044,12 +1973,11 @@ async fn mcp_post_initialize_round_trip() {
 // 9. Dashboard
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn dashboard_returns_html() {
     let client = http_client();
-    if !service_available(&client).await {
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .get(format!("{BASE_URL}/dashboard"))
@@ -2067,12 +1995,11 @@ async fn dashboard_returns_html() {
     assert!(text.contains("<!DOCTYPE html>"));
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn dashboard_data_returns_json() {
     let client = http_client();
-    if !service_available(&client).await {
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .get(format!("{BASE_URL}/dashboard/data"))
@@ -2088,12 +2015,11 @@ async fn dashboard_data_returns_json() {
 // 10. Tasks
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn tasks_crud_flow() {
     let client = http_client();
-    if !service_available(&client).await {
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("task-agent-{ts}");
@@ -2158,12 +2084,11 @@ async fn tasks_crud_flow() {
 // 11. Token Count
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn token_count_estimates_correctly() {
     let client = http_client();
-    if !service_available(&client).await {
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
         .post(format!("{BASE_URL}/token-count"))
@@ -2187,12 +2112,11 @@ async fn token_count_estimates_correctly() {
 // 12. Message inbox isolation (multi-repo sessions)
 // ---------------------------------------------------------------------------
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_SERVER_URL (see tests/support/backend_env.rs)"]
 #[tokio::test]
 async fn read_with_repo_session_scoping_prevents_inbox_bleed() {
     let client = http_client();
-    if !service_available(&client).await {
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let recipient = format!("isolated-recv-{ts}");

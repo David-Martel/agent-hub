@@ -8,10 +8,10 @@
 //! [`list_messages_postgres_with_filters`], asserting every optional
 //! `jsonb`-routed field survives the round trip intact.
 //!
-//! Prerequisites: a live `PostgreSQL` on `:5300` (the agent-bus default DSN).
-//! The test guards on [`pg_available`] and skips cleanly when PG is
-//! unreachable, mirroring the service-availability idiom used by the CLI/HTTP
-//! integration suites.
+//! Prerequisites: the disposable `PostgreSQL` named by
+//! `AGENT_BUS_TEST_DATABASE_URL` (see `tests/support/backend_env.rs`). Both
+//! tests are `#[ignore]`d; an unset variable or an unreachable database FAILS
+//! them rather than skipping, and nothing defaults to the live bus's `:5300`.
 //!
 //! Isolation: each row uses a fresh UUID id and a unique `repo:` tag derived
 //! from a timestamp + counter, so the read-back query targets only this test's
@@ -22,7 +22,7 @@
 //! # Running
 //!
 //! ```text
-//! cargo test -p agent-bus-core --test postgres_jsonb_roundtrip -- --test-threads=1
+//! cargo test -p agent-bus-core --test postgres_jsonb_roundtrip -- --ignored --test-threads=1
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,6 +35,11 @@ use agent_bus_core::postgres_store::{
 use agent_bus_core::settings::Settings;
 use serde_json::json;
 use smallvec::smallvec;
+
+#[path = "support/backend_env.rs"]
+mod backend_env;
+
+use backend_env::{DATABASE_URL_VAR, backend_url};
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -62,20 +67,22 @@ fn unique_suffix() -> String {
     format!("{ms}-{n}")
 }
 
-/// Returns `true` when a real `PostgreSQL` connection can be opened. A `None`
-/// result means PG is not configured; an `Err` means it is configured but
-/// unreachable. Either case skips the test gracefully.
-fn pg_available(settings: &Settings) -> bool {
-    matches!(connect_postgres(settings), Ok(Some(_)))
+/// [`Settings`] pointed at the disposable test database. Fails (not skips)
+/// when the variable is unset or the database cannot be opened.
+fn pg_settings() -> Settings {
+    let mut settings = Settings::from_env();
+    settings.database_url = Some(backend_url(DATABASE_URL_VAR));
+    match connect_postgres(&settings) {
+        Ok(Some(_)) => settings,
+        Ok(None) => panic!("PostgreSQL not configured despite {DATABASE_URL_VAR} being set"),
+        Err(e) => panic!("PostgreSQL unreachable via {DATABASE_URL_VAR}: {e}"),
+    }
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn message_metadata_jsonb_survives_pg_round_trip() {
-    let settings = Settings::from_env();
-    if !pg_available(&settings) {
-        eprintln!("SKIP: PostgreSQL not reachable for jsonb round-trip test");
-        return;
-    }
+    let settings = pg_settings();
 
     let suffix = unique_suffix();
     let repo_tag = format!("repo:jsonb-rt-{suffix}");
@@ -171,13 +178,10 @@ fn message_metadata_jsonb_survives_pg_round_trip() {
     );
 }
 
+#[ignore = "backend test: needs AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
 #[test]
 fn empty_metadata_object_round_trips_as_object() {
-    let settings = Settings::from_env();
-    if !pg_available(&settings) {
-        eprintln!("SKIP: PostgreSQL not reachable for empty-metadata round-trip test");
-        return;
-    }
+    let settings = pg_settings();
 
     let suffix = unique_suffix();
     let repo_tag = format!("repo:jsonb-empty-{suffix}");

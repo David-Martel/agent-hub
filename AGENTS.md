@@ -35,7 +35,7 @@ Code-grounded status snapshot:
 - `cargo build --release` in `rust-cli/`: build the shipping CLI binary.
 - `cargo test --workspace --lib --bins` at repo root: fast code-grounded check across the workspace without requiring live Redis/HTTP services.
 - `cargo test --bin agent-bus` in `rust-cli/`: run Rust unit tests.
-- `cargo test --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1` in `rust-cli/`: run integration tests against local Redis and PostgreSQL.
+- `cargo test --workspace --tests -- --ignored --test-threads=1` at repo root: run the `#[ignore]`d backend tests. They require `AGENT_BUS_TEST_REDIS_URL`, `AGENT_BUS_TEST_DATABASE_URL` and `AGENT_BUS_TEST_SERVER_URL` pointing at DISPOSABLE backends and fail (never skip) when those are unset or unreachable; the live bus ports 6380/5300/8400 are refused. CI's `test-integration` job shows how to start them.
 - `cargo fmt --all --check` and `cargo clippy --all-targets -- -D warnings` in `rust-cli/`: match CI formatting and lint gates.
 - `pwsh -NoLogo -NoProfile -File build.ps1 -FastRelease`: repo-root fast iteration build using the shared target-dir, linker, and `sccache` setup.
 

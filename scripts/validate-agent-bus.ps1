@@ -121,8 +121,8 @@ try {
 
         Invoke-AgentBusCargoTest `
             -Label "cargo test integration (serial)" `
-            -CargoArgs @("--manifest-path", $workspaceManifest, "--test", "integration_test", "--test", "http_integration_test", "--test", "channel_integration_test", "--", "--test-threads=1") `
-            -NextestArgs @("run", "--manifest-path", $workspaceManifest, "--target-dir", $resolvedTargetDir, "--test", "integration_test", "--test", "http_integration_test", "--test", "channel_integration_test", "-j", "1") `
+            -CargoArgs @("--manifest-path", $workspaceManifest, "--test", "integration_test", "--test", "http_integration_test", "--test", "channel_integration_test", "--", "--ignored", "--test-threads=1") `
+            -NextestArgs @("run", "--manifest-path", $workspaceManifest, "--target-dir", $resolvedTargetDir, "--test", "integration_test", "--test", "http_integration_test", "--test", "channel_integration_test", "--run-ignored", "only", "-j", "1") `
             -AllowNextest -UseNextest $useNextest
     }
 
