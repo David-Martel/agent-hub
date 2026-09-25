@@ -93,7 +93,7 @@ jobs:
       AGENT_BUS_TEST_SERVER_URL: http://127.0.0.1:18400
       # Backend tests counted in this checkout; a lower count means tests were
       # silently lost (renamed out of #[ignore], filtered, not compiled).
-      MIN_BACKEND_TESTS: "69"
+      MIN_BACKEND_TESTS: "73"
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh

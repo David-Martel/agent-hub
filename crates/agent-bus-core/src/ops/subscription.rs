@@ -118,8 +118,9 @@ pub fn list_subscriptions(settings: &Settings, agent: &str) -> Result<Vec<Subscr
 mod tests {
     use super::*;
 
+    /// Backends unreachable by construction: validation runs, I/O fails.
     fn test_settings() -> Settings {
-        Settings::from_env()
+        crate::test_support::offline_settings()
     }
 
     // -- subscribe validation -------------------------------------------------
@@ -173,14 +174,14 @@ mod tests {
                 ttl_seconds: None,
             };
             let result = subscribe(&settings, &req);
-            // Will fail on Redis connect, but should NOT fail on validation.
-            if let Err(ref err) = result {
-                let msg = err.to_string();
-                assert!(
-                    !msg.contains("invalid priority_min"),
-                    "priority_min '{pmin}' should be accepted but got: {msg}"
-                );
-            }
+            // Backends are offline: must fail at connect, not on validation.
+            let msg = result
+                .expect_err("offline backend: subscribe must fail at connect")
+                .to_string();
+            assert!(
+                !msg.contains("invalid priority_min"),
+                "priority_min '{pmin}' should be accepted but got: {msg}"
+            );
         }
     }
 

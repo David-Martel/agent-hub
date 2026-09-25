@@ -433,6 +433,17 @@ fn url_host_span(url: &str) -> Option<(std::ops::Range<usize>, &str)> {
     Some((host_start..host_end, &url[host_start..host_end]))
 }
 
+/// In this crate's unit tests, panic before connecting to a live agent-bus
+/// port (see `test_support`). A no-op in every other build.
+#[cfg(test)]
+pub(crate) fn refuse_live_bus_in_unit_tests(url: &str) {
+    crate::test_support::refuse_live_bus(url);
+}
+
+#[cfg(not(test))]
+#[inline]
+pub(crate) const fn refuse_live_bus_in_unit_tests(_url: &str) {}
+
 /// Return deterministic loopback candidates for backend URLs using `localhost`.
 ///
 /// Windows commonly resolves `localhost` to `::1` before `127.0.0.1`, while

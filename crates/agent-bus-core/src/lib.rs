@@ -20,6 +20,9 @@ pub mod settings;
 pub mod token;
 pub mod validation;
 
+#[cfg(test)]
+mod test_support;
+
 use models::STARTUP_PRESENCE_TTL;
 use ops::{PostMessageRequest, PresenceRequest, post_message, set_presence};
 use postgres_store::{PgWriter, probe_postgres};

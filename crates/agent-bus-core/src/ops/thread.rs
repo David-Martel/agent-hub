@@ -137,8 +137,9 @@ pub fn close_thread(settings: &Settings, thread_id: &str) -> Result<Thread> {
 mod tests {
     use super::*;
 
+    /// Backends unreachable by construction: validation runs, I/O fails.
     fn test_settings() -> Settings {
-        Settings::from_env()
+        crate::test_support::offline_settings()
     }
 
     #[test]
