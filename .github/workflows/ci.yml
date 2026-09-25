@@ -138,8 +138,6 @@ jobs:
           fi
       - name: Backend tests (ignored tests only)
         shell: bash
-        env:
-          AGENT_BUS_TEST_REDIS_URL: redis://127.0.0.1:16381/0
         run: |
           set -euo pipefail
           cargo test --workspace --tests --no-fail-fast -- --ignored --test-threads=1 \
