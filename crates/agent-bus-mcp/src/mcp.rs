@@ -62,6 +62,32 @@ impl AgentBusMcpServer {
     fn ok_content(value: &serde_json::Value) -> CallToolResult {
         CallToolResult::success(vec![Self::json_to_text(value)])
     }
+
+    /// The `call_tool` handler body: validate, then dispatch synchronously.
+    fn call_tool_now(
+        &self,
+        request: &CallToolRequestParams,
+    ) -> Result<CallToolResponse, rmcp::ErrorData> {
+        if !Self::is_known_tool(&request.name) {
+            return Err(rmcp::ErrorData::invalid_params("tool not found", None));
+        }
+
+        let args = request.arguments.as_ref();
+        let empty = serde_json::Map::new();
+        let args_map = args.unwrap_or(&empty);
+        if let Err(error) = validate_tool_arguments(&request.name, args_map) {
+            return Err(rmcp::ErrorData::invalid_params(error.to_string(), None));
+        }
+
+        let dispatch = McpToolDispatch::new(&self.settings);
+        match dispatch.dispatch_tool(&request.name, args_map) {
+            Ok(ref value) => Ok(Self::ok_content(value).into()),
+            Err(agent_bus_core::error::AgentBusError::InvalidParams(message)) => {
+                Err(rmcp::ErrorData::invalid_params(message, None))
+            }
+            Err(e) => Ok(Self::err_content(&e).into()),
+        }
+    }
 }
 
 impl ServerHandler for AgentBusMcpServer {
@@ -85,38 +111,23 @@ impl ServerHandler for AgentBusMcpServer {
         )
     }
 
-    async fn list_tools(
+    // Both handlers are synchronous (tool dispatch does blocking backend I/O),
+    // so they return an already-completed future, as rmcp's own defaults do,
+    // rather than an `async fn` with no `.await` (clippy::unused_async_trait_impl).
+    fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<ListToolsResult, rmcp::ErrorData> {
-        Ok(ListToolsResult::with_all_items(Self::tool_list()))
+    ) -> impl Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_ {
+        std::future::ready(Ok(ListToolsResult::with_all_items(Self::tool_list())))
     }
 
-    async fn call_tool(
+    fn call_tool(
         &self,
         request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<CallToolResponse, rmcp::ErrorData> {
-        if !Self::is_known_tool(&request.name) {
-            return Err(rmcp::ErrorData::invalid_params("tool not found", None));
-        }
-
-        let args = request.arguments.as_ref();
-        let empty = serde_json::Map::new();
-        let args_map = args.unwrap_or(&empty);
-        if let Err(error) = validate_tool_arguments(&request.name, args_map) {
-            return Err(rmcp::ErrorData::invalid_params(error.to_string(), None));
-        }
-
-        let dispatch = McpToolDispatch::new(&self.settings);
-        match dispatch.dispatch_tool(&request.name, args_map) {
-            Ok(ref value) => Ok(Self::ok_content(value).into()),
-            Err(agent_bus_core::error::AgentBusError::InvalidParams(message)) => {
-                Err(rmcp::ErrorData::invalid_params(message, None))
-            }
-            Err(e) => Ok(Self::err_content(&e).into()),
-        }
+    ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_ {
+        std::future::ready(self.call_tool_now(&request))
     }
 }
 
