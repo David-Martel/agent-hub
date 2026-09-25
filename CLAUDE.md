@@ -157,7 +157,7 @@ Use `--schema finding|status|benchmark` on `send` to validate message structure:
 | `AGENT_BUS_CONFIG` | `~/.config/agent-bus/config.json` | Config file path |
 | `AGENT_BUS_REDIS_URL` | `redis://localhost:6380/0` | config.json |
 | `AGENT_BUS_DATABASE_URL` | `postgresql://postgres@localhost:5300/redis_backend` | config.json |
-| `AGENT_BUS_SERVER_HOST` | `localhost` | config.json |
+| `AGENT_BUS_SERVER_HOST` | `localhost` (binds `127.0.0.1`; set `::1` for IPv6) | config.json |
 | `AGENT_BUS_STREAM_MAXLEN` | `100000` | config.json |
 | `AGENT_BUS_SESSION_ID` | (none) | env only — auto-tags messages with `session:<id>` |
 | `RUST_LOG` | `error` | env only |

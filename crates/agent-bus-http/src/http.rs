@@ -96,6 +96,23 @@ fn open_pubsub_connection(redis_url: &str) -> Option<redis::Connection> {
     None
 }
 
+/// The host the listener actually binds for a configured `server_host`.
+///
+/// `localhost` binds `127.0.0.1` explicitly. Binding the name itself takes the
+/// resolver's FIRST address, and where `localhost` resolves to `::1` first
+/// (Windows, many containers) the server listened on IPv6 only, so every
+/// client dialing `127.0.0.1` was refused. Clients dialing `localhost` still
+/// connect: HTTP clients try each resolved address in turn. Any other value
+/// (an IP literal, `::1`, `0.0.0.0`, a hostname) is bound as given.
+fn effective_bind_host(host: &str) -> &str {
+    let host = host.trim();
+    if host.eq_ignore_ascii_case("localhost") {
+        "127.0.0.1"
+    } else {
+        host
+    }
+}
+
 fn format_socket_addr(host: &str, port: u16) -> String {
     let host = host.trim();
     if host.contains(':') && !host.starts_with('[') {
@@ -3734,7 +3751,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         app
     };
 
-    let addr = format_socket_addr(&bind_host, port);
+    let addr = format_socket_addr(effective_bind_host(&bind_host), port);
     tracing::info!("HTTP server listening on {addr}");
     eprintln!("agent-bus HTTP server listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -3768,6 +3785,20 @@ mod tests {
         assert_eq!(format_socket_addr("::1", 8400), "[::1]:8400");
         assert_eq!(format_socket_addr("::", 8400), "[::]:8400");
         assert_eq!(format_socket_addr("[::1]", 8400), "[::1]:8400");
+    }
+
+    #[test]
+    fn localhost_binds_ipv4_loopback_explicitly() {
+        assert_eq!(effective_bind_host("localhost"), "127.0.0.1");
+        assert_eq!(effective_bind_host(" LocalHost "), "127.0.0.1");
+        assert_eq!(
+            format_socket_addr(effective_bind_host("localhost"), 8400),
+            "127.0.0.1:8400"
+        );
+        // Explicit choices are bound exactly as configured.
+        assert_eq!(effective_bind_host("::1"), "::1");
+        assert_eq!(effective_bind_host("0.0.0.0"), "0.0.0.0");
+        assert_eq!(effective_bind_host("127.0.0.1"), "127.0.0.1");
     }
 
     #[test]
