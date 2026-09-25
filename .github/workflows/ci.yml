@@ -28,6 +28,31 @@ jobs:
       - run: bash scripts/ci/setup-rust.sh
       - run: cargo fmt --all --check
 
+  lefthook-gates:
+    name: Lefthook Gates Run
+    runs-on: [self-hosted, Linux, X64]
+    # Fails if any lefthook command is skipped on a commit/push that changed
+    # files it matches -- the "no files for inspection" dead gate that kept
+    # fmt/clippy/test/audit from ever running here under `root: "."`.
+    env:
+      LEFTHOOK_VERSION: "2.1.9"
+      LEFTHOOK_SHA256: e938f34bd05bafe1155888879a045ef4ee8cf5b4a56c9e5e9b0c2649f295636e
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install pinned lefthook
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="lefthook_${LEFTHOOK_VERSION}_Linux_x86_64.gz"
+          curl -fsSLo "$RUNNER_TEMP/$archive" \
+            "https://github.com/evilmartians/lefthook/releases/download/v${LEFTHOOK_VERSION}/$archive"
+          echo "$LEFTHOOK_SHA256  $RUNNER_TEMP/$archive" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          gzip -dc "$RUNNER_TEMP/$archive" > "$RUNNER_TEMP/bin/lefthook"
+          chmod +x "$RUNNER_TEMP/bin/lefthook"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - run: bash scripts/ci/check-lefthook-gates.sh
+
   clippy:
     name: Clippy Lint
     runs-on: [self-hosted, Linux, X64]
