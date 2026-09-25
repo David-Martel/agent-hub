@@ -41,6 +41,10 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 if command -v rustup >/dev/null 2>&1; then
+  # Install the toolchain pinned by rust-toolchain.toml explicitly rather than relying on
+  # rustup's implicit auto-install, which rustup 1.28.0 turned off and 1.28.1 made
+  # configurable. With no argument, `toolchain install` installs the active (pinned) one.
+  rustup toolchain install --profile minimal --no-self-update
   rustup component add rustfmt clippy
 fi
 
