@@ -17,6 +17,13 @@ $sccacheDir = Join-Path $cacheRoot "sccache"
 
 New-Item -ItemType Directory -Force -Path $cargoTarget, $sccacheDir | Out-Null
 
+# Install the toolchain pinned by rust-toolchain.toml explicitly (see setup-rust.sh), then
+# the components the fmt/clippy steps need, before resolving cargo/rustc through it.
+& rustup toolchain install --profile minimal --no-self-update
+if ($LASTEXITCODE -ne 0) { throw "rustup toolchain install failed ($LASTEXITCODE)" }
+& rustup component add rustfmt clippy
+if ($LASTEXITCODE -ne 0) { throw "rustup component add failed ($LASTEXITCODE)" }
+
 $cargoPath = (& rustup which cargo).Trim()
 $rustcPath = (& rustup which rustc).Trim()
 $toolchainBin = Split-Path -Parent $cargoPath

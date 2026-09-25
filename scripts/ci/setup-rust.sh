@@ -33,14 +33,18 @@ if ! command -v cargo >/dev/null 2>&1; then
     echo "cargo and curl are unavailable; cannot bootstrap Rust" >&2
     exit 127
   fi
-  echo "cargo not found; installing the minimal stable rustup toolchain"
+  echo "cargo not found; installing rustup (rust-toolchain.toml picks the compiler)"
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
-    sh -s -- -y --default-toolchain stable --profile minimal
+    sh -s -- -y --default-toolchain none --profile minimal
   # shellcheck source=/dev/null
   source "$CARGO_HOME/env"
 fi
 
 if command -v rustup >/dev/null 2>&1; then
+  # Install the toolchain pinned by rust-toolchain.toml explicitly rather than relying on
+  # rustup's implicit auto-install, which rustup 1.28.0 turned off and 1.28.1 made
+  # configurable. With no argument, `toolchain install` installs the active (pinned) one.
+  rustup toolchain install --profile minimal --no-self-update
   rustup component add rustfmt clippy
 fi
 

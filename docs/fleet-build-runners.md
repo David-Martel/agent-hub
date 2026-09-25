@@ -21,7 +21,11 @@ Each runner must have `sccache` installed and reachable from `PATH`.
 unhealthy cache falls back to ordinary Cargo instead of blocking CI.
 The same bootstrap adds `$HOME/.local/bin` and `$HOME/.cargo/bin` to `PATH` and
 installs a minimal stable rustup toolchain when a runner cache volume contains
-no usable Cargo shim.
+no usable Cargo shim. It then installs the compiler pinned by
+`rust-toolchain.toml` (plus rustfmt and clippy), which is the one every job
+actually uses; the Windows `setup-rust.ps1` does the same. Changing the pin
+invalidates each runner's compiled cache once, since sccache keys include the
+compiler.
 
 The safe L0 is a persistent, runner-local cache at
 `~/.cache/sccache/agent-hub`. Spark jobs add the private-QSFP Redis endpoint at

@@ -1,0 +1,14 @@
+# One compiler for every runner, host and image. Before this file each CI runner used whatever
+# `stable` it happened to have installed: on 2026-09-25 the Linux runners (x64 and both Spark
+# ARM64) reported rustc 1.97.1 while the Windows runner reported 1.98.1, whose new clippy lint
+# `unused_async_trait_impl` turned main's Windows job red on code Linux clippy passed (#72).
+#
+# Bump this deliberately, in its own PR, together with the `FROM rust:<version>-bookworm`
+# lines in docker/Dockerfile.linux. That PR is where a new lint is supposed to surface, not a
+# random runner that updated itself.
+#
+# rustfmt and clippy are added by scripts/ci/setup-rust.{sh,ps1} rather than listed here as
+# `components`: with them listed, rustup would try to download them inside the official rust
+# Docker image (minimal profile) during `cargo build`.
+[toolchain]
+channel = "1.98.1"
