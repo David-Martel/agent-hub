@@ -23,17 +23,21 @@ command -v python3 >/dev/null || { echo "ERROR: python3 is required" >&2; exit 1
 work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/lefthook-gates.XXXXXX")"
 trap 'rm -rf -- "$work"' EXIT
 
-git clone -q --no-hardlinks "$repo" "$work/clone"
+# A snapshot of HEAD with fresh history, not a clone: CI checkouts are
+# shallow, and pushing from a shallow clone is refused.
+mkdir "$work/clone"
+git -C "$repo" archive HEAD | tar -x -C "$work/clone"
 git init -q --bare "$work/remote.git"
 cd "$work/clone"
 cp "$repo/lefthook.yml" lefthook.yml
+git init -q
 # Hermetic git identity/signing/hooks: nothing from the host config applies.
 git config user.name "lefthook-gate-probe"
 git config user.email "lefthook-gate-probe@invalid"
 git config commit.gpgsign false
 git config core.hooksPath .git/hooks
-git add lefthook.yml
-git commit -q --allow-empty -m "chore: probe base"
+git add -A
+git commit -q -m "chore: probe base"
 git remote add probe "$work/remote.git"
 git push -q probe HEAD:refs/heads/probe   # before hooks are installed
 
