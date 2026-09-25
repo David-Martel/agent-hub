@@ -26,7 +26,7 @@ Run these from the repo root — no need to `cd rust-cli`:
 cargo ab-build        # cargo build for rust-cli
 cargo ab-fast         # fast-release profile (thin LTO off, incremental on)
 cargo ab-test         # unit tests only (--bin agent-bus)
-cargo ab-itest        # integration tests (serial, needs Redis + PG)
+cargo ab-itest        # #[ignore]d backend tests (serial; needs DISPOSABLE backends via AGENT_BUS_TEST_*)
 cargo ab-clippy       # clippy for rust-cli
 cargo ab-nextest      # nextest runner (if installed)
 ```
@@ -37,9 +37,13 @@ cargo ab-nextest      # nextest runner (if installed)
 The default `AGENT_BUS_REDIS_URL` is `redis://localhost:6380/0`. This is
 intentional — the bus uses a dedicated Redis instance, not the system default.
 
-### Integration tests require live services
-`cargo ab-itest` needs Redis on `:6380` and PostgreSQL on `:5300`. Unit tests
-(`cargo ab-test`) have no external dependencies. Always run unit tests first.
+### Backend tests need DISPOSABLE services — never the live bus
+`cargo ab-itest` (`test --workspace --tests -- --ignored`) runs the `#[ignore]`d backend tests
+against `AGENT_BUS_TEST_REDIS_URL`, `AGENT_BUS_TEST_DATABASE_URL` and `AGENT_BUS_TEST_SERVER_URL`.
+The live bus ports 6380/5300/8400 are **refused**, and an unset/unreachable backend is a
+**failure**, not a skip (#64). CI's `test-integration` job shows how to start them. Unit tests
+(`cargo ab-test`) have no external dependencies — enforced since #66: every core connection path
+panics on 6380/5300/8400 in unit-test builds. Always run unit tests first.
 
 ### `server-mode` feature gate
 The `reqwest` dependency and all CLI server-mode routing are behind
@@ -55,9 +59,10 @@ RUSTC_WRAPPER="" cargo build
 
 ### Lefthook hooks run on multiple stages
 Lefthook runs on pre-commit, pre-push, and commit-msg (not just pre-push):
-- **pre-commit**: `cargo fmt --check`, `cargo clippy`, `ast-grep scan` (parallel)
-- **pre-push**: `cargo test`, `cargo audit` (parallel)
-- **commit-msg**: conventional commit format advisory
+- **pre-commit**: `cargo fmt --check`, `cargo clippy` (parallel; `ast-grep scan` removed in #64)
+- **pre-push**: `cargo test`, `cargo audit` — audit is **blocking** and a missing `cargo-audit` fails
+- **commit-msg**: conventional commit format advisory (but errors if the check itself cannot run)
+- CI fails if any lefthook command silently runs nothing (#65); `root: "."` used to make them all skip
 
 Install with `lefthook install` if hooks are missing.
 
