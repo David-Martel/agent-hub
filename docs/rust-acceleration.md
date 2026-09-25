@@ -15,7 +15,7 @@ The sccache wrapper and lld-link linker activate automatically.
 | `cargo ab-build` | Build all three binaries | No |
 | `cargo ab-fast` | Fast-release build (thin LTO off, incremental) | No |
 | `cargo ab-test` | Workspace unit tests | No |
-| `cargo ab-itest` | Integration tests (needs Redis + PG) | No |
+| `cargo ab-itest` | `#[ignore]`d backend tests; needs DISPOSABLE backends via `AGENT_BUS_TEST_*` (live ports refused) | No |
 | `cargo ab-clippy` | Clippy pedantic + restriction lints | No |
 | `cargo ab-nextest` | nextest test runner | `cargo-nextest` |
 | `cargo ab-cov` | LLVM coverage report → `lcov.info` | `cargo-llvm-cov` |
@@ -95,7 +95,7 @@ cargo install cargo-nextest --locked
 ```powershell
 cargo ab-nextest                          # all workspace tests
 cargo nextest run -p agent-bus            # single crate
-cargo nextest run --test http_integration_test -- --test-threads=1
+cargo nextest run --test http_integration_test --run-ignored ignored-only -j 1   # 48 #[ignore]d backend tests; without the flag only the 4 non-ignored ones run (measured 2026-09-25, nextest 0.9.140)
 ```
 
 **nextest config** (create `.config/nextest.toml` to customize):

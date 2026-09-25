@@ -64,8 +64,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 # Tests (unit only, no external services)
 cargo test --workspace --lib --bins
 
-# Integration tests (requires Redis :6380 + PostgreSQL :5300)
-cargo test --workspace --test '*'
+# Backend/integration tests are #[ignore]d (#64): they need DISPOSABLE backends via
+# AGENT_BUS_TEST_REDIS_URL / _DATABASE_URL / _SERVER_URL, refuse the live ports
+# 6380/5300/8400, and FAIL (never skip) when unset. Without --ignored they run 0 tests.
+cargo test --workspace --tests -- --ignored --test-threads=1   # == cargo ab-itest
 
 # Benchmarks (criterion: token estimation, TOON, MessagePack)
 cargo bench --workspace
@@ -174,8 +176,9 @@ Example configs for all platforms live in `examples/mcp/`.
 ## Git Hooks
 
 Lefthook (install with `lefthook install`):
-- **pre-commit** (parallel): `cargo fmt --check`, `cargo clippy`, `ast-grep scan`
-- **pre-push** (parallel): `cargo test`, `cargo audit`
+- **pre-commit** (parallel): `cargo fmt --check`, `cargo clippy` (the old `ast-grep scan` step was removed in #64 — it invoked shadow-utils `sg`, never ast-grep)
+- **pre-push**: `cargo test` (live-bus env pinned to a closed port), `cargo audit` — **blocking**; a missing `cargo-audit` is a failure, not a skip
+- Until #64 every command carried `root: "."`, which under lefthook 2.1.9 made them all silently skip; CI now fails if any lefthook command runs nothing (#65)
 - **commit-msg**: conventional commit format advisory
 
 ## Rust Conventions

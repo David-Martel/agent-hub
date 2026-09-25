@@ -59,4 +59,4 @@ behavior when transport semantics change.
 
 ## Commit & Pull Request Guidelines
 
-Use conventional commits with optional scopes, matching recent history: `feat(http): ...`, `perf(pg): ...`, `docs: ...`, `chore: ...`. Install hooks with `lefthook install`; pre-commit runs `fmt`, `clippy`, and `ast-grep`, and pre-push runs `cargo test`. PRs should describe behavior changes, note required local services or env vars, link issues when applicable, and include screenshots only for dashboard/UI changes.
+Use conventional commits with optional scopes, matching recent history: `feat(http): ...`, `perf(pg): ...`, `docs: ...`, `chore: ...`. Install hooks with `lefthook install`; pre-commit runs `fmt` and `clippy`, and pre-push runs `cargo test` and a blocking `cargo audit`. PRs should describe behavior changes, note required local services or env vars, link issues when applicable, and include screenshots only for dashboard/UI changes.
