@@ -2242,19 +2242,16 @@ mod tests {
     /// Hyphens and underscores are explicitly allowed.
     #[test]
     fn create_group_accepts_hyphen_and_underscore_in_name() {
-        // Validation is pure-logic — it bails before connecting to Redis only on
-        // name validation.  The error here comes from Redis, not validation.
-        // We check that the error message does NOT mention "name" validation.
-        let settings = Settings::from_env();
-        let result = create_group(&settings, "my-group_1", &[], "claude");
-        // If Redis is unavailable the error is a connection error, not a name-validation error.
-        if let Err(e) = result {
-            let msg = e.to_string();
-            assert!(
-                !msg.contains("alphanumeric"),
-                "name 'my-group_1' should pass name validation, got: {msg}"
-            );
-        }
+        // Backends are offline, so create_group must fail at connect -- after
+        // name validation, which is what this test checks.
+        let settings = crate::test_support::offline_settings();
+        let msg = create_group(&settings, "my-group_1", &[], "claude")
+            .expect_err("offline backend: create_group must fail at connect")
+            .to_string();
+        assert!(
+            !msg.contains("alphanumeric"),
+            "name 'my-group_1' should pass name validation, got: {msg}"
+        );
     }
 
     #[test]

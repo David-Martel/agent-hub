@@ -27,7 +27,9 @@ use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
 use crate::models::{Message, Presence};
-use crate::settings::{Settings, loopback_url_candidates, redact_url};
+use crate::settings::{
+    Settings, loopback_url_candidates, redact_url, refuse_live_bus_in_unit_tests,
+};
 
 /// Maximum number of attempts for a transient `PostgreSQL` failure.
 const PG_MAX_RETRIES: u32 = 3;
@@ -255,6 +257,7 @@ fn get_pg_client(settings: &Settings) -> Result<Option<PgClient>> {
 fn open_pg_client(database_url: &str) -> Result<PgClient> {
     let mut errors = Vec::new();
     for candidate in loopback_url_candidates(database_url) {
+        refuse_live_bus_in_unit_tests(&candidate);
         match PgClient::connect(candidate.as_str(), NoTls) {
             Ok(client) => return Ok(client),
             Err(e) => errors.push(format!(
