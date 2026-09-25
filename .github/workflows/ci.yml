@@ -12,7 +12,12 @@ on:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Cancel superseded PR revisions only. A main run must finish once it
+  # starts: cancelling it on every merge kept the Windows job's persistent
+  # target dir cold forever (the #64 run spent 56 min in clippy compiling
+  # aws-lc-sys and was cancelled by the next push). A newer main run still
+  # queues behind the running one rather than piling up.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   AGENT_BUS_BUILD_REVISION: ${{ github.sha }}
