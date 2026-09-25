@@ -221,7 +221,7 @@ Common issues:
 - **Redis not running**: Verify with `redis-cli -p 6380 ping`. If you need a local Redis install, use the maintained [redis-windows](https://github.com/redis-windows/redis-windows) repository.
 - **PostgreSQL connection refused**: Verify with `psql -h localhost -p 5300 -U postgres -c "SELECT 1"`.
 - **Service won't start**: Check error log, ensure `%USERPROFILE%\bin\agent-bus-http.exe` exists.
-- **Loopback family mismatch**: Prefer `redis://127.0.0.1:6380/0` and `postgresql://postgres@127.0.0.1:5300/redis_backend` for local storage. HTTP clients may keep `http://localhost:8400`; IPv6 literal URLs must use brackets, for example `http://[::1]:8400`.
+- **Loopback family mismatch**: Prefer `redis://127.0.0.1:6380/0` and `postgresql://postgres@127.0.0.1:5300/redis_backend` for local storage. HTTP clients may keep `http://localhost:8400`; IPv6 literal URLs must use brackets, for example `http://[::1]:8400`. The HTTP server binds the default `server_host` "localhost" to `127.0.0.1` explicitly: binding the name takes the resolver's first address, which is `::1` on Windows and in many containers, and left the server IPv6-only. Set `server_host` to `::1` for an IPv6 listener.
 - **Health works but send/read fail with 401**: The HTTP service has bearer auth enabled, but the client shell has no token. Run `pwsh -NoLogo -NoProfile -File scripts\sync-agent-bus-client-auth.ps1`, or set `AGENT_BUS_AUTH_TOKEN` before using `AGENT_BUS_SERVER_URL`.
 
 ### MCP launch
