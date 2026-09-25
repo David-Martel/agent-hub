@@ -12,6 +12,7 @@ pre-commit:
   parallel: true
   commands:
     rust-fmt:
+      root: "."
       glob: "*.rs"
       run: cargo fmt -- --check
 
