@@ -53,12 +53,20 @@ result set and has no way to tell. This is the same class as the `rag-redis` `he
 returning `Ok(true)` unconditionally — reachability mistaken for correctness — which this project's
 own `bus_health` was deliberately designed to avoid by reporting falsifiable counts.
 
-- [ ] Set `"additionalProperties": false` in `schema_for`.
-- [ ] Return `InvalidParams` naming the offending key(s), rather than dropping them.
-- [ ] Add a test asserting every tool in `tool_definitions()` declares
+- [x] Set `"additionalProperties": false` in `schema_for`.
+- [x] Return `InvalidParams` naming the offending key(s), rather than dropping them.
+- [x] Add a test asserting every tool in `tool_definitions()` declares
       `additionalProperties: false` — mirroring the existing
       `all_tool_schemas_declare_type_object` test
       ([`mcp_dispatch.rs:1043+`](./crates/agent-bus-core/src/mcp_dispatch.rs)).
+
+  **Closed 2026-09-25 — landed in `a24e573` (#55, 2026-08-15).** `schema_for` sets
+  `additionalProperties: false` (`mcp_dispatch.rs:73`); dispatch returns `InvalidParams`
+  "unknown argument(s) for {name}: …" naming each key (`mcp_dispatch.rs:523-533`). Tests
+  `all_tool_schemas_reject_additional_properties` and
+  `dispatch_rejects_unknown_arguments_before_execution` pass at `1d24e6a` (2 passed, 0 failed).
+  Negative control: flipping line 73 to `json!(true)` makes the first test FAIL, so it can see
+  the regression it guards. The HTTP-surface question below is still open.
 - [ ] Decide the same question for the HTTP surface: does `POST /messages` reject unknown body
       keys, or does `serde` silently drop them? (`#[serde(deny_unknown_fields)]` is the analogue.)
 
