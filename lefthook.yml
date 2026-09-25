@@ -19,11 +19,6 @@ pre-commit:
         RUSTC_WRAPPER: ""
       run: cargo clippy --all-targets --quiet -- -D warnings
 
-    ast-grep-rust:
-      root: "."
-      glob: "*.rs"
-      run: sg scan --config ~/.claude/sgconfig.yml {staged_files} 2>/dev/null; exit 0
-
 pre-push:
   parallel: true
   commands:
@@ -34,11 +29,28 @@ pre-push:
         RUSTC_WRAPPER: ""
       run: cargo test --quiet
 
+    # Blocking. A missing cargo-audit is a failure, not a skip: a gate that
+    # cannot run must say so rather than pass.
     rust-audit:
       root: "."
-      run: cargo audit --quiet 2>/dev/null; exit 0
+      run: |
+        command -v cargo-audit >/dev/null 2>&1 || {
+          echo "ERROR: cargo-audit is not installed (cargo install cargo-audit --locked)" >&2
+          exit 1
+        }
+        cargo audit
 
 commit-msg:
   commands:
+    # Advisory on purpose: a non-conventional subject only warns. But the
+    # check itself failing (unreadable message file, grep error) is an error:
+    # grep exits 1 for "no match" and >1 for "could not run".
     conventional:
-      run: "grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)' {1} || echo 'WARNING: Consider conventional commit format'; exit 0"
+      run: |
+        rc=0
+        grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)' "{1}" || rc=$?
+        case "$rc" in
+          0) ;;
+          1) echo "WARNING: Consider conventional commit format" ;;
+          *) echo "ERROR: conventional-commit check could not run (grep exit $rc)" >&2; exit "$rc" ;;
+        esac

@@ -1,8 +1,13 @@
 name: CI
 
 on:
+  # PRs need their own check contexts; before this trigger a PR had none, so
+  # nothing could be required and a merge proved nothing. Push is narrowed to
+  # main so a PR branch is not built twice (the concurrency group is keyed on
+  # github.ref, which differs between the push and the PR merge ref).
+  pull_request:
   push:
-    branches: ["**"]
+    branches: [main]
   workflow_dispatch: {}
 
 concurrency:
@@ -162,6 +167,9 @@ jobs:
       - shell: pwsh
         run: ./scripts/ci/setup-rust.ps1
       - run: cargo fmt --all --check
+      # Same strictness as the Linux clippy job: cfg(windows) code is only
+      # linted here, so a warning in it must fail this job.
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --lib --bins -- --test-threads=4
       - run: cargo build --release --workspace --bins
       - name: History catalog migration contract
