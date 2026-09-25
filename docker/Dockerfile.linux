@@ -22,7 +22,10 @@
 # ---------------------------------------------------------------------------
 # Stage 1: glibc build + library unit tests
 # ---------------------------------------------------------------------------
-FROM rust:1-bookworm AS build
+# Keep this tag equal to `channel` in rust-toolchain.toml (COPY . . brings that file in, and a
+# mismatch makes rustup download a second toolchain mid-build; the musl stage's `rustup target
+# add` below also lands on this image's toolchain, which is only the pinned one if they match).
+FROM rust:1.98.1-bookworm AS build
 
 # Avoid the Windows-only rustc wrapper (scripts/rustc-wrapper.cmd) on Linux.
 ENV RUSTC_WRAPPER="" \
@@ -72,7 +75,10 @@ RUN --mount=type=cache,id=agent-hub-cargo-registry,target=/usr/local/cargo/regis
 # ---------------------------------------------------------------------------
 # Stage 2 (optional): musl static build for x86_64-unknown-linux-musl
 # ---------------------------------------------------------------------------
-FROM rust:1-bookworm AS musl
+# Keep this tag equal to `channel` in rust-toolchain.toml (COPY . . brings that file in, and a
+# mismatch makes rustup download a second toolchain mid-build; the musl stage's `rustup target
+# add` below also lands on this image's toolchain, which is only the pinned one if they match).
+FROM rust:1.98.1-bookworm AS musl
 
 ENV RUSTC_WRAPPER="" \
     CARGO_TERM_COLOR=always \
