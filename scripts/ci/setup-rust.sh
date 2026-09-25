@@ -33,9 +33,9 @@ if ! command -v cargo >/dev/null 2>&1; then
     echo "cargo and curl are unavailable; cannot bootstrap Rust" >&2
     exit 127
   fi
-  echo "cargo not found; installing the minimal stable rustup toolchain"
+  echo "cargo not found; installing rustup (rust-toolchain.toml picks the compiler)"
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs |
-    sh -s -- -y --default-toolchain stable --profile minimal
+    sh -s -- -y --default-toolchain none --profile minimal
   # shellcheck source=/dev/null
   source "$CARGO_HOME/env"
 fi
