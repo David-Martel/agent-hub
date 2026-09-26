@@ -118,7 +118,8 @@ foreach ($p in $prereqs) {
 }
 
 if ($missing.Count -gt 0) {
-    $critical = $missing | Where-Object { $_ -in @("Rust (rustc)", "Cargo") }
+    # @() keeps .Count valid under Set-StrictMode when nothing matches ($null.Count throws).
+    $critical = @($missing | Where-Object { $_ -in @("Rust (rustc)", "Cargo") })
     if ($critical.Count -gt 0 -and -not $SkipBuild) {
         throw "Critical prerequisites missing: $($critical -join ', '). Install them and re-run."
     }
