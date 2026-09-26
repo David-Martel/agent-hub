@@ -60,3 +60,25 @@ behavior when transport semantics change.
 ## Commit & Pull Request Guidelines
 
 Use conventional commits with optional scopes, matching recent history: `feat(http): ...`, `perf(pg): ...`, `docs: ...`, `chore: ...`. Install hooks with `lefthook install`; pre-commit runs `fmt` and `clippy`, and pre-push runs `cargo test` and a blocking `cargo audit`. PRs should describe behavior changes, note required local services or env vars, link issues when applicable, and include screenshots only for dashboard/UI changes.
+
+## Automated Agents (Jules)
+
+Jules (Google's async coding agent) reads this file. It runs in a Google-hosted VM, so:
+
+- **Not available in the VM:** the live bus (Redis 6380, PostgreSQL 5300, HTTP 8400), the fleet
+  LAN, Windows, and `pwsh`. For `scripts/*.ps1` work, fetch the PowerShell 7 linux-x64 release
+  tarball from GitHub (apt/snap installs fail in the VM), then
+  `pwsh -c 'Install-Module Pester,PSScriptAnalyzer -Force -Scope CurrentUser'`. Never point a test at a live bus port. The `#[ignore]`d
+  backend tests need disposable backends; if you cannot start them, say so and skip them.
+- **Run these (no services needed):** `cargo fmt --all --check`,
+  `cargo clippy --all-targets -- -D warnings` in `rust-cli/`, and
+  `cargo test --workspace --lib --bins` at the repo root. Report exactly what you ran and the
+  result. Never guess a result you could not run.
+- **Review-only tasks** (the prompt says so): do not commit, push or open a PR. End the session
+  with the findings as your final message: numbered, each with SEVERITY, file:line, failure
+  scenario and a suggested fix.
+- **Change tasks:** one concern per PR, conventional-commit subject, and a commit trailer
+  `Agent: jules`. Do not bump the bus protocol or wire formats: every fleet host runs the same
+  `agent-bus` build.
+- **Do not ask for confirmation.** State any assumption and continue. When the task is done,
+  finish; do not stop to ask "should I proceed?".
