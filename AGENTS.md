@@ -66,7 +66,9 @@ Use conventional commits with optional scopes, matching recent history: `feat(ht
 Jules (Google's async coding agent) reads this file. It runs in a Google-hosted VM, so:
 
 - **Not available in the VM:** the live bus (Redis 6380, PostgreSQL 5300, HTTP 8400), the fleet
-  LAN, Windows, and possibly `pwsh`. Never point a test at a live bus port. The `#[ignore]`d
+  LAN, Windows, and `pwsh`. For `scripts/*.ps1` work, fetch the PowerShell 7 linux-x64 release
+  tarball from GitHub (apt/snap installs fail in the VM), then
+  `pwsh -c 'Install-Module Pester,PSScriptAnalyzer -Force -Scope CurrentUser'`. Never point a test at a live bus port. The `#[ignore]`d
   backend tests need disposable backends; if you cannot start them, say so and skip them.
 - **Run these (no services needed):** `cargo fmt --all --check`,
   `cargo clippy --all-targets -- -D warnings` in `rust-cli/`, and
