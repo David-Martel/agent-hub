@@ -16,6 +16,10 @@
 //! never call back out to itself. Only client-facing transports (stdio MCP
 //! today) should use [`RoutingDispatch`].
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
 use serde_json::{Map, Value};
 
 use crate::error::{AgentBusError, Result};
@@ -23,6 +27,40 @@ use crate::hub::{HubBackend, ProbeInfo, resolve_hub};
 use crate::mcp_dispatch::McpToolDispatch;
 use crate::ops::admin::health as ops_health;
 use crate::settings::Settings;
+
+/// How long a resolved backend is trusted before [`RoutingDispatch`]
+/// re-probes every candidate (operator requirement: "cache the last good one
+/// briefly" so a long-lived stdio session does not re-probe -- and, when
+/// offline, re-wait out every candidate's connect timeout -- on every single
+/// tool call).
+const HUB_CACHE_TTL: Duration = Duration::from_secs(15);
+
+/// Process-wide cache of the last resolved [`HubBackend`] per candidate list,
+/// since [`RoutingDispatch`] is constructed fresh on every MCP tool call (see
+/// `agent-bus-mcp`'s `call_tool_now`) and has nowhere longer-lived of its own
+/// to hold state. Keyed by the candidate list itself (rather than assuming
+/// one fixed list per process) so a settings change is never served a stale
+/// entry, and so unit tests using different candidate lists never see each
+/// other's cached results.
+type HubCacheEntry = (HubBackend, Instant);
+type HubCacheMap = HashMap<Vec<String>, HubCacheEntry>;
+
+static HUB_CACHE: OnceLock<Mutex<HubCacheMap>> = OnceLock::new();
+
+fn hub_cache() -> &'static Mutex<HubCacheMap> {
+    HUB_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Discard the cached entry for `candidates` so the next
+/// [`RoutingDispatch::resolve_backend`] call re-probes every candidate from
+/// scratch. Called whenever a call against the cached remote hub actually
+/// fails -- a briefly-cached "it was reachable 10 seconds ago" must not
+/// survive a live proof that it currently is not.
+fn invalidate_hub_cache(candidates: &[String]) {
+    if let Ok(mut guard) = hub_cache().lock() {
+        guard.remove(candidates);
+    }
+}
 
 /// The transport a [`RoutingDispatch`] uses to reach a remote hub.
 ///
@@ -64,14 +102,30 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
         }
     }
 
-    /// Resolve which backend this call would use right now. Re-resolved on
-    /// every call (candidates rarely change within a process lifetime, and a
-    /// short-lived stdio session should notice a hub coming back online).
+    /// Resolve which backend this call would use right now.
+    ///
+    /// Cached briefly ([`HUB_CACHE_TTL`]) so a long-lived stdio session does
+    /// not re-probe every candidate (including waiting out each dead one's
+    /// connect timeout when offline) on every single tool call. The cache is
+    /// invalidated immediately whenever an actual call against the cached
+    /// remote hub fails (see [`Self::dispatch_tool`]), so a briefly-stale
+    /// "it was reachable a few seconds ago" can never survive a live proof
+    /// that it currently is not.
     #[must_use]
     pub fn resolve_backend(&self) -> HubBackend {
-        resolve_hub(&self.settings.server_urls, |url| {
-            self.transport.probe_health(url)
-        })
+        let candidates = &self.settings.server_urls;
+        if let Ok(guard) = hub_cache().lock()
+            && let Some((backend, at)) = guard.get(candidates)
+            && at.elapsed() < HUB_CACHE_TTL
+        {
+            return backend.clone();
+        }
+
+        let backend = resolve_hub(candidates, |url| self.transport.probe_health(url));
+        if let Ok(mut guard) = hub_cache().lock() {
+            guard.insert(candidates.clone(), (backend.clone(), Instant::now()));
+        }
+        backend
     }
 
     /// Dispatch a tool call by name and arguments, returning the result as JSON.
@@ -101,7 +155,14 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
 
         match self.resolve_backend() {
             HubBackend::Local => self.local.dispatch_tool(name, args),
-            HubBackend::Remote { url, .. } => self.transport.call_tool(&url, name, args),
+            HubBackend::Remote { url, .. } => {
+                self.transport.call_tool(&url, name, args).inspect_err(|_| {
+                    // The cached backend just proved itself stale (reachable
+                    // moments ago, failing now) -- never let the rest of the
+                    // TTL window keep routing calls at it blind.
+                    invalidate_hub_cache(&self.settings.server_urls);
+                })
+            }
             HubBackend::Offline { tried } => Err(AgentBusError::Internal(format!(
                 "offline: no authoritative hub reachable (tried {tried:?}); refusing '{name}' \
                  rather than silently using a local store. This client is configured with \
@@ -338,6 +399,68 @@ mod tests {
         assert!(
             health.get("backend").is_none(),
             "pre-#78 dispatch has no backend field to distinguish local from remote"
+        );
+    }
+
+    /// Operator requirement: "cache the last good one briefly" -- a
+    /// long-lived stdio session must not re-probe every candidate (including
+    /// waiting out each dead one's connect timeout) on every single tool
+    /// call. Uses a candidate list not reused by any other test in this
+    /// module, since the cache is keyed by candidate-list content and is
+    /// process-wide.
+    #[test]
+    fn resolve_backend_is_cached_briefly_and_invalidated_on_call_failure() {
+        let candidates = [
+            "http://cache-test-a:8400".to_owned(),
+            "http://cache-test-b:8400".to_owned(),
+        ];
+        let settings = test_settings(&candidates);
+        let transport = FakeTransport {
+            healthy_urls: vec!["http://cache-test-a:8400".to_owned()],
+            remote_tool_error: true,
+            ..Default::default()
+        };
+        let dispatch = RoutingDispatch::new(&settings, transport);
+
+        let first = dispatch.resolve_backend();
+        assert!(first.is_remote());
+        assert_eq!(
+            dispatch.transport.probed.borrow().len(),
+            1,
+            "first call must probe"
+        );
+
+        let second = dispatch.resolve_backend();
+        assert_eq!(second, first, "cached result must be identical");
+        assert_eq!(
+            dispatch.transport.probed.borrow().len(),
+            1,
+            "a second call within the TTL must be served from cache, not re-probe"
+        );
+
+        // A real call against the cached (now-failing) hub must invalidate
+        // the cache, so the NEXT resolve_backend re-probes rather than
+        // trusting a briefly-cached "it worked a moment ago".
+        let call_result = dispatch.dispatch_tool("post_message", &Map::new());
+        assert!(
+            call_result.is_err(),
+            "FakeTransport is configured to fail every call_tool"
+        );
+        assert_eq!(
+            dispatch.transport.probed.borrow().len(),
+            1,
+            "dispatch_tool must use the cached backend, not re-probe, before the call itself fails"
+        );
+
+        let third = dispatch.resolve_backend();
+        assert_eq!(
+            third, first,
+            "same candidates/transport still resolve the same way"
+        );
+        assert_eq!(
+            dispatch.transport.probed.borrow().len(),
+            2,
+            "invalidation-on-failure must force the next resolve_backend to re-probe"
         );
     }
 }
