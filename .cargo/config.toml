@@ -6,7 +6,6 @@ ab-fast  = "build -p agent-bus -p agent-bus-http -p agent-bus-mcp --profile fast
 
 # Test aliases
 ab-test   = "test --workspace --lib"
-ab-itest  = "test -p agent-bus --test http_integration_test --test channel_integration_test -- --test-threads=1"
 ab-clippy = "clippy --workspace --all-targets"
 ab-nextest = "nextest run --workspace"
 

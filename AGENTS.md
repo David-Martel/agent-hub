@@ -2,23 +2,11 @@
 
 ## Project Structure & Module Organization
 
-The repo now has a top-level Cargo workspace with `rust-cli/` plus
-`crates/agent-bus-core`, `crates/agent-bus-cli`, `crates/agent-bus-http`, and
-`crates/agent-bus-mcp`.
-
-Current code-grounded split status (2026-04-04):
-- `agent-bus-core` owns extracted shared logic: storage adapters, validation,
-  token helpers, channels, typed ops (~1,670 lines across 7 ops modules),
-  agent profiles (`AgentProfile` trait), and validated task cards (`TaskCard`).
-- `rust-cli/` remains the primary runtime crate and still owns `lib.rs`,
-  `cli.rs`, `commands.rs`, `http.rs`, `mcp.rs`, `server_mode.rs`,
-  `mcp_discovery.rs`, benches, and integration tests.
-- The surface crates currently wrap `rust-cli`; they are not yet fully
-  independent implementations.
-- `scripts/` still builds and deploys through `rust-cli/`.
-- Phase 1 (ops consolidation) and Phase 2 (transport normalization) of
-  `agents.TODO.md` are complete. Phase 3 (crate split) is planned with
-  blockers identified in `docs/phase3-crate-split-plan-2026-04-04.md`.
+The Cargo workspace contains `crates/agent-bus-core` (shared storage and
+operations), `crates/agent-bus-cli` (package `agent-bus`),
+`crates/agent-bus-http`, and `crates/agent-bus-mcp`. The former `rust-cli/`
+directory has been removed. CLI integration targets live under
+`crates/agent-bus-cli/tests/`; service harnesses live under `scripts/ci/`.
 
 Supporting material remains split across `scripts/` for PowerShell automation,
 `examples/mcp/` for client configs, and `docs/` for design notes, assessments,
@@ -32,14 +20,43 @@ Code-grounded status snapshot:
 
 ## Build, Test, and Development Commands
 
-- `cargo build --release` in `rust-cli/`: build the shipping CLI binary.
+- `cargo build --release --workspace --bins` at repo root: build the shipping binaries.
 - `cargo test --workspace --lib --bins` at repo root: fast code-grounded check across the workspace without requiring live Redis/HTTP services.
-- `cargo test --bin agent-bus` in `rust-cli/`: run Rust unit tests.
-- `cargo test --test integration_test --test http_integration_test --test channel_integration_test -- --test-threads=1` in `rust-cli/`: run integration tests against local Redis and PostgreSQL.
-- `cargo fmt --all --check` and `cargo clippy --all-targets -- -D warnings` in `rust-cli/`: match CI formatting and lint gates.
+- `cargo test -p agent-bus --lib --bins`: run CLI unit tests.
+- `python scripts/ci/isolated-services.py integration` at repo root: run all four CLI integration targets against disposable Docker services, including ignored tests.
+- `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings` at repo root: match CI formatting and lint gates.
 - `pwsh -NoLogo -NoProfile -File build.ps1 -FastRelease`: repo-root fast iteration build using the shared target-dir, linker, and `sccache` setup.
 
-Set local services with `AGENT_BUS_REDIS_URL` and `AGENT_BUS_DATABASE_URL` when running integration flows.
+Do not point integration tests at the shared Redis, PostgreSQL, or HTTP bus.
+The harness requires Python 3.10+, Cargo and a local Docker engine providing
+Linux containers. Missing prerequisites fail; there is no live-service fallback.
+It starts fresh Redis/PostgreSQL containers on random loopback ports, launches
+its own HTTP binary, and verifies process/backend identity before testing.
+All four targets (including `cli_http_parity_test`) run with `--include-ignored`
+and `--test-threads=1`. The live tests are ignored in ordinary `cargo test`;
+`cargo test -p agent-bus --test integration_isolation_test` checks the isolation
+guard without services. Pre-push runs that guard plus workspace library/binary
+tests. CI also runs the disposable integration harness; unit tests alone are
+not evidence of service integration success.
+
+Use `python scripts/ci/isolated-services.py history` for the history migration
+contract in a fresh disposable PostgreSQL database. The explicit Cargo target
+must exist; missing targets and test failures are errors. No shared database is
+created or dropped. For release smoke, use `python scripts/ci/isolated-services.py
+smoke --cli <artifact-path> --http <artifact-path>` (also requires PowerShell 7).
+The harness owns the HTTP subprocess; the maintained smoke script checks the
+existing server's PID, identity and backends and requires healthy PostgreSQL.
+
+The harness clears inherited `AGENT_BUS_*` settings except build provenance,
+uses an empty temporary configuration file, disables startup announcements,
+and supplies `AGENT_BUS_TEST_RUN_ID`, `AGENT_BUS_TEST_REDIS_URL`,
+`AGENT_BUS_TEST_DATABASE_URL`, `AGENT_BUS_TEST_HTTP_URL`, and
+`AGENT_BUS_TEST_AUTH_TOKEN`. These variables are an internal harness contract,
+not instructions to adapt production endpoints to tests. Cleanup uses only
+captured container IDs and owned process handles. A failed cleanup is reported;
+there is no guessed-name/stale-resource deletion. Do not publish generated
+passwords or bearer tokens. Test the harness itself without services using
+`python -B -m unittest discover -s scripts/ci -p "test_*.py"`.
 
 ## Coding Style & Naming Conventions
 
@@ -47,11 +64,10 @@ Use Rust 2024 edition defaults with `rustfmt` width 100 and field init shorthand
 
 ## Testing Guidelines
 
-Place integration coverage in `rust-cli/tests/*_test.rs`. Shared unit coverage
-for extracted logic now primarily lives under `crates/agent-bus-core/src/*`.
-Current test inventory: 394 unit tests in `agent-bus-core`, 92 unit tests in
-`rust-cli` (486 total). `http_integration_test.rs` is a skeleton needing test
-functions. 10 integration tests in `rust-cli/tests/` require live Redis/PG.
+Place CLI integration coverage in `crates/agent-bus-cli/tests/*_test.rs`.
+Shared unit coverage lives under `crates/agent-bus-core/src/*`. Integration
+tests requiring external services must be ignored by default and validate
+the harness contract before any backend access.
 No fixed coverage percentage is enforced, but every feature change should add
 or update tests in the affected runtime. Prefer focused unit tests first, then
 integration coverage for Redis/PostgreSQL behavior, HTTP endpoints, and MCP
@@ -59,4 +75,4 @@ behavior when transport semantics change.
 
 ## Commit & Pull Request Guidelines
 
-Use conventional commits with optional scopes, matching recent history: `feat(http): ...`, `perf(pg): ...`, `docs: ...`, `chore: ...`. Install hooks with `lefthook install`; pre-commit runs `fmt`, `clippy`, and `ast-grep`, and pre-push runs `cargo test`. PRs should describe behavior changes, note required local services or env vars, link issues when applicable, and include screenshots only for dashboard/UI changes.
+Use conventional commits with optional scopes, matching recent history: `feat(http): ...`, `perf(pg): ...`, `docs: ...`, `chore: ...`. Install hooks with `lefthook install`; pre-commit runs workspace `fmt`, `clippy`, and `ast-grep` for nested Rust changes; pre-push runs service-free workspace and isolation-guard tests. PRs should describe behavior changes, provide isolated integration results when relevant, link issues when applicable, and include screenshots only for dashboard/UI changes.

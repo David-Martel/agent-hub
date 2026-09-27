@@ -1,35 +1,22 @@
-//! Integration tests requiring a running Redis instance.
-//! Skipped gracefully if Redis is not available.
+//! Integration coverage for explicitly provisioned disposable services.
+//! Run through scripts/ci isolated-service harness; ordinary tests ignore live cases.
+
+mod support;
 
 use std::process::Command;
 
 fn agent_bus_binary() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
-    cmd.env_remove("AGENT_BUS_SERVER_URL");
-    cmd.env("AGENT_BUS_REDIS_URL", "redis://127.0.0.1:6380/0");
-    cmd.env(
-        "AGENT_BUS_DATABASE_URL",
-        "postgresql://postgres@127.0.0.1:5300/redis_backend",
-    );
-    cmd.env("AGENT_BUS_STREAM_KEY", "agent_bus:test:messages");
-    cmd.env("AGENT_BUS_CHANNEL", "agent_bus:test:events");
-    cmd.env("AGENT_BUS_PRESENCE_PREFIX", "agent_bus:test:presence:");
-    cmd
+    support::agent_bus_binary()
 }
 
-fn redis_available() -> bool {
-    agent_bus_binary()
-        .args(["health", "--encoding", "compact"])
-        .output()
-        .is_ok_and(|o| o.status.success())
+fn require_service() {
+    support::require_http_blocking(&support::blocking_http_client());
 }
 
 #[test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 fn health_returns_ok_when_redis_available() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_service();
     let output = agent_bus_binary()
         .args(["health", "--encoding", "compact"])
         .output()
@@ -40,11 +27,9 @@ fn health_returns_ok_when_redis_available() {
 }
 
 #[test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 fn send_and_read_round_trip() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_service();
     let send = agent_bus_binary()
         .args([
             "send",
@@ -85,11 +70,9 @@ fn send_and_read_round_trip() {
 }
 
 #[test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 fn presence_set_and_list() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_service();
     let set = agent_bus_binary()
         .args([
             "presence",
@@ -117,7 +100,12 @@ fn presence_set_and_list() {
 
 #[test]
 fn invalid_settings_rejected() {
+    let config = tempfile::NamedTempFile::new().expect("isolated invalid-settings config");
+    std::fs::write(config.path(), b"{}").expect("empty test config");
     let output = Command::new(env!("CARGO_BIN_EXE_agent-bus"))
+        .env("AGENT_BUS_CONFIG", config.path())
+        .env("AGENT_BUS_ALLOW_REMOTE", "false")
+        .env("AGENT_BUS_STARTUP_ENABLED", "false")
         .env("AGENT_BUS_REDIS_URL", "redis://remote-host:6380/0")
         .args(["health", "--encoding", "compact"])
         .output()
@@ -129,11 +117,9 @@ fn invalid_settings_rejected() {
 }
 
 #[test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 fn cli_server_mode_send_and_read_round_trip() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_service();
 
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -141,7 +127,7 @@ fn cli_server_mode_send_and_read_round_trip() {
         .as_millis();
 
     let send = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .env("AGENT_BUS_SERVER_URL", support::base_url())
         .args([
             "send",
             "--from-agent",
@@ -165,7 +151,7 @@ fn cli_server_mode_send_and_read_round_trip() {
     );
 
     let read = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .env("AGENT_BUS_SERVER_URL", support::base_url())
         .args([
             "read",
             "--agent",
@@ -184,11 +170,9 @@ fn cli_server_mode_send_and_read_round_trip() {
 }
 
 #[test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 fn cli_server_mode_batch_send_round_trip() {
-    if !redis_available() {
-        eprintln!("SKIP: Redis not available");
-        return;
-    }
+    require_service();
 
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -207,7 +191,7 @@ fn cli_server_mode_batch_send_round_trip() {
 
     let batch_path = batch_file.to_string_lossy().into_owned();
     let send = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .env("AGENT_BUS_SERVER_URL", support::base_url())
         .args(["batch-send", "--file", &batch_path, "--encoding", "compact"])
         .output()
         .expect("batch-send failed");
@@ -222,7 +206,7 @@ fn cli_server_mode_batch_send_round_trip() {
     assert!(stdout.contains(r#""sent":2"#));
 
     let read = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", "http://localhost:8400")
+        .env("AGENT_BUS_SERVER_URL", support::base_url())
         .args([
             "read",
             "--agent",

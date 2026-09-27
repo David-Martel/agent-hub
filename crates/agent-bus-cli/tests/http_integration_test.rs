@@ -1,32 +1,16 @@
-//! End-to-end HTTP integration tests against the running agent-bus service.
-//!
-//! Prerequisites: the agent-bus HTTP server must be running at `localhost:8400`.
-//! All tests skip gracefully when the server is not reachable.
-//!
-//! Tests are isolated by using unique agent/resource names derived from
-//! `std::time::SystemTime` so concurrent runs do not interfere.
-//!
-//! # Running
-//!
-//! Run with a single test thread to avoid Redis key collisions from parallel
-//! execution (the `unique_suffix()` helper has millisecond precision, which is
-//! sufficient for sequential runs but can collide under aggressive parallelism):
-//!
-//! ```text
-//! cargo test --test http_integration_test -- --test-threads=1
-//! ```
+//! Integration coverage for explicitly provisioned disposable services.
+//! Run through scripts/ci isolated-service harness; ordinary tests ignore live cases.
+
+mod support;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::StatusCode;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-const BASE_URL: &str = "http://localhost:8400";
 
 /// Returns a millisecond-precision timestamp string suitable for unique IDs.
 fn unique_suffix() -> u64 {
@@ -41,48 +25,17 @@ fn unique_suffix() -> u64 {
     ms
 }
 
-fn auth_headers() -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    if let Ok(token) = std::env::var("AGENT_BUS_AUTH_TOKEN")
-        && !token.is_empty()
-    {
-        let value = HeaderValue::from_str(&format!("Bearer {token}"))
-            .expect("AGENT_BUS_AUTH_TOKEN should be a valid HTTP header value");
-        headers.insert(AUTHORIZATION, value);
-    }
-    headers
-}
-
 fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .default_headers(auth_headers())
-        .build()
-        .expect("failed to build HTTP test client")
+    support::http_client()
 }
 
 fn blocking_http_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .default_headers(auth_headers())
-        .build()
-        .expect("failed to build blocking HTTP test client")
+    support::blocking_http_client()
 }
 
-/// Returns a reqwest client and `true` when the service is reachable.
-///
-/// All test bodies should call this at the top and return early on `false`.
-async fn service_available(client: &reqwest::Client) -> bool {
-    client
-        .get(format!("{BASE_URL}/health"))
-        .send()
-        .await
-        .is_ok()
-}
-
-async fn admin_control_available(client: &reqwest::Client) -> bool {
-    match client.get(format!("{BASE_URL}/admin/service")).send().await {
-        Ok(resp) => resp.status() != StatusCode::NOT_FOUND,
-        Err(_) => false,
-    }
+/// Require the selected service and both backing stores before any mutation.
+async fn require_service(client: &reqwest::Client) {
+    support::require_http(client).await;
 }
 
 struct MaintenanceResumeGuard {
@@ -108,13 +61,19 @@ impl Drop for MaintenanceResumeGuard {
         if !self.active {
             return;
         }
-        let _ = blocking_http_client()
-            .post(format!("{BASE_URL}/admin/service/control"))
-            .json(&json!({
-                "action": "resume",
-                "requested_by": "http-integration-test-cleanup",
-            }))
-            .send();
+        // A blocking client cannot run on the async test runtime during unwind.
+        let _ = std::thread::spawn(|| {
+            let client = blocking_http_client();
+            support::require_http_blocking(&client);
+            let _ = client
+                .post(format!("{}/admin/service/control", support::base_url()))
+                .json(&json!({
+                    "action": "resume",
+                    "requested_by": "http-integration-test-cleanup",
+                }))
+                .send();
+        })
+        .join();
     }
 }
 
@@ -123,15 +82,14 @@ impl Drop for MaintenanceResumeGuard {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn health_endpoint_returns_ok() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .get(format!("{BASE_URL}/health"))
+        .get(format!("{base_url}/health"))
         .send()
         .await
         .expect("GET /health failed");
@@ -146,15 +104,14 @@ async fn health_endpoint_returns_ok() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn health_toon_encoding_returns_text() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .get(format!("{BASE_URL}/health?encoding=toon"))
+        .get(format!("{base_url}/health?encoding=toon"))
         .send()
         .await
         .expect("GET /health?encoding=toon failed");
@@ -176,15 +133,14 @@ async fn health_toon_encoding_returns_text() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn health_json_contains_pool_metrics() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .get(format!("{BASE_URL}/health"))
+        .get(format!("{base_url}/health"))
         .send()
         .await
         .expect("GET /health failed");
@@ -203,20 +159,15 @@ async fn health_json_contains_pool_metrics() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn service_control_pause_blocks_writes_until_resume() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
-    if !admin_control_available(&client).await {
-        eprintln!("SKIP: running HTTP service at {BASE_URL} does not expose /admin/service yet");
-        return;
-    }
+    require_service(&client).await;
 
     let mut resume_guard = MaintenanceResumeGuard::inactive();
     let pause_resp = client
-        .post(format!("{BASE_URL}/admin/service/control"))
+        .post(format!("{base_url}/admin/service/control"))
         .json(&json!({
             "action": "pause",
             "flush": false,
@@ -230,7 +181,7 @@ async fn service_control_pause_blocks_writes_until_resume() {
     resume_guard.arm();
 
     let blocked = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": "maintenance-test",
             "recipient": "maintenance-test",
@@ -249,7 +200,7 @@ async fn service_control_pause_blocks_writes_until_resume() {
     );
 
     let resume_resp = client
-        .post(format!("{BASE_URL}/admin/service/control"))
+        .post(format!("{base_url}/admin/service/control"))
         .json(&json!({
             "action": "resume",
             "requested_by": "http-integration-test",
@@ -262,7 +213,7 @@ async fn service_control_pause_blocks_writes_until_resume() {
 
     let ts = unique_suffix();
     let unblocked = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": format!("maintenance-after-{ts}"),
             "recipient": format!("maintenance-after-{ts}"),
@@ -280,16 +231,15 @@ async fn service_control_pause_blocks_writes_until_resume() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn post_message_returns_id() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": format!("http-tester-{ts}"),
             "recipient": format!("http-recv-{ts}"),
@@ -309,12 +259,11 @@ async fn post_message_returns_id() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn direct_message_creates_replayable_notification() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("http-tester-{ts}");
@@ -323,7 +272,7 @@ async fn direct_message_creates_replayable_notification() {
     let body_text = format!("notify-test-{ts}");
 
     let send_resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": sender,
             "recipient": recipient,
@@ -347,7 +296,7 @@ async fn direct_message_creates_replayable_notification() {
         .to_owned();
 
     let notifications_resp = client
-        .get(format!("{BASE_URL}/notifications/{recipient}?history=20"))
+        .get(format!("{base_url}/notifications/{recipient}?history=20"))
         .send()
         .await
         .expect("GET /notifications/{recipient} failed");
@@ -387,12 +336,11 @@ async fn direct_message_creates_replayable_notification() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn knock_endpoint_creates_knock_notification() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("knock-sender-{ts}");
@@ -400,7 +348,7 @@ async fn knock_endpoint_creates_knock_notification() {
     let body_text = format!("knock-now-{ts}");
 
     let knock_resp = client
-        .post(format!("{BASE_URL}/knock"))
+        .post(format!("{base_url}/knock"))
         .json(&json!({
             "sender": sender,
             "recipient": recipient,
@@ -419,7 +367,7 @@ async fn knock_endpoint_creates_knock_notification() {
         .to_owned();
 
     let notifications_resp = client
-        .get(format!("{BASE_URL}/notifications/{recipient}?history=20"))
+        .get(format!("{base_url}/notifications/{recipient}?history=20"))
         .send()
         .await
         .expect("GET /notifications/{recipient} failed");
@@ -444,19 +392,18 @@ async fn knock_endpoint_creates_knock_notification() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn claim_renew_release_round_trip_via_http() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resource = format!("http-lease-{ts}");
     let agent = format!("http-lease-agent-{ts}");
 
     let claim_resp = client
-        .post(format!("{BASE_URL}/channels/arbitrate/{resource}"))
+        .post(format!("{base_url}/channels/arbitrate/{resource}"))
         .json(&json!({
             "agent": agent,
             "priority_argument": "lease lifecycle test",
@@ -475,7 +422,7 @@ async fn claim_renew_release_round_trip_via_http() {
     assert_eq!(claim["mode"].as_str(), Some("shared_namespaced"));
 
     let renew_resp = client
-        .post(format!("{BASE_URL}/channels/arbitrate/{resource}/renew"))
+        .post(format!("{base_url}/channels/arbitrate/{resource}/renew"))
         .json(&json!({
             "agent": agent,
             "lease_ttl_seconds": 600,
@@ -488,7 +435,7 @@ async fn claim_renew_release_round_trip_via_http() {
     assert_eq!(renewed["lease_ttl_seconds"].as_u64(), Some(600));
 
     let release_resp = client
-        .post(format!("{BASE_URL}/channels/arbitrate/{resource}/release"))
+        .post(format!("{base_url}/channels/arbitrate/{resource}/release"))
         .json(&json!({ "agent": agent }))
         .send()
         .await
@@ -505,12 +452,11 @@ async fn claim_renew_release_round_trip_via_http() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn compact_context_respects_repo_tag_and_thread_filters() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("compact-recv-{ts}");
@@ -528,7 +474,7 @@ async fn compact_context_respects_repo_tag_and_thread_filters() {
         (drop_body.as_str(), "other-repo", "planning", "other-thread"),
     ] {
         let resp = client
-            .post(format!("{BASE_URL}/messages"))
+            .post(format!("{base_url}/messages"))
             .json(&json!({
                 "sender": format!("http-tester-{ts}"),
                 "recipient": agent,
@@ -544,7 +490,7 @@ async fn compact_context_respects_repo_tag_and_thread_filters() {
     }
 
     let resp = client
-        .post(format!("{BASE_URL}/compact-context"))
+        .post(format!("{base_url}/compact-context"))
         .json(&json!({
             "agent": agent,
             "repo": "wezterm",
@@ -578,15 +524,14 @@ async fn compact_context_respects_repo_tag_and_thread_filters() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn post_message_missing_sender_returns_400() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "recipient": "some-agent",
             "topic": "test",
@@ -611,15 +556,14 @@ async fn post_message_missing_sender_returns_400() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn post_message_empty_sender_returns_400() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": "   ",
             "recipient": "some-agent",
@@ -643,15 +587,14 @@ async fn post_message_empty_sender_returns_400() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn post_message_empty_body_returns_400() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": "http-tester",
             "recipient": "some-agent",
@@ -670,15 +613,14 @@ async fn post_message_empty_body_returns_400() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn get_messages_returns_array() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .get(format!("{BASE_URL}/messages"))
+        .get(format!("{base_url}/messages"))
         .send()
         .await
         .expect("GET /messages failed");
@@ -692,18 +634,17 @@ async fn get_messages_returns_array() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn get_messages_toon_encoding_returns_text() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     // First send a message so we have something to read back.
     let ts = unique_suffix();
     let agent = format!("http-toon-test-{ts}");
     client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": &agent,
             "recipient": &agent,
@@ -717,7 +658,7 @@ async fn get_messages_toon_encoding_returns_text() {
 
     let resp = client
         .get(format!(
-            "{BASE_URL}/messages?agent={agent}&encoding=toon&since=1"
+            "{base_url}/messages?agent={agent}&encoding=toon&since=1"
         ))
         .send()
         .await
@@ -749,12 +690,11 @@ async fn get_messages_toon_encoding_returns_text() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn toon_format_matches_spec() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let from_agent = format!("toon-sender-{ts}");
@@ -762,7 +702,7 @@ async fn toon_format_matches_spec() {
 
     // Send a message with known content and tags.
     client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": &from_agent,
             "recipient": &to_agent,
@@ -777,7 +717,7 @@ async fn toon_format_matches_spec() {
     // Read back with TOON encoding filtered to our unique recipient.
     let resp = client
         .get(format!(
-            "{BASE_URL}/messages?agent={to_agent}&encoding=toon&since=1"
+            "{base_url}/messages?agent={to_agent}&encoding=toon&since=1"
         ))
         .send()
         .await
@@ -807,12 +747,11 @@ async fn toon_format_matches_spec() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn read_filters_apply_to_topic_repo_session_tag_and_thread_id() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("filter-sender-{ts}");
@@ -822,7 +761,7 @@ async fn read_filters_apply_to_topic_repo_session_tag_and_thread_id() {
     let thread_id = format!("thread-{ts}");
 
     client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": &sender,
             "recipient": &recipient,
@@ -840,9 +779,7 @@ async fn read_filters_apply_to_topic_repo_session_tag_and_thread_id() {
         .expect("send failed");
 
     let resp = client
-        .get(format!(
-            "{BASE_URL}/messages?agent={recipient}&topic=filter-test&repo={repo}&session={session}&thread_id={thread_id}&since=1&limit=10"
-        ))
+        .get(format!("{base_url}/messages?agent={recipient}&topic=filter-test&repo={repo}&session={session}&thread_id={thread_id}&since=1&limit=10"))
         .send()
         .await
         .expect("filtered read failed");
@@ -875,9 +812,7 @@ async fn read_filters_apply_to_topic_repo_session_tag_and_thread_id() {
     );
 
     let wrong_topic = client
-        .get(format!(
-            "{BASE_URL}/messages?agent={recipient}&topic=Filter-Test&repo={repo}&session={session}&thread_id={thread_id}&since=1&limit=10"
-        ))
+        .get(format!("{base_url}/messages?agent={recipient}&topic=Filter-Test&repo={repo}&session={session}&thread_id={thread_id}&since=1&limit=10"))
         .send()
         .await
         .expect("wrong-topic filtered read failed");
@@ -888,12 +823,11 @@ async fn read_filters_apply_to_topic_repo_session_tag_and_thread_id() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn toon_body_truncated_at_120_chars() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("toon-trunc-{ts}");
@@ -901,7 +835,7 @@ async fn toon_body_truncated_at_120_chars() {
     let long_body: String = std::iter::repeat_n('x', 200).collect();
 
     client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": &agent,
             "recipient": &agent,
@@ -914,16 +848,17 @@ async fn toon_body_truncated_at_120_chars() {
 
     let resp = client
         .get(format!(
-            "{BASE_URL}/messages?agent={agent}&encoding=toon&since=1"
+            "{base_url}/messages?agent={agent}&encoding=toon&since=1"
         ))
         .send()
         .await
         .expect("read failed");
 
     let text = resp.text().await.expect("response not text");
-    if text.is_empty() {
-        return; // No messages to check — timing window, not a failure.
-    }
+    assert!(
+        !text.is_empty(),
+        "isolated message read must return the posted fixture"
+    );
 
     for line in text.lines() {
         // Extract the body portion (everything after the last '] ' or after '#topic ')
@@ -949,18 +884,17 @@ async fn toon_body_truncated_at_120_chars() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn toon_shows_tags_in_brackets() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("toon-tags-{ts}");
 
     client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": &agent,
             "recipient": &agent,
@@ -974,16 +908,17 @@ async fn toon_shows_tags_in_brackets() {
 
     let resp = client
         .get(format!(
-            "{BASE_URL}/messages?agent={agent}&encoding=toon&since=1"
+            "{base_url}/messages?agent={agent}&encoding=toon&since=1"
         ))
         .send()
         .await
         .expect("read failed");
 
     let text = resp.text().await.expect("response not text");
-    if text.is_empty() {
-        return;
-    }
+    assert!(
+        !text.is_empty(),
+        "isolated message read must return the posted fixture"
+    );
 
     let line = text
         .lines()
@@ -1000,12 +935,11 @@ async fn toon_shows_tags_in_brackets() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn large_body_is_compressed_and_decompressed() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("lz4-test-{ts}");
@@ -1013,7 +947,7 @@ async fn large_body_is_compressed_and_decompressed() {
     let large_body = format!("LZ4-compression-test: {} {}", ts, "A".repeat(600));
 
     let send_resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": &agent,
             "recipient": &agent,
@@ -1031,7 +965,7 @@ async fn large_body_is_compressed_and_decompressed() {
     // Read back — body should be transparently decompressed.
     let read_resp = client
         .get(format!(
-            "{BASE_URL}/messages?agent={agent}&since=1&limit=10"
+            "{base_url}/messages?agent={agent}&since=1&limit=10"
         ))
         .send()
         .await
@@ -1071,12 +1005,11 @@ async fn large_body_is_compressed_and_decompressed() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn small_body_not_compressed() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("no-lz4-{ts}");
@@ -1084,7 +1017,7 @@ async fn small_body_not_compressed() {
     let small_body = format!("small-body-{ts}");
 
     let send_resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": &agent,
             "recipient": &agent,
@@ -1112,16 +1045,15 @@ async fn small_body_not_compressed() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn batch_send_three_messages_returns_three_ids() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resp = client
-        .post(format!("{BASE_URL}/messages/batch"))
+        .post(format!("{base_url}/messages/batch"))
         .json(&json!({
             "messages": [
                 {"sender": "batch-agent", "recipient": format!("batch-recv-{ts}"), "topic": "batch", "body": "msg1"},
@@ -1147,15 +1079,14 @@ async fn batch_send_three_messages_returns_three_ids() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn batch_send_empty_array_returns_400() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .post(format!("{BASE_URL}/messages/batch"))
+        .post(format!("{base_url}/messages/batch"))
         .json(&json!({"messages": []}))
         .send()
         .await
@@ -1169,12 +1100,11 @@ async fn batch_send_empty_array_returns_400() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn batch_send_over_100_messages_returns_400() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let messages: Vec<Value> = (0..=100)
         .map(|i| {
@@ -1188,7 +1118,7 @@ async fn batch_send_over_100_messages_returns_400() {
         .collect();
 
     let resp = client
-        .post(format!("{BASE_URL}/messages/batch"))
+        .post(format!("{base_url}/messages/batch"))
         .json(&json!({"messages": messages}))
         .send()
         .await
@@ -1211,18 +1141,17 @@ async fn batch_send_over_100_messages_returns_400() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn batch_ack_valid_ids_returns_ok() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     // Send two messages first to get real IDs.
     let ts = unique_suffix();
     let agent = format!("batch-ack-agent-{ts}");
     let batch_resp = client
-        .post(format!("{BASE_URL}/messages/batch"))
+        .post(format!("{base_url}/messages/batch"))
         .json(&json!({
             "messages": [
                 {"sender": &agent, "recipient": &agent, "topic": "test", "body": "ack-me-1"},
@@ -1243,7 +1172,7 @@ async fn batch_ack_valid_ids_returns_ok() {
 
     // Now batch-ack them.
     let ack_resp = client
-        .post(format!("{BASE_URL}/ack/batch"))
+        .post(format!("{base_url}/ack/batch"))
         .json(&json!({
             "agent": &agent,
             "message_ids": ids,
@@ -1262,12 +1191,11 @@ async fn batch_ack_valid_ids_returns_ok() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn direct_channel_send_and_read() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("direct-sender-{ts}");
@@ -1275,7 +1203,7 @@ async fn direct_channel_send_and_read() {
 
     // POST to direct channel.
     let send_resp = client
-        .post(format!("{BASE_URL}/channels/direct/{recipient}"))
+        .post(format!("{base_url}/channels/direct/{recipient}"))
         .json(&json!({
             "sender": &sender,
             "body": format!("direct-msg-{ts}"),
@@ -1298,7 +1226,7 @@ async fn direct_channel_send_and_read() {
     // GET from direct channel — reading as the recipient viewing conversation with sender.
     let read_resp = client
         .get(format!(
-            "{BASE_URL}/channels/direct/{sender}?agent={recipient}"
+            "{base_url}/channels/direct/{sender}?agent={recipient}"
         ))
         .send()
         .await
@@ -1319,16 +1247,15 @@ async fn direct_channel_send_and_read() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn escalate_channel_sets_high_priority() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resp = client
-        .post(format!("{BASE_URL}/channels/escalate"))
+        .post(format!("{base_url}/channels/escalate"))
         .json(&json!({
             "sender": format!("escalate-agent-{ts}"),
             "body": format!("urgent issue {ts}"),
@@ -1368,12 +1295,11 @@ async fn escalate_channel_sets_high_priority() {
 /// `to` field of the returned message. It is self-contained — the presence
 /// record expires on its own TTL.
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn escalate_routes_to_orchestrator_when_present() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let orch_agent = format!("orchestrator-{ts}");
@@ -1381,7 +1307,7 @@ async fn escalate_routes_to_orchestrator_when_present() {
 
     // Register the orchestrator agent with the required capability.
     let presence_resp = client
-        .put(format!("{BASE_URL}/presence/{orch_agent}"))
+        .put(format!("{base_url}/presence/{orch_agent}"))
         .json(&json!({
             "status": "online",
             "capabilities": ["orchestration"],
@@ -1399,7 +1325,7 @@ async fn escalate_routes_to_orchestrator_when_present() {
 
     // Post the escalation.
     let resp = client
-        .post(format!("{BASE_URL}/channels/escalate"))
+        .post(format!("{base_url}/channels/escalate"))
         .json(&json!({
             "sender": sender,
             "body": format!("escalation for orchestrator test {ts}"),
@@ -1435,16 +1361,15 @@ async fn escalate_routes_to_orchestrator_when_present() {
 /// Verify that batch send returns 400 (not 422) when the messages array field
 /// is missing from the request body. This covers Deviation 1 for the batch endpoint.
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn batch_send_missing_messages_field_returns_400() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     // Send a body that is missing the required `messages` field entirely.
     let resp = client
-        .post(format!("{BASE_URL}/messages/batch"))
+        .post(format!("{base_url}/messages/batch"))
         .json(&json!({"unexpected_field": "value"}))
         .send()
         .await
@@ -1466,16 +1391,15 @@ async fn batch_send_missing_messages_field_returns_400() {
 /// Verify that batch ack returns 400 (not 422) when the required `agent` field
 /// is missing. This covers Deviation 1 for the batch-ack endpoint.
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn batch_ack_missing_agent_field_returns_400() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     // Omit the required `agent` field.
     let resp = client
-        .post(format!("{BASE_URL}/ack/batch"))
+        .post(format!("{base_url}/ack/batch"))
         .json(&json!({"message_ids": ["fake-id-1"]}))
         .send()
         .await
@@ -1495,19 +1419,18 @@ async fn batch_ack_missing_agent_field_returns_400() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn arbitrate_first_claim_granted() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resource = format!("test-resource-{ts}");
     let first_agent = format!("claimer-1-{ts}");
 
     let resp = client
-        .post(format!("{BASE_URL}/channels/arbitrate/{resource}"))
+        .post(format!("{base_url}/channels/arbitrate/{resource}"))
         .json(&json!({
             "agent": &first_agent,
             "priority_argument": "first to edit",
@@ -1532,12 +1455,11 @@ async fn arbitrate_first_claim_granted() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn arbitrate_second_claim_is_contested() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resource = format!("contested-resource-{ts}");
@@ -1546,7 +1468,7 @@ async fn arbitrate_second_claim_is_contested() {
 
     // First claim.
     client
-        .post(format!("{BASE_URL}/channels/arbitrate/{resource}"))
+        .post(format!("{base_url}/channels/arbitrate/{resource}"))
         .json(&json!({"agent": &first_agent}))
         .send()
         .await
@@ -1554,7 +1476,7 @@ async fn arbitrate_second_claim_is_contested() {
 
     // Second claim — should show contested state.
     let resp = client
-        .post(format!("{BASE_URL}/channels/arbitrate/{resource}"))
+        .post(format!("{base_url}/channels/arbitrate/{resource}"))
         .json(&json!({
             "agent": &second_agent,
             "priority_argument": "I need it too",
@@ -1573,12 +1495,11 @@ async fn arbitrate_second_claim_is_contested() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn arbitrate_get_state_shows_claims() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resource = format!("state-check-resource-{ts}");
@@ -1586,7 +1507,7 @@ async fn arbitrate_get_state_shows_claims() {
 
     // Post a claim.
     client
-        .post(format!("{BASE_URL}/channels/arbitrate/{resource}"))
+        .post(format!("{base_url}/channels/arbitrate/{resource}"))
         .json(&json!({"agent": &agent}))
         .send()
         .await
@@ -1594,7 +1515,7 @@ async fn arbitrate_get_state_shows_claims() {
 
     // GET arbitration state.
     let resp = client
-        .get(format!("{BASE_URL}/channels/arbitrate/{resource}"))
+        .get(format!("{base_url}/channels/arbitrate/{resource}"))
         .send()
         .await
         .expect("GET /channels/arbitrate/:resource failed");
@@ -1608,12 +1529,11 @@ async fn arbitrate_get_state_shows_claims() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn arbitrate_resolve_sets_winner() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let resource = format!("resolve-resource-{ts}");
@@ -1622,14 +1542,14 @@ async fn arbitrate_resolve_sets_winner() {
 
     // Establish a contested state.
     client
-        .post(format!("{BASE_URL}/channels/arbitrate/{resource}"))
+        .post(format!("{base_url}/channels/arbitrate/{resource}"))
         .json(&json!({"agent": &agent_a}))
         .send()
         .await
         .expect("claim a failed");
 
     client
-        .post(format!("{BASE_URL}/channels/arbitrate/{resource}"))
+        .post(format!("{base_url}/channels/arbitrate/{resource}"))
         .json(&json!({"agent": &agent_b}))
         .send()
         .await
@@ -1637,7 +1557,7 @@ async fn arbitrate_resolve_sets_winner() {
 
     // Resolve in favour of agent_a.
     let resp = client
-        .put(format!("{BASE_URL}/channels/arbitrate/{resource}/resolve"))
+        .put(format!("{base_url}/channels/arbitrate/{resource}/resolve"))
         .json(&json!({
             "winner": &agent_a,
             "reason": "agent_a has higher priority task",
@@ -1669,18 +1589,17 @@ async fn arbitrate_resolve_sets_winner() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn put_presence_returns_200() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("presence-test-{ts}");
 
     let resp = client
-        .put(format!("{BASE_URL}/presence/{agent}"))
+        .put(format!("{base_url}/presence/{agent}"))
         .json(&json!({
             "status": "online",
             "capabilities": ["test", "http"],
@@ -1705,15 +1624,14 @@ async fn put_presence_returns_200() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn get_presence_returns_array() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .get(format!("{BASE_URL}/presence"))
+        .get(format!("{base_url}/presence"))
         .send()
         .await
         .expect("GET /presence failed");
@@ -1727,25 +1645,24 @@ async fn get_presence_returns_array() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn get_presence_toon_encoding() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     // First register a presence so we have something to show.
     let ts = unique_suffix();
     let agent = format!("toon-presence-{ts}");
     client
-        .put(format!("{BASE_URL}/presence/{agent}"))
+        .put(format!("{base_url}/presence/{agent}"))
         .json(&json!({"status": "online", "ttl_seconds": 30}))
         .send()
         .await
         .expect("presence set failed");
 
     let resp = client
-        .get(format!("{BASE_URL}/presence?encoding=toon"))
+        .get(format!("{base_url}/presence?encoding=toon"))
         .send()
         .await
         .expect("GET /presence?encoding=toon failed");
@@ -1772,12 +1689,11 @@ async fn get_presence_toon_encoding() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn pending_ack_message_appears_in_pending_list() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("ack-sender-{ts}");
@@ -1785,7 +1701,7 @@ async fn pending_ack_message_appears_in_pending_list() {
 
     // Send a message with request_ack=true.
     let send_resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": &sender,
             "recipient": &receiver,
@@ -1803,7 +1719,7 @@ async fn pending_ack_message_appears_in_pending_list() {
 
     // GET /pending-acks — the message should appear.
     let pending_resp = client
-        .get(format!("{BASE_URL}/pending-acks?agent={receiver}"))
+        .get(format!("{base_url}/pending-acks?agent={receiver}"))
         .send()
         .await
         .expect("GET /pending-acks failed");
@@ -1825,12 +1741,11 @@ async fn pending_ack_message_appears_in_pending_list() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn acknowledged_message_removed_from_pending() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let sender = format!("ack-cycle-sender-{ts}");
@@ -1838,7 +1753,7 @@ async fn acknowledged_message_removed_from_pending() {
 
     // Send with request_ack=true.
     let send_resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": &sender,
             "recipient": &receiver,
@@ -1855,7 +1770,7 @@ async fn acknowledged_message_removed_from_pending() {
 
     // ACK the message.
     let ack_resp = client
-        .post(format!("{BASE_URL}/messages/{msg_id}/ack"))
+        .post(format!("{base_url}/messages/{msg_id}/ack"))
         .json(&json!({
             "agent": &receiver,
             "body": "acknowledged",
@@ -1883,15 +1798,14 @@ async fn acknowledged_message_removed_from_pending() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn post_message_invalid_priority_returns_400() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": "tester",
             "recipient": "recv",
@@ -1911,15 +1825,14 @@ async fn post_message_invalid_priority_returns_400() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn post_message_missing_recipient_returns_400() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": "tester",
             "topic": "test",
@@ -1939,15 +1852,14 @@ async fn post_message_missing_recipient_returns_400() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn batch_send_message_with_bad_priority_returns_400() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .post(format!("{BASE_URL}/messages/batch"))
+        .post(format!("{base_url}/messages/batch"))
         .json(&json!({
             "messages": [{
                 "sender": "tester",
@@ -1973,16 +1885,14 @@ async fn batch_send_message_with_bad_priority_returns_400() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn mcp_get_returns_tool_list() {
+    let base_url = support::base_url();
     // The long-running HTTP service exposes MCP Streamable HTTP at /mcp.
     let client = http_client();
-    let mcp_url = format!("{BASE_URL}/mcp");
+    let mcp_url = format!("{base_url}/mcp");
 
-    let ok = client.get(&mcp_url).send().await.is_ok();
-    if !ok {
-        eprintln!("SKIP: agent-bus HTTP MCP endpoint not running at {mcp_url}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client.get(&mcp_url).send().await.expect("GET /mcp failed");
     assert_eq!(resp.status(), StatusCode::OK);
@@ -2003,15 +1913,14 @@ async fn mcp_get_returns_tool_list() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn mcp_post_initialize_round_trip() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        eprintln!("SKIP: agent-bus not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .post(format!("{BASE_URL}/mcp"))
+        .post(format!("{base_url}/mcp"))
         .header("Mcp-Session-Id", "http-integration-session")
         .json(&json!({
             "jsonrpc": "2.0",
@@ -2045,14 +1954,14 @@ async fn mcp_post_initialize_round_trip() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn dashboard_returns_html() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .get(format!("{BASE_URL}/dashboard"))
+        .get(format!("{base_url}/dashboard"))
         .send()
         .await
         .expect("GET /dashboard failed");
@@ -2068,14 +1977,14 @@ async fn dashboard_returns_html() {
 }
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn dashboard_data_returns_json() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .get(format!("{BASE_URL}/dashboard/data"))
+        .get(format!("{base_url}/dashboard/data"))
         .send()
         .await
         .expect("GET /dashboard/data failed");
@@ -2089,18 +1998,18 @@ async fn dashboard_data_returns_json() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn tasks_crud_flow() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let agent = format!("task-agent-{ts}");
 
     // Get initially empty
     let get_1 = client
-        .get(format!("{BASE_URL}/tasks/{agent}"))
+        .get(format!("{base_url}/tasks/{agent}"))
         .send()
         .await
         .expect("GET /tasks failed");
@@ -2110,7 +2019,7 @@ async fn tasks_crud_flow() {
 
     // Create a task
     let post_resp = client
-        .post(format!("{BASE_URL}/tasks/{agent}"))
+        .post(format!("{base_url}/tasks/{agent}"))
         .json(&json!({
             "task": "Test task",
             "priority": "high",
@@ -2125,7 +2034,7 @@ async fn tasks_crud_flow() {
 
     // Get non-empty
     let get_2 = client
-        .get(format!("{BASE_URL}/tasks/{agent}"))
+        .get(format!("{base_url}/tasks/{agent}"))
         .send()
         .await
         .expect("GET /tasks failed");
@@ -2135,7 +2044,7 @@ async fn tasks_crud_flow() {
 
     // Delete (consume) task
     let delete_resp = client
-        .delete(format!("{BASE_URL}/tasks/{agent}"))
+        .delete(format!("{base_url}/tasks/{agent}"))
         .send()
         .await
         .expect("DELETE /tasks failed");
@@ -2145,7 +2054,7 @@ async fn tasks_crud_flow() {
 
     // Get empty again
     let get_3 = client
-        .get(format!("{BASE_URL}/tasks/{agent}"))
+        .get(format!("{base_url}/tasks/{agent}"))
         .send()
         .await
         .expect("GET /tasks failed");
@@ -2159,14 +2068,14 @@ async fn tasks_crud_flow() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn token_count_estimates_correctly() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        return;
-    }
+    require_service(&client).await;
 
     let resp = client
-        .post(format!("{BASE_URL}/token-count"))
+        .post(format!("{base_url}/token-count"))
         .json(&json!({
             "text": "Hello world"
         }))
@@ -2188,18 +2097,18 @@ async fn token_count_estimates_correctly() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 async fn read_with_repo_session_scoping_prevents_inbox_bleed() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !service_available(&client).await {
-        return;
-    }
+    require_service(&client).await;
 
     let ts = unique_suffix();
     let recipient = format!("isolated-recv-{ts}");
 
     // Message 1: Repo A, Session 1
     client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": format!("sender-{ts}"),
             "recipient": &recipient,
@@ -2213,7 +2122,7 @@ async fn read_with_repo_session_scoping_prevents_inbox_bleed() {
 
     // Message 2: Repo B, Session 1
     client
-        .post(format!("{BASE_URL}/messages"))
+        .post(format!("{base_url}/messages"))
         .json(&json!({
             "sender": format!("sender-{ts}"),
             "recipient": &recipient,
@@ -2228,7 +2137,7 @@ async fn read_with_repo_session_scoping_prevents_inbox_bleed() {
     // Read bound to Repo A
     let read_a = client
         .get(format!(
-            "{BASE_URL}/messages?agent={recipient}&repo=A&since=10"
+            "{base_url}/messages?agent={recipient}&repo=A&since=10"
         ))
         .send()
         .await
@@ -2240,7 +2149,7 @@ async fn read_with_repo_session_scoping_prevents_inbox_bleed() {
     // Read bound to Repo B
     let read_b = client
         .get(format!(
-            "{BASE_URL}/messages?agent={recipient}&repo=B&since=10"
+            "{base_url}/messages?agent={recipient}&repo=B&since=10"
         ))
         .send()
         .await

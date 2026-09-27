@@ -1,43 +1,13 @@
-//! CLI/HTTP parity integration tests.
-//!
-//! Verifies that the CLI binary and the HTTP server agree on three flows that
-//! were previously only covered on a single surface:
-//!
-//! 1. `read-direct` over **real direct-channel traffic** — a message posted via
-//!    the CLI `post-direct` command is read back identically via both the CLI
-//!    `read-direct` command and the HTTP `GET /channels/direct/:agent` route.
-//!    Direct-channel streams (`bus:direct:<lo>:<hi>`) are global Redis keys
-//!    independent of the configurable main stream, so a CLI subprocess and the
-//!    running HTTP server share them.
-//! 2. `compact-context` — main-stream messages scoped by a unique `thread_id`
-//!    and repo tag are compacted identically via the CLI `compact-context`
-//!    command and the HTTP `POST /compact-context` route.
-//! 3. thread-summary — main-stream messages tagged with a unique `thread_id`
-//!    are aggregated by the CLI `summarize-thread` command.
-//!
-//! Prerequisites: the agent-bus HTTP server must be running at `localhost:8400`
-//! with the default Redis (`:6380`). All tests skip gracefully when the server
-//! is not reachable. The CLI subprocesses are run with **default settings** (no
-//! `AGENT_BUS_STREAM_KEY` override) so they target the same Redis keys as the
-//! running server.
-//!
-//! Isolation: every test derives unique agent / thread / repo names from a
-//! millisecond timestamp plus an atomic counter.
-//!
-//! # Running
-//!
-//! ```text
-//! cargo test -p agent-bus --test cli_http_parity_test -- --test-threads=1
-//! ```
+//! Integration coverage for explicitly provisioned disposable services.
+//! Run through scripts/ci isolated-service harness; ordinary tests ignore live cases.
+
+mod support;
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
-
-const BASE_URL: &str = "http://localhost:8400";
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -54,31 +24,18 @@ fn unique_suffix() -> String {
     format!("{ms}-{n}")
 }
 
-/// Returns `true` when the HTTP server is reachable.
-fn http_available(client: &reqwest::blocking::Client) -> bool {
-    client.get(format!("{BASE_URL}/health")).send().is_ok()
+/// Require the selected disposable HTTP server and backing stores.
+fn require_service(client: &reqwest::blocking::Client) {
+    support::require_http_blocking(client);
 }
 
 fn http_client() -> reqwest::blocking::Client {
-    let mut headers = HeaderMap::new();
-    if let Ok(token) = std::env::var("AGENT_BUS_AUTH_TOKEN")
-        && !token.is_empty()
-    {
-        let value = HeaderValue::from_str(&format!("Bearer {token}"))
-            .expect("AGENT_BUS_AUTH_TOKEN should be a valid HTTP header value");
-        headers.insert(AUTHORIZATION, value);
-    }
-
-    reqwest::blocking::Client::builder()
-        .default_headers(headers)
-        .build()
-        .expect("failed to build HTTP test client")
+    support::blocking_http_client()
 }
 
-/// The CLI binary, with **default** settings so its Redis keys match the
-/// running HTTP server.
+/// The CLI binary with settings matching the disposable HTTP server.
 fn agent_bus_binary() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_agent-bus"))
+    support::agent_bus_binary()
 }
 
 // ---------------------------------------------------------------------------
@@ -86,12 +43,11 @@ fn agent_bus_binary() -> Command {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 fn read_direct_parity_cli_and_http() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !http_available(&client) {
-        eprintln!("SKIP: agent-bus HTTP not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client);
 
     let suffix = unique_suffix();
     let agent_a = format!("parity-a-{suffix}");
@@ -149,7 +105,7 @@ fn read_direct_parity_cli_and_http() {
     //     viewing the conversation with agent_a.
     let http_resp = client
         .get(format!(
-            "{BASE_URL}/channels/direct/{agent_a}?agent={agent_b}"
+            "{base_url}/channels/direct/{agent_a}?agent={agent_b}"
         ))
         .send()
         .expect("GET /channels/direct failed");
@@ -182,16 +138,15 @@ fn read_direct_parity_cli_and_http() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 #[expect(
     clippy::too_many_lines,
     reason = "linear seed -> HTTP-compact -> CLI-compact -> parity-assert flow reads clearer inline than split across helpers"
 )]
 fn compact_context_parity_cli_and_http() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !http_available(&client) {
-        eprintln!("SKIP: agent-bus HTTP not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client);
 
     let suffix = unique_suffix();
     let recipient = format!("compact-parity-{suffix}");
@@ -207,7 +162,7 @@ fn compact_context_parity_cli_and_http() {
         (drop_body.as_str(), "other-repo", "other-thread"),
     ] {
         let resp = client
-            .post(format!("{BASE_URL}/messages"))
+            .post(format!("{base_url}/messages"))
             .json(&json!({
                 "sender": format!("compact-sender-{suffix}"),
                 "recipient": recipient,
@@ -223,7 +178,7 @@ fn compact_context_parity_cli_and_http() {
 
     // (a) compact-context via HTTP.
     let http_resp = client
-        .post(format!("{BASE_URL}/compact-context"))
+        .post(format!("{base_url}/compact-context"))
         .json(&json!({
             "agent": recipient,
             "repo": repo,
@@ -309,16 +264,15 @@ fn compact_context_parity_cli_and_http() {
 // ---------------------------------------------------------------------------
 
 #[test]
+#[ignore = "requires explicit disposable target; use isolated integration harness"]
 #[expect(
     clippy::too_many_lines,
     reason = "linear seed -> durable-summary poll -> aggregate-assert flow reads clearer inline than split across helpers"
 )]
 fn summarize_thread_aggregates_thread_traffic() {
+    let base_url = support::base_url();
     let client = http_client();
-    if !http_available(&client) {
-        eprintln!("SKIP: agent-bus HTTP not running at {BASE_URL}");
-        return;
-    }
+    require_service(&client);
 
     let suffix = unique_suffix();
     let thread_id = format!("summary-thread-{suffix}");
@@ -349,7 +303,7 @@ fn summarize_thread_aggregates_thread_traffic() {
     ];
     for (sender, topic, body, tid) in seeds {
         let resp = client
-            .post(format!("{BASE_URL}/messages"))
+            .post(format!("{base_url}/messages"))
             .json(&json!({
                 "sender": sender,
                 "recipient": "all",

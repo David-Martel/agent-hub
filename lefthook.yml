@@ -1,27 +1,24 @@
 # Agent Hub — Lefthook Configuration
 # Install: lefthook install
 
-skip_output:
-  - meta
-
 pre-commit:
   parallel: true
   commands:
     rust-fmt:
       root: "."
-      glob: "*.rs"
-      run: cargo fmt -- --check
+      glob: ["*.rs", "**/*.rs"]
+      run: cargo fmt --all --check
 
     rust-clippy:
       root: "."
-      glob: "*.rs"
+      glob: ["*.rs", "**/*.rs"]
       env:
         RUSTC_WRAPPER: ""
-      run: cargo clippy --all-targets --quiet -- -D warnings
+      run: cargo clippy --workspace --all-targets --quiet -- -D warnings
 
     ast-grep-rust:
       root: "."
-      glob: "*.rs"
+      glob: ["*.rs", "**/*.rs"]
       run: sg scan --config ~/.claude/sgconfig.yml {staged_files} 2>/dev/null; exit 0
 
 pre-push:
@@ -29,10 +26,9 @@ pre-push:
   commands:
     rust-test:
       root: "."
-      glob: "*.rs"
       env:
         RUSTC_WRAPPER: ""
-      run: cargo test --quiet
+      run: cargo test --workspace --lib --bins --quiet && cargo test -p agent-bus --test integration_isolation_test --quiet
 
     rust-audit:
       root: "."

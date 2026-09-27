@@ -64,8 +64,14 @@ cargo clippy --workspace --all-targets -- -D warnings
 # Tests (unit only, no external services)
 cargo test --workspace --lib --bins
 
-# Integration tests (requires Redis :6380 + PostgreSQL :5300)
-cargo test --workspace --test '*'
+# Integration tests (Python 3.10+, Cargo, local Docker Linux containers)
+python scripts/ci/isolated-services.py integration
+
+# Pure integration-isolation guard tests (no services)
+cargo test -p agent-bus --test integration_isolation_test
+
+# History migration contract (fresh disposable PostgreSQL container)
+python scripts/ci/isolated-services.py history
 
 # Benchmarks (criterion: token estimation, TOON, MessagePack)
 cargo bench --workspace
@@ -175,8 +181,24 @@ Example configs for all platforms live in `examples/mcp/`.
 
 Lefthook (install with `lefthook install`):
 - **pre-commit** (parallel): `cargo fmt --check`, `cargo clippy`, `ast-grep scan`
-- **pre-push** (parallel): `cargo test`, `cargo audit`
+- **pre-push** (parallel): workspace library/binary tests plus the pure integration-isolation guard, `cargo audit`
 - **commit-msg**: conventional commit format advisory
+
+Never run live integration targets against the shared bus. Their tests are
+ignored by default and require the isolated harness's explicit test URLs, run
+identity and authentication. The harness removes inherited agent-bus settings,
+uses an empty temporary config and fresh containers, and verifies the owned
+HTTP PID, service identity, backend URLs and authenticated admin read before
+test mutations. It runs all four CLI targets, including parity, serially with
+`--include-ignored`. Missing Docker, failed readiness and missing Cargo targets
+fail the job; they are not successful skips. Cleanup removes only captured
+container IDs and owned subprocesses. See AGENTS.md for the environment
+contract and harness unit-test command.
+
+Functional smoke CI uses the same disposable backends through
+`python scripts/ci/isolated-services.py smoke --cli <artifact> --http <artifact>`.
+This requires PowerShell 7 and healthy PostgreSQL. History migration CI runs in
+its own disposable container; it never drops a database on the shared server.
 
 ## Rust Conventions
 
