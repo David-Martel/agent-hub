@@ -18,6 +18,12 @@ tokio = { version = "1.0", features = ["full"] }
 rmcp = { version = "3", features = ["server", "transport-async-rw"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# #78: the stdio MCP server proxies to a configured remote hub instead of
+# silently reading its own local store. Async client only (no "blocking"
+# feature) — the actual call runs via tokio::task::block_in_place from
+# inside the already-running multi-thread runtime (see hub_transport.rs),
+# matching the pattern agent-bus-cli's server_mode.rs already uses.
+reqwest = { version = "0.13", features = ["json"], default-features = false }
 
 [lints]
 workspace = true

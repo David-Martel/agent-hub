@@ -13,10 +13,11 @@ use rmcp::model::{
     InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
 };
 
-use agent_bus_core::mcp_dispatch::{
-    McpToolDispatch, ToolDefinition, tool_definitions, validate_tool_arguments,
-};
+use agent_bus_core::mcp_dispatch::{ToolDefinition, tool_definitions, validate_tool_arguments};
+use agent_bus_core::remote_dispatch::RoutingDispatch;
 use agent_bus_core::settings::Settings;
+
+use crate::hub_transport::HttpMcpTransport;
 
 /// Convert a [`ToolDefinition`] into an `rmcp::model::Tool`.
 fn to_rmcp_tool(def: ToolDefinition) -> Tool {
@@ -79,7 +80,11 @@ impl AgentBusMcpServer {
             return Err(rmcp::ErrorData::invalid_params(error.to_string(), None));
         }
 
-        let dispatch = McpToolDispatch::new(&self.settings);
+        // #78: route through the configured remote hub candidates when
+        // present, refuse loudly when configured but unreachable, and
+        // dispatch locally only when no candidates are configured at all —
+        // never a silent local fallback presented as fleet state.
+        let dispatch = RoutingDispatch::new(&self.settings, HttpMcpTransport::new(&self.settings));
         match dispatch.dispatch_tool(&request.name, args_map) {
             Ok(ref value) => Ok(Self::ok_content(value).into()),
             Err(agent_bus_core::error::AgentBusError::InvalidParams(message)) => {
@@ -137,10 +142,10 @@ mod tests {
     use agent_bus_core::redis_bus::notification_cursor_key;
 
     /// Helper: create a dispatch instance for tests that do not need Redis/PG.
-    fn test_dispatch() -> McpToolDispatch<'static> {
+    fn test_dispatch() -> agent_bus_core::mcp_dispatch::McpToolDispatch<'static> {
         // Leak a Settings to get a 'static reference — acceptable in test code.
         let settings = Box::leak(Box::new(agent_bus_core::settings::Settings::from_env()));
-        McpToolDispatch::new(settings)
+        agent_bus_core::mcp_dispatch::McpToolDispatch::new(settings)
     }
 
     #[test]

@@ -6,6 +6,8 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use reqwest::StatusCode;
 
+use agent_bus_core::hub::{HubBackend, ProbeInfo, resolve_hub};
+
 use crate::settings::Settings;
 
 #[cfg(feature = "server-mode")]
@@ -121,14 +123,60 @@ fn run_server_future<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
 
 /// Returns `true` when the caller should route through the HTTP service
 /// instead of connecting to Redis directly.
+///
+/// Checks the whole ordered candidate list (`server_urls`), not just the
+/// single-URL `server_url` alias, so `AGENT_BUS_SERVER_URLS` alone (with no
+/// `AGENT_BUS_SERVER_URL`) is enough to opt a command into server mode (#78).
 #[cfg(feature = "server-mode")]
 pub(crate) fn use_server_mode(settings: &Settings) -> bool {
-    settings.server_url.is_some()
+    !settings.server_urls.is_empty()
 }
 
 #[cfg(not(feature = "server-mode"))]
 pub(crate) fn use_server_mode(_settings: &Settings) -> bool {
     false
+}
+
+/// Probe one candidate hub's `/health` for [`resolve_hub`]. Returns `None` on
+/// any failure — unreachable, timeout, non-2xx, or an unparseable body —
+/// [`resolve_hub`] does not distinguish why a probe failed.
+#[cfg(feature = "server-mode")]
+fn probe_hub_health(url: &str) -> Option<ProbeInfo> {
+    let health = http_get(&format!("{url}/health")).ok()?;
+    Some(ProbeInfo {
+        build_version: health
+            .get("build_version")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+/// Resolve which hub backend `settings.server_urls` currently points at
+/// (#78): the first reachable candidate (`Remote`, `authoritative` iff it was
+/// index 0), `Offline` if candidates are configured but none answered, or
+/// `Local` if none are configured at all. Never falls back to a local Redis
+/// read/write when candidates were configured but unreachable — that is
+/// exactly the split-brain island #78 reports.
+#[cfg(feature = "server-mode")]
+pub(crate) fn active_hub_backend(settings: &Settings) -> HubBackend {
+    resolve_hub(&settings.server_urls, probe_hub_health)
+}
+
+#[cfg(not(feature = "server-mode"))]
+pub(crate) fn active_hub_backend(_settings: &Settings) -> HubBackend {
+    HubBackend::Local
+}
+
+/// Render an `HubBackend::Offline` state as the loud, explicit JSON error
+/// body used by CLI commands that must refuse rather than silently read or
+/// write a local store when no configured hub candidate answered.
+pub(crate) fn offline_error(command: &str, tried: &[String]) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{command}: offline: no authoritative hub reachable (tried {tried:?}). This client is \
+         configured with remote hub candidates (AGENT_BUS_SERVER_URLS/AGENT_BUS_SERVER_URL) and \
+         has no local bus of its own; refusing to silently read or write a local store and \
+         report it as fleet state."
+    )
 }
 
 /// Performs a `GET` request and returns the parsed JSON body.

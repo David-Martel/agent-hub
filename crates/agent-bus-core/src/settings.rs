@@ -41,6 +41,13 @@ pub struct ConfigFile {
     ///
     /// Example: `"http://192.168.1.100:8400"`
     pub server_url: Option<String>,
+    /// Optional ORDERED list of candidate hub URLs, tried in order (e.g. a
+    /// fleet p2p name, then a LAN name, then a tailnet name, then a future
+    /// always-reachable cloud URL). Takes priority over `server_url` as a
+    /// whole tier; `server_url` remains a single-entry convenience alias.
+    ///
+    /// Example: `["http://10.60.4.2:8400", "http://asuspro13.local:8400", "http://100.64.0.3:8400"]`
+    pub server_urls: Option<Vec<String>>,
     /// Suppress non-fatal degraded-mode warnings that would otherwise mix into
     /// machine-readable stdout/stderr captures.
     pub machine_safe: Option<bool>,
@@ -180,6 +187,57 @@ fn resolve_optional_url(
     }
 }
 
+/// Resolve the ordered hub-candidate list.
+///
+/// Tiers (env beats config as a whole tier, matching every other setting):
+/// 1. `AGENT_BUS_SERVER_URLS` env var — comma-separated, entries trimmed,
+///    blanks dropped.
+/// 2. `AGENT_BUS_SERVER_URL` env var — single URL.
+/// 3. `server_urls` in config.json — list, blanks dropped.
+/// 4. `server_url` in config.json — single URL.
+/// 5. Empty (local-only mode).
+///
+/// Whenever only a single URL is configured (tiers 2 or 4), the result is a
+/// one-element list so `server_urls.first()` is identical to the historical
+/// `server_url` field.
+fn resolve_server_url_list(cfg: &ConfigFile) -> Vec<String> {
+    if let Ok(raw) = std::env::var("AGENT_BUS_SERVER_URLS") {
+        let list: Vec<String> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if !list.is_empty() {
+            return list;
+        }
+    }
+    if let Ok(single) = std::env::var("AGENT_BUS_SERVER_URL") {
+        let trimmed = single.trim();
+        if !trimmed.is_empty() {
+            return vec![trimmed.to_owned()];
+        }
+    }
+    if let Some(list) = cfg.server_urls.as_ref() {
+        let list: Vec<String> = list
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if !list.is_empty() {
+            return list;
+        }
+    }
+    if let Some(single) = cfg.server_url.as_deref() {
+        let trimmed = single.trim();
+        if !trimmed.is_empty() {
+            return vec![trimmed.to_owned()];
+        }
+    }
+    Vec::new()
+}
+
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
@@ -216,6 +274,19 @@ pub struct Settings {
     ///
     /// Example values: `"http://localhost:8400"`, `"http://192.168.1.100:8400"`
     pub server_url: Option<String>,
+    /// Ordered candidate hub URLs, tried in order with a short connect
+    /// timeout by [`crate::hub::resolve_hub`]. The first that answers
+    /// `/health` is used; if it is index 0 the hub is `authoritative`,
+    /// otherwise it is a fallback. Empty means local-only mode (this process
+    /// IS the store, e.g. running on the hub host itself).
+    ///
+    /// `server_url` is always `server_urls.first().cloned()`, so every
+    /// existing single-URL caller keeps working unchanged.
+    ///
+    /// Resolution order: `AGENT_BUS_SERVER_URLS` (comma-separated) env var →
+    /// `AGENT_BUS_SERVER_URL` (single) env var → `server_urls` in config.json
+    /// → `server_url` in config.json → empty (local-only).
+    pub server_urls: Vec<String>,
     /// Suppress non-fatal warnings that otherwise pollute machine-readable
     /// output captures during degraded-mode fallbacks.
     pub machine_safe: bool,
@@ -249,6 +320,7 @@ impl Settings {
         }
 
         let cfg = load_config_file();
+        let server_urls = resolve_server_url_list(&cfg);
 
         let startup_enabled_str = resolve(
             "AGENT_BUS_STARTUP_ENABLED",
@@ -331,12 +403,11 @@ impl Settings {
                 .ok()
                 .filter(|s| !s.is_empty())
                 .or_else(|| cfg.session_id.filter(|s| !s.is_empty())),
-            // Server URL for HTTP client mode: env var overrides config file;
-            // empty string treated as absent (falls back to direct Redis mode).
-            server_url: std::env::var("AGENT_BUS_SERVER_URL")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .or_else(|| cfg.server_url.filter(|s| !s.is_empty())),
+            // Server URL for HTTP client mode: single-entry alias for
+            // `server_urls.first()`, always kept in sync so every existing
+            // caller that reads `server_url` alone keeps working unchanged.
+            server_url: server_urls.first().cloned(),
+            server_urls,
             machine_safe: resolve_parse("AGENT_BUS_MACHINE_SAFE", cfg.machine_safe, false),
             // Bearer token for the HTTP server: env var overrides config file;
             // empty string treated as absent (no auth required).
@@ -953,5 +1024,171 @@ mod tests {
         let mut s = Settings::from_env();
         s.machine_safe = true;
         assert!(!s.log_non_fatal_warnings());
+    }
+
+    // -----------------------------------------------------------------------
+    // server_urls — ordered hub-candidate list (#78)
+    // -----------------------------------------------------------------------
+
+    /// Serializes access to the `AGENT_BUS_SERVER_URL{,S}` env vars across
+    /// this module's tests: `cargo test` runs tests in this file on multiple
+    /// threads by default, and these vars are process-global.
+    #[expect(
+        clippy::semicolon_outside_block,
+        reason = "clippy::semicolon_outside_block and clippy::semicolon_if_nothing_returned \
+                  disagree on where the ; belongs for a multi-statement unsafe block used as a \
+                  statement; keeping the ; on each inner statement reads clearer here"
+    )]
+    fn with_server_url_env<T>(urls: Option<&str>, url: Option<&str>, f: impl FnOnce() -> T) -> T {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: serialized by LOCK; no other thread touches these two vars
+        // while the guard is held (every test in this module goes through
+        // this helper or leaves both vars untouched).
+        unsafe {
+            match urls {
+                Some(v) => std::env::set_var("AGENT_BUS_SERVER_URLS", v),
+                None => std::env::remove_var("AGENT_BUS_SERVER_URLS"),
+            }
+            match url {
+                Some(v) => std::env::set_var("AGENT_BUS_SERVER_URL", v),
+                None => std::env::remove_var("AGENT_BUS_SERVER_URL"),
+            }
+        }
+        let result = f();
+        // SAFETY: same justification as above.
+        unsafe {
+            std::env::remove_var("AGENT_BUS_SERVER_URLS");
+            std::env::remove_var("AGENT_BUS_SERVER_URL");
+        }
+        result
+    }
+
+    #[test]
+    fn server_urls_empty_by_default() {
+        with_server_url_env(None, None, || {
+            assert_eq!(
+                resolve_server_url_list(&ConfigFile::default()),
+                Vec::<String>::new()
+            );
+        });
+    }
+
+    #[test]
+    fn server_urls_parses_comma_separated_list_and_trims_entries() {
+        with_server_url_env(
+            Some(" http://10.60.4.2:8400 , http://asuspro13.local:8400,http://100.64.0.3:8400 "),
+            None,
+            || {
+                assert_eq!(
+                    resolve_server_url_list(&ConfigFile::default()),
+                    vec![
+                        "http://10.60.4.2:8400".to_owned(),
+                        "http://asuspro13.local:8400".to_owned(),
+                        "http://100.64.0.3:8400".to_owned(),
+                    ]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn server_urls_drops_blank_entries() {
+        with_server_url_env(Some("http://a:8400,,  ,http://b:8400"), None, || {
+            assert_eq!(
+                resolve_server_url_list(&ConfigFile::default()),
+                vec!["http://a:8400".to_owned(), "http://b:8400".to_owned()]
+            );
+        });
+    }
+
+    #[test]
+    fn server_urls_list_env_takes_priority_over_single_env() {
+        with_server_url_env(Some("http://list:8400"), Some("http://single:8400"), || {
+            assert_eq!(
+                resolve_server_url_list(&ConfigFile::default()),
+                vec!["http://list:8400".to_owned()]
+            );
+        });
+    }
+
+    #[test]
+    fn server_urls_falls_back_to_single_env_when_list_env_absent() {
+        with_server_url_env(None, Some("http://single:8400"), || {
+            assert_eq!(
+                resolve_server_url_list(&ConfigFile::default()),
+                vec!["http://single:8400".to_owned()]
+            );
+        });
+    }
+
+    #[test]
+    fn server_urls_falls_back_to_config_list_when_env_absent() {
+        with_server_url_env(None, None, || {
+            let cfg = ConfigFile {
+                server_urls: Some(vec![
+                    "http://cfg-a:8400".to_owned(),
+                    "http://cfg-b:8400".to_owned(),
+                ]),
+                ..ConfigFile::default()
+            };
+            assert_eq!(
+                resolve_server_url_list(&cfg),
+                vec![
+                    "http://cfg-a:8400".to_owned(),
+                    "http://cfg-b:8400".to_owned()
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn server_urls_falls_back_to_config_single_when_list_and_env_absent() {
+        with_server_url_env(None, None, || {
+            let cfg = ConfigFile {
+                server_url: Some("http://cfg-single:8400".to_owned()),
+                ..ConfigFile::default()
+            };
+            assert_eq!(
+                resolve_server_url_list(&cfg),
+                vec!["http://cfg-single:8400".to_owned()]
+            );
+        });
+    }
+
+    #[test]
+    fn server_url_field_is_first_entry_of_server_urls() {
+        with_server_url_env(Some("http://first:8400,http://second:8400"), None, || {
+            let s = Settings::from_env();
+            assert_eq!(s.server_url.as_deref(), Some("http://first:8400"));
+            assert_eq!(
+                s.server_urls,
+                vec![
+                    "http://first:8400".to_owned(),
+                    "http://second:8400".to_owned()
+                ]
+            );
+        });
+    }
+
+    #[test]
+    fn server_urls_empty_means_local_only() {
+        with_server_url_env(None, None, || {
+            let s = Settings::from_env();
+            assert!(s.server_urls.is_empty());
+            assert!(s.server_url.is_none());
+        });
+    }
+
+    #[test]
+    fn config_file_deserializes_server_urls_list() {
+        let json = r#"{"server_urls": ["http://a:8400", "http://b:8400"]}"#;
+        let cfg: ConfigFile = serde_json::from_str(json).expect("valid JSON");
+        assert_eq!(
+            cfg.server_urls,
+            Some(vec!["http://a:8400".to_owned(), "http://b:8400".to_owned()])
+        );
     }
 }
