@@ -5,6 +5,7 @@
 //! holds the actual tool definitions and dispatch logic.
 
 use std::sync::Arc;
+use std::task::Poll;
 
 use anyhow::Result;
 use rmcp::ServerHandler;
@@ -85,38 +86,45 @@ impl ServerHandler for AgentBusMcpServer {
         )
     }
 
-    async fn list_tools(
+    fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<ListToolsResult, rmcp::ErrorData> {
-        Ok(ListToolsResult::with_all_items(Self::tool_list()))
+    ) -> impl Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send {
+        std::future::poll_fn(|_| {
+            Poll::Ready(Ok(ListToolsResult::with_all_items(Self::tool_list())))
+        })
     }
 
-    async fn call_tool(
+    fn call_tool(
         &self,
         request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> Result<CallToolResponse, rmcp::ErrorData> {
-        if !Self::is_known_tool(&request.name) {
-            return Err(rmcp::ErrorData::invalid_params("tool not found", None));
-        }
-
-        let args = request.arguments.as_ref();
-        let empty = serde_json::Map::new();
-        let args_map = args.unwrap_or(&empty);
-        if let Err(error) = validate_tool_arguments(&request.name, args_map) {
-            return Err(rmcp::ErrorData::invalid_params(error.to_string(), None));
-        }
-
-        let dispatch = McpToolDispatch::new(&self.settings);
-        match dispatch.dispatch_tool(&request.name, args_map) {
-            Ok(ref value) => Ok(Self::ok_content(value).into()),
-            Err(agent_bus_core::error::AgentBusError::InvalidParams(message)) => {
-                Err(rmcp::ErrorData::invalid_params(message, None))
+    ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send {
+        std::future::poll_fn(move |_| {
+            if !Self::is_known_tool(&request.name) {
+                return Poll::Ready(Err(rmcp::ErrorData::invalid_params("tool not found", None)));
             }
-            Err(e) => Ok(Self::err_content(&e).into()),
-        }
+
+            let args = request.arguments.as_ref();
+            let empty = serde_json::Map::new();
+            let args_map = args.unwrap_or(&empty);
+            if let Err(error) = validate_tool_arguments(&request.name, args_map) {
+                return Poll::Ready(Err(rmcp::ErrorData::invalid_params(
+                    error.to_string(),
+                    None,
+                )));
+            }
+
+            let dispatch = McpToolDispatch::new(&self.settings);
+            Poll::Ready(match dispatch.dispatch_tool(&request.name, args_map) {
+                Ok(ref value) => Ok(Self::ok_content(value).into()),
+                Err(agent_bus_core::error::AgentBusError::InvalidParams(message)) => {
+                    Err(rmcp::ErrorData::invalid_params(message, None))
+                }
+                Err(e) => Ok(Self::err_content(&e).into()),
+            })
+        })
     }
 }
 
