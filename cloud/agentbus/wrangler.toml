@@ -65,10 +65,19 @@ new_sqlite_classes = ["BusLog", "ClaimDO"]
 
 # ---------------------------------------------------------------------------
 # Secrets (never committed; set via `wrangler secret put <NAME>` at deploy
-# time, sourced from the Bitwarden `cloudflare.com` item — see README.md):
-#   AGENT_BUS_TOKENS      JSON map: {"<token>": {"agent": "...", "host": "..."}, ...}
-#   AGENT_BUS_AUTH_TOKEN  single shared token, parity fallback with the
-#                         on-site hub's env var name
+# time, sourced from the Bitwarden `cloudflare.com` item — see README.md's
+# "Auth model" section for the full format and a worked example):
+#   AGENT_BUS_TOKENS      JSON OBJECT (never an array — the parser fails
+#                         closed on anything else, agent-hub#82 review N1):
+#                         {"<token, >=32 chars>": {"agent": "...",
+#                          "role": "agent"|"hub"|"operator", "host"?: "...",
+#                          "hub"?: "..." (required for role "hub")}, ...}
+#                         Unknown keys on an entry, or a token shorter than
+#                         32 characters, make that entry fail closed too.
+#   AGENT_BUS_AUTH_TOKEN  single shared token (>=32 chars), parity fallback
+#                         with the on-site hub's env var name — do not set
+#                         AGENT_BUS_DEV_ALLOW_SHARED_TOKEN in production, or
+#                         this becomes live (see README.md)
 # ---------------------------------------------------------------------------
 
 [vars]

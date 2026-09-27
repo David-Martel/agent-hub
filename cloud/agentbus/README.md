@@ -42,6 +42,36 @@ The `AGENT_BUS_AUTH_TOKEN` shared-token fallback is disabled unless
 `agent` — it can never reach `/sync/*` or `resolve` even when enabled. Not
 recommended for production; configure `AGENT_BUS_TOKENS` instead.
 
+### `AGENT_BUS_TOKENS` format, exactly (agent-hub#82 re-review N1)
+
+`AGENT_BUS_TOKENS` MUST be a JSON **object** whose keys are the bearer tokens
+themselves — never a JSON array. `parseTokenMap` (`src/auth.ts`) fails
+CLOSED on the whole secret if the top-level value is an array, `null`, or
+any other non-object shape: every token then gets `401`, rather than the
+array-index bug this closes (a secret accidentally shaped as `[{"agent":
+"op","role":"operator",...}]` made the literal `Bearer 0` authenticate as
+operator, because `Object.entries()` on an array yields index keys). Per
+entry: unknown keys are rejected (the whole entry is dropped, not just the
+unknown field), and the token itself must be **at least 32 characters** —
+both checks fail closed on that one entry, not the whole map.
+
+Worked example (placeholder tokens below are obviously fake — never real
+credentials; a real token is a long random string from your secrets
+manager, not a readable phrase like these):
+
+```json
+{
+  "0000000000000000000000000000dead": { "agent": "claude", "host": "asuspro13", "role": "agent" },
+  "1111111111111111111111111111beef": { "agent": "codex", "host": "asuspro13", "role": "agent" },
+  "2222222222222222222222222222cafe": { "agent": "asuspro13-sync", "role": "hub", "hub": "asuspro13" },
+  "3333333333333333333333333333f00d": { "agent": "operator", "role": "operator" }
+}
+```
+
+Set it with `wrangler secret put AGENT_BUS_TOKENS` and paste the (real,
+never-shared) JSON on stdin — never commit it, and never pass it inline to
+any MCP config or shell history.
+
 `Identity.token` (the raw bearer, previously stashed "for audit logging") has
 been removed — nothing ever logged it, and doing so would leak a live token.
 

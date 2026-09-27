@@ -81,10 +81,27 @@ interface TokenMapEntry {
 }
 
 const VALID_ROLES: readonly Role[] = ["agent", "hub", "operator"];
+const VALID_ENTRY_KEYS: readonly string[] = ["agent", "host", "role", "hub"];
+
+/**
+ * Minimum accepted length for a bearer token, whether it's a key in
+ * `AGENT_BUS_TOKENS` or the `AGENT_BUS_AUTH_TOKEN` shared fallback
+ * (agent-hub#82 re-review N1). 32 is the review's own recommendation — long
+ * enough that a short, guessable, or accidentally-truncated string (a stray
+ * `"0"`, a copy-paste of just the token's prefix) can never authenticate.
+ */
+export const MIN_TOKEN_LEN = 32;
 
 function isValidEntry(entry: unknown): entry is TokenMapEntry {
-  if (!entry || typeof entry !== "object") return false;
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
   const e = entry as Record<string, unknown>;
+  // Reject unknown keys outright (agent-hub#82 re-review N1) — a typo'd or
+  // extra field (e.g. a stray `token` key left over from copy-pasting a
+  // different config shape) is treated as a malformed entry, not silently
+  // ignored.
+  for (const key of Object.keys(e)) {
+    if (!VALID_ENTRY_KEYS.includes(key)) return false;
+  }
   if (typeof e.agent !== "string" || e.agent.length === 0) return false;
   if (e.host !== undefined && typeof e.host !== "string") return false;
   if (typeof e.role !== "string" || !(VALID_ROLES as string[]).includes(e.role)) return false;
@@ -97,13 +114,26 @@ function parseTokenMap(json: string | undefined): Map<string, TokenMapEntry> {
   const map = new Map<string, TokenMapEntry>();
   if (!json) return map;
   try {
-    const parsed = JSON.parse(json) as Record<string, unknown>;
-    for (const [token, entry] of Object.entries(parsed)) {
+    const parsed: unknown = JSON.parse(json);
+    // Fail closed on the WHOLE secret if the top-level shape is wrong
+    // (agent-hub#82 re-review N1): `parseTokenMap` used to run
+    // `Object.entries()` on whatever `JSON.parse` returned, including an
+    // ARRAY — `Object.entries(["real-token-object"])` yields `[["0",
+    // {...}]]`, so a secret accidentally (or maliciously) written as a JSON
+    // array made the literal string `"0"` authenticate as that entry's
+    // role, e.g. `Bearer 0` as operator, while the intended real token
+    // matched nothing and got 401. A non-array, non-null object is the only
+    // shape ever accepted; anything else yields an empty map (every token
+    // gets 401 rather than some unintended subset working).
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return map;
+    }
+    for (const [token, entry] of Object.entries(parsed as Record<string, unknown>)) {
       // Fail closed per-entry: a malformed entry (missing role, a hub-role
-      // entry with no `hub`, ...) is simply not accepted, rather than
-      // silently downgrading its privilege or throwing out of the request
-      // path.
-      if (isValidEntry(entry)) {
+      // entry with no `hub`, an unknown key, ...) or a too-short token
+      // string is simply not accepted, rather than silently downgrading its
+      // privilege or throwing out of the request path.
+      if (token.length >= MIN_TOKEN_LEN && isValidEntry(entry)) {
         map.set(token, entry);
       }
     }
@@ -139,6 +169,7 @@ export function authenticate(request: Request, env: AuthEnv): Identity | null {
   if (
     env.AGENT_BUS_DEV_ALLOW_SHARED_TOKEN === "1" &&
     env.AGENT_BUS_AUTH_TOKEN &&
+    env.AGENT_BUS_AUTH_TOKEN.length >= MIN_TOKEN_LEN &&
     timingSafeEqual(token, env.AGENT_BUS_AUTH_TOKEN)
   ) {
     // Least privilege: never hub/operator, so this can't reach /sync/* or

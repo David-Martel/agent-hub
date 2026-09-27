@@ -17,16 +17,21 @@ export default defineConfig({
       // `(origin_hub, id)` composite dedup key). `AGENT_BUS_AUTH_TOKEN` is
       // gated behind `AGENT_BUS_DEV_ALLOW_SHARED_TOKEN` and used only by
       // `health-auth.test.ts` to exercise the dev-fallback path itself.
+      //
+      // agent-hub#82 re-review N1: every token below is >=32 characters —
+      // the parser now rejects a shorter token-map key outright (see
+      // `MIN_TOKEN_LEN` in `src/auth.ts`). Keep in sync with the literal
+      // values in `test/helpers.ts`.
       miniflare: {
         bindings: {
-          AGENT_BUS_AUTH_TOKEN: "test-shared-token",
+          AGENT_BUS_AUTH_TOKEN: "test-shared-token-0123456789012345678901",
           AGENT_BUS_DEV_ALLOW_SHARED_TOKEN: "1",
           AGENT_BUS_TOKENS: JSON.stringify({
-            "test-token-claude": { agent: "claude", host: "test-host", role: "agent" },
-            "test-token-codex": { agent: "codex", host: "test-host", role: "agent" },
-            "test-token-hub-a": { agent: "hub-a-relay", role: "hub", hub: "asuspro13" },
-            "test-token-hub-b": { agent: "hub-b-relay", role: "hub", hub: "spark-0060" },
-            "test-token-operator": { agent: "operator", role: "operator" },
+            "test-token-claude-0123456789012345678901": { agent: "claude", host: "test-host", role: "agent" },
+            "test-token-codex-01234567890123456789012": { agent: "codex", host: "test-host", role: "agent" },
+            "test-token-hub-a-01234567890123456789012": { agent: "hub-a-relay", role: "hub", hub: "asuspro13" },
+            "test-token-hub-b-01234567890123456789012": { agent: "hub-b-relay", role: "hub", hub: "spark-0060" },
+            "test-token-operator-01234567890123456789": { agent: "operator", role: "operator" },
           }),
         },
       },

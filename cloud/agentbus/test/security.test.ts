@@ -15,7 +15,7 @@ import { describe, expect, it } from "vitest";
 // filesystem.
 // eslint-disable-next-line import/no-unresolved
 import wranglerToml from "../wrangler.toml?raw";
-import { authenticate } from "../src/auth";
+import { authenticate, MIN_TOKEN_LEN } from "../src/auth";
 import {
   api,
   apiJson,
@@ -278,6 +278,10 @@ describe("Identity.token removed from the wire (review L3)", () => {
   });
 });
 
+// >=32 chars (agent-hub#82 re-review N1's minimum token length applies to
+// AGENT_BUS_AUTH_TOKEN too, not just AGENT_BUS_TOKENS entries).
+const FAKE_SHARED_TOKEN = "some-shared-token-0000000000000000000"; // pragma: allowlist secret
+
 describe("Shared-token fallback is disabled by default (review H1/L5)", () => {
   it("a request bearing the shared token is rejected when the dev flag is off", () => {
     // Simulate the flag being off by pointing at an env without it — this
@@ -285,21 +289,96 @@ describe("Shared-token fallback is disabled by default (review H1/L5)", () => {
     // so this test instead unit-tests `authenticate()` directly with a
     // fake env, which is pure and needs no Miniflare state.
     const req = new Request("https://example.com/presence", {
-      headers: { authorization: "Bearer some-shared-token" },
+      headers: { authorization: `Bearer ${FAKE_SHARED_TOKEN}` },
     });
-    const identity = authenticate(req, { AGENT_BUS_AUTH_TOKEN: "some-shared-token" }); // no DEV_ALLOW flag  // pragma: allowlist secret
+    const identity = authenticate(req, { AGENT_BUS_AUTH_TOKEN: FAKE_SHARED_TOKEN }); // no DEV_ALLOW flag
     expect(identity).toBeNull();
   });
 
   it("with the dev flag on, the shared token resolves to least-privilege role 'agent', never hub/operator", () => {
     const req = new Request("https://example.com/presence", {
-      headers: { authorization: "Bearer some-shared-token" },
+      headers: { authorization: `Bearer ${FAKE_SHARED_TOKEN}` },
     });
     const identity = authenticate(req, {
-      AGENT_BUS_AUTH_TOKEN: "some-shared-token", // pragma: allowlist secret
+      AGENT_BUS_AUTH_TOKEN: FAKE_SHARED_TOKEN,
       AGENT_BUS_DEV_ALLOW_SHARED_TOKEN: "1",
     });
     expect(identity?.role).toBe("agent");
+  });
+
+  it("a shared token shorter than 32 chars never authenticates, even with the dev flag on (re-review N1)", () => {
+    const shortToken = "short-shared-token"; // pragma: allowlist secret
+    const req = new Request("https://example.com/presence", {
+      headers: { authorization: `Bearer ${shortToken}` },
+    });
+    const identity = authenticate(req, {
+      AGENT_BUS_AUTH_TOKEN: shortToken,
+      AGENT_BUS_DEV_ALLOW_SHARED_TOKEN: "1",
+    });
+    expect(identity).toBeNull();
+  });
+});
+
+describe("N1: AGENT_BUS_TOKENS parser is strict (re-review, MEDIUM-critical-in-practice)", () => {
+  const REAL_TOKEN = "real-token-that-should-have-worked-0000"; // pragma: allowlist secret
+
+  it("an array-shaped token map authenticates NOTHING — not the array index, not the real token", () => {
+    // The exploit: Object.entries(["x"]) yields [["0", "x"]], so a secret
+    // accidentally shaped as a JSON ARRAY made the literal string `Bearer 0`
+    // authenticate as whatever role the sole array entry named — verified
+    // as full operator compromise in the re-review's probe.
+    const arrayShapedSecret = JSON.stringify([
+      { agent: "op", role: "operator", token: REAL_TOKEN },
+    ]);
+    const reqZero = new Request("https://example.com/sync/stats", {
+      headers: { authorization: "Bearer 0" },
+    });
+    expect(authenticate(reqZero, { AGENT_BUS_TOKENS: arrayShapedSecret })).toBeNull();
+
+    const reqReal = new Request("https://example.com/sync/stats", {
+      headers: { authorization: `Bearer ${REAL_TOKEN}` },
+    });
+    expect(authenticate(reqReal, { AGENT_BUS_TOKENS: arrayShapedSecret })).toBeNull();
+  });
+
+  it("a null or non-object top-level value also fails the whole map closed", () => {
+    for (const secret of ['null', '"just a string"', "42", "true"]) {
+      const req = new Request("https://example.com/presence", {
+        headers: { authorization: `Bearer ${REAL_TOKEN}` },
+      });
+      expect(authenticate(req, { AGENT_BUS_TOKENS: secret })).toBeNull();
+    }
+  });
+
+  it("an entry with an unknown key is rejected, not silently accepted with the extra field ignored", () => {
+    const secret = JSON.stringify({
+      [REAL_TOKEN]: { agent: "op", role: "operator", token: REAL_TOKEN },
+    });
+    const req = new Request("https://example.com/sync/stats", {
+      headers: { authorization: `Bearer ${REAL_TOKEN}` },
+    });
+    expect(authenticate(req, { AGENT_BUS_TOKENS: secret })).toBeNull();
+  });
+
+  it("a token shorter than 32 characters never authenticates, even with an otherwise-valid entry", () => {
+    const shortToken = "short-but-otherwise-valid-token";
+    // Deliberately still under 32 to prove the boundary; adjust if the
+    // literal above happens to reach 32 after an edit.
+    expect(shortToken.length).toBeLessThan(MIN_TOKEN_LEN);
+    const secret = JSON.stringify({ [shortToken]: { agent: "op", role: "operator" } });
+    const req = new Request("https://example.com/sync/stats", {
+      headers: { authorization: `Bearer ${shortToken}` },
+    });
+    expect(authenticate(req, { AGENT_BUS_TOKENS: secret })).toBeNull();
+  });
+
+  it("a valid, >=32-char, plain-object entry still authenticates correctly (no over-correction)", () => {
+    const secret = JSON.stringify({ [REAL_TOKEN]: { agent: "op", role: "operator" } });
+    const req = new Request("https://example.com/sync/stats", {
+      headers: { authorization: `Bearer ${REAL_TOKEN}` },
+    });
+    const identity = authenticate(req, { AGENT_BUS_TOKENS: secret });
+    expect(identity).toEqual({ agent: "op", role: "operator" });
   });
 });
 
