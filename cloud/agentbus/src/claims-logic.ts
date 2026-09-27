@@ -6,6 +6,7 @@
  */
 
 import type { OwnershipClaim, ResourceLeaseMode, ResourceScope, RerouteSuggestion } from "./types";
+import { MAX_RESOURCE_NAME_LEN, ValidationError } from "./validation";
 
 const MACHINE_GLOBAL_RESOURCES = [
   "~/bin",
@@ -99,10 +100,38 @@ export function suggestReroute(
 
 export function parseLeaseMode(mode: string): ResourceLeaseMode {
   if (mode === "shared" || mode === "shared_namespaced" || mode === "exclusive") return mode;
-  throw new Error(`invalid lease mode '${mode}'; expected shared|shared_namespaced|exclusive`);
+  // Was a plain `Error` (500-mapped); a bad `mode` value is caller input, so
+  // this should 400 like every other validation failure (agent-hub#82 review).
+  throw new ValidationError(`invalid lease mode '${mode}'; expected shared|shared_namespaced|exclusive`);
 }
 
 export function parseResourceScope(scope: string): ResourceScope {
   if (scope === "repo" || scope === "machine") return scope;
-  throw new Error(`invalid scope '${scope}'; expected repo|machine`);
+  throw new ValidationError(`invalid scope '${scope}'; expected repo|machine`);
+}
+
+/**
+ * Normalizes a claim resource name (agent-hub#82 review M9): folds
+ * backslashes to forward slashes and lowercases, so `Foo.rs`/`foo.rs` and
+ * `a\b`/`a/b` land in the same `ClaimDO` shard instead of each holding its
+ * own independent "exclusive" grant. This is PARITY with the Rust hub's own
+ * `channels.rs:372` backslash folding, plus an ADDITIONAL case-fold this
+ * cloud tier needs that the Rust side does not yet have — see README.md's
+ * "Resource aliasing" note: the two must be kept in sync, or a resource
+ * claimed as `Foo.rs` on-site and `foo.rs` here will silently split across
+ * two independent authorities once the Rust proxy (SYNC-CONTRACT.md §6)
+ * exists. Also strips a leading `./` and caps length so an oversized or
+ * relative-path resource name can't mint an unbounded number of ClaimDOs
+ * (review M6).
+ */
+export function normalizeResourceName(resource: string): string {
+  let normalized = resource.replace(/\\/g, "/").toLowerCase();
+  if (normalized.startsWith("./")) normalized = normalized.slice(2);
+  if (normalized.length === 0) {
+    throw new ValidationError("resource must not be empty");
+  }
+  if (normalized.length > MAX_RESOURCE_NAME_LEN) {
+    throw new ValidationError(`resource exceeds maximum length of ${MAX_RESOURCE_NAME_LEN}`);
+  }
+  return normalized;
 }

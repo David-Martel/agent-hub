@@ -68,7 +68,39 @@ An unreachable cloud tier must never degrade the on-site hub. Concretely:
   `cloud_queue_depth` / `cloud_last_push_age_seconds` — informational, never
   an error returned from `send`/`read`.
 
-## 6. Claims proxy with an explicit lab-scoped fallback
+## 6a. Hub delegation and identity binding (agent-hub#82)
+
+The cloud tier's auth model (`src/auth.ts`) now binds every write-route actor
+field to the caller's bearer-token identity, with one deliberate exception
+this section documents: a **hub-role token may vouch for any agent**.
+
+This is required by §6 below: the future Rust-side proxy authenticates to
+the cloud with ONE hub-role token (asuspro13's own), but forwards claim/
+renew/release/ack/knock/message requests on behalf of MANY different
+real on-site agents (claude, codex, gemini, ...). If hub-role tokens were
+bound the same way agent-role tokens are (body value must equal the token's
+own `agent`), every proxied request would be forced to claim/renew/release/
+send as the HUB's identity, not the real on-site agent — losing exactly the
+end-to-end agent identity the operator's hard requirement calls for.
+
+Concretely:
+- **Agent-role tokens are bound.** A body/path value that disagrees with the
+  token's own `agent`/`host` is a 403; a matching or omitted value resolves
+  to the token's own identity.
+- **Hub- and operator-role tokens may vouch** for any non-empty agent value.
+  `origin_hub` is the one field even a hub-role token cannot override at
+  will beyond its own `hub` — see §6b.
+- The Rust-side proxy (when it lands) MUST set `sender`/`agent`/`from` to the
+  REAL on-site agent's name on every proxied call — vouching is not a license
+  to relabel or omit the real actor. This is a trust boundary the proxy
+  itself owns; the cloud tier can only verify that some hub-role token
+  authorized the request, not that the proxy is telling the truth about
+  which on-site agent originated it. That trust is inherent to the design
+  (the alternative — one cloud token per on-site agent, kept in sync with
+  the fleet's actual agent roster — was rejected as needless fleet-topology
+  coupling for a first cut).
+
+## 6b. origin_hub is exclusively hub-identity-derived
 
 Per the operator's decision in agent-hub#79 (§"Decisions for the operator",
 item 2): **the cloud `ClaimDO` is the global claims authority.** The on-site
@@ -113,26 +145,81 @@ Additive, optional fields on the existing `Health` struct
 
 ## Wire contract (what this Worker actually accepts)
 
-- `POST /sync/push` — body `{ origin_hub: string, messages: SendBody[] }`
+Every route in this section requires a **hub-role** bearer token (`GET
+/sync/pull` also accepts **operator**), and `origin_hub` for the whole
+request is ALWAYS the token's own `hub` field — never a value the caller
+supplies (agent-hub#82 review H5). A body-level `origin_hub` that disagrees
+with the token's `hub` is a 403 for the whole request; a PER-ITEM
+`origin_hub` that disagrees is rejected for that item only (see the
+`rejected` array), not trusted and not a whole-batch failure.
+
+- `POST /sync/push` — body `{ origin_hub?: string, messages: SendBody[] }`
   (see `src/index.ts`'s `SyncPushMessageInput`, a superset of the normal
   `POST /messages` body with `id`, `timestamp_utc`, `protocol_version`,
-  `client_msg_id`, `origin_host`, `origin_hub`, `hlc` all accepted so the
-  origin hub's own values are preserved rather than re-minted by the cloud).
-  Idempotent on `id` **and** `client_msg_id` (either match is a duplicate,
-  reported in the response's `duplicates` array, never re-inserted).
+  `client_msg_id`, `origin_host`, `origin_hub`, `origin_seq`, `hlc` all
+  accepted so the origin hub's own values are preserved rather than re-minted
+  by the cloud). Runs the SAME per-item validation as `POST /messages` —
+  length/NUL/priority/`tags: string[]`/sensitivity/PHI/size — with schema
+  auto-fit deliberately SKIPPED (see §6c below). `id`/`timestamp_utc`/
+  `protocol_version` are validated for FORMAT only (not re-minted), so a
+  historical row keeps its original values.
+  Idempotent on `(origin_hub, id)` **and** `(origin_hub, client_msg_id)`
+  (agent-hub#82 review M5 — scoped by origin, not globally unique, so a
+  cross-origin id collision can never pre-empt another origin's write).
+  A same-origin, same-key hit with IDENTICAL content is a `duplicate`; with
+  DIFFERENT content it's a `conflict` — both reported in their own response
+  arrays, neither ever overwrites the stored row.
   Messages with `sensitivity: "no-offsite"` are always rejected (see the
   `rejected` array in the response) — the origin hub should filter these out
-  before pushing, but the cloud tier enforces it again as defense in depth.
-  Batch limit: 500 messages per call.
+  before pushing, but the cloud tier enforces it again as defense in depth,
+  now FAIL CLOSED on any value other than exactly `internal`/`no-offsite`.
+  Batch limit: 500 messages per call. Does NOT create a `pending_acks` row
+  for `request_ack: true` items (a bulk historical import of thousands of
+  old acks must not create thousands of permanently-stale pending acks).
 - `GET /sync/pull?since=<cursor>&exclude_origin=<hub>&limit=<n>` — paged by a
   monotonic integer cursor (`next_cursor` in the response; pass it back as
   the next call's `since`). `exclude_origin` omits messages whose
   `origin_hub` equals the caller's own hub name, so a hub pulling right after
   pushing doesn't re-ingest its own writes. `has_more` tells the caller
-  whether another page is available.
-- Both endpoints require the same bearer-token auth as every other route
-  (`AGENT_BUS_TOKENS` / `AGENT_BUS_AUTH_TOKEN` — see README.md), so the sync
-  client authenticates exactly like any other agent-bus caller.
+  whether another page is available. A non-integer `since` is a `400`, never
+  a silently-empty page with `next_cursor: null`.
+- `POST /sync/push-presence` (agent-hub#82) — body `{ origin_hub?: string,
+  origin_host?: string, events: [{origin_id: int, timestamp_utc,
+  protocol_version, agent, status, session_id?, capabilities?, metadata?,
+  ttl_seconds?}] }` (<=500 events). Dedups on `(origin_hub, origin_id)` —
+  `origin_id` is the ORIGIN'S OWN row id (e.g. the on-site Postgres
+  `presence_events.id`), not a message id. Response is `{accepted: int,
+  duplicates: int, rejected: [...]}` — COUNTS, not id arrays, matching what
+  the historical importer already expects (see below). Only advances the
+  "current" `GET /presence` row for `(hub, agent)` when the event's
+  `timestamp_utc` is >= what's already stored, so an out-of-order historical
+  replay never clobbers live status with stale data.
+- `GET /sync/stats` (operator role) — returns per-`origin_hub` message and
+  presence counts, for verifying replication volume without reading raw rows.
+- All of the above use the same `AGENT_BUS_TOKENS` bearer auth as every other
+  route (see README.md's "Auth model"), so the sync client authenticates
+  exactly like any other agent-bus caller — it just needs a token with role
+  `hub` (and, for the operator-only `/sync/stats`, a separate `operator`
+  token).
+
+## 6c. Historical-import compatibility (verified against the actual importer)
+
+`~/.local/share/jules-fleet/handoff-2026-09-26/agentbus-import/
+import_pg_export.py` was read in full while building this contract. It
+already targets exactly the shapes above — `POST /sync/push` with
+`{origin_hub, messages}` and array-shaped `accepted`/`duplicates`/`rejected`,
+`POST /sync/push-presence` with `{origin_hub, origin_host, events}` and
+INTEGER `accepted`/`duplicates` — and never sends `origin_seq`. **No importer
+changes are required**, provided its `AGENTBUS_TOKEN` is configured as a
+`hub`-role token whose `hub` field equals the importer's `--origin-hub`
+argument.
+
+Schema auto-fit is skipped on `/sync/push` specifically so this importer's
+historical rows are not mutated on replay: `autoFitSchema` prepends
+`FINDING:`/`SEVERITY:` to an unstructured body inferred to need the
+`finding` schema from its topic, which is correct behavior for a FRESH
+`POST /messages` but would corrupt an already-accepted on-site row being
+imported verbatim years later.
 
 ## What this PR does NOT implement
 

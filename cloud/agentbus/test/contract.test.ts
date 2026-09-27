@@ -39,7 +39,7 @@ describe("contract: Message", () => {
   it("round-trips every field of a fully-populated Rust Message verbatim", async () => {
     const stub = busLogStub();
     const fixture = messageFullFixture as unknown as Record<string, unknown>;
-    const { message: stored } = await stub.insertMessage({
+    const { message: storedMessage } = await stub.insertMessage({
       id: fixture.id as string,
       timestamp_utc: fixture.timestamp_utc as string,
       protocol_version: fixture.protocol_version as string,
@@ -54,8 +54,17 @@ describe("contract: Message", () => {
       reply_to: fixture.reply_to as string,
       metadata: fixture.metadata as never,
       stream_id: fixture.stream_id as string,
+      // origin_hub (agent-hub#82 review M5): REQUIRED at insert time now
+      // (the composite dedup key is `(origin_hub, id)`), but the Rust struct
+      // this fixture was generated from has no such field at all — it is a
+      // cloud-tier-only addition, excluded from the equality check below the
+      // same way `stream_id` already is for the minimal fixture.
+      origin_hub: "contract-test-hub",
     });
-    expect(stored).toEqual(fixture);
+    const stored = storedMessage as unknown as Record<string, unknown>;
+    const { origin_hub: _originHub, ...storedWithoutOriginHub } = stored;
+    expect(storedWithoutOriginHub).toEqual(fixture);
+    expect(typeof stored.origin_hub).toBe("string");
   });
 
   it("round-trips a minimal Rust Message: tags=[] and metadata=null are ALWAYS present, thread_id/reply_to are OMITTED", async () => {
@@ -73,6 +82,7 @@ describe("contract: Message", () => {
       priority: fixture.priority as string,
       request_ack: fixture.request_ack as boolean,
       metadata: fixture.metadata as never,
+      origin_hub: "contract-test-hub",
     });
     const stored = storedMessage as unknown as Record<string, unknown>;
     // The fixture is a bare `serde_json::from_value` deserialize — it was
@@ -80,10 +90,13 @@ describe("contract: Message", () => {
     // (omitted). Once actually stored (by either hub), a message always
     // carries its log position, the same way Redis's XADD assigns one; that
     // is new information this specific field legitimately gains on write,
-    // not a contract violation. Every other field must still match exactly.
-    const { stream_id: _omittedFromFixture, ...storedWithoutStreamId } = stored;
-    expect(storedWithoutStreamId).toEqual(fixture);
+    // not a contract violation. `origin_hub` is excluded for the same reason
+    // as the "fully-populated" test above. Every other field must still
+    // match exactly.
+    const { stream_id: _omittedFromFixture, origin_hub: _originHub, ...storedRest } = stored;
+    expect(storedRest).toEqual(fixture);
     expect(typeof stored.stream_id).toBe("string");
+    expect(typeof stored.origin_hub).toBe("string");
     expect(stored).not.toHaveProperty("thread_id");
     expect(stored).not.toHaveProperty("reply_to");
     expect(stored.tags).toEqual([]);
@@ -95,16 +108,24 @@ describe("contract: Presence", () => {
   it("round-trips every field of a fully-populated Rust Presence", async () => {
     const stub = busLogStub();
     const fixture = presenceFullFixture as unknown as Record<string, unknown>;
-    const stored = (await stub.setPresence({
-      agent: fixture.agent as string,
-      status: fixture.status as string,
-      protocol_version: fixture.protocol_version as string,
-      timestamp_utc: fixture.timestamp_utc as string,
-      session_id: fixture.session_id as string,
-      capabilities: fixture.capabilities as string[],
-      metadata: fixture.metadata as never,
-      ttl_seconds: fixture.ttl_seconds as number,
-    })) as unknown as Record<string, unknown>;
+    // `keyOrigin` (2nd arg, agent-hub#82 review M9) is an internal storage
+    // discriminator, never serialized to the wire — the fixture (generated
+    // from the Rust struct, which has no such concept) is unaffected as long
+    // as `originHub` (3rd arg) is left unset, so `origin_hub` is never added
+    // to the returned object.
+    const stored = (await stub.setPresence(
+      {
+        agent: fixture.agent as string,
+        status: fixture.status as string,
+        protocol_version: fixture.protocol_version as string,
+        timestamp_utc: fixture.timestamp_utc as string,
+        session_id: fixture.session_id as string,
+        capabilities: fixture.capabilities as string[],
+        metadata: fixture.metadata as never,
+        ttl_seconds: fixture.ttl_seconds as number,
+      },
+      "contract-test-key-origin",
+    )) as unknown as Record<string, unknown>;
     expect(stored).toEqual(fixture);
 
     const listed = (await stub.listPresence()) as Array<Record<string, unknown>>;

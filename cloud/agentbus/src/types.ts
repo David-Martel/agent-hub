@@ -109,6 +109,10 @@ export interface Presence {
 
   // --- agent-hub#79 additive field ---
   network_context?: NetworkContext;
+  // --- agent-hub#82 additive field: set only for presence relayed via
+  // `POST /sync/push-presence`, mirroring `Message.origin_hub`. Absent for
+  // presence set directly via `PUT /presence/:agent`. ---
+  origin_hub?: string;
 }
 
 /** Mirrors `agent_bus_core::redis_bus::Notification`. */

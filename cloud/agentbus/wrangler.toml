@@ -8,6 +8,17 @@ compatibility_flags = ["nodejs_compat"]
 # deploy --account-id <id>` or the `CLOUDFLARE_ACCOUNT_ID` env var), never
 # committed. See README.md for the full deploy checklist.
 
+# agent-hub#82 review M8: the Worker stayed reachable at its
+# `*.workers.dev` subdomain even after the custom domain went live,
+# bypassing any future Cloudflare Access policy scoped to
+# agentbus.dtmventures.com. Both are disabled — the ONLY route in is the
+# custom domain below (or the workers.dev fallback during the one-time
+# initial smoke test in README.md's deploy checklist, which must re-run
+# this with `workers_dev = true` temporarily and set it back to `false`
+# before going further).
+workers_dev = false
+preview_urls = false
+
 [observability]
 enabled = true
 
@@ -62,3 +73,10 @@ new_sqlite_classes = ["BusLog", "ClaimDO"]
 
 [vars]
 HUB_IDENTITY = "cloud"
+# Retention (agent-hub#82 review M1) is OFF (unlimited) by default —
+# uncomment and set a window (days) once the operator decides on one.
+# RETENTION_DAYS = "90"
+# Per-identity rate limit (agent-hub#82), requests/minute. Defaults to 600
+# when unset. See README.md's "Security hardening" section for the
+# Workers-rate-limit-binding upgrade path.
+# RATE_LIMIT_PER_MINUTE = "600"

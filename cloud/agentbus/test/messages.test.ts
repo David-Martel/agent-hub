@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { apiJson, postJson } from "./helpers";
+import { apiJson, CODEX_TOKEN, HUB_A_TOKEN, postJson } from "./helpers";
 
 describe("POST /messages", () => {
   it("sends a message and returns the stored Message shape", async () => {
@@ -216,9 +216,13 @@ describe("POST /messages/:id/ack", () => {
       body: "needs an ack",
       request_ack: true,
     });
+    // "Ack only for yourself" (agent-hub#82): the acking `agent` is the
+    // bearer identity (claude), not the message's `recipient` field — those
+    // are two different things (who is acking vs. who the original message
+    // was addressed to).
     const { status, body } = await postJson<{ ack_sent: boolean; acked_message_id: string }>(
       `/messages/${sent.body.id}/ack`,
-      { agent: "ack-test-agent" },
+      { agent: "claude" },
     );
     expect(status).toBe(200);
     expect(body.ack_sent).toBe(true);
@@ -228,9 +232,36 @@ describe("POST /messages/:id/ack", () => {
     expect(pending.body.some((p) => p.message_id === sent.body.id)).toBe(false);
   });
 
-  it("rejects an empty agent", async () => {
-    const { status } = await postJson("/messages/some-id/ack", { agent: "" });
+  it("an agent-role token defaults an omitted/empty agent to its own identity", async () => {
+    const { status, body } = await postJson<{ ack_sent: boolean }>("/messages/some-id/ack", { agent: "" });
+    expect(status).toBe(200);
+    expect(body.ack_sent).toBe(true);
+  });
+
+  it("a hub/operator token still rejects an empty agent (no identity to default to)", async () => {
+    const { status } = await postJson("/messages/some-id/ack", { agent: "" }, HUB_A_TOKEN);
     expect(status).toBe(400);
+  });
+
+  it("REJECTS acking as a different agent (403 — review 'ack only for yourself')", async () => {
+    const sent = await postJson<{ id: string }>("/messages", {
+      sender: "claude",
+      recipient: "ack-mismatch-agent",
+      topic: "status",
+      body: "needs an ack",
+      request_ack: true,
+    });
+    // Authenticated as claude (default token), but the body asserts a
+    // different agent's identity.
+    const { status } = await postJson(`/messages/${sent.body.id}/ack`, { agent: "codex" });
+    expect(status).toBe(403);
+    // A codex-authenticated ack for the same message is fine.
+    const asCodex = await postJson<{ ack_sent: boolean }>(
+      `/messages/${sent.body.id}/ack`,
+      { agent: "codex" },
+      CODEX_TOKEN,
+    );
+    expect(asCodex.status).toBe(200);
   });
 });
 
@@ -273,8 +304,10 @@ describe("POST /read/batch and POST /ack/batch", () => {
       request_ack: true,
     });
 
+    // Acking identity is the bearer's own agent (claude), not the messages'
+    // recipient field (agent-hub#82: "ack only for yourself").
     const { status, body } = await postJson<{ acked: number; message_ids: string[] }>("/ack/batch", {
-      agent: "batch-ack-agent",
+      agent: "claude",
       message_ids: [first.body.id, second.body.id],
     });
     expect(status).toBe(200);

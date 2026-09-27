@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { api, apiJson, postJson, putJson } from "./helpers";
+import { api, apiJson, CODEX_TOKEN, OPERATOR_TOKEN, postJson, putJson } from "./helpers";
 
 function resource(name: string): string {
   // Every test gets its own resource name so ClaimDO instances (one per
   // resource, via idFromName) never leak state between tests.
   return `${name}-${crypto.randomUUID()}`;
 }
+
+// agent-hub#82 security review (H2/P2): claim/renew/release are now
+// owner-only for agent-role tokens — the bearer token's own identity must
+// match the `agent` field. Every "codex" actor below authenticates with
+// CODEX_TOKEN (not the default CLAUDE_TOKEN) for exactly this reason.
 
 describe("POST /channels/arbitrate/:resource (claim)", () => {
   it("grants a lone exclusive claim", async () => {
@@ -25,7 +30,7 @@ describe("POST /channels/arbitrate/:resource (claim)", () => {
     const { body } = await postJson<{
       status: string;
       reroute_suggestion?: { original_resource: string; reason: string };
-    }>(`/channels/arbitrate/${res}`, { agent: "codex" });
+    }>(`/channels/arbitrate/${res}`, { agent: "codex" }, CODEX_TOKEN);
     expect(body.status).toBe("contested");
     expect(body.reroute_suggestion?.original_resource).toBe(res);
     expect(body.reroute_suggestion?.reason).toContain("claude");
@@ -34,10 +39,11 @@ describe("POST /channels/arbitrate/:resource (claim)", () => {
   it("does not conflict for two shared claims", async () => {
     const res = resource("shared");
     await postJson(`/channels/arbitrate/${res}`, { agent: "claude", mode: "shared" });
-    const { body } = await postJson<{ status: string }>(`/channels/arbitrate/${res}`, {
-      agent: "codex",
-      mode: "shared",
-    });
+    const { body } = await postJson<{ status: string }>(
+      `/channels/arbitrate/${res}`,
+      { agent: "codex", mode: "shared" },
+      CODEX_TOKEN,
+    );
     expect(body.status).toBe("granted");
   });
 
@@ -47,6 +53,7 @@ describe("POST /channels/arbitrate/:resource (claim)", () => {
     const { body } = await postJson<{ reroute_suggestion?: { suggested_resource: string } }>(
       `/channels/arbitrate/${res}`,
       { agent: "codex" },
+      CODEX_TOKEN,
     );
     // REROUTE_RULES' suggested_resource template is the fixed pattern name
     // ("cargo-target:{agent}"), not the full matched resource string — this
@@ -68,7 +75,7 @@ describe("POST /channels/arbitrate/:resource (claim)", () => {
     const res = resource("concurrent");
     const [a, b] = await Promise.all([
       postJson<{ status: string; agent: string }>(`/channels/arbitrate/${res}`, { agent: "claude" }),
-      postJson<{ status: string; agent: string }>(`/channels/arbitrate/${res}`, { agent: "codex" }),
+      postJson<{ status: string; agent: string }>(`/channels/arbitrate/${res}`, { agent: "codex" }, CODEX_TOKEN),
     ]);
     const statuses = [a.body.status, b.body.status].sort();
     // The DO serializes the two requests, so exactly one of them is
@@ -104,16 +111,20 @@ describe("GET /channels/arbitrate/:resource (arbitration state)", () => {
 });
 
 describe("PUT /channels/arbitrate/:resource/resolve", () => {
-  it("names a winner: granted for the winner, review_assigned for the rest", async () => {
+  it("names a winner: granted for the winner, review_assigned for the rest (operator role required)", async () => {
     const res = resource("resolve");
     await postJson(`/channels/arbitrate/${res}`, { agent: "claude" });
-    await postJson(`/channels/arbitrate/${res}`, { agent: "codex" });
+    await postJson(`/channels/arbitrate/${res}`, { agent: "codex" }, CODEX_TOKEN);
 
     const { status, body } = await putJson<{
       winner: string;
       resolution_reason: string;
       claims: Array<{ agent: string; status: string }>;
-    }>(`/channels/arbitrate/${res}/resolve`, { winner: "claude", reason: "higher priority argument" });
+    }>(
+      `/channels/arbitrate/${res}/resolve`,
+      { winner: "claude", reason: "higher priority argument" },
+      OPERATOR_TOKEN,
+    );
 
     expect(status).toBe(200);
     expect(body.winner).toBe("claude");
@@ -124,13 +135,22 @@ describe("PUT /channels/arbitrate/:resource/resolve", () => {
     expect(codex?.status).toBe("review_assigned");
   });
 
-  it("rejects resolving a resource with no claims (400)", async () => {
+  it("rejects resolving a resource with no claims (400, still requires operator role)", async () => {
     const res = resource("resolve-empty");
-    const { status, body } = await putJson<{ error: string }>(`/channels/arbitrate/${res}/resolve`, {
-      winner: "claude",
-    });
+    const { status, body } = await putJson<{ error: string }>(
+      `/channels/arbitrate/${res}/resolve`,
+      { winner: "claude" },
+      OPERATOR_TOKEN,
+    );
     expect(status).toBe(400);
     expect(body.error).toMatch(/no claims found/);
+  });
+
+  it("REJECTS a non-operator token (403) — resolve was previously open to every token (review H2)", async () => {
+    const res = resource("resolve-forbidden");
+    await postJson(`/channels/arbitrate/${res}`, { agent: "claude" });
+    const { status } = await putJson(`/channels/arbitrate/${res}/resolve`, { winner: "claude" }); // default CLAUDE_TOKEN, role "agent"
+    expect(status).toBe(403);
   });
 });
 
@@ -147,10 +167,21 @@ describe("POST /channels/arbitrate/:resource/renew", () => {
     expect(body.lease_ttl_seconds).toBe(7200);
   });
 
-  it("renewing a nonexistent claim mirrors the Rust hub's 500 (AgentBusError::Internal, not 400)", async () => {
+  it("renewing your own nonexistent claim mirrors the Rust hub's 500 (AgentBusError::Internal, not 400)", async () => {
     const res = resource("renew-missing");
-    const { status } = await postJson(`/channels/arbitrate/${res}/renew`, { agent: "nobody" });
+    // Renewing as "claude" (matching the bearer token's own identity) on a
+    // resource claude has never claimed — owner-only binding lets this
+    // request through, then the DO's own missing-claim check 500s.
+    const { status } = await postJson(`/channels/arbitrate/${res}/renew`, { agent: "claude" });
     expect(status).toBe(500);
+  });
+
+  it("REJECTS renewing as a different agent (403, owner-only — review H2/P2)", async () => {
+    const res = resource("renew-forbidden");
+    await postJson(`/channels/arbitrate/${res}`, { agent: "codex" }, CODEX_TOKEN);
+    // Authenticated as claude, but trying to renew codex's claim.
+    const { status } = await postJson(`/channels/arbitrate/${res}/renew`, { agent: "codex" });
+    expect(status).toBe(403);
   });
 });
 
@@ -164,17 +195,24 @@ describe("POST /channels/arbitrate/:resource/release", () => {
     expect(status).toBe(200);
     expect(body.claims).toEqual([]);
 
-    const reclaim = await postJson<{ status: string }>(`/channels/arbitrate/${res}`, { agent: "codex" });
+    const reclaim = await postJson<{ status: string }>(`/channels/arbitrate/${res}`, { agent: "codex" }, CODEX_TOKEN);
     expect(reclaim.body.status).toBe("granted");
   });
 
-  it("releasing a nonexistent claim is a 400", async () => {
+  it("releasing your own nonexistent claim is a 400", async () => {
     const res = resource("release-missing");
     const { status, body } = await postJson<{ error: string }>(`/channels/arbitrate/${res}/release`, {
-      agent: "nobody",
+      agent: "claude",
     });
     expect(status).toBe(400);
     expect(body.error).toMatch(/no active claim/);
+  });
+
+  it("REJECTS releasing another agent's claim (403, owner-only — review H2/P2)", async () => {
+    const res = resource("release-forbidden");
+    await postJson(`/channels/arbitrate/${res}`, { agent: "codex" }, CODEX_TOKEN);
+    const { status } = await postJson(`/channels/arbitrate/${res}/release`, { agent: "codex" }); // default CLAUDE_TOKEN
+    expect(status).toBe(403);
   });
 });
 
@@ -192,13 +230,35 @@ describe("lease expiry", () => {
   }, 10_000);
 });
 
+describe("claim/renew lease TTL cap (review M4)", () => {
+  it("caps an oversized lease_ttl_seconds instead of overflowing the expiry timestamp", async () => {
+    const res = resource("ttl-cap");
+    const { status, body } = await postJson<{ lease_ttl_seconds: number }>(`/channels/arbitrate/${res}`, {
+      agent: "claude",
+      lease_ttl_seconds: 1e13,
+    });
+    expect(status).toBe(200);
+    expect(body.lease_ttl_seconds).toBeLessThanOrEqual(86_400);
+  });
+
+  it("rejects a non-numeric lease_ttl_seconds with 400, not a 500 'Invalid time value'", async () => {
+    const res = resource("ttl-bad");
+    const { status, body } = await postJson<{ error: string }>(`/channels/arbitrate/${res}`, {
+      agent: "claude",
+      lease_ttl_seconds: "abc" as unknown as number,
+    });
+    expect(status).toBe(400);
+    expect(body.error).not.toMatch(/Invalid time value/);
+  });
+});
+
 describe("GET /resource-events/:resource_id", () => {
   it("records claimed/contested/resolved/released lifecycle events", async () => {
     const res = resource("events");
     await postJson(`/channels/arbitrate/${res}`, { agent: "claude" });
-    await postJson(`/channels/arbitrate/${res}`, { agent: "codex" });
-    await putJson(`/channels/arbitrate/${res}/resolve`, { winner: "claude" });
-    await postJson(`/channels/arbitrate/${res}/release`, { agent: "codex" });
+    await postJson(`/channels/arbitrate/${res}`, { agent: "codex" }, CODEX_TOKEN);
+    await putJson(`/channels/arbitrate/${res}/resolve`, { winner: "claude" }, OPERATOR_TOKEN);
+    await postJson(`/channels/arbitrate/${res}/release`, { agent: "codex" }, CODEX_TOKEN);
 
     const { status, body } = await apiJson<Array<{ event: string }>>(`/resource-events/${res}`);
     expect(status).toBe(200);
@@ -207,6 +267,33 @@ describe("GET /resource-events/:resource_id", () => {
     expect(events).toContain("contested");
     expect(events).toContain("resolved");
     expect(events).toContain("released");
+  });
+
+  it("does not mint a ClaimDO for a resource nobody has ever claimed (review M6)", async () => {
+    const res = resource("events-unclaimed");
+    const { status, body } = await apiJson<unknown[]>(`/resource-events/${res}`);
+    expect(status).toBe(200);
+    expect(body).toEqual([]);
+  });
+});
+
+describe("resource name normalization (review M9)", () => {
+  it("Foo.rs and foo.rs share the same ClaimDO shard", async () => {
+    const base = `Case-Fold-${crypto.randomUUID()}`;
+    await postJson(`/channels/arbitrate/${base}`, { agent: "claude" });
+    const { body } = await apiJson<{ claims: Array<{ agent: string }> }>(
+      `/channels/arbitrate/${base.toLowerCase()}`,
+    );
+    expect(body.claims.some((c) => c.agent === "claude")).toBe(true);
+  });
+
+  it("a\\b and a/b share the same ClaimDO shard", async () => {
+    const unique = crypto.randomUUID();
+    await postJson(`/channels/arbitrate/${encodeURIComponent(`a\\${unique}\\b`)}`, { agent: "claude" });
+    const { body } = await apiJson<{ claims: Array<{ agent: string }> }>(
+      `/channels/arbitrate/${encodeURIComponent(`a/${unique}/b`)}`,
+    );
+    expect(body.claims.some((c) => c.agent === "claude")).toBe(true);
   });
 });
 

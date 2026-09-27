@@ -28,7 +28,7 @@ import { claimConflicts, effectiveScope, recomputeClaimStatuses, suggestReroute 
 import type { Env } from "./env";
 import { formatTimestampUtc } from "./ids";
 import type { ArbitrationState, OwnershipClaim, ResourceEvent, ResourceLeaseMode, ResourceScope } from "./types";
-import { ValidationError } from "./validation";
+import { MAX_LEASE_TTL_SECONDS, MIN_LEASE_TTL_SECONDS, ValidationError } from "./validation";
 
 /** Adds the index signature `sql.exec<T>()` requires without repeating it at every call site. */
 type Row<T> = T & Record<string, SqlStorageValue>;
@@ -146,6 +146,24 @@ export class ClaimDO extends DurableObject<Env> {
     this.initialized = true;
   }
 
+  /** True once this DO's tables have actually been created. Read-only
+   * probes (`getState`, `listEvents`) use this to avoid minting a
+   * persistent DO for a resource nobody has ever claimed (agent-hub#82
+   * review M6: `GET /resource-events/:id` on an unclaimed resource used to
+   * call `ensureSchema()` unconditionally). A plain `SELECT` against
+   * `sqlite_master` does not itself create or persist anything. */
+  private hasSchema(): boolean {
+    if (this.initialized) return true;
+    const row = this.sql
+      .exec<Row<{ c: number }>>("SELECT count(*) as c FROM sqlite_master WHERE type = 'table' AND name = 'claims'")
+      .toArray()[0];
+    if ((row?.c ?? 0) > 0) {
+      this.initialized = true;
+      return true;
+    }
+    return false;
+  }
+
   private pruneExpired(now: number): void {
     const expired = this.sql
       .exec<Row<{ agent: string }>>(
@@ -212,7 +230,7 @@ export class ClaimDO extends DurableObject<Env> {
   }
 
   listEvents(limit = 100): ResourceEvent[] {
-    this.ensureSchema();
+    if (!this.hasSchema()) return [];
     const rows = this.sql
       .exec<Row<{ event: string; agent: string; resource: string; timestamp: string; seq: number }>>(
         "SELECT * FROM events ORDER BY seq DESC LIMIT ?",
@@ -237,7 +255,10 @@ export class ClaimDO extends DurableObject<Env> {
     }
 
     const now = Date.now();
-    const leaseTtl = Math.max(input.leaseTtlSeconds ?? CLAIM_TTL_SECS, 1);
+    const leaseTtl = Math.min(
+      Math.max(input.leaseTtlSeconds ?? CLAIM_TTL_SECS, MIN_LEASE_TTL_SECONDS),
+      MAX_LEASE_TTL_SECONDS,
+    );
     const expiresAt = formatTimestampUtc(new Date(now + leaseTtl * 1000));
 
     let claims = this.loadActiveClaims(now).filter((c) => c.agent !== input.agent);
@@ -288,7 +309,7 @@ export class ClaimDO extends DurableObject<Env> {
       // intentional 500, not a 400. See the module docblock.
       throw new Error("no active claim found for agent on resource");
     }
-    const ttl = Math.max(leaseTtlSeconds ?? CLAIM_TTL_SECS, 1);
+    const ttl = Math.min(Math.max(leaseTtlSeconds ?? CLAIM_TTL_SECS, MIN_LEASE_TTL_SECONDS), MAX_LEASE_TTL_SECONDS);
     target.lease_ttl_seconds = ttl;
     target.timestamp = nowIso;
     target.expires_at = formatTimestampUtc(new Date(now + ttl * 1000));
@@ -350,7 +371,9 @@ export class ClaimDO extends DurableObject<Env> {
   }
 
   getState(resource: string): ArbitrationState {
-    this.ensureSchema();
+    if (!this.hasSchema()) {
+      return { resource, claims: [], winner: null, resolution_reason: null };
+    }
     const claims = this.loadActiveClaims();
     const res = this.sql
       .exec<Row<{ winner: string; reason: string; expires_at_ms: number }>>(

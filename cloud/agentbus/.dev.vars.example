@@ -3,10 +3,21 @@
 # `wrangler secret put <NAME>` from the Bitwarden `cloudflare.com` item;
 # they never live in this repo in either form.
 
-# JSON map of bearer token -> identity. Prefer this over AGENT_BUS_AUTH_TOKEN
-# once more than one caller needs a distinguishable identity for audit.
-AGENT_BUS_TOKENS={"dev-token-claude":{"agent":"claude","host":"asuspro13"},"dev-token-codex":{"agent":"codex","host":"asuspro13"}}
+# JSON map of bearer token -> identity (agent-hub#82). Every entry now
+# carries a `role`: "agent" (bound to that agent/host — a body value that
+# disagrees is rejected with 403), "hub" (may vouch for any agent; its `hub`
+# field is the ONLY source of `origin_hub` on /sync/*, and required for role
+# "hub"), or "operator" (may vouch for any agent; required for
+# PUT .../resolve and GET /sync/stats). The importer at
+# ~/.local/share/jules-fleet/handoff-2026-09-26/agentbus-import/import_pg_export.py
+# needs a "hub" token whose `hub` matches its --origin-hub argument.
+AGENT_BUS_TOKENS={"dev-token-claude":{"agent":"claude","host":"asuspro13","role":"agent"},"dev-token-codex":{"agent":"codex","host":"asuspro13","role":"agent"},"dev-token-hub-asuspro13":{"agent":"asuspro13-sync","role":"hub","hub":"asuspro13"},"dev-token-operator":{"agent":"operator","role":"operator"}}
 
 # Single shared token, parity fallback with the on-site hub's env var name.
-# Placeholder value, not a real credential — replace before use.
+# DISABLED unless AGENT_BUS_DEV_ALLOW_SHARED_TOKEN=1 is ALSO set (agent-hub#82
+# review H1/L5: this used to be an always-on, un-attributable superuser).
+# Always resolves to role "agent" (least privilege) — never use it for
+# anything that needs hub/operator role. Placeholder value, not a real
+# credential — replace before use.
 AGENT_BUS_AUTH_TOKEN=dev-only-change-me  # pragma: allowlist secret
+AGENT_BUS_DEV_ALLOW_SHARED_TOKEN=1
