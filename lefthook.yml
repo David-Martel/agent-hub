@@ -33,7 +33,7 @@ pre-push:
         RUSTC_WRAPPER: ""
         AGENT_BUS_REDIS_URL: redis://127.0.0.1:1/0
         AGENT_BUS_DATABASE_URL: postgresql://postgres@127.0.0.1:1/none
-      run: env -u AGENT_BUS_SERVER_URL cargo test --workspace --quiet
+      run: env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_SERVER_URLS cargo test --workspace --quiet
 
     # Blocking. A missing cargo-audit is a failure, not a skip: a gate that
     # cannot run must say so rather than pass.

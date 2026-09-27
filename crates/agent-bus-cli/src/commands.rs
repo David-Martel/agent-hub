@@ -39,7 +39,8 @@ use crate::output::{
 };
 use crate::redis_bus::{bus_list_messages, connect};
 use crate::server_mode::{
-    http_get, http_post, http_put, post_service_action, query_windows_service_state,
+    active_hub_backend, http_get, http_post, http_put, offline_error, post_service_action,
+    query_windows_service_state, resolve_authoritative_claim_url, resolve_hub_url,
     resolved_service_base_url, sc_action, service_status_payload, use_server_mode, wait_for_health,
     wait_for_windows_service_state,
 };
@@ -85,6 +86,16 @@ pub(crate) struct ReadArgs<'a> {
     pub(crate) exclude_broadcast: bool,
     pub(crate) excerpt: Option<usize>,
     pub(crate) encoding: &'a Encoding,
+}
+
+/// Append `/messages/{message_id}/ack` path segments to `url` in place (#78).
+#[cfg(feature = "server-mode")]
+fn append_ack_path(url: &mut reqwest::Url, message_id: &str) -> Result<()> {
+    let mut segments = url
+        .path_segments_mut()
+        .map_err(|()| anyhow::anyhow!("hub URL does not support path segments"))?;
+    segments.extend(["messages", message_id, "ack"]);
+    Ok(())
 }
 
 #[cfg(feature = "server-mode")]
@@ -176,28 +187,65 @@ pub(crate) fn cmd_history_status(settings: &Settings, encoding: &Encoding) -> Re
 pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_storage: bool) {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let url = format!("{}/health", settings.server_url.as_deref().unwrap_or(""));
-        match http_get(&url) {
-            Ok(val) => {
-                output(&val, encoding);
-                // Never exit 0 on an unhealthy bus: a probe that prints ok=false
-                // but returns success is a silent failure for any
-                // `agent-bus health && <deploy>` gate.
-                let ok = val
-                    .get("ok")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                let storage_ready = val
-                    .get("storage_ready")
-                    .and_then(serde_json::Value::as_bool)
-                    .unwrap_or(false);
-                if !ok || (require_storage && !storage_ready) {
-                    std::process::exit(1);
+        // #78: resolve the whole ordered candidate list, not just the first
+        // URL, and report explicitly which one (if any) answered so an
+        // island (a client silently reading its own local store while
+        // believing it is talking to the fleet) is detectable from this
+        // output alone.
+        let backend = active_hub_backend(settings);
+        match backend {
+            agent_bus_core::hub::HubBackend::Remote { ref url, .. } => {
+                match http_get(&format!("{url}/health")) {
+                    Ok(mut val) => {
+                        if let serde_json::Value::Object(ref mut map) = val {
+                            map.insert(
+                                "backend".to_owned(),
+                                serde_json::to_value(&backend).unwrap_or(serde_json::Value::Null),
+                            );
+                        }
+                        output(&val, encoding);
+                        // Never exit 0 on an unhealthy bus: a probe that prints
+                        // ok=false but returns success is a silent failure for
+                        // any `agent-bus health && <deploy>` gate.
+                        let ok = val
+                            .get("ok")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        let storage_ready = val
+                            .get("storage_ready")
+                            .and_then(serde_json::Value::as_bool)
+                            .unwrap_or(false);
+                        if !ok || (require_storage && !storage_ready) {
+                            std::process::exit(1);
+                        }
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("server-mode health failed against {url}: {e:#}");
+                        std::process::exit(1);
+                    }
                 }
-                return;
             }
-            Err(e) => {
-                eprintln!("server-mode health failed: {e:#}");
+            agent_bus_core::hub::HubBackend::Offline { tried } => {
+                // Explicit, visible offline status — never a silent fallback
+                // to a local Redis read presented as fleet health.
+                let report = serde_json::json!({
+                    "ok": false,
+                    "database_ok": false,
+                    "storage_ready": false,
+                    "backend": {"mode": "offline", "tried": tried},
+                });
+                output(&report, encoding);
+                std::process::exit(1);
+            }
+            agent_bus_core::hub::HubBackend::Local => {
+                // use_server_mode() being true guarantees server_urls is
+                // non-empty, so resolve_hub should never return Local here;
+                // treat it as a loud error rather than panicking the process.
+                eprintln!(
+                    "internal error: active_hub_backend returned Local while server_urls is \
+                     non-empty"
+                );
                 std::process::exit(1);
             }
         }
@@ -207,7 +255,11 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_stora
     if matches!(encoding, Encoding::Toon) {
         println!("{}", format_health_toon(&health));
     } else {
-        output(&health, encoding);
+        let mut val = serde_json::to_value(&health).unwrap_or_default();
+        if let serde_json::Value::Object(ref mut map) = val {
+            map.insert("backend".to_owned(), serde_json::json!({"mode": "local"}));
+        }
+        output(&val, encoding);
     }
     // Exit code mirrors bus health so scripts/CI can gate on it. Redis-down
     // (ok=false) always fails; PostgreSQL-down (storage_ready=false) fails only
@@ -384,7 +436,8 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
         let fitted_body = auto_fit_schema(body, effective_schema);
         validate_message_schema(&fitted_body, effective_schema)?;
 
-        let url = format!("{}/messages", settings.server_url.as_deref().unwrap_or(""));
+        let base = resolve_hub_url(settings, "send")?;
+        let url = format!("{base}/messages");
         let mut payload = serde_json::json!({
             "sender": from,
             "recipient": to,
@@ -441,7 +494,7 @@ pub(crate) fn cmd_read(settings: &Settings, args: &ReadArgs<'_>) -> Result<()> {
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
+        let base = resolve_hub_url(settings, "read")?;
         let mut url = reqwest::Url::parse(&format!("{base}/messages"))
             .context("invalid server URL for message read")?;
         {
@@ -586,6 +639,31 @@ pub(crate) fn cmd_ack(
     body: &str,
     encoding: &Encoding,
 ) -> Result<()> {
+    // #78: `ack` used to always write to local Redis, even when a remote hub
+    // was configured, although `POST /messages/{id}/ack` already existed on
+    // the hub. Route through the resolved hub when one is configured; never
+    // silently apply the ack to a local store when candidates are configured
+    // but unreachable (an offline ack is a lost ack, not a local one).
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        return match active_hub_backend(settings) {
+            agent_bus_core::hub::HubBackend::Remote { url, .. } => {
+                let mut ack_url = reqwest::Url::parse(&url).context("invalid hub URL")?;
+                append_ack_path(&mut ack_url, message_id)?;
+                let val = http_post(
+                    ack_url.as_str(),
+                    &serde_json::json!({ "agent": agent, "body": body }),
+                )?;
+                output(&val, encoding);
+                Ok(())
+            }
+            agent_bus_core::hub::HubBackend::Offline { tried } => Err(offline_error("ack", &tried)),
+            agent_bus_core::hub::HubBackend::Local => Err(anyhow!(
+                "internal error: active_hub_backend returned Local while server_urls is non-empty"
+            )),
+        };
+    }
+
     let mut conn = connect(settings)?;
     let ack = post_ack(
         &mut conn,
@@ -646,7 +724,7 @@ pub(crate) fn cmd_presence(settings: &Settings, args: &PresenceArgs<'_>) -> Resu
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
+        let base = resolve_hub_url(settings, "presence")?;
         let url = format!("{base}/presence/{agent}");
         let mut payload = serde_json::json!({
             "status": args.status,
@@ -760,7 +838,8 @@ pub(crate) fn cmd_presence_history(
 pub(crate) fn cmd_presence_list(settings: &Settings, encoding: &Encoding) -> Result<()> {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let url = format!("{}/presence", settings.server_url.as_deref().unwrap_or(""));
+        let base = resolve_hub_url(settings, "presence-list")?;
+        let url = format!("{base}/presence");
         let val = http_get(&url)?;
         output(&val, encoding);
         return Ok(());
@@ -1184,7 +1263,7 @@ fn batch_send_via_server(
     items: &[ValidatedBatchItem],
     encoding: &Encoding,
 ) -> Result<()> {
-    let base = settings.server_url.as_deref().unwrap_or("");
+    let base = resolve_hub_url(settings, "batch-send")?;
     let url = format!("{base}/messages/batch");
     let messages: Vec<serde_json::Value> = items
         .iter()
@@ -1363,10 +1442,16 @@ pub(crate) fn cmd_claim(
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
-        let url = build_server_resource_url(base, resource, None)?;
+        // #78 + operator addendum: an exclusive claim is the one write that
+        // must never be granted against anything but the authoritative hub
+        // -- not offline, and not a reachable-but-lower-priority fallback
+        // either, since a second hub tier (e.g. a future Cloudflare-hosted
+        // candidate) must never let two different hubs believe they can both
+        // grant the same claim.
+        let base = resolve_authoritative_claim_url(settings, "claim")?;
+        let request_url = build_server_resource_url(&base, resource, None)?;
         let val = http_post(
-            &url,
+            &request_url,
             &serde_json::json!({
                 "agent": agent,
                 "priority_argument": reason,
@@ -1413,8 +1498,8 @@ pub(crate) fn cmd_renew_claim(
 ) -> Result<()> {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
-        let url = build_server_resource_url(base, resource, Some("renew"))?;
+        let base = resolve_authoritative_claim_url(settings, "renew-claim")?;
+        let url = build_server_resource_url(&base, resource, Some("renew"))?;
         let val = http_post(
             &url,
             &serde_json::json!({
@@ -1446,8 +1531,8 @@ pub(crate) fn cmd_release_claim(
 ) -> Result<()> {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
-        let url = build_server_resource_url(base, resource, Some("release"))?;
+        let base = resolve_authoritative_claim_url(settings, "release-claim")?;
+        let url = build_server_resource_url(&base, resource, Some("release"))?;
         let val = http_post(&url, &serde_json::json!({ "agent": agent }))?;
         output(&val, encoding);
         return Ok(());
@@ -1469,6 +1554,38 @@ pub(crate) fn cmd_claims(
     status_str: Option<&str>,
     encoding: &Encoding,
 ) -> Result<()> {
+    // #78: `claims` used to always read local Redis, even when a remote hub
+    // was configured — the exact split-brain island the issue reports. Route
+    // through the resolved hub when one is configured; never silently fall
+    // back to a local read when candidates are configured but unreachable.
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        return match active_hub_backend(settings) {
+            agent_bus_core::hub::HubBackend::Remote { url, .. } => {
+                let mut claims_url =
+                    reqwest::Url::parse(&format!("{url}/claims")).context("invalid hub URL")?;
+                {
+                    let mut pairs = claims_url.query_pairs_mut();
+                    if let Some(resource) = resource {
+                        pairs.append_pair("resource", resource);
+                    }
+                    if let Some(status) = status_str {
+                        pairs.append_pair("status", status);
+                    }
+                }
+                let val = http_get(claims_url.as_str())?;
+                output(&val, encoding);
+                Ok(())
+            }
+            agent_bus_core::hub::HubBackend::Offline { tried } => {
+                Err(offline_error("claims", &tried))
+            }
+            agent_bus_core::hub::HubBackend::Local => Err(anyhow!(
+                "internal error: active_hub_backend returned Local while server_urls is non-empty"
+            )),
+        };
+    }
+
     let claims = ops_list_claims(
         settings,
         &ListClaimsRequest {
@@ -1662,8 +1779,8 @@ pub(crate) fn cmd_resolve(
 ) -> Result<()> {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
-        let url = build_server_resource_url(base, resource, Some("resolve"))?;
+        let base = resolve_authoritative_claim_url(settings, "resolve")?;
+        let url = build_server_resource_url(&base, resource, Some("resolve"))?;
         let val = http_put(
             &url,
             &serde_json::json!({
@@ -1710,7 +1827,7 @@ pub(crate) fn cmd_knock(
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
+        let base = resolve_hub_url(settings, "knock")?;
         let url = format!("{base}/knock");
         let val = http_post(
             &url,
@@ -1778,7 +1895,7 @@ pub(crate) fn cmd_compact_context(
 ) -> Result<()> {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
+        let base = resolve_hub_url(settings, "compact-context")?;
         let mut payload = serde_json::json!({
             "since_minutes": args.since_minutes,
             "max_tokens": args.max_tokens,

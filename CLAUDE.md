@@ -162,7 +162,59 @@ Use `--schema finding|status|benchmark` on `send` to validate message structure:
 | `AGENT_BUS_SERVER_HOST` | `localhost` (binds `127.0.0.1`; set `::1` for IPv6) | config.json |
 | `AGENT_BUS_STREAM_MAXLEN` | `100000` | config.json |
 | `AGENT_BUS_SESSION_ID` | (none) | env only — auto-tags messages with `session:<id>` |
+| `AGENT_BUS_SERVER_URL` | (none) | config.json — single remote hub URL; CLI/MCP route through it instead of local Redis/PG |
+| `AGENT_BUS_SERVER_URLS` | (none) | config.json `server_urls` — ordered, comma-separated hub candidates (#78). Takes priority over `AGENT_BUS_SERVER_URL` as a whole tier; `AGENT_BUS_SERVER_URL`/`server_url` remain a single-entry back-compat alias for `server_urls.first()`. A roaming client (e.g. a laptop off the fleet LAN) lists several reachable-path candidates (p2p, LAN, tailnet, ...) in priority order |
 | `RUST_LOG` | `error` | env only |
+
+### Remote-hub resolution (#78)
+
+`agent_bus_core::hub::resolve_hub` tries `server_urls` in order (short connect
+timeout per candidate) and returns exactly one of:
+
+- **`Remote { url, authoritative, hub_build, tried }`** — a candidate
+  answered `/health`. `authoritative` is `true` only for the first
+  (highest-priority) candidate; anything else is a reachable fallback.
+- **`Offline { tried }`** — candidates are configured but none answered.
+  Writes (`send`, `presence`, `claim`, `ack`) are refused with a loud,
+  actionable error — **never** silently applied to a local store. An
+  exclusive `claim` specifically returns `"claim pending: no authoritative
+  hub reachable"` rather than a hard failure or a local grant, since a
+  caller may reasonably retry once a hub is reachable again.
+- **`Local`** — no candidates configured at all (e.g. this process runs on
+  the hub host itself). This is deliberate local-only mode, not a fallback,
+  and is reported as such.
+
+`bus_health` (CLI `health`, MCP `bus_health` tool) always includes a
+`backend` field reporting exactly which of the three states above answered,
+so a client silently reading its own local store while believing it talks to
+the fleet (the original #78 "island" symptom) is detectable from the health
+output alone. `agent-bus-mcp` (stdio) proxies every other tool call to the
+resolved remote hub via a blocking-from-async `RemoteMcpTransport`
+(`agent_bus_core::remote_dispatch::RoutingDispatch`); `agent-bus-http` (the
+hub itself) never uses this path — it always dispatches locally, so a hub
+can never proxy to itself even if its own config named a `server_url`.
+
+A durable offline write outbox (spool-and-replay for `send`/`presence`/
+`claim`/`ack` while offline, with idempotent UUIDv7 client ids) is
+deliberately **not** implemented yet — see #80.
+
+**PR #81 review follow-up (2026-09-27), scope limits:** an `https://`
+candidate (e.g. a Cloudflare-hosted tier per #79) now works — both
+`agent-bus-cli` and `agent-bus-mcp` link `reqwest`'s `rustls` feature (NOT
+`rustls-tls`, which doesn't exist in reqwest 0.13; `default-tls =
+["rustls"]` there), using `rustls-platform-verifier` for the OS trust store
+on Linux and Windows rather than a hardcoded webpki root bundle. This only
+covers the CLIENT side (dialing out to a remote hub); `agent-bus-http` (the
+hub binary itself) does not terminate TLS directly. `resolve_server_url_list`
+also deduplicates `server_urls` by exact string match (first occurrence
+wins — no trailing-slash/case normalization), and `AGENT_BUS_SERVER_URLS=""`
+(present but empty) is confirmed to fall through to the next tier exactly
+like the var being unset, with no "explicit local-only override" sentinel.
+The #80 outbox above remains the one deliberately deferred gap. Separately,
+`codex/fix-filtered-inbox`'s `8a2064e` (filtered-inbox pagination, part of
+#77) predates and is orthogonal to #78's routing scope — it was carried
+through the rebase described in PR #81 but was not itself re-reviewed as
+part of #78/#81 and should get its own independent review.
 
 ## MCP Platform Configs
 

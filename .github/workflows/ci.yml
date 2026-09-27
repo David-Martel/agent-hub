@@ -98,6 +98,24 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
       - run: cargo test --workspace --lib --bins -- --test-threads=4
+      - name: Non-ignored integration tests (no live backend of any kind)
+        shell: bash
+        # `--tests` here is deliberately NOT `--workspace --tests -- --ignored`
+        # (that's test-integration's job, below, against disposable backends).
+        # This runs every *non*-ignored `tests/*.rs` binary -- e.g.
+        # crates/agent-bus-cli/tests/hub_routing_test.rs (#78/#81), which
+        # spins up its own in-process mock HTTP hub and needs no external
+        # service at all. Redis/PostgreSQL are still pinned to a closed port
+        # and AGENT_BUS_SERVER_URL{,S} unset as defense in depth: a test file
+        # added here later that forgets to isolate itself must fail loudly
+        # against a closed port, never silently reach the live bus.
+        env:
+          AGENT_BUS_REDIS_URL: redis://127.0.0.1:1/0
+          AGENT_BUS_DATABASE_URL: postgresql://postgres@127.0.0.1:1/none
+        run: |
+          set -euo pipefail
+          env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_SERVER_URLS \
+            cargo test --workspace --tests -- --test-threads=4
 
   test-integration:
     name: Integration Tests

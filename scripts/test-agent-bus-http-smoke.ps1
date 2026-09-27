@@ -9,7 +9,10 @@ param(
     [int]$StartupAttempts = 2,
     [int]$TimeoutSeconds = 10,
     [string]$ExpectedRevision = $env:AGENT_BUS_BUILD_REVISION,
-    [string]$AuthToken = $env:AGENT_BUS_AUTH_TOKEN
+    [string]$AuthToken = $env:AGENT_BUS_AUTH_TOKEN,
+    [switch]$UseExistingServer,
+    [int]$ExpectedProcessId,
+    [string]$ExpectedServiceAgentId
 )
 
 $ErrorActionPreference = "Stop"
@@ -90,7 +93,43 @@ if (-not [string]::IsNullOrWhiteSpace($AuthToken)) {
 $Process = $null
 $Health = $null
 try {
-    for ($attempt = 1; $attempt -le $StartupAttempts; $attempt++) {
+    if ($UseExistingServer) {
+        # The isolated CI harness owns this process. Never start or stop it here.
+        $target = [uri]$BaseUrl
+        if ($target.Scheme -ne 'http' -or $target.Host -ne 'localhost' -or
+            $target.Port -in @(8400, 8401) -or $target.Port -ne $Port -or
+            $ExpectedProcessId -le 0 -or
+            $ExpectedServiceAgentId -cne "agent-bus-test-$env:AGENT_BUS_TEST_RUN_ID" -or
+            $env:AGENT_BUS_TEST_RUN_ID -notmatch '^[a-f0-9]{32}$' -or
+            [string]::IsNullOrWhiteSpace($AuthToken)) {
+            throw 'Existing-server smoke requires an explicit isolated harness identity'
+        }
+        $existingProcess = Get-Process -Id $ExpectedProcessId -ErrorAction Stop
+        if ($existingProcess.HasExited) { throw 'Owned HTTP process has exited' }
+        $Health = Invoke-RestMethod -Uri "$($BaseUrl.TrimEnd('/'))/health" `
+            -TimeoutSec 10 -MaximumRedirection 0
+        if ($Health.maintenance.pid -ne $ExpectedProcessId -or
+            $Health.maintenance.service_agent_id -cne $ExpectedServiceAgentId -or
+            -not $Health.ok -or -not $Health.database_ok -or -not $Health.storage_ready) {
+            throw 'HTTP identity or readiness does not match the isolated harness'
+        }
+        foreach ($binding in @(
+            @{ Field = 'redis_url'; Expected = $env:AGENT_BUS_REDIS_URL },
+            @{ Field = 'database_url'; Expected = $env:AGENT_BUS_DATABASE_URL }
+        )) {
+            $actual = [uri]$Health.($binding.Field)
+            $expected = [uri]$binding.Expected
+            if (-not $binding.Expected -or $expected.Host -ne 'localhost' -or
+                $expected.Port -in @(6379, 6380, 5432, 5300) -or
+                $actual.Scheme -ne $expected.Scheme -or $actual.Host -ne $expected.Host -or
+                $actual.Port -ne $expected.Port -or $actual.AbsolutePath -cne $expected.AbsolutePath) {
+                throw 'HTTP backend does not match the disposable harness services'
+            }
+        }
+        Invoke-RestMethod -Uri "$($BaseUrl.TrimEnd('/'))/admin/service" `
+            -Headers $RequestHeaders -TimeoutSec 10 -MaximumRedirection 0 | Out-Null
+    }
+    for ($attempt = 1; -not $UseExistingServer -and $attempt -le $StartupAttempts; $attempt++) {
         $StdoutPath = New-TempFile -Prefix "agent-bus-http-stdout" -Extension ".log"
         $StderrPath = New-TempFile -Prefix "agent-bus-http-stderr" -Extension ".log"
         $TempPaths.Add($StdoutPath)

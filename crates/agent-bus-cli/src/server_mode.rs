@@ -6,6 +6,8 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 use reqwest::StatusCode;
 
+use agent_bus_core::hub::{HubBackend, ProbeInfo, resolve_hub};
+
 use crate::settings::Settings;
 
 #[cfg(feature = "server-mode")]
@@ -121,14 +123,135 @@ fn run_server_future<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
 
 /// Returns `true` when the caller should route through the HTTP service
 /// instead of connecting to Redis directly.
+///
+/// Checks the whole ordered candidate list (`server_urls`), not just the
+/// single-URL `server_url` alias, so `AGENT_BUS_SERVER_URLS` alone (with no
+/// `AGENT_BUS_SERVER_URL`) is enough to opt a command into server mode (#78).
 #[cfg(feature = "server-mode")]
 pub(crate) fn use_server_mode(settings: &Settings) -> bool {
-    settings.server_url.is_some()
+    !settings.server_urls.is_empty()
 }
 
 #[cfg(not(feature = "server-mode"))]
 pub(crate) fn use_server_mode(_settings: &Settings) -> bool {
     false
+}
+
+/// Probe one candidate hub's `/health` for [`resolve_hub`]. Returns `None` on
+/// any failure — unreachable, timeout, non-2xx, or an unparseable body —
+/// [`resolve_hub`] does not distinguish why a probe failed.
+#[cfg(feature = "server-mode")]
+fn probe_hub_health(url: &str) -> Option<ProbeInfo> {
+    let health = http_get(&format!("{url}/health")).ok()?;
+    Some(ProbeInfo {
+        build_version: health
+            .get("build_version")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+    })
+}
+
+/// Resolve which hub backend `settings.server_urls` currently points at
+/// (#78): the first reachable candidate (`Remote`, `authoritative` iff it was
+/// index 0), `Offline` if candidates are configured but none answered, or
+/// `Local` if none are configured at all. Never falls back to a local Redis
+/// read/write when candidates were configured but unreachable — that is
+/// exactly the split-brain island #78 reports.
+#[cfg(feature = "server-mode")]
+pub(crate) fn active_hub_backend(settings: &Settings) -> HubBackend {
+    resolve_hub(&settings.server_urls, probe_hub_health)
+}
+
+#[cfg(not(feature = "server-mode"))]
+pub(crate) fn active_hub_backend(_settings: &Settings) -> HubBackend {
+    HubBackend::Local
+}
+
+/// Render an `HubBackend::Offline` state as the loud, explicit error used by
+/// CLI commands that must refuse rather than silently read or write a local
+/// store when no configured hub candidate answered.
+pub(crate) fn offline_error(command: &str, tried: &[String]) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{command}: offline: no authoritative hub reachable (tried {tried:?}). This client is \
+         configured with remote hub candidates (AGENT_BUS_SERVER_URLS/AGENT_BUS_SERVER_URL) and \
+         has no local bus of its own; refusing to silently read or write a local store and \
+         report it as fleet state."
+    )
+}
+
+/// Render the "claim pending" error used specifically for claim-authority
+/// operations (`claim`, `renew-claim`, `release-claim`, `resolve`) -- the
+/// operator's exact wording, distinct from `offline_error` because a caller
+/// polling for a claim needs to know this is a retryable "not yet", not a
+/// hard failure. Used both when no candidate answered at all AND when a
+/// candidate answered but was not the authoritative (first-priority) one:
+/// once a second, later hub tier exists (e.g. a Cloudflare-hosted fallback),
+/// there must be exactly one claims authority, never a grant against
+/// whichever candidate happened to answer.
+pub(crate) fn claim_pending_error(command: &str, tried: &[String]) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{command}: claim pending: no authoritative hub reachable (tried {tried:?}); exclusive \
+         claims cannot be granted, renewed, released or resolved against a non-authoritative \
+         fallback or while offline. Retry once the first-priority hub in \
+         AGENT_BUS_SERVER_URLS/AGENT_BUS_SERVER_URL is reachable."
+    )
+}
+
+/// Resolve the base URL for an ordinary (non-claim-authority) HTTP request:
+/// `send`/`read`/`presence`/`presence-list`/`batch-send`/`knock`/
+/// `compact-context`. Any reachable candidate is fine here -- a fallback
+/// answering is still the fleet, just not the highest-priority path to it.
+/// Returns the loud offline error when no candidate answered.
+///
+/// # Errors
+/// Returns [`offline_error`] when every candidate is unreachable, or an
+/// internal error if called while in local-only mode (a caller bug: every
+/// call site guards on [`use_server_mode`] first).
+#[cfg(feature = "server-mode")]
+pub(crate) fn resolve_hub_url(settings: &Settings, command: &str) -> Result<String> {
+    match active_hub_backend(settings) {
+        HubBackend::Remote { url, .. } => Ok(url),
+        HubBackend::Offline { tried } => Err(offline_error(command, &tried)),
+        HubBackend::Local => Err(anyhow::anyhow!(
+            "{command}: resolve_hub_url called with no hub candidates configured (local-only \
+             mode) -- this is a caller bug, not an offline condition; check use_server_mode first"
+        )),
+    }
+}
+
+/// Resolve the base URL for a claim-AUTHORITY operation: `claim`,
+/// `renew-claim`, `release-claim`, `resolve`. Only the authoritative
+/// (first-priority) candidate may grant, renew, release or resolve an
+/// exclusive claim -- never a reachable-but-lower-priority fallback, and
+/// never a silent local grant. Both "no candidate reachable" and "a
+/// candidate answered but is not authoritative" yield the same "claim
+/// pending" error: a caller polling for the claim should retry either way,
+/// not distinguish the two.
+///
+/// # Errors
+/// Returns [`claim_pending_error`] unless the authoritative candidate itself
+/// answered, or an internal error if called while in local-only mode (a
+/// caller bug: every call site guards on [`use_server_mode`] first).
+#[cfg(feature = "server-mode")]
+pub(crate) fn resolve_authoritative_claim_url(
+    settings: &Settings,
+    command: &str,
+) -> Result<String> {
+    match active_hub_backend(settings) {
+        HubBackend::Remote {
+            url,
+            authoritative: true,
+            ..
+        } => Ok(url),
+        HubBackend::Remote { tried, .. } | HubBackend::Offline { tried } => {
+            Err(claim_pending_error(command, &tried))
+        }
+        HubBackend::Local => Err(anyhow::anyhow!(
+            "{command}: resolve_authoritative_claim_url called with no hub candidates configured \
+             (local-only mode) -- this is a caller bug, not an offline condition; check \
+             use_server_mode first"
+        )),
+    }
 }
 
 /// Performs a `GET` request and returns the parsed JSON body.
@@ -426,5 +549,42 @@ mod tests {
         assert!(message.contains("HTTP 503 Service Unavailable"));
         assert!(message.contains("maintenance"));
         assert!(!message.contains("requires bearer-token auth"));
+    }
+
+    /// Proves an `https://` candidate (e.g. a Cloudflare-hosted
+    /// `https://agentbus.dtmventures.com` tier, item 5) is handled by an
+    /// HTTPS-capable connector through the production `server_client()` used
+    /// by every `server-mode` HTTP call (`http_get`/`http_post`/`http_put`),
+    /// not a hand-rolled client.
+    ///
+    /// Connect-level test, not a full TLS handshake against a real
+    /// certificate: the discriminator is the shape of the failure against an
+    /// address nothing listens on. Confirmed empirically before the `rustls`
+    /// feature was added to this crate's `reqwest` dependency: connecting to
+    /// `https://127.0.0.1:1/health` with NO TLS backend linked fails
+    /// immediately with `"invalid URL, scheme is not http"` (reqwest refuses
+    /// to even attempt the connection); with `rustls` linked, the same
+    /// request instead fails with `"tcp connect error"` (connection
+    /// refused), proving the scheme was accepted and a real socket connect
+    /// was attempted. `anyhow::Error`'s alternate `{:#}` `Display` is used to
+    /// print the full context chain (`http_get`'s `.with_context()` message
+    /// plus the underlying `reqwest::Error` and its own source chain) --
+    /// plain `{}`/`.to_string()` only prints the outermost context frame.
+    #[test]
+    fn server_client_accepts_https_candidates_for_the_cloud_hub_tier() {
+        let result = http_get("https://127.0.0.1:1/health");
+        let message = format!("{:#}", result.expect_err("port 1 must not have a listener"));
+
+        assert!(
+            !message.to_lowercase().contains("scheme is not http"),
+            "https:// was rejected before any connection was attempted -- the \
+             `rustls` feature is missing from agent-bus-cli's reqwest dependency; \
+             got: {message}"
+        );
+        assert!(
+            message.contains("tcp connect error"),
+            "expected a real TCP connect attempt (and failure) once the scheme \
+             was accepted; got: {message}"
+        );
     }
 }

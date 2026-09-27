@@ -329,7 +329,7 @@ const NOTIFICATION_STREAM_MAXLEN: u64 = 10_000;
 const NOTIFICATION_STREAM_TTL_SECS: u64 = 259_200;
 
 /// TTL for notification and inbox cursors (`bus:cursor:*`, `bus:notify_cursor:*`): 7 days.
-const CURSOR_TTL_SECS: u64 = 604_800;
+pub(crate) const CURSOR_TTL_SECS: u64 = 604_800;
 
 /// TTL for per-agent task queues (`bus:tasks:*`): 3 days.
 const TASK_QUEUE_TTL_SECS: u64 = 259_200;
@@ -631,7 +631,7 @@ pub fn list_notifications(
 ///
 /// Returns an error if the Redis `XRANGE` command fails.
 pub fn list_notifications_since_id(
-    conn: &mut redis::Connection,
+    conn: &mut impl redis::ConnectionLike,
     agent: &str,
     since_id: &str,
     limit: usize,
