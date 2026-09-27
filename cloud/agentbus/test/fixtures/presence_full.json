@@ -1,0 +1,16 @@
+{
+  "agent": "claude",
+  "capabilities": [
+    "mcp",
+    "http"
+  ],
+  "metadata": {
+    "host": "asuspro13",
+    "repo": "agent-hub"
+  },
+  "protocol_version": "1.0",
+  "session_id": "session-abc123",
+  "status": "online",
+  "timestamp_utc": "2026-09-27T12:00:00.000000Z",
+  "ttl_seconds": 300
+}

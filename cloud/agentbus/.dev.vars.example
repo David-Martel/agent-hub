@@ -1,0 +1,28 @@
+# Copy to .dev.vars for local `wrangler dev` testing (never commit .dev.vars
+# itself — it is gitignored). Production secrets are set with
+# `wrangler secret put <NAME>` from the Bitwarden `cloudflare.com` item;
+# they never live in this repo in either form.
+
+# JSON map of bearer token -> identity (agent-hub#82). Every entry now
+# carries a `role`: "agent" (bound to that agent/host — a body value that
+# disagrees is rejected with 403), "hub" (may vouch for any agent; its `hub`
+# field is the ONLY source of `origin_hub` on /sync/*, and required for role
+# "hub"), or "operator" (may vouch for any agent; required for
+# PUT .../resolve and GET /sync/stats). The importer at
+# ~/.local/share/jules-fleet/handoff-2026-09-26/agentbus-import/import_pg_export.py
+# needs a "hub" token whose `hub` matches its --origin-hub argument.
+#
+# agent-hub#82 re-review N1: every token below is padded to >=32 characters
+# — the parser fails closed on a shorter one, an unknown key on an entry, or
+# a top-level array instead of an object. See README.md's "Auth model" for
+# the full format and a from-scratch worked example.
+AGENT_BUS_TOKENS={"dev-token-claude-0000000000000000":{"agent":"claude","host":"asuspro13","role":"agent"},"dev-token-codex-00000000000000000":{"agent":"codex","host":"asuspro13","role":"agent"},"dev-token-hub-asuspro13-0000000000":{"agent":"asuspro13-sync","role":"hub","hub":"asuspro13"},"dev-token-operator-0000000000000":{"agent":"operator","role":"operator"}}
+
+# Single shared token, parity fallback with the on-site hub's env var name.
+# DISABLED unless AGENT_BUS_DEV_ALLOW_SHARED_TOKEN=1 is ALSO set (agent-hub#82
+# review H1/L5: this used to be an always-on, un-attributable superuser).
+# Always resolves to role "agent" (least privilege) — never use it for
+# anything that needs hub/operator role. Placeholder value, not a real
+# credential — replace before use. Also subject to the >=32-char minimum.
+AGENT_BUS_AUTH_TOKEN=dev-only-change-me-00000000000000  # pragma: allowlist secret
+AGENT_BUS_DEV_ALLOW_SHARED_TOKEN=1

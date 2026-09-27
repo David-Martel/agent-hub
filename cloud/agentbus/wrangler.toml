@@ -1,0 +1,91 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "agentbus-cloud"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+# No `account_id` here on purpose — this is set at deploy time (`wrangler
+# deploy --account-id <id>` or the `CLOUDFLARE_ACCOUNT_ID` env var), never
+# committed. See README.md for the full deploy checklist.
+
+# agent-hub#82 review M8: the Worker stayed reachable at its
+# `*.workers.dev` subdomain even after the custom domain went live,
+# bypassing any future Cloudflare Access policy scoped to
+# agentbus.dtmventures.com. Both are disabled — the ONLY route in is the
+# custom domain below (or the workers.dev fallback during the one-time
+# initial smoke test in README.md's deploy checklist, which must re-run
+# this with `workers_dev = true` temporarily and set it back to `false`
+# before going further).
+workers_dev = false
+preview_urls = false
+
+[observability]
+enabled = true
+
+# ---------------------------------------------------------------------------
+# Durable Objects — the primary store (D1 and R2 are DENIED on the available
+# dtmventures.com API token; see agent-hub#79 design-change note). Both
+# classes use the SQLite storage backend (`ctx.storage.sql`), which Miniflare
+# / vitest-pool-workers also supports for local testing.
+# ---------------------------------------------------------------------------
+
+[[durable_objects.bindings]]
+name = "BUS_LOG"
+class_name = "BusLog"
+
+[[durable_objects.bindings]]
+name = "CLAIM_DO"
+class_name = "ClaimDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BusLog", "ClaimDO"]
+
+# ---------------------------------------------------------------------------
+# Routes / custom domain — DEPLOY-TIME ONLY, commented out until the zone
+# Workers Routes / Custom Domains permission on the API token is verified
+# (see README.md "Deploy checklist"). Until then, deploy without a route and
+# use the auto-assigned `*.workers.dev` subdomain for smoke testing.
+# ---------------------------------------------------------------------------
+
+# [[routes]]
+# pattern = "agentbus.dtmventures.com"
+# custom_domain = true
+
+# ---------------------------------------------------------------------------
+# R2 snapshots — OPTIONAL and DEFERRED (agent-hub#79 design-change note).
+# The `/sync/pull` and future export endpoints work entirely off the
+# BusLog Durable Object's SQLite storage; add this binding only if/when
+# off-site R2 archival is separately approved and permitted on the token.
+# ---------------------------------------------------------------------------
+
+# [[r2_buckets]]
+# binding = "SNAPSHOTS"
+# bucket_name = "agentbus-snapshots"
+
+# ---------------------------------------------------------------------------
+# Secrets (never committed; set via `wrangler secret put <NAME>` at deploy
+# time, sourced from the Bitwarden `cloudflare.com` item — see README.md's
+# "Auth model" section for the full format and a worked example):
+#   AGENT_BUS_TOKENS      JSON OBJECT (never an array — the parser fails
+#                         closed on anything else, agent-hub#82 review N1):
+#                         {"<token, >=32 chars>": {"agent": "...",
+#                          "role": "agent"|"hub"|"operator", "host"?: "...",
+#                          "hub"?: "..." (required for role "hub")}, ...}
+#                         Unknown keys on an entry, or a token shorter than
+#                         32 characters, make that entry fail closed too.
+#   AGENT_BUS_AUTH_TOKEN  single shared token (>=32 chars), parity fallback
+#                         with the on-site hub's env var name — do not set
+#                         AGENT_BUS_DEV_ALLOW_SHARED_TOKEN in production, or
+#                         this becomes live (see README.md)
+# ---------------------------------------------------------------------------
+
+[vars]
+HUB_IDENTITY = "cloud"
+# Retention (agent-hub#82 review M1) is OFF (unlimited) by default —
+# uncomment and set a window (days) once the operator decides on one.
+# RETENTION_DAYS = "90"
+# Per-identity rate limit (agent-hub#82), requests/minute. Defaults to 600
+# when unset. See README.md's "Security hardening" section for the
+# Workers-rate-limit-binding upgrade path.
+# RATE_LIMIT_PER_MINUTE = "600"

@@ -33,6 +33,31 @@ jobs:
       - run: bash scripts/ci/setup-rust.sh
       - run: cargo fmt --all --check
 
+  cloud-agentbus:
+    name: Cloud Agentbus (TypeScript)
+    runs-on: [self-hosted, Linux, X64]
+    # agent-hub#82: cloud/agentbus (the agentbus.dtmventures.com Cloudflare
+    # Worker) had ZERO CI coverage before this — verified by grep, the
+    # checks on 3aad635 were Rust-only. No `paths:` filter exists anywhere in
+    # this repo's workflows (checked before adding this job), so this job
+    # runs unconditionally like every other job here rather than introducing
+    # a new, unprecedented filtering pattern. `actions/setup-node` is used
+    # rather than assuming Node is preinstalled in the runner image — the
+    # image identity for this repo's self-hosted runners was not verified as
+    # part of this change, so don't assume `vigil-runner:amd64` or any other
+    # specific base.
+    defaults:
+      run:
+        working-directory: cloud/agentbus
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+
   lefthook-gates:
     name: Lefthook Gates Run
     runs-on: [self-hosted, Linux, X64]
