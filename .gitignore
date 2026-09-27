@@ -34,6 +34,9 @@ Thumbs.db
 # Agent config, context checkpoints, and plans ARE tracked (portable across clones).
 # Only genuinely machine-local / secret agent artifacts stay ignored:
 .claude/worktrees/
+# Repo-local git worktrees (agent-hub#82): `git worktree add worktrees/<name>`
+# checkouts live here, never scattered under ~/dev/worktrees/ or similar.
+worktrees/
 .claude/settings.local.json
 .codex/sessions/
 .serena/cache/
