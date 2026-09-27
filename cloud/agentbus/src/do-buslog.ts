@@ -72,6 +72,11 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_to_ts ON messages(to_agent, timestamp_utc);
 CREATE INDEX IF NOT EXISTS idx_messages_from_ts ON messages(from_agent, timestamp_utc);
 CREATE INDEX IF NOT EXISTS idx_messages_ingested ON messages(ingested_at_utc);
+-- The UNIQUE constraint above is on (origin_hub, id), not id alone, so a
+-- bare WHERE id = ? (getMessageRecipient, review N6) has no index to use
+-- without this: a 100-id /ack/batch would be 100 full table scans at fleet
+-- volume (~27k rows and growing).
+CREATE INDEX IF NOT EXISTS idx_messages_id ON messages(id);
 
 -- "Current" presence liveness, keyed by (key_origin, agent) rather than
 -- agent alone (review M9): two different hubs' (or two different roaming
@@ -415,22 +420,29 @@ export class BusLog extends DurableObject<Env> {
     return { message: rowToMessage(row), inserted: true, conflict: false };
   }
 
-  /** Inserts every item of a `/messages/batch` request in ONE synchronous
-   * RPC (re-review N8): this method itself contains no `await`, and neither
-   * does `insertMessage`, so Cloudflare's SQLite-backed Durable Object
-   * storage wraps the whole sequence of INSERTs in a single implicit
-   * transaction. If any individual insert throws (a genuine storage error,
-   * not the ordinary "already exists" replay case, which `insertMessage`
-   * reports via `conflict`/`inserted` rather than throwing), every insert
-   * already performed earlier IN THIS SAME CALL rolls back with it --
-   * closing the "item 0 persisted, item 1 failed" gap the review found.
-   * Field/identity validation happens before this is ever called (in
-   * index.ts), so a bad item never reaches here at all. */
+  /** Inserts every item of a `/messages/batch` request atomically
+   * (re-review N8). Verified EMPIRICALLY (not merely assumed from "no
+   * `await` occurs"): a first attempt relying on the lack of `await` alone
+   * did NOT roll back an earlier insert when a later one threw inside the
+   * same RPC call in this test environment, so this wraps the whole
+   * sequence in an EXPLICIT `this.ctx.storage.transactionSync(...)` --
+   * Cloudflare's documented mechanism for "either every write in this
+   * closure commits, or none do." If any individual insert throws (a
+   * genuine storage error, not the ordinary "already exists" replay case,
+   * which `insertMessage` reports via `conflict`/`inserted` rather than
+   * throwing), every insert already performed earlier IN THIS SAME CALL
+   * rolls back with it -- closing the "item 0 persisted, item 1 failed" gap
+   * the review found. See test/smoke.test.ts's "insertMessageBatch rolls
+   * back atomically" test, which exercises this with a genuine
+   * storage-path exception (a missing `origin_hub`), not just a validation
+   * failure. Field/identity validation happens before this is ever called
+   * (in index.ts), so a bad item never reaches here at all in the real
+   * route. */
   insertMessageBatch(
     inputs: InsertMessageInput[],
   ): { message: Message; inserted: boolean; conflict: boolean }[] {
     this.ensureSchema();
-    return inputs.map((input) => this.insertMessage(input));
+    return this.ctx.storage.transactionSync(() => inputs.map((input) => this.insertMessage(input)));
   }
 
   clearPendingAck(messageId: string): void {

@@ -44,6 +44,52 @@ describe("smoke: rate limiting (agent-hub#82, checkRateLimit)", () => {
   });
 });
 
+describe("smoke: insertMessageBatch rolls back atomically on a storage-path exception (re-review N8)", () => {
+  it("a genuine storage error (not a validation error) mid-batch rolls back everything already inserted in the SAME call", async () => {
+    // This is the load-bearing atomicity claim behind the N8 fix: index.ts
+    // validates every item BEFORE calling insertMessageBatch, so the ONLY
+    // way item 0 could still end up persisted while item 1 fails is a
+    // genuine storage-path exception thrown partway through this single
+    // synchronous DO RPC. insertMessage() itself throws exactly that shape
+    // of error when origin_hub is missing (see do-buslog.ts) -- a case that
+    // can't happen via the real /messages/batch route (bindOriginHubForDirectWrite
+    // always supplies one), but is the most direct way to prove the
+    // rollback property empirically rather than merely asserting it in a
+    // comment.
+    const id = env.BUS_LOG.idFromName(`batch-rollback-${crypto.randomUUID()}`);
+    const stub = env.BUS_LOG.get(id);
+    const recipient = `batch-rollback-agent-${crypto.randomUUID()}`;
+    const validItem = {
+      id: crypto.randomUUID(),
+      origin_hub: "asuspro13",
+      timestamp_utc: "2026-09-27T00:00:00.000000Z",
+      protocol_version: "1.0",
+      from: "claude",
+      to: recipient,
+      topic: "status",
+      body: "should be rolled back",
+      tags: [],
+      priority: "normal",
+      request_ack: false,
+      metadata: {},
+    };
+    // origin_hub omitted entirely (cast around the type since the real
+    // caller can never construct this) so insertMessage throws INSIDE the
+    // batch, after the first item already ran its INSERT.
+    const brokenItem = { ...validItem, id: crypto.randomUUID(), origin_hub: undefined } as unknown as typeof validItem;
+
+    await expect(stub.insertMessageBatch([validItem, brokenItem])).rejects.toThrow();
+
+    const rows = await stub.listMessages({
+      agent: recipient,
+      since_ms: 0,
+      limit: 10,
+      include_broadcast: true,
+    });
+    expect(rows.some((m) => m.id === validItem.id)).toBe(false);
+  });
+});
+
 describe("smoke: retention alarm (agent-hub#82, off by default)", () => {
   it("maybeScheduleRetention is a no-op when RETENTION_DAYS is unset", async () => {
     // This Worker's test bindings (vitest.config.ts) never set
