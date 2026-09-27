@@ -1,0 +1,27 @@
+{
+  "name": "agentbus-cloud",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Off-site Cloudflare tier of agent-bus (agent-hub#79) — Worker + Durable Objects, no D1/R2 required.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.3.0",
+    "@cloudflare/workers-types": "^5.20260927.1",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.42.0"
+  },
+  "dependencies": {
+    "hono": "^4.13.9"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true,
+    "workerd@1.20260926.1": true
+  }
+}

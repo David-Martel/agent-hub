@@ -1,0 +1,24 @@
+{
+  "agent": "codex",
+  "expires_at": "2026-09-27T12:30:01.000000Z",
+  "lease_ttl_seconds": 1800,
+  "mode": "exclusive",
+  "namespace": "ns-1",
+  "priority_argument": "running clippy",
+  "repo_scopes": [
+    "agent-hub"
+  ],
+  "reroute_suggestion": {
+    "isolation_hint": "use --target-dir T:\\RustCache\\cargo-target-codex",
+    "original_resource": "cargo-target",
+    "reason": "resource contested by claude",
+    "suggested_resource": "cargo-target:codex"
+  },
+  "resource": "cargo-target",
+  "scope": "machine",
+  "scope_kind": "path",
+  "scope_path": "/home/damartel/dev/repos/agent-hub",
+  "status": "contested",
+  "thread_id": "thread-79",
+  "timestamp": "2026-09-27T12:00:01.000000Z"
+}

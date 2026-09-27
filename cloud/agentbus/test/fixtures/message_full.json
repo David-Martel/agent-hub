@@ -1,0 +1,22 @@
+{
+  "body": "STATUS: cloud tier fixture",
+  "from": "claude",
+  "id": "018f4c2e-6b7a-7c3d-8e2f-1a2b3c4d5e6f",
+  "metadata": {
+    "n": 1,
+    "origin": "fixture"
+  },
+  "priority": "high",
+  "protocol_version": "1.0",
+  "reply_to": "018f4c2e-0000-7000-8000-000000000000",
+  "request_ack": true,
+  "stream_id": "1690000000000-0",
+  "tags": [
+    "repo:agent-hub",
+    "priority:high"
+  ],
+  "thread_id": "thread-79",
+  "timestamp_utc": "2026-09-27T12:00:00.000000Z",
+  "to": "codex",
+  "topic": "status"
+}

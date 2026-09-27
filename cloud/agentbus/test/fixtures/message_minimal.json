@@ -1,0 +1,13 @@
+{
+  "body": "check the bus",
+  "from": "claude",
+  "id": "018f4c2e-6b7a-7c3d-8e2f-000000000001",
+  "metadata": null,
+  "priority": "normal",
+  "protocol_version": "1.0",
+  "request_ack": false,
+  "tags": [],
+  "timestamp_utc": "2026-09-27T12:00:00.000000Z",
+  "to": "all",
+  "topic": "knock"
+}

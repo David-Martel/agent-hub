@@ -1,0 +1,6 @@
+{
+  "claims": [],
+  "resolution_reason": "first-come, higher priority argument",
+  "resource": "cargo-target",
+  "winner": "claude"
+}

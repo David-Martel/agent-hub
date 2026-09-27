@@ -1,0 +1,12 @@
+# Copy to .dev.vars for local `wrangler dev` testing (never commit .dev.vars
+# itself — it is gitignored). Production secrets are set with
+# `wrangler secret put <NAME>` from the Bitwarden `cloudflare.com` item;
+# they never live in this repo in either form.
+
+# JSON map of bearer token -> identity. Prefer this over AGENT_BUS_AUTH_TOKEN
+# once more than one caller needs a distinguishable identity for audit.
+AGENT_BUS_TOKENS={"dev-token-claude":{"agent":"claude","host":"asuspro13"},"dev-token-codex":{"agent":"codex","host":"asuspro13"}}
+
+# Single shared token, parity fallback with the on-site hub's env var name.
+# Placeholder value, not a real credential — replace before use.
+AGENT_BUS_AUTH_TOKEN=dev-only-change-me  # pragma: allowlist secret
