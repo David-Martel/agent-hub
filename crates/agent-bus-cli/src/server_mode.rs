@@ -550,4 +550,41 @@ mod tests {
         assert!(message.contains("maintenance"));
         assert!(!message.contains("requires bearer-token auth"));
     }
+
+    /// Proves an `https://` candidate (e.g. a Cloudflare-hosted
+    /// `https://agentbus.dtmventures.com` tier, item 5) is handled by an
+    /// HTTPS-capable connector through the production `server_client()` used
+    /// by every `server-mode` HTTP call (`http_get`/`http_post`/`http_put`),
+    /// not a hand-rolled client.
+    ///
+    /// Connect-level test, not a full TLS handshake against a real
+    /// certificate: the discriminator is the shape of the failure against an
+    /// address nothing listens on. Confirmed empirically before the `rustls`
+    /// feature was added to this crate's `reqwest` dependency: connecting to
+    /// `https://127.0.0.1:1/health` with NO TLS backend linked fails
+    /// immediately with `"invalid URL, scheme is not http"` (reqwest refuses
+    /// to even attempt the connection); with `rustls` linked, the same
+    /// request instead fails with `"tcp connect error"` (connection
+    /// refused), proving the scheme was accepted and a real socket connect
+    /// was attempted. `anyhow::Error`'s alternate `{:#}` `Display` is used to
+    /// print the full context chain (`http_get`'s `.with_context()` message
+    /// plus the underlying `reqwest::Error` and its own source chain) --
+    /// plain `{}`/`.to_string()` only prints the outermost context frame.
+    #[test]
+    fn server_client_accepts_https_candidates_for_the_cloud_hub_tier() {
+        let result = http_get("https://127.0.0.1:1/health");
+        let message = format!("{:#}", result.expect_err("port 1 must not have a listener"));
+
+        assert!(
+            !message.to_lowercase().contains("scheme is not http"),
+            "https:// was rejected before any connection was attempted -- the \
+             `rustls` feature is missing from agent-bus-cli's reqwest dependency; \
+             got: {message}"
+        );
+        assert!(
+            message.contains("tcp connect error"),
+            "expected a real TCP connect attempt (and failure) once the scheme \
+             was accepted; got: {message}"
+        );
+    }
 }

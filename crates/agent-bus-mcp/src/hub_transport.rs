@@ -168,6 +168,69 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
 
+    /// `reqwest::Error`'s `Display` only prints its own top-level message
+    /// ("error sending request for url ..."); the discriminating text lives
+    /// deeper in the `source()` chain (hyper-util's connector, then the OS
+    /// error). Concatenate the whole chain so a substring assertion can see
+    /// it, mirroring what `anyhow::Error`'s `{:#}` alternate `Display` does
+    /// for `anyhow` errors (this is a bare `reqwest::Error`, not `anyhow`).
+    fn full_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+        let mut message = err.to_string();
+        let mut cause = err.source();
+        while let Some(source) = cause {
+            message.push_str(": ");
+            message.push_str(&source.to_string());
+            cause = source.source();
+        }
+        message
+    }
+
+    /// Proves an `https://` candidate (e.g. `https://agentbus.dtmventures.com`,
+    /// item 5) is actually handled by an HTTPS-capable connector, using the
+    /// SAME client [`HttpMcpTransport`] sends real requests with -- not a
+    /// hand-rolled one.
+    ///
+    /// This is a connect-level test, not a full TLS handshake against a real
+    /// certificate (a self-signed local TLS server is more machinery than
+    /// this needs): the discriminator is the shape of the failure against an
+    /// address nothing listens on. Confirmed empirically before this reqwest
+    /// feature was linked: connecting to `https://127.0.0.1:1/health`
+    /// (`crates/agent-bus-mcp/Cargo.toml` `reqwest` with no TLS backend at
+    /// all, i.e. `default-features = false` and no `rustls` feature) fails
+    /// immediately with `"invalid URL, scheme is not http"` -- reqwest
+    /// refuses to even attempt the connection. With the `rustls` feature
+    /// linked, the SAME request instead fails with `"tcp connect error"`
+    /// (connection refused), proving the scheme was accepted and a real
+    /// socket connect was attempted. If this test starts failing with
+    /// "scheme is not http" again, the `rustls` feature was dropped from
+    /// `Cargo.toml`.
+    #[test]
+    fn https_candidate_reaches_a_real_connect_attempt_not_a_scheme_rejection() {
+        let transport = transport_with_token(None);
+        let rt = tokio::runtime::Runtime::new().expect("build test runtime");
+        let result = rt.block_on(async {
+            transport
+                .client
+                .get("https://127.0.0.1:1/health")
+                .send()
+                .await
+        });
+
+        let err = result.expect_err("port 1 must not have a listener");
+        let message = full_error_chain(&err);
+        assert!(
+            !message.to_lowercase().contains("scheme is not http"),
+            "https:// was rejected before any connection was attempted -- the \
+             `rustls` feature is missing from agent-bus-mcp's reqwest dependency; \
+             got: {message}"
+        );
+        assert!(
+            message.contains("tcp connect error"),
+            "expected a real TCP connect attempt (and failure) once the scheme \
+             was accepted; got: {message}"
+        );
+    }
+
     /// Bind an ephemeral-port mock hub that answers exactly one request with
     /// a fixed body, then stops. Good enough for these single-call tests.
     fn spawn_one_shot_mock(

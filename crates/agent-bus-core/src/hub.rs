@@ -249,6 +249,43 @@ mod tests {
     }
 
     #[test]
+    fn https_candidate_is_accepted_by_resolution() {
+        // `resolve_hub` does no I/O and no scheme filtering of its own -- it
+        // is a plain string handed to `probe`. This proves nothing upstream
+        // (this function, or a caller building the candidate list) special-
+        // cases or rejects `https://`, which is required for a Cloudflare-
+        // hosted `https://agentbus.dtmventures.com` candidate (item 5) to
+        // ever reach the actual HTTP client.
+        let candidates = urls(&["https://agentbus.dtmventures.com"]);
+        let backend = resolve_hub(&candidates, |url| {
+            assert_eq!(url, "https://agentbus.dtmventures.com");
+            Some(ProbeInfo {
+                build_version: Some("0.5.0 (cloud)".to_owned()),
+            })
+        });
+        assert_eq!(
+            backend,
+            HubBackend::Remote {
+                url: "https://agentbus.dtmventures.com".to_owned(),
+                authoritative: true,
+                hub_build: Some("0.5.0 (cloud)".to_owned()),
+                tried: urls(&["https://agentbus.dtmventures.com"]),
+            }
+        );
+
+        // Also prove an unreachable https:// candidate lands the ordinary
+        // `Offline` state, not some special/rejected variant.
+        let candidates = urls(&["https://agentbus.dtmventures.com"]);
+        let backend = resolve_hub(&candidates, |_| None);
+        assert_eq!(
+            backend,
+            HubBackend::Offline {
+                tried: urls(&["https://agentbus.dtmventures.com"]),
+            }
+        );
+    }
+
+    #[test]
     fn serializes_with_a_mode_tag_for_json_reporting() {
         let backend = HubBackend::Remote {
             url: "http://a:8400".to_owned(),
