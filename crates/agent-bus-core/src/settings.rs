@@ -1074,10 +1074,20 @@ mod tests {
         let _guard = LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // SAFETY: serialized by LOCK; no other thread touches these two vars
+        // Isolate from the host's real ~/.config/agent-bus/config.json: on a
+        // machine whose config lists server_urls (e.g. a roaming client), the
+        // "empty means local-only" assertions would otherwise read that file
+        // and fail. Point AGENT_BUS_CONFIG at a path that cannot exist.
+        let prev_config = std::env::var_os("AGENT_BUS_CONFIG");
+        let missing_config = std::env::temp_dir().join(format!(
+            "agent-bus-settings-test-no-config-{}.json",
+            std::process::id()
+        ));
+        // SAFETY: serialized by LOCK; no other thread touches these vars
         // while the guard is held (every test in this module goes through
-        // this helper or leaves both vars untouched).
+        // this helper or leaves them untouched).
         unsafe {
+            std::env::set_var("AGENT_BUS_CONFIG", &missing_config);
             match urls {
                 Some(v) => std::env::set_var("AGENT_BUS_SERVER_URLS", v),
                 None => std::env::remove_var("AGENT_BUS_SERVER_URLS"),
@@ -1090,6 +1100,10 @@ mod tests {
         let result = f();
         // SAFETY: same justification as above.
         unsafe {
+            match prev_config {
+                Some(v) => std::env::set_var("AGENT_BUS_CONFIG", v),
+                None => std::env::remove_var("AGENT_BUS_CONFIG"),
+            }
             std::env::remove_var("AGENT_BUS_SERVER_URLS");
             std::env::remove_var("AGENT_BUS_SERVER_URL");
         }
