@@ -39,17 +39,30 @@ import {
   assertNoPhi,
   coerceOptionalInt,
   enforceSchemaForTransport,
+  MAX_BODY_LEN,
   MAX_LEASE_TTL_SECONDS,
+  MAX_ORIGIN_HOST_LEN,
+  MAX_ORIGIN_HUB_LEN,
+  MAX_RECIPIENT_LEN,
+  MAX_SENDER_LEN,
+  MAX_SYNC_ID_LEN,
+  MAX_THREAD_ID_LEN,
   MIN_LEASE_TTL_SECONDS,
+  nonEmpty,
   parseIntParam,
+  validateClaimCore,
   validateMessageCore,
   validateMessageSchema,
+  validateOptionalString,
+  validatePresenceCore,
   validateProtocolVersion,
   validateTags,
   validateTimestampUtc,
   ForbiddenError,
   ValidationError,
+  type RawClaimFields,
   type RawMessageFields,
+  type RawPresenceFields,
 } from "./validation";
 import { normalizeResourceName, parseLeaseMode, parseResourceScope } from "./claims-logic";
 import type { Health, JsonValue } from "./types";
@@ -73,7 +86,6 @@ const BUILD_VERSION = "agentbus-cloud@0.2.0";
 const DEFAULT_SINCE_MINUTES = 60;
 const MAX_HISTORY_MINUTES = 10_080; // 7 days, mirrors agent_bus_core::models::MAX_HISTORY_MINUTES
 const DEFAULT_LIMIT = 50;
-const MAX_ID_LEN = 128;
 
 function cloudIdentity(env: Env): string {
   return env.HUB_IDENTITY ?? "cloud";
@@ -187,13 +199,9 @@ app.get("/health", (c) => {
 
 interface SendBody extends RawMessageFields {
   schema?: string;
-  thread_id?: string;
   request_ack?: boolean;
-  reply_to?: string;
-  client_msg_id?: string;
   origin_host?: string;
   origin_hub?: string;
-  hlc?: string;
 }
 
 function buildValidatedMessage(req: SendBody, identity: Identity, env: Env): InsertMessageInput {
@@ -213,8 +221,13 @@ function buildValidatedMessage(req: SendBody, identity: Identity, env: Env): Ins
   assertNoPhi(fittedBody);
 
   const sender = bindAgent(identity, core.sender, "sender");
-  const originHost = bindOriginHost(identity, req.origin_host);
-  const originHub = bindOriginHubForDirectWrite(identity, req.origin_hub, cloudIdentity(env));
+  // Length-capped BEFORE binding (agent-hub#82 re-review N2): an oversized
+  // origin_host/origin_hub in the request body must 400 on its own size,
+  // not be silently compared against/overridden by the identity's value.
+  const cappedOriginHost = validateOptionalString(req.origin_host, "origin_host", MAX_ORIGIN_HOST_LEN);
+  const cappedOriginHub = validateOptionalString(req.origin_hub, "origin_hub", MAX_ORIGIN_HUB_LEN);
+  const originHost = bindOriginHost(identity, cappedOriginHost);
+  const originHub = bindOriginHubForDirectWrite(identity, cappedOriginHub, cloudIdentity(env));
 
   const input: InsertMessageInput = {
     id: uuidv7(),
@@ -230,11 +243,11 @@ function buildValidatedMessage(req: SendBody, identity: Identity, env: Env): Ins
     metadata: core.metadata,
     origin_hub: originHub,
   };
-  if (req.thread_id) input.thread_id = req.thread_id;
-  if (req.reply_to) input.reply_to = req.reply_to;
-  if (req.client_msg_id) input.client_msg_id = req.client_msg_id;
+  if (core.thread_id) input.thread_id = core.thread_id;
+  if (core.reply_to) input.reply_to = core.reply_to;
+  if (core.client_msg_id) input.client_msg_id = core.client_msg_id;
   if (originHost) input.origin_host = originHost;
-  if (req.hlc) input.hlc = req.hlc;
+  if (core.hlc) input.hlc = core.hlc;
   return input;
 }
 
@@ -436,12 +449,11 @@ app.post("/knock", async (c) => {
   return guarded(async () => {
     const identity = c.get("identity");
     const sender = bindAgent(identity, body.sender, "sender");
-    const recipient = (body.recipient ?? "").trim();
-    if (!recipient) throw new ValidationError("recipient must not be empty");
-    const knockBody = body.body ?? "check the bus";
-    if (!knockBody.trim()) throw new ValidationError("body must not be empty");
-    assertNoPhi(knockBody);
+    const recipient = nonEmpty(body.recipient ?? "", "recipient", MAX_RECIPIENT_LEN);
+    const knockBody = nonEmpty(body.body ?? "check the bus", "body", MAX_BODY_LEN);
+    const threadId = validateOptionalString(body.thread_id, "thread_id", MAX_THREAD_ID_LEN);
     const tags = validateTags(body.tags);
+    assertNoPhi(knockBody, recipient, threadId);
     const requestAck = body.request_ack ?? true;
 
     const stub = busLogStub(c.env);
@@ -463,7 +475,7 @@ app.post("/knock", async (c) => {
       },
       origin_hub: bindOriginHubForDirectWrite(identity, undefined, cloudIdentity(c.env)),
     };
-    if (body.thread_id) input.thread_id = body.thread_id;
+    if (threadId) input.thread_id = threadId;
     const { message } = await stub.insertMessage(input);
     return message;
   });
@@ -481,26 +493,26 @@ function presenceOrigin(identity: Identity): { keyOrigin: string; originHub?: st
 app.put("/presence/:agent", async (c) => {
   const agentParam = c.req.param("agent").trim();
   const body = await c.req
-    .json<{ status?: string; session_id?: string; capabilities?: string[]; ttl_seconds?: number; metadata?: JsonValue; network_context?: string }>()
-    .catch(() => ({} as { status?: string; session_id?: string; capabilities?: string[]; ttl_seconds?: number; metadata?: JsonValue; network_context?: string }));
+    .json<RawPresenceFields & { ttl_seconds?: number }>()
+    .catch(() => ({}) as RawPresenceFields & { ttl_seconds?: number });
   return guarded(async () => {
     const identity = c.get("identity");
     const agent = bindAgent(identity, agentParam, "agent");
-    assertNoPhi(body.metadata !== undefined ? JSON.stringify(body.metadata) : undefined);
+    const core = validatePresenceCore(body);
     const ttl = Math.min(Math.max(coerceOptionalInt(body.ttl_seconds, "ttl_seconds", { min: 1 }) ?? 180, 1), 86_400);
     const stub = busLogStub(c.env);
     const { keyOrigin, originHub } = presenceOrigin(identity);
     return stub.setPresence(
       {
         agent,
-        status: body.status ?? "online",
+        status: core.status,
         protocol_version: PROTOCOL_VERSION,
         timestamp_utc: formatTimestampUtc(),
-        session_id: body.session_id ?? "",
-        capabilities: body.capabilities ?? [],
-        metadata: body.metadata ?? {},
+        session_id: core.session_id,
+        capabilities: core.capabilities,
+        metadata: core.metadata,
         ttl_seconds: ttl,
-        network_context: body.network_context as never,
+        network_context: core.network_context as never,
       },
       keyOrigin,
       originHub,
@@ -538,33 +550,16 @@ app.get("/pending-acks", async (c) => {
 
 // --- Claims: POST/GET /channels/arbitrate/:resource, resolve/renew/release -----
 
+interface ClaimBody extends RawClaimFields {
+  agent?: string;
+  mode?: string;
+  lease_ttl_seconds?: number;
+  scope?: string;
+}
+
 app.post("/channels/arbitrate/:resource", async (c) => {
   const rawResource = c.req.param("resource");
-  const body = await c.req
-    .json<{
-      agent?: string;
-      priority_argument?: string;
-      mode?: string;
-      namespace?: string;
-      scope_kind?: string;
-      scope_path?: string;
-      repo_scopes?: string[];
-      thread_id?: string;
-      lease_ttl_seconds?: number;
-      scope?: string;
-    }>()
-    .catch(() => ({} as {
-      agent?: string;
-      priority_argument?: string;
-      mode?: string;
-      namespace?: string;
-      scope_kind?: string;
-      scope_path?: string;
-      repo_scopes?: string[];
-      thread_id?: string;
-      lease_ttl_seconds?: number;
-      scope?: string;
-    }));
+  const body = await c.req.json<ClaimBody>().catch(() => ({}) as ClaimBody);
   return guarded(async () => {
     // Validated inside `guarded()` (agent-hub#82 review L1/M6 follow-up): an
     // oversized/empty resource name must 400 through the normal JSON error
@@ -579,18 +574,23 @@ app.post("/channels/arbitrate/:resource", async (c) => {
       min: MIN_LEASE_TTL_SECONDS,
       max: MAX_LEASE_TTL_SECONDS,
     });
+    // Type-checks and caps namespace/scope_kind/scope_path/repo_scopes/
+    // priority_argument/thread_id (agent-hub#82 re-review N4: `namespace:{}`
+    // used to 500 deep inside the DO, and `repo_scopes:"abc"` was stored and
+    // served back as a bare string).
+    const claimFields = validateClaimCore(body);
     const stub = claimStub(c.env, resource);
     return stub.claim(
       {
         resource,
         agent,
-        priorityArgument: body.priority_argument ?? "first-edit required",
+        priorityArgument: claimFields.priorityArgument,
         mode,
-        namespace: body.namespace,
-        scopeKind: body.scope_kind,
-        scopePath: body.scope_path,
-        repoScopes: body.repo_scopes,
-        threadId: body.thread_id,
+        namespace: claimFields.namespace,
+        scopeKind: claimFields.scopeKind,
+        scopePath: claimFields.scopePath,
+        repoScopes: claimFields.repoScopes,
+        threadId: claimFields.threadId,
         leaseTtlSeconds: leaseTtlSeconds ?? 3600,
         scope,
       },
@@ -693,14 +693,32 @@ interface SyncPushMessageInput extends RawMessageFields {
  */
 function buildSyncPushItem(m: SyncPushMessageInput): InsertMessageInput {
   const core = validateMessageCore(m);
+  // Unlike direct `/messages`, a synced item has no caller "identity" a
+  // missing sender could default to — a hub token vouches for an EXPLICIT
+  // historical agent name, never its own (agent-hub#82 re-review N9's
+  // resolution: `sender` is optional in the shared core so `/messages` can
+  // fill it from the token, but `/sync/push` still requires it outright).
+  if (!core.sender) throw new ValidationError("sender must not be empty");
 
   const id = m.id && m.id.trim() ? m.id.trim() : uuidv7();
-  if (id.length > MAX_ID_LEN) throw new ValidationError(`id exceeds maximum length of ${MAX_ID_LEN}`);
+  if (id.length > MAX_SYNC_ID_LEN) throw new ValidationError(`id exceeds maximum length of ${MAX_SYNC_ID_LEN}`);
   if (id.includes("\u0000")) throw new ValidationError("id must not contain NUL bytes (\\x00)");
 
+  // Canonicalized to `formatTimestampUtc`'s exact shape (agent-hub#82
+  // re-review N10): a stored raw value like "2020-01-01 00:00:00+05:00"
+  // (space separator, non-Z offset) parses fine via `Date.parse` but sorts
+  // and compares incorrectly against every other row's canonical string —
+  // it was invisible to `since=60`-style cutoff queries and would corrupt
+  // retention/presence "is this newer" comparisons.
   const timestampUtc = m.timestamp_utc ? validateTimestampUtc(m.timestamp_utc) : formatTimestampUtc();
   const protocolVersion = m.protocol_version ? validateProtocolVersion(m.protocol_version) : PROTOCOL_VERSION;
   const originSeq = coerceOptionalInt(m.origin_seq, "origin_seq", { min: 0 });
+  const originHost = validateOptionalString(m.origin_host, "origin_host", MAX_ORIGIN_HOST_LEN);
+  // Length-capped but NOT bound/defaulted here (agent-hub#82 re-review N2 +
+  // H5) — `BusLog.syncPush` compares this against the route-verified hub
+  // identity and rejects a per-item mismatch rather than silently trusting
+  // or silently overriding it.
+  const originHub = validateOptionalString(m.origin_hub, "origin_hub", MAX_ORIGIN_HUB_LEN);
 
   const input: InsertMessageInput = {
     id,
@@ -715,15 +733,12 @@ function buildSyncPushItem(m: SyncPushMessageInput): InsertMessageInput {
     request_ack: m.request_ack ?? false,
     metadata: core.metadata,
   };
-  if (m.thread_id) input.thread_id = m.thread_id;
-  if (m.reply_to) input.reply_to = m.reply_to;
-  if (m.client_msg_id) input.client_msg_id = m.client_msg_id;
-  if (m.origin_host) input.origin_host = m.origin_host;
-  // Preserved (not defaulted here) so `BusLog.syncPush` can compare it
-  // against the route-verified hub identity and reject a per-item mismatch
-  // (review H5) rather than silently trusting or silently overriding it.
-  if (m.origin_hub) input.origin_hub = m.origin_hub;
-  if (m.hlc) input.hlc = m.hlc;
+  if (core.thread_id) input.thread_id = core.thread_id;
+  if (core.reply_to) input.reply_to = core.reply_to;
+  if (core.client_msg_id) input.client_msg_id = core.client_msg_id;
+  if (originHost) input.origin_host = originHost;
+  if (originHub) input.origin_hub = originHub;
+  if (core.hlc) input.hlc = core.hlc;
   if (originSeq !== undefined) input.origin_seq = originSeq;
   if (core.sensitivity !== "internal") input.sensitivity = core.sensitivity;
   return input;
@@ -816,24 +831,25 @@ app.post("/sync/push-presence", async (c) => {
         if (ev.origin_id === undefined || !Number.isInteger(ev.origin_id)) {
           throw new ValidationError("origin_id must be an integer");
         }
-        const agent = (ev.agent ?? "").trim();
-        if (!agent) throw new ValidationError("agent must not be empty");
-        const status = (ev.status ?? "").trim();
-        if (!status) throw new ValidationError("status must not be empty");
+        const agent = nonEmpty(ev.agent ?? "", "agent", MAX_SENDER_LEN);
+        // Same shared validator as PUT /presence (agent-hub#82 re-review
+        // N3): status/session_id/capabilities/metadata were all previously
+        // uncapped and untyped on this route too (1.5 MB metadata and a 1 MB
+        // status both accepted; a non-string session_id stored as the
+        // useless literal "[object Object]").
+        const core = validatePresenceCore(ev);
         const timestampUtc = ev.timestamp_utc ? validateTimestampUtc(ev.timestamp_utc) : formatTimestampUtc();
         const protocolVersion = ev.protocol_version ? validateProtocolVersion(ev.protocol_version) : PROTOCOL_VERSION;
-        const capabilities = validateTags(ev.capabilities);
-        assertNoPhi(ev.metadata !== undefined ? JSON.stringify(ev.metadata) : undefined);
         const ttlSeconds = coerceOptionalInt(ev.ttl_seconds, "ttl_seconds", { min: 1, max: 86_400 });
         events.push({
           origin_id: ev.origin_id,
           timestamp_utc: timestampUtc,
           protocol_version: protocolVersion,
           agent,
-          status,
-          session_id: ev.session_id ?? null,
-          capabilities,
-          metadata: ev.metadata,
+          status: core.status,
+          session_id: core.session_id || null,
+          capabilities: core.capabilities,
+          metadata: core.metadata,
           ttl_seconds: ttlSeconds ?? null,
         });
       } catch (err) {

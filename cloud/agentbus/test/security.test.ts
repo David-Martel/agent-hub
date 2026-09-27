@@ -404,3 +404,284 @@ describe("HUB_A constant sanity (avoids an unused-import lint drift)", () => {
     expect(status).toBe(200);
   });
 });
+
+describe("N2: side fields are capped, type-checked and PHI-screened (re-review)", () => {
+  it("rejects a 1 MB thread_id on POST /messages instead of storing it", async () => {
+    const { status, body } = await postJson<{ error: string }>("/messages", {
+      sender: "claude",
+      recipient: "codex",
+      topic: "status",
+      body: "x",
+      thread_id: "t".repeat(1_000_000),
+    });
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/thread_id/);
+  });
+
+  it("rejects an oversized client_msg_id, reply_to and hlc", async () => {
+    for (const [field, len] of [
+      ["client_msg_id", 1000],
+      ["reply_to", 1000],
+      ["hlc", 1000],
+    ] as const) {
+      const { status, body } = await postJson<{ error: string }>("/messages", {
+        sender: "claude",
+        recipient: "codex",
+        topic: "status",
+        body: "x",
+        [field]: "y".repeat(len),
+      });
+      expect(status).toBe(400);
+      expect(body.error).toMatch(new RegExp(field));
+    }
+  });
+
+  it("rejects a 500 KB recipient", async () => {
+    const { status, body } = await postJson<{ error: string }>("/messages", {
+      sender: "claude",
+      recipient: "r".repeat(500_000),
+      topic: "status",
+      body: "x",
+    });
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/recipient/);
+  });
+
+  it("rejects an oversized origin_host and origin_hub on a direct post", async () => {
+    const originHost = await postJson<{ error: string }>("/messages", {
+      sender: "claude",
+      recipient: "codex",
+      topic: "status",
+      body: "x",
+      origin_host: "h".repeat(1000),
+    });
+    expect(originHost.status).toBe(400);
+
+    const originHub = await postJson<{ error: string }>(
+      "/messages",
+      { sender: "claude", recipient: "codex", topic: "status", body: "x", origin_hub: "h".repeat(1000) },
+      HUB_A_TOKEN,
+    );
+    expect(originHub.status).toBe(400);
+  });
+
+  it("a hub push with 3 MB of oversized side fields is rejected per item, not stored", async () => {
+    const { body } = await postJson<{ accepted: string[]; rejected: Array<{ reason: string }> }>(
+      "/sync/push",
+      {
+        origin_hub: HUB_A,
+        messages: [
+          {
+            id: crypto.randomUUID(),
+            sender: "claude",
+            recipient: "codex",
+            topic: "status",
+            body: "x",
+            thread_id: "t".repeat(1_000_000),
+            client_msg_id: "c".repeat(1_000_000),
+            reply_to: "r".repeat(1_000_000),
+          },
+        ],
+      },
+      HUB_A_TOKEN,
+    );
+    expect(body.accepted).toHaveLength(0);
+  });
+
+  it("extends the PHI screen to topic, thread_id and recipient (re-review M7/N2)", async () => {
+    const topicHit = await postJson<{ error: string }>("/messages", {
+      sender: "claude",
+      recipient: "codex",
+      topic: "patient name intake",
+      body: "x",
+    });
+    expect(topicHit.status).toBe(400);
+    expect(topicHit.body.error).toMatch(/PHI/);
+
+    const threadIdHit = await postJson<{ error: string }>("/messages", {
+      sender: "claude",
+      recipient: "codex",
+      topic: "status",
+      body: "x",
+      thread_id: "SSN 123-45-6789",
+    });
+    expect(threadIdHit.status).toBe(400);
+    expect(threadIdHit.body.error).toMatch(/PHI/);
+
+    const recipientHit = await postJson<{ error: string }>("/messages", {
+      sender: "claude",
+      recipient: "patient name intake",
+      topic: "status",
+      body: "x",
+    });
+    expect(recipientHit.status).toBe(400);
+    expect(recipientHit.body.error).toMatch(/PHI/);
+  });
+});
+
+describe("N3: PUT /presence and /sync/push-presence field validation (re-review)", () => {
+  it("rejects capabilities:5 instead of storing and later mis-serving it", async () => {
+    const { status, body } = await putJson<{ error: string }>(
+      "/presence/n3-cap-test",
+      { status: "online", capabilities: 5 as unknown as string[] },
+      HUB_A_TOKEN,
+    );
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/capabilities/);
+  });
+
+  it("rejects 1.5 MB of presence metadata", async () => {
+    const { status, body } = await putJson<{ error: string }>(
+      "/presence/n3-metadata-test",
+      { status: "online", metadata: { blob: "x".repeat(1_500_000) } },
+      HUB_A_TOKEN,
+    );
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/metadata/);
+  });
+
+  it("rejects a non-string session_id and network_context instead of coercing to '[object Object]'", async () => {
+    const sessionId = await putJson<{ error: string }>(
+      "/presence/n3-session-test",
+      { status: "online", session_id: {} as unknown as string },
+      HUB_A_TOKEN,
+    );
+    expect(sessionId.status).toBe(400);
+
+    const networkContext = await putJson<{ error: string }>(
+      "/presence/n3-network-test",
+      { status: "online", network_context: {} as unknown as string },
+      HUB_A_TOKEN,
+    );
+    expect(networkContext.status).toBe(400);
+  });
+
+  it("rejects an invalid (but string) network_context value", async () => {
+    const { status, body } = await putJson<{ error: string }>(
+      "/presence/n3-network-invalid",
+      { status: "online", network_context: "not-a-real-value" },
+      HUB_A_TOKEN,
+    );
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/network_context/);
+  });
+
+  it("PHI-screens presence status", async () => {
+    const { status, body } = await putJson<{ error: string }>(
+      "/presence/n3-phi-status",
+      { status: "patient name is Jane" },
+      HUB_A_TOKEN,
+    );
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/PHI/);
+  });
+
+  it("/sync/push-presence rejects the same class of bad fields per event", async () => {
+    const { body } = await postJson<{ accepted: number; rejected: Array<{ reason: string }> }>(
+      "/sync/push-presence",
+      {
+        origin_hub: HUB_A,
+        origin_host: "asuspro13",
+        events: [
+          {
+            origin_id: Math.floor(Math.random() * 1_000_000_000),
+            timestamp_utc: "2026-06-12T16:06:02.895291Z",
+            protocol_version: "1.0",
+            agent: "claude",
+            status: "x".repeat(1_000_000),
+          },
+        ],
+      },
+      HUB_A_TOKEN,
+    );
+    expect(body.accepted).toBe(0);
+  });
+});
+
+describe("Row size stays under Cloudflare's DO SQLite ~2 MB row limit, with margin (re-review N2)", () => {
+  it("the theoretical worst-case message row (every field at its cap) has healthy margin below DO_SQLITE_ROW_LIMIT_BYTES", async () => {
+    const {
+      MAX_BODY_LEN,
+      MAX_METADATA_BYTES,
+      MAX_TAGS_COUNT,
+      MAX_TAG_LEN,
+      MAX_SENDER_LEN,
+      MAX_RECIPIENT_LEN,
+      MAX_TOPIC_LEN,
+      MAX_THREAD_ID_LEN,
+      MAX_REPLY_TO_LEN,
+      MAX_CLIENT_MSG_ID_LEN,
+      MAX_HLC_LEN,
+      MAX_ORIGIN_HOST_LEN,
+      MAX_ORIGIN_HUB_LEN,
+      MAX_TOTAL_MESSAGE_BYTES,
+      DO_SQLITE_ROW_LIMIT_BYTES,
+    } = await import("../src/validation");
+
+    const worstCaseFieldSum =
+      MAX_BODY_LEN +
+      MAX_METADATA_BYTES +
+      MAX_TAGS_COUNT * MAX_TAG_LEN +
+      MAX_SENDER_LEN +
+      MAX_RECIPIENT_LEN +
+      MAX_TOPIC_LEN +
+      MAX_THREAD_ID_LEN +
+      MAX_REPLY_TO_LEN +
+      MAX_CLIENT_MSG_ID_LEN +
+      MAX_HLC_LEN +
+      MAX_ORIGIN_HOST_LEN +
+      MAX_ORIGIN_HUB_LEN;
+
+    // Both the sum of every individual field cap AND the explicit
+    // total-size backstop must have real margin below the DO row limit —
+    // currently the per-field sum (~346 KB) is comfortably under the
+    // explicit total cap (400 KB) too, so raising any single field's cap
+    // without checking this sum is exactly the mistake this test catches.
+    expect(worstCaseFieldSum).toBeLessThan(DO_SQLITE_ROW_LIMIT_BYTES / 2);
+    expect(MAX_TOTAL_MESSAGE_BYTES).toBeLessThan(DO_SQLITE_ROW_LIMIT_BYTES / 2);
+  });
+});
+
+describe("N4: claim field validation (re-review)", () => {
+  it("rejects repo_scopes:\"abc\" instead of storing it as a bare string", async () => {
+    const { status, body } = await postJson<{ error: string }>(`/channels/arbitrate/${crypto.randomUUID()}`, {
+      agent: "claude",
+      repo_scopes: "abc" as unknown as string[],
+    });
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/repo_scopes/);
+  });
+
+  it("rejects a 1 MB priority_argument", async () => {
+    const { status, body } = await postJson<{ error: string }>(`/channels/arbitrate/${crypto.randomUUID()}`, {
+      agent: "claude",
+      priority_argument: "p".repeat(1_000_000),
+    });
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/priority_argument/);
+  });
+
+  it("rejects namespace:{} with a 400, not a generic 500", async () => {
+    const { status, body } = await postJson<{ error: string }>(`/channels/arbitrate/${crypto.randomUUID()}`, {
+      agent: "claude",
+      mode: "shared_namespaced",
+      namespace: {} as unknown as string,
+    });
+    expect(status).toBe(400);
+    expect(body.error).toMatch(/namespace/);
+  });
+
+  it("rejects an oversized scope_kind/scope_path", async () => {
+    const scopeKind = await postJson<{ error: string }>(`/channels/arbitrate/${crypto.randomUUID()}`, {
+      agent: "claude",
+      scope_kind: "k".repeat(1000),
+    });
+    expect(scopeKind.status).toBe(400);
+
+    const scopePath = await postJson<{ error: string }>(`/channels/arbitrate/${crypto.randomUUID()}`, {
+      agent: "claude",
+      scope_path: "p".repeat(2000),
+    });
+    expect(scopePath.status).toBe(400);
+  });
+});

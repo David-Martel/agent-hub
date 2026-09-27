@@ -175,6 +175,22 @@ Beyond the identity/role model above:
 - **Caps.** Metadata capped at 64 KB, body at 256 KB (unchanged), a
   defense-in-depth 400 KB total-message cap, tags capped at 64 entries of
   256 chars each, claim/renew lease TTL capped to 1..86400 seconds.
+- **Every remaining field is type-checked and length-capped (re-review
+  N2/N3/N4).** `sender`/`recipient`/`topic` (256), `thread_id` (256),
+  `reply_to`/`client_msg_id`/`hlc` (128), `origin_host`/`origin_hub` (256) on
+  messages; `status` (64), `session_id` (256), `capabilities` (`string[]`,
+  same caps as `tags`) and a validated `network_context` enum on presence
+  (both `PUT /presence/:agent` and `POST /sync/push-presence`);
+  `priority_argument` (512), `namespace`/`scope_kind` (256/128),
+  `scope_path` (1024) and `repo_scopes` (`string[]`) on claims. The sum of
+  every field at its individual cap, plus the 400 KB total-size backstop,
+  both stay well under half of Cloudflare's documented ~2 MB per-row limit
+  for Durable Object SQLite storage (`DO_SQLITE_ROW_LIMIT_BYTES` in
+  `src/validation.ts`; `test/security.test.ts` asserts the arithmetic so a
+  future cap increase that erodes the margin fails loudly).
+- **PHI screen extended to `topic`, `thread_id`, `recipient` and presence
+  `status`** (re-review M7/N2/N3) — previously only the body, ack/knock body
+  and metadata were screened.
 - **Bounded tag scan.** `GET /messages?tag=...` examines at most 10,000 rows
   per call (`MAX_TAG_SCAN_ROWS` in `src/do-buslog.ts`) rather than paging
   through the entire 7-day window when a tag filter matches nothing.

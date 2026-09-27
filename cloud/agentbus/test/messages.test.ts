@@ -29,13 +29,26 @@ describe("POST /messages", () => {
     expect(body).not.toHaveProperty("reply_to");
   });
 
-  it("rejects an empty sender (400)", async () => {
-    const { status, body } = await postJson<{ error: string }>("/messages", {
+  it("an agent-role token defaults an empty/omitted sender to its own identity (re-review N9)", async () => {
+    // auth.ts's docblock always said an omitted sender is filled from the
+    // token; validateMessageCore used to contradict that by throwing on an
+    // empty sender BEFORE bindAgent ever got a chance to default it.
+    const { status, body } = await postJson<{ from: string }>("/messages", {
       sender: "",
       recipient: "codex",
       topic: "status",
       body: "hi",
     });
+    expect(status).toBe(200);
+    expect(body.from).toBe("claude");
+  });
+
+  it("a hub/operator token still rejects an empty sender (no identity to default to)", async () => {
+    const { status, body } = await postJson<{ error: string }>(
+      "/messages",
+      { sender: "", recipient: "codex", topic: "status", body: "hi" },
+      HUB_A_TOKEN,
+    );
     expect(status).toBe(400);
     expect(body.error).toMatch(/sender must not be empty/);
   });
@@ -199,7 +212,7 @@ describe("POST /messages/batch", () => {
     const { status, body } = await postJson<{ error: string }>("/messages/batch", {
       messages: [
         { sender: "claude", recipient: "batch-agent", topic: "status", body: "ok" },
-        { sender: "", recipient: "batch-agent", topic: "status", body: "bad" },
+        { sender: "claude", recipient: "batch-agent", topic: "status", body: "bad", priority: "critical" },
       ],
     });
     expect(status).toBe(400);
