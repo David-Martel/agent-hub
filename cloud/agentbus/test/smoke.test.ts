@@ -78,7 +78,13 @@ describe("smoke: insertMessageBatch rolls back atomically on a storage-path exce
     // batch, after the first item already ran its INSERT.
     const brokenItem = { ...validItem, id: crypto.randomUUID(), origin_hub: undefined } as unknown as typeof validItem;
 
-    await expect(stub.insertMessageBatch([validItem, brokenItem])).rejects.toThrow();
+    let threw = false;
+    try {
+      await stub.insertMessageBatch([validItem, brokenItem]);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
 
     const rows = await stub.listMessages({
       agent: recipient,
