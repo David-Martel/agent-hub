@@ -395,6 +395,24 @@ export class BusLog extends DurableObject<Env> {
     return { message: rowToMessage(row), inserted: true, conflict: false };
   }
 
+  /** Inserts every item of a `/messages/batch` request in ONE synchronous
+   * RPC (re-review N8): this method itself contains no `await`, and neither
+   * does `insertMessage`, so Cloudflare's SQLite-backed Durable Object
+   * storage wraps the whole sequence of INSERTs in a single implicit
+   * transaction. If any individual insert throws (a genuine storage error,
+   * not the ordinary "already exists" replay case, which `insertMessage`
+   * reports via `conflict`/`inserted` rather than throwing), every insert
+   * already performed earlier IN THIS SAME CALL rolls back with it --
+   * closing the "item 0 persisted, item 1 failed" gap the review found.
+   * Field/identity validation happens before this is ever called (in
+   * index.ts), so a bad item never reaches here at all. */
+  insertMessageBatch(
+    inputs: InsertMessageInput[],
+  ): { message: Message; inserted: boolean; conflict: boolean }[] {
+    this.ensureSchema();
+    return inputs.map((input) => this.insertMessage(input));
+  }
+
   clearPendingAck(messageId: string): void {
     this.ensureSchema();
     this.sql.exec("DELETE FROM pending_acks WHERE message_id = ?", messageId);

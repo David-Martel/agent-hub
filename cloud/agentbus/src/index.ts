@@ -305,19 +305,36 @@ app.post("/messages/batch", async (c) => {
     if (messages.length === 0) throw new ValidationError("messages array must not be empty");
     if (messages.length > 100) throw new ValidationError("batch size limit is 100 messages");
 
-    const stub = busLogStub(c.env);
-    const ids: string[] = [];
-    for (const [idx, item] of messages.entries()) {
-      let input: InsertMessageInput;
+    // Re-review N8: validate EVERY item BEFORE writing ANY of them. The old
+    // code validated-then-inserted one item at a time, so item 0 persisted
+    // even when item 1 failed validation (verified: a 400 response left a
+    // partially-applied batch behind). Preserve the original error's status
+    // (a `ForbiddenError` from an identity-binding mismatch stays a 403,
+    // not a 400 -- the other N8 residual the review flagged) while still
+    // naming which item failed.
+    const inputs: InsertMessageInput[] = messages.map((item, idx) => {
       try {
-        input = buildValidatedMessage(item, identity, c.env);
+        return buildValidatedMessage(item, identity, c.env);
       } catch (err) {
+        if (err instanceof ForbiddenError) {
+          throw new ForbiddenError(`item ${idx}: ${err.message}`);
+        }
         const msg = err instanceof Error ? err.message : String(err);
         throw new ValidationError(`item ${idx}: ${msg}`);
       }
-      const { message } = await stub.insertMessage(input);
-      ids.push(message.id);
-    }
+    });
+
+    // All inserts happen in ONE synchronous Durable Object RPC
+    // (`insertMessageBatch`), which Cloudflare's SQLite storage backend
+    // wraps in a single implicit transaction (no `await` occurs between the
+    // individual `INSERT`s): if any insert throws, every insert already
+    // made earlier in this same call rolls back too. A same-origin
+    // duplicate (same id/client_msg_id) is NOT an error -- it's reported as
+    // `inserted: false` per item, matching the non-batch route's own
+    // idempotent-replay semantics, so it does not roll back its siblings.
+    const stub = busLogStub(c.env);
+    const results = await stub.insertMessageBatch(inputs);
+    const ids = results.map((r) => r.message.id);
     return { ids, count: ids.length };
   });
 });

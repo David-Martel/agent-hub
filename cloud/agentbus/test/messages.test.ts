@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { apiJson, CODEX_TOKEN, HUB_A_TOKEN, postJson } from "./helpers";
+import { apiJson, CLAUDE_TOKEN, CODEX_TOKEN, HUB_A_TOKEN, postJson } from "./helpers";
 
 describe("POST /messages", () => {
   it("sends a message and returns the stored Message shape", async () => {
@@ -217,6 +217,38 @@ describe("POST /messages/batch", () => {
     });
     expect(status).toBe(400);
     expect(body.error).toMatch(/^item 1:/);
+  });
+
+  it("is atomic: a later item's validation failure leaves NO earlier item persisted (re-review N8)", async () => {
+    const { status } = await postJson("/messages/batch", {
+      messages: [
+        { sender: "claude", recipient: "batch-atomic-agent", topic: "status", body: "should-not-persist" },
+        { sender: "claude", recipient: "batch-atomic-agent", topic: "status", body: "bad", priority: "critical" },
+      ],
+    });
+    expect(status).toBe(400);
+
+    const { body: stored } = await apiJson<Array<{ body: string }>>("/messages?agent=batch-atomic-agent");
+    expect(stored.some((m) => m.body === "should-not-persist")).toBe(false);
+  });
+
+  it("an identity-binding mismatch inside a batch item is a 403, not a 400 (re-review N8)", async () => {
+    const { status, body } = await postJson<{ error: string }>(
+      "/messages/batch",
+      {
+        messages: [
+          { sender: "claude", recipient: "batch-mismatch-agent", topic: "status", body: "should-not-persist-either" },
+          { sender: "codex", recipient: "batch-mismatch-agent", topic: "status", body: "spoofed sender" },
+        ],
+      },
+      CLAUDE_TOKEN,
+    );
+    expect(status).toBe(403);
+    expect(body.error).toMatch(/^item 1:/);
+
+    // Atomic: item 0 (valid on its own) must not have persisted either.
+    const { body: stored } = await apiJson<Array<{ body: string }>>("/messages?agent=batch-mismatch-agent");
+    expect(stored.some((m) => m.body === "should-not-persist-either")).toBe(false);
   });
 });
 
