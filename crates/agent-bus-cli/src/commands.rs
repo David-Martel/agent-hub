@@ -40,8 +40,9 @@ use crate::output::{
 use crate::redis_bus::{bus_list_messages, connect};
 use crate::server_mode::{
     active_hub_backend, http_get, http_post, http_put, offline_error, post_service_action,
-    query_windows_service_state, resolved_service_base_url, sc_action, service_status_payload,
-    use_server_mode, wait_for_health, wait_for_windows_service_state,
+    query_windows_service_state, resolve_authoritative_claim_url, resolve_hub_url,
+    resolved_service_base_url, sc_action, service_status_payload, use_server_mode, wait_for_health,
+    wait_for_windows_service_state,
 };
 use crate::settings::{Settings, loopback_url_candidates};
 #[cfg(feature = "server-mode")]
@@ -239,8 +240,13 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_stora
             }
             agent_bus_core::hub::HubBackend::Local => {
                 // use_server_mode() being true guarantees server_urls is
-                // non-empty, so resolve_hub cannot return Local here.
-                unreachable!("active_hub_backend returned Local while server_urls is non-empty");
+                // non-empty, so resolve_hub should never return Local here;
+                // treat it as a loud error rather than panicking the process.
+                eprintln!(
+                    "internal error: active_hub_backend returned Local while server_urls is \
+                     non-empty"
+                );
+                std::process::exit(1);
             }
         }
     }
@@ -430,7 +436,8 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
         let fitted_body = auto_fit_schema(body, effective_schema);
         validate_message_schema(&fitted_body, effective_schema)?;
 
-        let url = format!("{}/messages", settings.server_url.as_deref().unwrap_or(""));
+        let base = resolve_hub_url(settings, "send")?;
+        let url = format!("{base}/messages");
         let mut payload = serde_json::json!({
             "sender": from,
             "recipient": to,
@@ -487,7 +494,7 @@ pub(crate) fn cmd_read(settings: &Settings, args: &ReadArgs<'_>) -> Result<()> {
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
+        let base = resolve_hub_url(settings, "read")?;
         let mut url = reqwest::Url::parse(&format!("{base}/messages"))
             .context("invalid server URL for message read")?;
         {
@@ -651,9 +658,9 @@ pub(crate) fn cmd_ack(
                 Ok(())
             }
             agent_bus_core::hub::HubBackend::Offline { tried } => Err(offline_error("ack", &tried)),
-            agent_bus_core::hub::HubBackend::Local => {
-                unreachable!("active_hub_backend returned Local while server_urls is non-empty")
-            }
+            agent_bus_core::hub::HubBackend::Local => Err(anyhow!(
+                "internal error: active_hub_backend returned Local while server_urls is non-empty"
+            )),
         };
     }
 
@@ -717,7 +724,7 @@ pub(crate) fn cmd_presence(settings: &Settings, args: &PresenceArgs<'_>) -> Resu
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
+        let base = resolve_hub_url(settings, "presence")?;
         let url = format!("{base}/presence/{agent}");
         let mut payload = serde_json::json!({
             "status": args.status,
@@ -831,7 +838,8 @@ pub(crate) fn cmd_presence_history(
 pub(crate) fn cmd_presence_list(settings: &Settings, encoding: &Encoding) -> Result<()> {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let url = format!("{}/presence", settings.server_url.as_deref().unwrap_or(""));
+        let base = resolve_hub_url(settings, "presence-list")?;
+        let url = format!("{base}/presence");
         let val = http_get(&url)?;
         output(&val, encoding);
         return Ok(());
@@ -1255,7 +1263,7 @@ fn batch_send_via_server(
     items: &[ValidatedBatchItem],
     encoding: &Encoding,
 ) -> Result<()> {
-    let base = settings.server_url.as_deref().unwrap_or("");
+    let base = resolve_hub_url(settings, "batch-send")?;
     let url = format!("{base}/messages/batch");
     let messages: Vec<serde_json::Value> = items
         .iter()
@@ -1435,40 +1443,30 @@ pub(crate) fn cmd_claim(
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
         // #78 + operator addendum: an exclusive claim is the one write that
-        // must never be granted against anything but the authoritative hub.
-        // Offline gets a distinct, loud message (not the generic
-        // `offline_error`) because a caller polling for a claim needs to
-        // know this is a retryable "not yet", not a hard failure.
-        return match active_hub_backend(settings) {
-            agent_bus_core::hub::HubBackend::Remote { url, .. } => {
-                let request_url = build_server_resource_url(&url, resource, None)?;
-                let val = http_post(
-                    &request_url,
-                    &serde_json::json!({
-                        "agent": agent,
-                        "priority_argument": reason,
-                        "mode": mode,
-                        "namespace": namespace,
-                        "scope_kind": scope_kind,
-                        "scope_path": scope_path,
-                        "repo_scopes": repo_scopes,
-                        "thread_id": thread_id,
-                        "lease_ttl_seconds": lease_ttl_seconds.max(1),
-                        "scope": scope,
-                    }),
-                )?;
-                output(&val, encoding);
-                Ok(())
-            }
-            agent_bus_core::hub::HubBackend::Offline { tried } => Err(anyhow!(
-                "claim pending: no authoritative hub reachable (tried {tried:?}); exclusive \
-                 claims cannot be granted offline. Retry once a hub in \
-                 AGENT_BUS_SERVER_URLS/AGENT_BUS_SERVER_URL is reachable."
-            )),
-            agent_bus_core::hub::HubBackend::Local => {
-                unreachable!("active_hub_backend returned Local while server_urls is non-empty")
-            }
-        };
+        // must never be granted against anything but the authoritative hub
+        // -- not offline, and not a reachable-but-lower-priority fallback
+        // either, since a second hub tier (e.g. a future Cloudflare-hosted
+        // candidate) must never let two different hubs believe they can both
+        // grant the same claim.
+        let base = resolve_authoritative_claim_url(settings, "claim")?;
+        let request_url = build_server_resource_url(&base, resource, None)?;
+        let val = http_post(
+            &request_url,
+            &serde_json::json!({
+                "agent": agent,
+                "priority_argument": reason,
+                "mode": mode,
+                "namespace": namespace,
+                "scope_kind": scope_kind,
+                "scope_path": scope_path,
+                "repo_scopes": repo_scopes,
+                "thread_id": thread_id,
+                "lease_ttl_seconds": lease_ttl_seconds.max(1),
+                "scope": scope,
+            }),
+        )?;
+        output(&val, encoding);
+        return Ok(());
     }
 
     let claim = ops_claim_resource(
@@ -1500,8 +1498,8 @@ pub(crate) fn cmd_renew_claim(
 ) -> Result<()> {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
-        let url = build_server_resource_url(base, resource, Some("renew"))?;
+        let base = resolve_authoritative_claim_url(settings, "renew-claim")?;
+        let url = build_server_resource_url(&base, resource, Some("renew"))?;
         let val = http_post(
             &url,
             &serde_json::json!({
@@ -1533,8 +1531,8 @@ pub(crate) fn cmd_release_claim(
 ) -> Result<()> {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
-        let url = build_server_resource_url(base, resource, Some("release"))?;
+        let base = resolve_authoritative_claim_url(settings, "release-claim")?;
+        let url = build_server_resource_url(&base, resource, Some("release"))?;
         let val = http_post(&url, &serde_json::json!({ "agent": agent }))?;
         output(&val, encoding);
         return Ok(());
@@ -1582,9 +1580,9 @@ pub(crate) fn cmd_claims(
             agent_bus_core::hub::HubBackend::Offline { tried } => {
                 Err(offline_error("claims", &tried))
             }
-            agent_bus_core::hub::HubBackend::Local => {
-                unreachable!("active_hub_backend returned Local while server_urls is non-empty")
-            }
+            agent_bus_core::hub::HubBackend::Local => Err(anyhow!(
+                "internal error: active_hub_backend returned Local while server_urls is non-empty"
+            )),
         };
     }
 
@@ -1781,8 +1779,8 @@ pub(crate) fn cmd_resolve(
 ) -> Result<()> {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
-        let url = build_server_resource_url(base, resource, Some("resolve"))?;
+        let base = resolve_authoritative_claim_url(settings, "resolve")?;
+        let url = build_server_resource_url(&base, resource, Some("resolve"))?;
         let val = http_put(
             &url,
             &serde_json::json!({
@@ -1829,7 +1827,7 @@ pub(crate) fn cmd_knock(
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
+        let base = resolve_hub_url(settings, "knock")?;
         let url = format!("{base}/knock");
         let val = http_post(
             &url,
@@ -1897,7 +1895,7 @@ pub(crate) fn cmd_compact_context(
 ) -> Result<()> {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = settings.server_url.as_deref().unwrap_or("");
+        let base = resolve_hub_url(settings, "compact-context")?;
         let mut payload = serde_json::json!({
             "since_minutes": args.since_minutes,
             "max_tokens": args.max_tokens,

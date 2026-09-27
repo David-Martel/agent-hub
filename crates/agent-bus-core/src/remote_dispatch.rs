@@ -62,6 +62,30 @@ fn invalidate_hub_cache(candidates: &[String]) {
     }
 }
 
+/// MCP tool names that grant, renew, release or resolve an exclusive claim.
+/// These must go only to the authoritative hub candidate (see
+/// [`RoutingDispatch::dispatch_tool`]) -- mirrors the CLI's own
+/// `resolve_authoritative_claim_url` gate in `agent-bus-cli`'s
+/// `server_mode.rs`.
+fn is_claim_authority_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "claim_resource" | "renew_claim" | "release_claim" | "resolve_claim"
+    )
+}
+
+/// The operator's exact "claim pending" wording, used both when no candidate
+/// answered at all and when a candidate answered but was not the
+/// authoritative one -- a caller polling for the claim should retry either
+/// way, not distinguish the two.
+fn claim_pending_error(name: &str, tried: &[String]) -> AgentBusError {
+    AgentBusError::Internal(format!(
+        "{name}: claim pending: no authoritative hub reachable (tried {tried:?}); exclusive \
+         claims cannot be granted, renewed, released or resolved against a non-authoritative \
+         fallback or while offline."
+    ))
+}
+
 /// The transport a [`RoutingDispatch`] uses to reach a remote hub.
 ///
 /// Implementations live in the binary crates (e.g. a blocking `reqwest`
@@ -153,7 +177,34 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
             return Ok(self.bus_health_report());
         }
 
-        match self.resolve_backend() {
+        let backend = self.resolve_backend();
+
+        // Claim-authority tools (grant/renew/release/resolve an exclusive
+        // claim) must go ONLY to the authoritative (first-priority)
+        // candidate -- never a reachable-but-lower-priority fallback, and
+        // never offline. Once a second, later hub tier exists (e.g. a future
+        // Cloudflare-hosted candidate), there must be exactly one claims
+        // authority, so both "nothing answered" and "something answered but
+        // it wasn't the authoritative one" get the same retryable "claim
+        // pending" answer, distinct from the generic offline error other
+        // tools get.
+        if is_claim_authority_tool(name) {
+            return match backend {
+                HubBackend::Remote {
+                    url,
+                    authoritative: true,
+                    ..
+                } => self.transport.call_tool(&url, name, args).inspect_err(|_| {
+                    invalidate_hub_cache(&self.settings.server_urls);
+                }),
+                HubBackend::Remote { tried, .. } | HubBackend::Offline { tried } => {
+                    Err(claim_pending_error(name, &tried))
+                }
+                HubBackend::Local => self.local.dispatch_tool(name, args),
+            };
+        }
+
+        match backend {
             HubBackend::Local => self.local.dispatch_tool(name, args),
             HubBackend::Remote { url, .. } => {
                 self.transport.call_tool(&url, name, args).inspect_err(|_| {
@@ -178,6 +229,10 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
                 .transport
                 .call_tool(url, "bus_health", &Map::new())
                 .unwrap_or_else(|e| {
+                    // Same reasoning as dispatch_tool's Remote arm: a cached
+                    // backend that just failed a real call must not survive
+                    // the rest of the TTL window.
+                    invalidate_hub_cache(&self.settings.server_urls);
                     serde_json::json!({
                         "ok": false,
                         "database_ok": false,

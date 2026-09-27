@@ -486,3 +486,141 @@ fn local_only_mode_never_reports_the_offline_hub_wording() {
         "local-only mode must explicitly report backend mode local: {combined}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// send — fallover coverage (PR #81 review item 2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn send_falls_over_to_the_second_candidate_when_the_first_is_dead() {
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "POST",
+            path: "/messages",
+            status: 200,
+            body: r#"{"id": "msg-1", "sender": "codex", "recipient": "all", "topic": "status", "body": "hi"}"#
+                .to_owned(),
+        },
+    ]);
+
+    // 127.0.0.1:1 is closed, so `send` must fail over to the live second
+    // candidate instead of erroring out on the first dead one.
+    let output = agent_bus_with_hub_candidates(
+        &["http://127.0.0.1:1".to_owned(), hub.url()],
+        "send-fallback",
+    )
+    .args([
+        "send",
+        "--from-agent",
+        "codex",
+        "--to-agent",
+        "all",
+        "--topic",
+        "status",
+        "--body",
+        "hi",
+        "--encoding",
+        "json",
+    ])
+    .output()
+    .expect("run agent-bus send");
+
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        stdout_of(&output),
+        stderr_of(&output)
+    );
+    assert!(
+        hub.hits() >= 1,
+        "the reachable second candidate must have been used"
+    );
+}
+
+#[test]
+fn send_refuses_loudly_when_every_candidate_is_offline() {
+    let output = agent_bus_with_hub_candidates(&["http://127.0.0.1:1".to_owned()], "send-offline")
+        .args([
+            "send",
+            "--from-agent",
+            "codex",
+            "--to-agent",
+            "all",
+            "--topic",
+            "status",
+            "--body",
+            "hi",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run agent-bus send");
+
+    assert!(!output.status.success());
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("offline: no authoritative hub reachable"),
+        "got: {stderr}"
+    );
+    assert!(
+        !stderr.to_lowercase().contains("redis"),
+        "must not fall back to a local read/write: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// claim — authoritative-only grant (PR #81 review item 4)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn claim_reports_pending_when_only_a_non_authoritative_candidate_answers() {
+    // The FIRST (authoritative) candidate is a dead port; the SECOND
+    // candidate is a live mock hub that would happily grant the claim if
+    // asked. A claim must never be granted against a non-authoritative
+    // fallback -- it must report "claim pending" exactly as it would if
+    // nothing answered at all, and must never even reach the second
+    // candidate's /channels/arbitrate route.
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "POST",
+            path: "/channels/arbitrate/file.txt",
+            status: 200,
+            body: r#"{"resource": "file.txt", "status": "granted"}"#.to_owned(),
+        },
+    ]);
+
+    let output = agent_bus_with_hub_candidates(
+        &["http://127.0.0.1:1".to_owned(), hub.url()],
+        "claim-non-authoritative",
+    )
+    .args([
+        "claim",
+        "file.txt",
+        "--agent",
+        "codex",
+        "--encoding",
+        "json",
+    ])
+    .output()
+    .expect("run agent-bus claim");
+
+    assert!(
+        !output.status.success(),
+        "a non-authoritative candidate must never grant a claim"
+    );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("claim pending: no authoritative hub reachable"),
+        "got: {stderr}"
+    );
+    // Exactly one request must have reached the mock hub -- the /health
+    // probe used to resolve the backend. Its /channels/arbitrate route (the
+    // actual grant) must never be hit; if it had been, `hits()` would be 2.
+    assert_eq!(
+        hub.hits(),
+        1,
+        "the non-authoritative candidate's arbitrate route must never be called"
+    );
+}

@@ -167,9 +167,9 @@ pub(crate) fn active_hub_backend(_settings: &Settings) -> HubBackend {
     HubBackend::Local
 }
 
-/// Render an `HubBackend::Offline` state as the loud, explicit JSON error
-/// body used by CLI commands that must refuse rather than silently read or
-/// write a local store when no configured hub candidate answered.
+/// Render an `HubBackend::Offline` state as the loud, explicit error used by
+/// CLI commands that must refuse rather than silently read or write a local
+/// store when no configured hub candidate answered.
 pub(crate) fn offline_error(command: &str, tried: &[String]) -> anyhow::Error {
     anyhow::anyhow!(
         "{command}: offline: no authoritative hub reachable (tried {tried:?}). This client is \
@@ -177,6 +177,81 @@ pub(crate) fn offline_error(command: &str, tried: &[String]) -> anyhow::Error {
          has no local bus of its own; refusing to silently read or write a local store and \
          report it as fleet state."
     )
+}
+
+/// Render the "claim pending" error used specifically for claim-authority
+/// operations (`claim`, `renew-claim`, `release-claim`, `resolve`) -- the
+/// operator's exact wording, distinct from `offline_error` because a caller
+/// polling for a claim needs to know this is a retryable "not yet", not a
+/// hard failure. Used both when no candidate answered at all AND when a
+/// candidate answered but was not the authoritative (first-priority) one:
+/// once a second, later hub tier exists (e.g. a Cloudflare-hosted fallback),
+/// there must be exactly one claims authority, never a grant against
+/// whichever candidate happened to answer.
+pub(crate) fn claim_pending_error(command: &str, tried: &[String]) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{command}: claim pending: no authoritative hub reachable (tried {tried:?}); exclusive \
+         claims cannot be granted, renewed, released or resolved against a non-authoritative \
+         fallback or while offline. Retry once the first-priority hub in \
+         AGENT_BUS_SERVER_URLS/AGENT_BUS_SERVER_URL is reachable."
+    )
+}
+
+/// Resolve the base URL for an ordinary (non-claim-authority) HTTP request:
+/// `send`/`read`/`presence`/`presence-list`/`batch-send`/`knock`/
+/// `compact-context`. Any reachable candidate is fine here -- a fallback
+/// answering is still the fleet, just not the highest-priority path to it.
+/// Returns the loud offline error when no candidate answered.
+///
+/// # Errors
+/// Returns [`offline_error`] when every candidate is unreachable, or an
+/// internal error if called while in local-only mode (a caller bug: every
+/// call site guards on [`use_server_mode`] first).
+#[cfg(feature = "server-mode")]
+pub(crate) fn resolve_hub_url(settings: &Settings, command: &str) -> Result<String> {
+    match active_hub_backend(settings) {
+        HubBackend::Remote { url, .. } => Ok(url),
+        HubBackend::Offline { tried } => Err(offline_error(command, &tried)),
+        HubBackend::Local => Err(anyhow::anyhow!(
+            "{command}: resolve_hub_url called with no hub candidates configured (local-only \
+             mode) -- this is a caller bug, not an offline condition; check use_server_mode first"
+        )),
+    }
+}
+
+/// Resolve the base URL for a claim-AUTHORITY operation: `claim`,
+/// `renew-claim`, `release-claim`, `resolve`. Only the authoritative
+/// (first-priority) candidate may grant, renew, release or resolve an
+/// exclusive claim -- never a reachable-but-lower-priority fallback, and
+/// never a silent local grant. Both "no candidate reachable" and "a
+/// candidate answered but is not authoritative" yield the same "claim
+/// pending" error: a caller polling for the claim should retry either way,
+/// not distinguish the two.
+///
+/// # Errors
+/// Returns [`claim_pending_error`] unless the authoritative candidate itself
+/// answered, or an internal error if called while in local-only mode (a
+/// caller bug: every call site guards on [`use_server_mode`] first).
+#[cfg(feature = "server-mode")]
+pub(crate) fn resolve_authoritative_claim_url(
+    settings: &Settings,
+    command: &str,
+) -> Result<String> {
+    match active_hub_backend(settings) {
+        HubBackend::Remote {
+            url,
+            authoritative: true,
+            ..
+        } => Ok(url),
+        HubBackend::Remote { tried, .. } | HubBackend::Offline { tried } => {
+            Err(claim_pending_error(command, &tried))
+        }
+        HubBackend::Local => Err(anyhow::anyhow!(
+            "{command}: resolve_authoritative_claim_url called with no hub candidates configured \
+             (local-only mode) -- this is a caller bug, not an offline condition; check \
+             use_server_mode first"
+        )),
+    }
 }
 
 /// Performs a `GET` request and returns the parsed JSON body.
