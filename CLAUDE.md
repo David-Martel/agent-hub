@@ -198,6 +198,24 @@ A durable offline write outbox (spool-and-replay for `send`/`presence`/
 `claim`/`ack` while offline, with idempotent UUIDv7 client ids) is
 deliberately **not** implemented yet — see #80.
 
+**PR #81 review follow-up (2026-09-27), scope limits:** an `https://`
+candidate (e.g. a Cloudflare-hosted tier per #79) now works — both
+`agent-bus-cli` and `agent-bus-mcp` link `reqwest`'s `rustls` feature (NOT
+`rustls-tls`, which doesn't exist in reqwest 0.13; `default-tls =
+["rustls"]` there), using `rustls-platform-verifier` for the OS trust store
+on Linux and Windows rather than a hardcoded webpki root bundle. This only
+covers the CLIENT side (dialing out to a remote hub); `agent-bus-http` (the
+hub binary itself) does not terminate TLS directly. `resolve_server_url_list`
+also deduplicates `server_urls` by exact string match (first occurrence
+wins — no trailing-slash/case normalization), and `AGENT_BUS_SERVER_URLS=""`
+(present but empty) is confirmed to fall through to the next tier exactly
+like the var being unset, with no "explicit local-only override" sentinel.
+The #80 outbox above remains the one deliberately deferred gap. Separately,
+`codex/fix-filtered-inbox`'s `8a2064e` (filtered-inbox pagination, part of
+#77) predates and is orthogonal to #78's routing scope — it was carried
+through the rebase described in PR #81 but was not itself re-reviewed as
+part of #78/#81 and should get its own independent review.
+
 ## MCP Platform Configs
 
 All 3 platforms configured identically at:
