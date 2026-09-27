@@ -3,14 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::error::Result;
+use base64::Engine as _;
 use serde::Serialize;
+use sha2::{Digest as _, Sha256};
 
 use crate::models::Message;
-use crate::redis_bus::{
-    get_notification_cursor, get_scoped_notification_cursor, list_notifications_since_id,
-    notification_cursor_key, scoped_notification_cursor_key, set_notification_cursor,
-    set_scoped_notification_cursor,
-};
+use crate::redis_bus::{Notification, list_notifications_since_id, notification_cursor_key};
 use crate::settings::Settings;
 
 use super::MessageFilters;
@@ -39,19 +37,21 @@ pub struct CheckInboxResult {
 
 /// Check an agent's inbox using cursor-based notification delivery.
 ///
-/// Reads notifications from the per-agent attention stream since the last
-/// stored cursor, applies tag/thread filters, advances the cursor to the last
-/// delivered entry, and returns the matched messages with cursor metadata.
+/// Scans at most 4,096 entries in pages of 256, stopping at the requested match
+/// count. The cursor advances over examined entries, including nonmatches,
+/// but never over an unexamined page tail. An empty result with an advanced
+/// cursor can mean the scan budget was exhausted; call again to continue.
 ///
-/// When `request.filters.repo` or `request.filters.session` is set, a
-/// **scoped cursor** is used instead of the global per-agent cursor. This
-/// allows callers to maintain independent read positions for different repos
-/// or sessions without interfering with the global cursor. The scope
-/// selection follows the key returned by
-/// [`scoped_notification_cursor_key`](crate::redis_bus::scoped_notification_cursor_key).
+/// Each effective filter combination has an independent versioned cursor.
+/// Repo and session are conjunctive tags; tag order, duplicates and empty
+/// tags do not distinguish cursors. Thread and topic remain exact matches.
+/// Unfiltered reads retain the existing global key. Filtered reads start from
+/// the beginning of retained history once after upgrading; unsafe legacy
+/// scoped/global positions are neither inherited nor changed. Filtered
+/// cursors expire seven days after their last advance or explicit reset.
 ///
-/// If `reset_cursor` is set the cursor is zeroed before reading, which
-/// re-delivers all messages from the beginning of the stream.
+/// `reset_cursor` resets only the selected lane before reading. A zero limit
+/// does not scan or advance, but still honours an explicit reset.
 ///
 /// # Errors
 ///
@@ -60,86 +60,118 @@ pub fn check_inbox(
     conn: &mut redis::Connection,
     request: &CheckInboxRequest<'_>,
 ) -> Result<CheckInboxResult> {
-    let required_tags = super::scoped_required_tags(&request.filters);
-    let required_tag_refs: Vec<&str> = required_tags.iter().map(String::as_str).collect();
+    check_inbox_with_store(conn, request)
+}
 
-    let repo_scope = request.filters.repo;
-    let session_scope = request.filters.session;
-    let has_scope = repo_scope.is_some() || session_scope.is_some();
+const INBOX_PAGE_SIZE: usize = 256;
+const INBOX_SCAN_LIMIT: usize = 4_096;
 
-    // Honour reset_cursor before reading: write "0-0" so the subsequent read
-    // starts from the beginning of the stream.
-    if request.reset_cursor {
-        if has_scope {
-            set_scoped_notification_cursor(conn, request.agent, repo_scope, session_scope, "0-0")?;
-        } else {
-            set_notification_cursor(conn, request.agent, "0-0")?;
-        }
+// A small storage seam keeps cursor/pagination regressions independent of live
+// agent state. Production still uses the same Redis notification decoder.
+trait InboxStore {
+    fn cursor(&mut self, key: &str) -> Result<String>;
+    fn save_cursor(&mut self, key: &str, value: &str) -> Result<()>;
+    fn page(&mut self, agent: &str, cursor: &str, limit: usize) -> Result<Vec<Notification>>;
+}
+
+impl<T: redis::ConnectionLike> InboxStore for T {
+    fn cursor(&mut self, key: &str) -> Result<String> {
+        let value: Option<String> = redis::cmd("GET").arg(key).query(self)?;
+        Ok(value.unwrap_or_else(|| "0-0".to_owned()))
     }
 
-    let cursor = if has_scope {
-        get_scoped_notification_cursor(conn, request.agent, repo_scope, session_scope)?
-    } else {
-        get_notification_cursor(conn, request.agent)?
-    };
-    let notifications = list_notifications_since_id(conn, request.agent, &cursor, request.limit)?;
+    fn save_cursor(&mut self, key: &str, value: &str) -> Result<()> {
+        let mut command = redis::cmd("SET");
+        command.arg(key).arg(value);
+        if key.starts_with("bus:notify_filter_cursor:") {
+            command.arg("EX").arg(crate::redis_bus::CURSOR_TTL_SECS);
+        }
+        command.query::<()>(self)?;
+        Ok(())
+    }
 
-    let thread_id = request.filters.thread_id;
-    let agent = request.agent;
-    let filtered_notifications: Vec<_> = notifications
-        .into_iter()
-        .filter(|notification| {
-            crate::redis_bus::message_matches_filters(
+    fn page(&mut self, agent: &str, cursor: &str, limit: usize) -> Result<Vec<Notification>> {
+        list_notifications_since_id(self, agent, cursor, limit)
+    }
+}
+
+fn inbox_cursor_key(request: &CheckInboxRequest<'_>, required_tags: &[String]) -> Result<String> {
+    if required_tags.is_empty()
+        && request.filters.thread_id.is_none()
+        && request.filters.topic.is_none()
+    {
+        return Ok(notification_cursor_key(request.agent));
+    }
+    // JSON encodes component boundaries and None versus Some("") unambiguously.
+    let identity = serde_json::to_vec(&(
+        request.agent,
+        required_tags,
+        request.filters.thread_id,
+        request.filters.topic,
+    ))?;
+    Ok(format!(
+        "bus:notify_filter_cursor:{}:v1:{}",
+        request.agent,
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(identity))
+    ))
+}
+
+fn check_inbox_with_store(
+    store: &mut impl InboxStore,
+    request: &CheckInboxRequest<'_>,
+) -> Result<CheckInboxResult> {
+    let mut required_tags = super::scoped_required_tags(&request.filters);
+    required_tags.sort_unstable();
+    required_tags.dedup();
+    let key = inbox_cursor_key(request, &required_tags)?;
+    let required_tag_refs: Vec<&str> = required_tags.iter().map(String::as_str).collect();
+    if request.reset_cursor {
+        store.save_cursor(&key, "0-0")?;
+    }
+    let cursor = store.cursor(&key)?;
+    let mut cursor_now = cursor.clone();
+    let mut messages = Vec::new();
+    let mut scanned = 0;
+    while messages.len() < request.limit && scanned < INBOX_SCAN_LIMIT {
+        let page_size = INBOX_PAGE_SIZE.min(INBOX_SCAN_LIMIT - scanned);
+        let page = store.page(request.agent, &cursor_now, page_size)?;
+        let page_len = page.len();
+        for notification in page {
+            let stream_id = notification.notification_stream_id.ok_or_else(|| {
+                crate::error::AgentBusError::Internal("Notification has no stream cursor".into())
+            })?;
+            cursor_now = stream_id;
+            scanned += 1;
+            if crate::redis_bus::message_matches_filters(
                 &notification.message,
-                Some(agent),
+                Some(request.agent),
                 None,
                 true,
-                None,
-                thread_id,
+                request.filters.topic,
+                request.filters.thread_id,
                 &required_tag_refs,
-            )
-        })
-        .take(request.limit)
-        .collect();
-
-    let messages: Vec<Message> = filtered_notifications
-        .iter()
-        .map(|notification| notification.message.clone())
-        .collect();
-
-    let cursor_now = filtered_notifications
-        .last()
-        .and_then(|notification| notification.notification_stream_id.as_deref())
-        .unwrap_or(&cursor)
-        .to_owned();
-
-    // Advance cursor to the last delivered notification entry so replay
-    // remains aligned with the per-agent attention stream.
-    if cursor_now != cursor {
-        if has_scope {
-            set_scoped_notification_cursor(
-                conn,
-                request.agent,
-                repo_scope,
-                session_scope,
-                &cursor_now,
-            )?;
-        } else {
-            set_notification_cursor(conn, request.agent, &cursor_now)?;
+            ) {
+                messages.push(notification.message);
+                if messages.len() == request.limit {
+                    break;
+                }
+            }
+        }
+        if page_len < page_size {
+            break;
         }
     }
 
-    let cursor_key = if has_scope {
-        scoped_notification_cursor_key(request.agent, repo_scope, session_scope)
-    } else {
-        notification_cursor_key(request.agent)
-    };
+    // Commit once: a failed later page must not consume unreturned messages.
+    if cursor_now != cursor {
+        store.save_cursor(&key, &cursor_now)?;
+    }
 
     Ok(CheckInboxResult {
         messages,
         cursor_was: cursor,
         cursor_now,
-        inbox_cursor_key: cursor_key,
+        inbox_cursor_key: key,
     })
 }
 
@@ -717,6 +749,421 @@ fn extract_resource_from_message(msg: &Message) -> String {
 
 #[cfg(test)]
 mod tests {
+    struct ScriptedRedis(std::collections::VecDeque<(Vec<u8>, redis::Value)>);
+
+    impl redis::ConnectionLike for ScriptedRedis {
+        fn req_packed_command(&mut self, command: &[u8]) -> redis::RedisResult<redis::Value> {
+            let (expected, response) = self.0.pop_front().expect("unexpected Redis command");
+            assert_eq!(command, expected);
+            Ok(response)
+        }
+
+        fn req_packed_commands(
+            &mut self,
+            _: &[u8],
+            _: usize,
+            _: usize,
+        ) -> redis::RedisResult<Vec<redis::Value>> {
+            panic!("inbox must not require a pipeline");
+        }
+
+        fn get_db(&self) -> i64 {
+            0
+        }
+        fn check_connection(&mut self) -> bool {
+            true
+        }
+        fn is_open(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn inbox_redis_adapter_preserves_cursor_ttl_contract_and_decodes_entries() {
+        for filtered in [false, true] {
+            let request = inbox_request(filtered.then_some("a"), 1);
+            let key = super::inbox_cursor_key(&request, &[]).unwrap();
+            let message = inbox_entries(["a"]).entries.remove(0).message;
+            let entry = |id: &str, payload: Vec<u8>| {
+                redis::Value::Array(vec![
+                    redis::Value::BulkString(id.as_bytes().to_vec()),
+                    redis::Value::Array(vec![
+                        redis::Value::BulkString(b"message".to_vec()),
+                        redis::Value::BulkString(payload),
+                    ]),
+                ])
+            };
+            let mut set = redis::cmd("SET");
+            set.arg(&key).arg("2-0");
+            if filtered {
+                set.arg("EX").arg(604_800);
+            }
+            let mut backend = ScriptedRedis(std::collections::VecDeque::from([
+                (
+                    redis::cmd("GET").arg(&key).get_packed_command(),
+                    redis::Value::Nil,
+                ),
+                (
+                    redis::cmd("XRANGE")
+                        .arg("agent_bus:notify:codex")
+                        .arg("(0-0")
+                        .arg("+")
+                        .arg("COUNT")
+                        .arg(super::INBOX_PAGE_SIZE)
+                        .get_packed_command(),
+                    redis::Value::Array(vec![
+                        entry("1-0", b"invalid JSON".to_vec()),
+                        entry("2-0", serde_json::to_vec(&message).unwrap()),
+                    ]),
+                ),
+                (set.get_packed_command(), redis::Value::Okay),
+            ]));
+            let result = super::check_inbox_with_store(&mut backend, &request).unwrap();
+            assert_eq!(result.messages.len(), 1);
+            assert_eq!(result.messages[0].id, message.id);
+            assert_eq!(result.cursor_now, "2-0");
+            assert!(backend.0.is_empty());
+        }
+    }
+
+    #[test]
+    fn inbox_redis_reset_is_atomic_with_expiry_and_zero_limit_never_reads_stream() {
+        let mut request = inbox_request(Some("a"), 0);
+        request.reset_cursor = true;
+        let key = super::inbox_cursor_key(&request, &[]).unwrap();
+        let mut backend = ScriptedRedis(std::collections::VecDeque::from([
+            (
+                redis::cmd("SET")
+                    .arg(&key)
+                    .arg("0-0")
+                    .arg("EX")
+                    .arg(604_800)
+                    .get_packed_command(),
+                redis::Value::Okay,
+            ),
+            (
+                redis::cmd("GET").arg(&key).get_packed_command(),
+                redis::Value::BulkString(b"0-0".to_vec()),
+            ),
+        ]));
+        assert_eq!(
+            super::check_inbox_with_store(&mut backend, &request)
+                .unwrap()
+                .cursor_now,
+            "0-0"
+        );
+        assert!(backend.0.is_empty());
+    }
+
+    #[derive(Default)]
+    struct MemoryInbox {
+        cursors: std::collections::HashMap<String, String>,
+        entries: Vec<crate::redis_bus::Notification>,
+        reads: usize,
+        fail_on_read: Option<usize>,
+    }
+
+    impl super::InboxStore for MemoryInbox {
+        fn cursor(&mut self, key: &str) -> crate::error::Result<String> {
+            Ok(self
+                .cursors
+                .get(key)
+                .cloned()
+                .unwrap_or_else(|| "0-0".into()))
+        }
+
+        fn save_cursor(&mut self, key: &str, value: &str) -> crate::error::Result<()> {
+            self.cursors.insert(key.into(), value.into());
+            Ok(())
+        }
+
+        fn page(
+            &mut self,
+            _: &str,
+            cursor: &str,
+            limit: usize,
+        ) -> crate::error::Result<Vec<crate::redis_bus::Notification>> {
+            self.reads += 1;
+            if self.fail_on_read == Some(self.reads) {
+                return Err(crate::error::AgentBusError::Internal(
+                    "injected page failure".into(),
+                ));
+            }
+            let position = cursor.split('-').next().unwrap().parse::<usize>().unwrap();
+            Ok(self
+                .entries
+                .iter()
+                .skip(position)
+                .take(limit)
+                .cloned()
+                .collect())
+        }
+    }
+
+    fn inbox_request(thread: Option<&str>, limit: usize) -> super::CheckInboxRequest<'_> {
+        super::CheckInboxRequest {
+            agent: "codex",
+            limit,
+            reset_cursor: false,
+            filters: super::MessageFilters {
+                repo: None,
+                session: None,
+                tags: &[],
+                thread_id: thread,
+                topic: None,
+            },
+        }
+    }
+
+    fn inbox_entries(threads: impl IntoIterator<Item = &'static str>) -> MemoryInbox {
+        MemoryInbox {
+            entries: threads
+                .into_iter()
+                .enumerate()
+                .map(|(index, thread)| {
+                    let mut message = make_message(
+                        "claude",
+                        "status",
+                        "fixture",
+                        "2026-09-27T00:00:00Z",
+                        Some(thread),
+                    );
+                    message.to = "codex".into();
+                    message.tags =
+                        smallvec::smallvec!["repo:study".into(), format!("session:{thread}")];
+                    make_notification(message, Some(&format!("{}-0", index + 1)))
+                })
+                .collect(),
+            ..MemoryInbox::default()
+        }
+    }
+
+    #[test]
+    fn inbox_matches_beyond_unmatched_pages_without_repeating_or_skipping() {
+        let mut store =
+            inbox_entries(std::iter::repeat_n("old", 600).chain(["current", "current"]));
+        let request = inbox_request(Some("current"), 1);
+        let first = super::check_inbox_with_store(&mut store, &request).unwrap();
+        assert_eq!(first.messages.len(), 1);
+        assert_eq!(first.cursor_now, "601-0");
+        assert_eq!(store.reads, 3);
+        let second = super::check_inbox_with_store(&mut store, &request).unwrap();
+        assert_eq!(second.cursor_now, "602-0");
+        assert_eq!(second.messages.len(), 1);
+        assert!(
+            super::check_inbox_with_store(&mut store, &request)
+                .unwrap()
+                .messages
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn inbox_bounded_empty_scan_makes_progress() {
+        let mut store =
+            inbox_entries(std::iter::repeat_n("old", super::INBOX_SCAN_LIMIT).chain(["current"]));
+        let request = inbox_request(Some("current"), 1);
+        let first = super::check_inbox_with_store(&mut store, &request).unwrap();
+        assert!(first.messages.is_empty());
+        assert_eq!(first.cursor_now, format!("{}-0", super::INBOX_SCAN_LIMIT));
+        assert_eq!(
+            store.reads,
+            super::INBOX_SCAN_LIMIT / super::INBOX_PAGE_SIZE
+        );
+        assert_eq!(
+            super::check_inbox_with_store(&mut store, &request)
+                .unwrap()
+                .messages
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn inbox_filtered_global_and_reset_positions_are_independent() {
+        let mut store = inbox_entries(["a", "b", "a"]);
+        let mut a = inbox_request(Some("a"), 1);
+        let first = super::check_inbox_with_store(&mut store, &a).unwrap();
+        assert_eq!(first.cursor_now, "1-0");
+        let b = super::check_inbox_with_store(&mut store, &inbox_request(Some("b"), 1)).unwrap();
+        assert_eq!(b.cursor_now, "2-0");
+        let global = super::check_inbox_with_store(&mut store, &inbox_request(None, 1)).unwrap();
+        assert_eq!(global.inbox_cursor_key, "bus:notify_cursor:codex");
+        assert_eq!(global.cursor_now, "1-0");
+        assert_eq!(
+            super::check_inbox_with_store(&mut store, &a)
+                .unwrap()
+                .cursor_now,
+            "3-0"
+        );
+        a.reset_cursor = true;
+        assert_eq!(
+            super::check_inbox_with_store(&mut store, &a)
+                .unwrap()
+                .cursor_now,
+            "1-0"
+        );
+        assert_eq!(store.cursors[&b.inbox_cursor_key], "2-0");
+        assert_eq!(store.cursors[&global.inbox_cursor_key], "1-0");
+    }
+
+    #[test]
+    fn inbox_normalized_tags_and_scope_conjunction_use_same_lane() {
+        let mut store = inbox_entries(["a", "b"]);
+        let mut scoped = inbox_request(None, 1);
+        scoped.filters.repo = Some("study");
+        scoped.filters.session = Some("b");
+        let first = super::check_inbox_with_store(&mut store, &scoped).unwrap();
+        assert_eq!(first.cursor_now, "2-0");
+        assert_eq!(first.messages[0].thread_id.as_deref(), Some("b"));
+        let tags = vec![
+            "session:b".into(),
+            String::new(),
+            "repo:study".into(),
+            "session:b".into(),
+        ];
+        let mut equivalent = inbox_request(None, 1);
+        equivalent.filters.tags = &tags;
+        let second = super::check_inbox_with_store(&mut store, &equivalent).unwrap();
+        assert_eq!(first.inbox_cursor_key, second.inbox_cursor_key);
+        assert!(second.messages.is_empty());
+        scoped.filters.session = Some("a");
+        let other = super::check_inbox_with_store(&mut store, &scoped).unwrap();
+        assert_ne!(first.inbox_cursor_key, other.inbox_cursor_key);
+        assert_eq!(other.cursor_now, "1-0");
+        scoped.filters.session = None;
+        assert_eq!(
+            super::check_inbox_with_store(&mut store, &scoped)
+                .unwrap()
+                .cursor_now,
+            "1-0"
+        );
+    }
+
+    #[test]
+    fn inbox_topic_is_filtered_and_isolated() {
+        let mut store = inbox_entries(["a", "a"]);
+        store.entries[1].message.topic = "findings".into();
+        let mut request = inbox_request(None, 1);
+        request.filters.topic = Some("findings");
+        assert_eq!(
+            super::check_inbox_with_store(&mut store, &request)
+                .unwrap()
+                .cursor_now,
+            "2-0"
+        );
+        request.filters.topic = Some("status");
+        assert_eq!(
+            super::check_inbox_with_store(&mut store, &request)
+                .unwrap()
+                .cursor_now,
+            "1-0"
+        );
+    }
+
+    #[test]
+    fn inbox_zero_limit_does_not_scan_and_reset_affects_only_selected_lane() {
+        let mut store = inbox_entries(["a"]);
+        let mut request = inbox_request(Some("a"), 1);
+        let first = super::check_inbox_with_store(&mut store, &request).unwrap();
+        request.limit = 0;
+        let reads = store.reads;
+        assert_eq!(
+            super::check_inbox_with_store(&mut store, &request)
+                .unwrap()
+                .cursor_now,
+            "1-0"
+        );
+        request.reset_cursor = true;
+        assert_eq!(
+            super::check_inbox_with_store(&mut store, &request)
+                .unwrap()
+                .cursor_now,
+            "0-0"
+        );
+        assert_eq!(store.cursors[&first.inbox_cursor_key], "0-0");
+        assert_eq!(store.reads, reads);
+    }
+
+    #[test]
+    fn inbox_page_failure_does_not_consume_unreturned_messages() {
+        let mut store = inbox_entries(std::iter::repeat_n("a", 300));
+        store.fail_on_read = Some(2);
+        assert!(super::check_inbox_with_store(&mut store, &inbox_request(Some("a"), 300)).is_err());
+        assert!(store.cursors.is_empty());
+    }
+
+    #[test]
+    fn inbox_legacy_filtered_positions_are_not_inherited_or_mutated() {
+        let mut store = inbox_entries(["a", "b"]);
+        store
+            .cursors
+            .insert("bus:notify_cursor:codex".into(), "2-0".into());
+        store
+            .cursors
+            .insert("bus:notify_cursor:codex:repo:study".into(), "2-0".into());
+        let mut request = inbox_request(None, 1);
+        request.filters.repo = Some("study");
+        let result = super::check_inbox_with_store(&mut store, &request).unwrap();
+        assert_eq!(result.cursor_was, "0-0");
+        assert_eq!(result.cursor_now, "1-0");
+        assert_eq!(store.cursors["bus:notify_cursor:codex"], "2-0");
+        assert_eq!(store.cursors["bus:notify_cursor:codex:repo:study"], "2-0");
+    }
+
+    #[test]
+    fn inbox_skips_malformed_snapshot_and_advances() {
+        let mut store = inbox_entries(["a", "a"]);
+        // The Redis decoder represents invalid JSON with an empty message.
+        store.entries[0].message.to.clear();
+        store.entries[0].message.id.clear();
+        let result = super::check_inbox_with_store(&mut store, &inbox_request(None, 1)).unwrap();
+        assert_eq!(result.cursor_now, "2-0");
+        assert_eq!(result.messages.len(), 1);
+        assert!(!result.messages[0].id.is_empty());
+    }
+
+    #[test]
+    fn inbox_empty_and_delimited_filter_components_remain_unambiguous() {
+        let mut store = inbox_entries([]);
+        let mut request = inbox_request(None, 1);
+        let global = super::check_inbox_with_store(&mut store, &request).unwrap();
+        request.filters.repo = Some("");
+        request.filters.session = Some("");
+        assert_eq!(
+            super::check_inbox_with_store(&mut store, &request)
+                .unwrap()
+                .inbox_cursor_key,
+            global.inbox_cursor_key
+        );
+        request.filters.thread_id = Some("");
+        assert_ne!(
+            super::check_inbox_with_store(&mut store, &request)
+                .unwrap()
+                .inbox_cursor_key,
+            global.inbox_cursor_key
+        );
+        request.filters.thread_id = Some("a:b");
+        request.filters.topic = Some("c");
+        let first = super::check_inbox_with_store(&mut store, &request).unwrap();
+        request.filters.thread_id = Some("a");
+        request.filters.topic = Some("b:c");
+        assert_ne!(
+            super::check_inbox_with_store(&mut store, &request)
+                .unwrap()
+                .inbox_cursor_key,
+            first.inbox_cursor_key
+        );
+        request.filters.thread_id = None;
+        request.filters.topic = None;
+        request.filters.repo = Some(" ");
+        assert_ne!(
+            super::check_inbox_with_store(&mut store, &request)
+                .unwrap()
+                .inbox_cursor_key,
+            global.inbox_cursor_key
+        );
+    }
     use smallvec::smallvec;
 
     use super::*;
