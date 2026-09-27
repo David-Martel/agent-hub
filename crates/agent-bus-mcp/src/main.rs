@@ -1,3 +1,4 @@
+mod hub_transport;
 mod mcp;
 
 use agent_bus_core::{bootstrap, maybe_announce_startup};

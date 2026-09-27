@@ -38,7 +38,13 @@ base64 = "0.23"
 smallvec = { version = "1", features = ["serde"] }
 rmp-serde = "1"
 regex-lite = "0.1"
-reqwest = { version = "0.13", features = ["json"], default-features = false, optional = true }
+# "rustls" (NOT "rustls-tls" -- reqwest 0.13 renamed the feature; verified
+# against the vendored crates.io Cargo.toml, `default-tls = ["rustls"]`) so
+# `https://agentbus.dtmventures.com`-style cloud-hub candidates (#79) work.
+# Pulls in `rustls-platform-verifier` (OS trust store on both Linux and
+# Windows -- no system OpenSSL needed) rather than a hardcoded webpki root
+# bundle.
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false, optional = true }
 
 [features]
 default = ["server-mode"]
@@ -46,7 +52,12 @@ server-mode = ["dep:reqwest"]
 
 [dev-dependencies]
 tempfile = "3"
-reqwest = { version = "0.13", features = ["json", "blocking"] }
+# default-features = false: the test suite's mock hubs are always plain
+# http://, and leaving reqwest's default TLS backend on here would silently
+# unify into the workspace's feature set (Cargo resolver 2 unifies a
+# package's dev-dep features into its normal dep whenever tests are built),
+# masking whether the `rustls` feature above is actually doing anything.
+reqwest = { version = "0.13", features = ["json", "blocking"], default-features = false }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 

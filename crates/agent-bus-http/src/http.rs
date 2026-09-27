@@ -2145,6 +2145,45 @@ async fn http_arbitration_state_handler(
     Ok(Json(serde_json::to_value(&state_data).unwrap_or_default()))
 }
 
+// --- GET /claims (#78) ------------------------------------------------------
+
+/// Query parameters for `GET /claims`.
+#[derive(Debug, Deserialize)]
+pub(crate) struct HttpListClaimsQuery {
+    resource: Option<String>,
+    status: Option<String>,
+}
+
+/// List ownership claims with optional `resource`/`status` filters.
+///
+/// Added for #78: the CLI's `agent-bus claims` and the `claims` MCP-adjacent
+/// tooling previously had no HTTP route at all, so a remote-configured
+/// client silently fell back to reading its own local Redis instead of the
+/// authoritative hub. This mirrors `agent-bus claims`'s local output shape
+/// (`{"claims": [...], "count": N}`) so CLI output is identical whether
+/// routed locally or through this endpoint.
+async fn http_list_claims_handler(
+    State(state): State<AppState>,
+    Query(params): Query<HttpListClaimsQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
+    let claims = tokio::task::spawn_blocking(move || {
+        ops_list_claims(
+            &state.settings,
+            &ListClaimsRequest {
+                resource: params.resource.as_deref(),
+                status: params.status.as_deref(),
+            },
+        )
+    })
+    .await
+    .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
+    .map_err(classify_core_error)?;
+
+    Ok(Json(
+        serde_json::json!({"claims": claims, "count": claims.len()}),
+    ))
+}
+
 // --- PUT /channels/arbitrate/:resource/resolve -----------------------------
 
 /// Request body for `PUT /channels/arbitrate/:resource/resolve`.
@@ -3676,6 +3715,9 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
             "/channels/arbitrate/{resource}/release",
             post(http_release_claim_handler),
         )
+        // #78: list all claims across resources (the per-resource state
+        // above only ever answers for one named resource).
+        .route("/claims", get(http_list_claims_handler))
         .route("/channels/summary", get(http_channel_summary_handler))
         .route("/token-count", post(http_token_count_handler))
         .route("/compact-context", post(http_compact_context_handler))
