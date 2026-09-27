@@ -20,6 +20,19 @@ describe("GET /health", () => {
     expect(body).not.toHaveProperty("pg_presence_count");
     expect(body).not.toHaveProperty("stream_length");
   });
+
+  it("warns when the shared AGENT_BUS_AUTH_TOKEN dev fallback is enabled (2026-09-27 token-rotation follow-up)", async () => {
+    // This test binding always has AGENT_BUS_DEV_ALLOW_SHARED_TOKEN=1 (see
+    // vitest.config.ts, needed by the "accepts the shared AGENT_BUS_AUTH_TOKEN"
+    // test above), so /health must surface the warning unconditionally here.
+    // A real production deploy should never set this flag at all, in which
+    // case `warnings` is omitted entirely (see the `if` guard in
+    // src/index.ts's /health handler) -- this test proves the mechanism
+    // fires, not that it's off in this particular sandbox.
+    const { body } = await apiJson<{ warnings?: string[] }>("/health", undefined, null);
+    expect(body.warnings).toBeDefined();
+    expect(body.warnings?.some((w) => w.includes("AGENT_BUS_DEV_ALLOW_SHARED_TOKEN"))).toBe(true);
+  });
 });
 
 describe("auth", () => {

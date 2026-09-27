@@ -200,6 +200,11 @@ export interface Health {
   runtime: string;
   codec: string;
   hub_identity?: string;
+  /** Non-fatal deploy-hygiene warnings surfaced at /health (re-review L5
+   * follow-up, 2026-09-27 on-site hub token rotation): e.g. the shared
+   * AGENT_BUS_AUTH_TOKEN dev fallback being enabled. Omitted entirely when
+   * there is nothing to warn about. */
+  warnings?: string[];
 }
 
 export interface ApiError {

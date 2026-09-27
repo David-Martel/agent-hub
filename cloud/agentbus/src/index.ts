@@ -192,6 +192,22 @@ app.get("/health", (c) => {
     codec: "json",
     hub_identity: cloudIdentity(c.env),
   };
+  // Deploy-hygiene warning (2026-09-27, on-site hub token rotation
+  // follow-up): AGENT_BUS_AUTH_TOKEN is a shared, unbound, lowest-privilege
+  // fallback meant ONLY for local dev (see README's "Auth model" and
+  // .dev.vars.example) -- it must never be set to a real deployed secret,
+  // and it must never be the on-site hub's own AGENT_BUS_AUTH_TOKEN (the
+  // token just rotated on asuspro13/both Sparks/dtm-p1gen7): reusing it
+  // here would mean a single leaked secret compromises both tiers at once.
+  // Surface it at /health so a deploy-time smoke check (or a human) can
+  // catch a misconfiguration without grepping Worker logs.
+  if (c.env.AGENT_BUS_DEV_ALLOW_SHARED_TOKEN === "1") {
+    health.warnings = [
+      "AGENT_BUS_DEV_ALLOW_SHARED_TOKEN=1: the shared AGENT_BUS_AUTH_TOKEN auth " +
+        "fallback is ENABLED. This is a dev-only escape hatch and must never be set " +
+        "in a real deployment; disable it and configure AGENT_BUS_TOKENS instead.",
+    ];
+  }
   return json(health, 200);
 });
 

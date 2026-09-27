@@ -75,6 +75,43 @@ any MCP config or shell history.
 `Identity.token` (the raw bearer, previously stashed "for audit logging") has
 been removed — nothing ever logged it, and doing so would leak a live token.
 
+### Cloud tokens are their own credential space — NEVER the on-site hub's (review L5)
+
+**Every token in this Worker's `AGENT_BUS_TOKENS` MUST be generated fresh,
+specifically for the cloud tier, and MUST NEVER be the same value as the
+on-site agent-bus hub's `AGENT_BUS_AUTH_TOKEN`** (the token asuspro13, both
+DGX Sparks and dtm-p1gen7 authenticate to each other with — see the main
+repo's `~/.config/agent-bus/config.json` / `hub.env`, most recently rotated
+2026-09-27). These are two separate trust domains with different blast
+radii: the on-site hub token is trusted by every fleet host on the LAN/p2p
+fabric, while a cloud token is reachable from the public internet. Reusing
+one token across both means a single leak (a misconfigured client, a log
+line, a compromised laptop) compromises BOTH tiers simultaneously, and
+rotating one tier's token silently breaks the other's auth instead of being
+an isolated, low-drama rotation.
+
+Concretely:
+- Generate the cloud tier's `AGENT_BUS_TOKENS` entries with their own random
+  values (e.g. `openssl rand -hex 32`), independent of any on-site secret.
+- The future hub→cloud sync client (the on-site `asuspro13` process that
+  will call `POST /sync/push` / `/sync/push-presence` against this Worker —
+  see SYNC-CONTRACT.md) authenticates with its OWN dedicated hub-role cloud
+  token, stored separately from `hub.env` (which holds the on-site hub's own
+  token, for on-site fleet auth, not cloud auth). Never point that client at
+  the on-site hub token.
+- `AGENT_BUS_AUTH_TOKEN` (the shared, unbound, lowest-privilege dev fallback
+  — see above) must never be set to a real deployed secret at all, on-site
+  hub token or otherwise; it exists only for local `vitest`/`wrangler dev`
+  runs. `GET /health` surfaces a `warnings` array naming this exact
+  misconfiguration when `AGENT_BUS_DEV_ALLOW_SHARED_TOKEN=1` is set, so a
+  post-deploy smoke check (or a human) can catch it without grepping Worker
+  logs — see `test/health-auth.test.ts` for the regression test.
+- Storing and generating the real values is a deploy-time operational step,
+  not something this repository does: whoever runs `wrangler secret put`
+  generates fresh tokens and keeps them 0600 outside the repo (e.g. in a
+  password manager or a `0600` file under `~/.config/`), never committed
+  here.
+
 ## Route table
 
 Derived directly from `crates/agent-bus-http/src/http.rs`'s router

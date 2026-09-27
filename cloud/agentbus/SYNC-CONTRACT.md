@@ -127,6 +127,38 @@ Concretely:
   the fleet's actual agent roster — was rejected as needless fleet-topology
   coupling for a first cut).
 
+## 6a-1. The hub->cloud sync client's token is a SEPARATE credential (2026-09-27)
+
+The proxy/sync client described in §6 and §6a — the on-site `asuspro13`
+process that will eventually call `POST /sync/push` / `/sync/push-presence`
+/ `GET /sync/pull` against this Worker — authenticates to the **cloud**
+tier with its **own dedicated hub-role cloud token**, generated
+specifically for that purpose and stored **separately from `hub.env`**
+(the file that holds the on-site agent-bus hub's own `AGENT_BUS_AUTH_TOKEN`,
+used for on-site fleet auth between asuspro13/the Sparks/dtm-p1gen7, most
+recently rotated 2026-09-27 — see the main repo's
+`~/.config/agent-bus/config.json`).
+
+These are deliberately two different secrets in two different files:
+- **On-site hub token** (`hub.env`): authenticates fleet members to the
+  on-site Redis/PostgreSQL-backed hub. Rotating it is a fleet-wide,
+  LAN/p2p-scoped operation.
+- **Cloud sync token** (its own file, e.g. under `~/.config/agent-bus/` but
+  NOT `hub.env`): a hub-role entry in THIS Worker's `AGENT_BUS_TOKENS`
+  (`{"agent": "asuspro13-sync", "role": "hub", "hub": "asuspro13"}` per the
+  worked example in README.md), reachable from the public internet.
+  Rotating it is a cloud-only operation that never touches on-site fleet
+  auth.
+
+Reusing the on-site hub token as the cloud sync token (or vice versa) would
+mean a compromise of either surface — a leaked cloud secret from a public
+endpoint, or a leaked on-site secret from a laptop — compromises BOTH tiers
+at once, and makes every future rotation a coupled, higher-risk operation
+instead of two independent, low-drama ones. See README.md's "Cloud tokens
+are their own credential space" for the equivalent guidance from the cloud
+side, and the deploy checklist there for how the real values get generated
+and stored (0600, outside the repo, never committed).
+
 ## 6b. origin_hub is exclusively hub-identity-derived (agent-hub#82)
 
 `origin_hub` on every `/sync/*` route (§6's proxy included, once it exists)
