@@ -539,7 +539,7 @@ app.get("/pending-acks", async (c) => {
 // --- Claims: POST/GET /channels/arbitrate/:resource, resolve/renew/release -----
 
 app.post("/channels/arbitrate/:resource", async (c) => {
-  const resource = normalizeResourceName(c.req.param("resource"));
+  const rawResource = c.req.param("resource");
   const body = await c.req
     .json<{
       agent?: string;
@@ -566,6 +566,11 @@ app.post("/channels/arbitrate/:resource", async (c) => {
       scope?: string;
     }));
   return guarded(async () => {
+    // Validated inside `guarded()` (agent-hub#82 review L1/M6 follow-up): an
+    // oversized/empty resource name must 400 through the normal JSON error
+    // path, not escape as Hono's default plain-text 500 the way it did when
+    // this validation ran before `guarded` was ever entered.
+    const resource = normalizeResourceName(rawResource);
     const identity = c.get("identity");
     const agent = bindAgent(identity, body.agent, "agent");
     const mode = parseLeaseMode(body.mode ?? "exclusive");
@@ -595,14 +600,18 @@ app.post("/channels/arbitrate/:resource", async (c) => {
 });
 
 app.get("/channels/arbitrate/:resource", async (c) => {
-  const resource = normalizeResourceName(c.req.param("resource"));
-  return guarded(async () => claimStub(c.env, resource).getState(resource));
+  const rawResource = c.req.param("resource");
+  return guarded(async () => {
+    const resource = normalizeResourceName(rawResource);
+    return claimStub(c.env, resource).getState(resource);
+  });
 });
 
 app.put("/channels/arbitrate/:resource/resolve", async (c) => {
-  const resource = normalizeResourceName(c.req.param("resource"));
+  const rawResource = c.req.param("resource");
   const body = await c.req.json<{ winner?: string; reason?: string; resolved_by?: string }>().catch(() => ({} as { winner?: string; reason?: string; resolved_by?: string }));
   return guarded(async () => {
+    const resource = normalizeResourceName(rawResource);
     const identity = c.get("identity");
     // The global claims authority's resolve is a policy decision, not a
     // self-service action — restrict it to operator-role tokens
@@ -617,9 +626,10 @@ app.put("/channels/arbitrate/:resource/resolve", async (c) => {
 });
 
 app.post("/channels/arbitrate/:resource/renew", async (c) => {
-  const resource = normalizeResourceName(c.req.param("resource"));
+  const rawResource = c.req.param("resource");
   const body = await c.req.json<{ agent?: string; lease_ttl_seconds?: number }>().catch(() => ({} as { agent?: string; lease_ttl_seconds?: number }));
   return guarded(async () => {
+    const resource = normalizeResourceName(rawResource);
     const identity = c.get("identity");
     // Owner-only (agent-hub#82 review H2/P2): an agent-role token can only
     // renew its OWN claim; hub/operator tokens may vouch for the on-site
@@ -634,9 +644,10 @@ app.post("/channels/arbitrate/:resource/renew", async (c) => {
 });
 
 app.post("/channels/arbitrate/:resource/release", async (c) => {
-  const resource = normalizeResourceName(c.req.param("resource"));
+  const rawResource = c.req.param("resource");
   const body = await c.req.json<{ agent?: string }>().catch(() => ({} as { agent?: string }));
   return guarded(async () => {
+    const resource = normalizeResourceName(rawResource);
     const identity = c.get("identity");
     // Owner-only, same rule as renew.
     const agent = bindAgent(identity, body.agent, "agent");
@@ -645,8 +656,9 @@ app.post("/channels/arbitrate/:resource/release", async (c) => {
 });
 
 app.get("/resource-events/:resource_id", async (c) => {
-  const resource = normalizeResourceName(c.req.param("resource_id"));
+  const rawResource = c.req.param("resource_id");
   return guarded(async () => {
+    const resource = normalizeResourceName(rawResource);
     const limit = parseIntParam(c.req.query("limit"), "limit", { min: 1, max: 1000, default: 100 });
     return claimStub(c.env, resource).listEvents(limit);
   });

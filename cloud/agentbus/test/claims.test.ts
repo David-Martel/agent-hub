@@ -277,6 +277,20 @@ describe("GET /resource-events/:resource_id", () => {
   });
 });
 
+describe("resource name length cap (review M6, must 400 not 500)", () => {
+  it("an oversized resource name is a JSON 400 with security headers, not Hono's default plain-text 500", async () => {
+    const res = await api(
+      `/channels/arbitrate/${"x".repeat(300)}`,
+      { method: "POST", body: JSON.stringify({ agent: "claude" }) },
+    );
+    expect(res.status).toBe(400);
+    expect(res.headers.get("content-type")).toMatch(/application\/json/);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/resource/);
+  });
+});
+
 describe("resource name normalization (review M9)", () => {
   it("Foo.rs and foo.rs share the same ClaimDO shard", async () => {
     const base = `Case-Fold-${crypto.randomUUID()}`;

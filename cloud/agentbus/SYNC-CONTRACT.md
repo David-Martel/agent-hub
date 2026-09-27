@@ -68,39 +68,7 @@ An unreachable cloud tier must never degrade the on-site hub. Concretely:
   `cloud_queue_depth` / `cloud_last_push_age_seconds` — informational, never
   an error returned from `send`/`read`.
 
-## 6a. Hub delegation and identity binding (agent-hub#82)
-
-The cloud tier's auth model (`src/auth.ts`) now binds every write-route actor
-field to the caller's bearer-token identity, with one deliberate exception
-this section documents: a **hub-role token may vouch for any agent**.
-
-This is required by §6 below: the future Rust-side proxy authenticates to
-the cloud with ONE hub-role token (asuspro13's own), but forwards claim/
-renew/release/ack/knock/message requests on behalf of MANY different
-real on-site agents (claude, codex, gemini, ...). If hub-role tokens were
-bound the same way agent-role tokens are (body value must equal the token's
-own `agent`), every proxied request would be forced to claim/renew/release/
-send as the HUB's identity, not the real on-site agent — losing exactly the
-end-to-end agent identity the operator's hard requirement calls for.
-
-Concretely:
-- **Agent-role tokens are bound.** A body/path value that disagrees with the
-  token's own `agent`/`host` is a 403; a matching or omitted value resolves
-  to the token's own identity.
-- **Hub- and operator-role tokens may vouch** for any non-empty agent value.
-  `origin_hub` is the one field even a hub-role token cannot override at
-  will beyond its own `hub` — see §6b.
-- The Rust-side proxy (when it lands) MUST set `sender`/`agent`/`from` to the
-  REAL on-site agent's name on every proxied call — vouching is not a license
-  to relabel or omit the real actor. This is a trust boundary the proxy
-  itself owns; the cloud tier can only verify that some hub-role token
-  authorized the request, not that the proxy is telling the truth about
-  which on-site agent originated it. That trust is inherent to the design
-  (the alternative — one cloud token per on-site agent, kept in sync with
-  the fleet's actual agent roster — was rejected as needless fleet-topology
-  coupling for a first cut).
-
-## 6b. origin_hub is exclusively hub-identity-derived
+## 6. Claims proxy with an explicit lab-scoped fallback
 
 Per the operator's decision in agent-hub#79 (§"Decisions for the operator",
 item 2): **the cloud `ClaimDO` is the global claims authority.** The on-site
@@ -126,6 +94,48 @@ logic, unchanged), but:
   lab LAN with no route to asuspro13 at all) have **no lab-scoped fallback**
   available to them — they see the same offline-claims behavior agent-hub#78
   already specifies (`Exclusive claims are never granted offline`).
+
+## 6a. Hub delegation and identity binding (agent-hub#82)
+
+The cloud tier's auth model (`src/auth.ts`) now binds every write-route actor
+field to the caller's bearer-token identity, with one deliberate exception
+this section documents: a **hub-role token may vouch for any agent**.
+
+This is required by §6 above: the proxy described there authenticates to
+the cloud with ONE hub-role token (asuspro13's own), but forwards claim/
+renew/release/ack/knock/message requests on behalf of MANY different
+real on-site agents (claude, codex, gemini, ...). If hub-role tokens were
+bound the same way agent-role tokens are (body value must equal the token's
+own `agent`), every proxied request would be forced to claim/renew/release/
+send as the HUB's identity, not the real on-site agent — losing exactly the
+end-to-end agent identity the operator's hard requirement calls for.
+
+Concretely:
+- **Agent-role tokens are bound.** A body/path value that disagrees with the
+  token's own `agent`/`host` is a 403; a matching or omitted value resolves
+  to the token's own identity.
+- **Hub- and operator-role tokens may vouch** for any non-empty agent value.
+  `origin_hub` is the one field even a hub-role token cannot override at
+  will beyond its own `hub` — see §6b.
+- The proxy from §6 (when it lands) MUST set `sender`/`agent`/`from` to the
+  REAL on-site agent's name on every proxied call — vouching is not a license
+  to relabel or omit the real actor. This is a trust boundary the proxy
+  itself owns; the cloud tier can only verify that some hub-role token
+  authorized the request, not that the proxy is telling the truth about
+  which on-site agent originated it. That trust is inherent to the design
+  (the alternative — one cloud token per on-site agent, kept in sync with
+  the fleet's actual agent roster — was rejected as needless fleet-topology
+  coupling for a first cut).
+
+## 6b. origin_hub is exclusively hub-identity-derived (agent-hub#82)
+
+`origin_hub` on every `/sync/*` route (§6's proxy included, once it exists)
+comes from the hub-role token's OWN `hub` field — never a value the caller
+supplies. A whole-request `origin_hub` in the body that disagrees with the
+token's `hub` is a 403 for the entire call; a PER-ITEM `origin_hub` (in a
+`/sync/push` batch) that disagrees is rejected for that item alone, reported
+in the response's `rejected` array, and never silently trusted or silently
+overridden. See "Wire contract" below for the exact per-route behavior.
 
 ## 7. Metrics and health surfaced in local `/health`
 
