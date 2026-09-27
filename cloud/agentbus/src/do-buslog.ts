@@ -15,7 +15,7 @@
 
 import { DurableObject } from "cloudflare:workers";
 import type { Env } from "./env";
-import { parseTimestampUtcMs } from "./ids";
+import { formatTimestampUtc, parseTimestampUtcMs } from "./ids";
 import type { JsonValue, Message, Notification, PendingAck, Presence } from "./types";
 
 /** Adds the index signature `sql.exec<T>()` requires without repeating it at every call site. */
@@ -57,11 +57,21 @@ CREATE TABLE IF NOT EXISTS messages (
   origin_seq INTEGER,
   hlc TEXT,
   sensitivity TEXT NOT NULL DEFAULT 'internal',
+  -- Cloud INGEST time (re-review N5), always formatTimestampUtc() taken
+  -- at INSERT time -- deliberately NOT timestamp_utc, which is the
+  -- message's own original/authored timestamp and can be arbitrarily old
+  -- for a historical import (e.g. a June message imported today). Using
+  -- timestamp_utc for retention would purge a freshly-imported historical
+  -- row immediately instead of after RETENTION_DAYS of actually living in
+  -- this store. The empty-string default only matters if this column is
+  -- ever added to an already-populated table via a future migration.
+  ingested_at_utc TEXT NOT NULL DEFAULT '',
   UNIQUE(origin_hub, id),
   UNIQUE(origin_hub, client_msg_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_to_ts ON messages(to_agent, timestamp_utc);
 CREATE INDEX IF NOT EXISTS idx_messages_from_ts ON messages(from_agent, timestamp_utc);
+CREATE INDEX IF NOT EXISTS idx_messages_ingested ON messages(ingested_at_utc);
 
 -- "Current" presence liveness, keyed by (key_origin, agent) rather than
 -- agent alone (review M9): two different hubs' (or two different roaming
@@ -99,9 +109,14 @@ CREATE TABLE IF NOT EXISTS presence_history (
   ttl_seconds INTEGER NOT NULL,
   network_context TEXT,
   origin_hub TEXT,
-  origin_id INTEGER
+  origin_id INTEGER,
+  -- Cloud ingest time (re-review N5) -- see the identical column on
+  -- messages above for the rationale; retention deletes by this, never by
+  -- timestamp_utc.
+  ingested_at_utc TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_presence_history_agent ON presence_history(agent, timestamp_utc);
+CREATE INDEX IF NOT EXISTS idx_presence_history_ingested ON presence_history(ingested_at_utc);
 
 -- Dedup gate for POST /sync/push-presence, keyed on (origin_hub, origin_id)
 -- per the on-site export's own row id (review item 6).
@@ -350,8 +365,8 @@ export class BusLog extends DurableObject<Env> {
       `INSERT INTO messages
         (origin_hub, id, client_msg_id, timestamp_utc, protocol_version, from_agent, to_agent, topic, body,
          thread_id, tags, priority, request_ack, reply_to, metadata, stream_id,
-         origin_host, origin_seq, hlc, sensitivity)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         origin_host, origin_seq, hlc, sensitivity, ingested_at_utc)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.origin_hub,
       input.id,
       input.client_msg_id ?? null,
@@ -372,6 +387,11 @@ export class BusLog extends DurableObject<Env> {
       input.origin_seq ?? null,
       input.hlc ?? null,
       input.sensitivity ?? "internal",
+      // Cloud ingest time, NOT input.timestamp_utc (re-review N5): this is
+      // "now" as far as THIS store is concerned, regardless of how old the
+      // message's own authored timestamp is (a historical import can be
+      // months old and must still get the full retention window from here).
+      formatTimestampUtc(),
     );
 
     const row = this.sql
@@ -609,8 +629,8 @@ export class BusLog extends DurableObject<Env> {
       originHub ?? null,
     );
     this.sql.exec(
-      `INSERT INTO presence_history (agent, status, protocol_version, timestamp_utc, session_id, capabilities, metadata, ttl_seconds, network_context, origin_hub, origin_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO presence_history (agent, status, protocol_version, timestamp_utc, session_id, capabilities, metadata, ttl_seconds, network_context, origin_hub, origin_id, ingested_at_utc)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       input.agent,
       input.status,
       input.protocol_version,
@@ -622,6 +642,7 @@ export class BusLog extends DurableObject<Env> {
       input.network_context ?? null,
       originHub ?? null,
       null,
+      formatTimestampUtc(),
     );
     const result: Presence = { ...input };
     if (originHub) result.origin_hub = originHub;
@@ -879,8 +900,8 @@ export class BusLog extends DurableObject<Env> {
       );
       const ttlSeconds = ev.ttl_seconds ?? 180;
       this.sql.exec(
-        `INSERT INTO presence_history (agent, status, protocol_version, timestamp_utc, session_id, capabilities, metadata, ttl_seconds, network_context, origin_hub, origin_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+        `INSERT INTO presence_history (agent, status, protocol_version, timestamp_utc, session_id, capabilities, metadata, ttl_seconds, network_context, origin_hub, origin_id, ingested_at_utc)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
         ev.agent,
         ev.status,
         ev.protocol_version,
@@ -891,6 +912,7 @@ export class BusLog extends DurableObject<Env> {
         ttlSeconds,
         originHub,
         ev.origin_id,
+        formatTimestampUtc(),
       );
 
       const currentRow = this.sql
@@ -969,20 +991,43 @@ export class BusLog extends DurableObject<Env> {
 
   // -- Retention (review M1): a DO alarm, off/long by default -------------
 
-  /** Schedules (or re-schedules) the retention alarm if `RETENTION_DAYS` is
-   * a positive integer. Idempotent — safe to call on every write; Durable
-   * Object alarms overwrite rather than stack. Off by default (no alarm is
-   * ever set when `RETENTION_DAYS` is unset/0/invalid), matching the task's
-   * "off or long by default" requirement. */
+  /** Schedules the retention alarm if `RETENTION_DAYS` is a positive
+   * integer AND no alarm is already scheduled (re-review N5: this used to
+   * unconditionally `setAlarm()` on every call, and it's called from
+   * `ensureSchema()`, which runs once per DO INSTANCE -- not once ever. A
+   * Durable Object instance is re-constructed on every cold start/eviction,
+   * so a busy DO that evicts and reconstructs every few minutes would keep
+   * pushing the alarm 24h into the future on every restart and it would
+   * NEVER actually fire. Checking `getAlarm()` first makes this safe to
+   * call on every write, which is the whole point of calling it from
+   * `ensureSchema()` in the first place.) Off by default (no alarm is ever
+   * set when `RETENTION_DAYS` is unset/0/invalid), matching the task's "off
+   * or long by default" requirement. */
   maybeScheduleRetention(retentionDays: string | undefined): void {
     const days = Number(retentionDays);
     if (!retentionDays || !Number.isFinite(days) || days <= 0) return;
-    // Run roughly daily; the exact cadence doesn't matter as long as it's
-    // less than the retention window itself.
-    this.ctx.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1000).catch(() => {
-      // Best-effort: a failure to schedule the alarm must never fail the
-      // write path that triggered this call.
-    });
+    this.ctx.storage
+      .getAlarm()
+      .then((existing) => {
+        if (existing !== null) return undefined;
+        // Run roughly daily; the exact cadence doesn't matter as long as
+        // it's less than the retention window itself.
+        return this.ctx.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1000);
+      })
+      .catch(() => {
+        // Best-effort: a failure to schedule the alarm must never fail the
+        // write path that triggered this call.
+      });
+  }
+
+  /** Test/ops-only accessor for the currently scheduled alarm time (ms
+   * epoch since Unix, or `null` if none is scheduled). Not used by any
+   * production code path -- exists purely so a test can assert that
+   * `maybeScheduleRetention`'s idempotency claim (re-review N5: a second
+   * call must not push the alarm further into the future) is actually
+   * true, rather than merely "doesn't throw". */
+  async debugGetAlarmTime(): Promise<number | null> {
+    return this.ctx.storage.getAlarm();
   }
 
   override async alarm(): Promise<void> {
@@ -990,8 +1035,13 @@ export class BusLog extends DurableObject<Env> {
     const retentionDays = Number(this.env.RETENTION_DAYS);
     if (!Number.isFinite(retentionDays) || retentionDays <= 0) return;
     const cutoffIso = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
-    this.sql.exec("DELETE FROM messages WHERE timestamp_utc < ?", cutoffIso);
-    this.sql.exec("DELETE FROM presence_history WHERE timestamp_utc < ?", cutoffIso);
+    // Delete by CLOUD INGEST time (re-review N5), never by the row's own
+    // `timestamp_utc` -- a historical import can carry an authored
+    // timestamp from months ago and must still get the full
+    // RETENTION_DAYS window measured from when THIS store actually
+    // received it, not when it originally happened on-site.
+    this.sql.exec("DELETE FROM messages WHERE ingested_at_utc < ?", cutoffIso);
+    this.sql.exec("DELETE FROM presence_history WHERE ingested_at_utc < ?", cutoffIso);
     // Reschedule for the next window.
     await this.ctx.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1000);
   }

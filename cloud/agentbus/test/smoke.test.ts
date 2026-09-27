@@ -60,4 +60,73 @@ describe("smoke: retention alarm (agent-hub#82, off by default)", () => {
     // default" behavior rather than the alarm handler's internal logic.
     await expect(runDurableObjectAlarm(stub)).resolves.toBe(false);
   });
+
+  it("scheduling is idempotent: a second call does not push the alarm further into the future (re-review N5)", async () => {
+    // maybeScheduleRetention takes retentionDays as a PARAMETER (not read
+    // from env), so this exercises it directly without needing the
+    // process-wide RETENTION_DAYS binding (unset in vitest.config.ts).
+    const id = env.BUS_LOG.idFromName(`retention-idempotent-${crypto.randomUUID()}`);
+    const stub = env.BUS_LOG.get(id);
+
+    await stub.maybeScheduleRetention("90");
+    const first = await stub.debugGetAlarmTime();
+    expect(first).not.toBeNull();
+
+    // The old code unconditionally called setAlarm() again here, pushing
+    // the alarm 24h further into the future every time -- which meant a DO
+    // instance that gets evicted/reconstructed often (ensureSchema() calls
+    // this on every fresh instance) could see the alarm's due time keep
+    // sliding forward and never actually fire.
+    await stub.maybeScheduleRetention("90");
+    const second = await stub.debugGetAlarmTime();
+    expect(second).toBe(first);
+  });
+
+  it("a historical (e.g. June) import survives RETENTION_DAYS=90 because pruning keys on cloud INGEST time, not the message's own timestamp_utc (re-review N5)", async () => {
+    const id = env.BUS_LOG.idFromName(`retention-june-import-${crypto.randomUUID()}`);
+    const stub = env.BUS_LOG.get(id);
+
+    // A message "authored" in June -- well past a 90-day window measured
+    // from its own timestamp_utc, but ingested into THIS store just now
+    // (insertMessage always stamps ingested_at_utc with the real current
+    // time, by design -- see do-buslog.ts).
+    const juneMessageId = crypto.randomUUID();
+    const { inserted } = await stub.insertMessage({
+      id: juneMessageId,
+      origin_hub: "asuspro13",
+      timestamp_utc: "2026-06-01T00:00:00.000000Z",
+      protocol_version: "1.0",
+      from: "codex",
+      to: "claude",
+      topic: "status",
+      body: "a June-dated historical import",
+      tags: [],
+      priority: "normal",
+      request_ack: false,
+      metadata: {},
+    });
+    expect(inserted).toBe(true);
+
+    // Exercise the real production code path: this.env.RETENTION_DAYS,
+    // read fresh by alarm() on every invocation. `env` here is the exact
+    // object the Workers runtime hands to every Durable Object
+    // construction in this isolate, so mutating it is visible to
+    // `this.env` inside the DO.
+    const previousRetentionDays = env.RETENTION_DAYS;
+    env.RETENTION_DAYS = "90";
+    try {
+      await stub.maybeScheduleRetention("90");
+      await runDurableObjectAlarm(stub);
+    } finally {
+      env.RETENTION_DAYS = previousRetentionDays;
+    }
+
+    const survivors = await stub.listMessages({
+      agent: "claude",
+      since_ms: Date.parse("2026-01-01T00:00:00Z"),
+      limit: 100,
+      include_broadcast: true,
+    });
+    expect(survivors.some((m) => m.id === juneMessageId)).toBe(true);
+  });
 });
