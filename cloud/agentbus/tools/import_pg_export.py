@@ -14,6 +14,13 @@ Safety properties:
 - Idempotent: the cloud dedups on message id, so a re-run after a partial
   failure re-sends at most one batch. --state records the next row offset.
 - --dry-run does everything except the HTTP call and prints the counts.
+- Any row the CLOUD rejects (not merely a local skip/exclude, and not a
+  same-id "conflict", which just means the row already exists with
+  different content) is treated as a hard failure: the run exits non-zero
+  and every rejected id/reason is written to --report, unless --allow-rejects
+  is passed (in which case rejections are still reported, but the run still
+  exits 0). `conflicts` (accepted-by-content, differs-from-existing) are
+  counted and reported but never gate the exit code on their own.
 
 Stdlib only, so it runs with `uv run --no-project python` on any fleet host.
 """
@@ -201,6 +208,11 @@ def main() -> int:
     ap.add_argument("--state", type=Path, help="resume-state JSON file")
     ap.add_argument("--report", type=Path, help="write a JSON summary here")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument(
+        "--allow-rejects",
+        action="store_true",
+        help="exit 0 even if the cloud rejected one or more rows (still reported)",
+    )
     args = ap.parse_args()
 
     token = os.environ.get("AGENTBUS_TOKEN", "")
@@ -242,10 +254,18 @@ def main() -> int:
             "skipped": len(skipped),
             "accepted": 0,
             "duplicates": 0,
+            # A "conflict" is a same-id/client_msg_id row whose CONTENT
+            # differs from what's already stored -- distinct from a
+            # "rejection" (the cloud refused to store the row at all, e.g.
+            # a validation failure). Counted and reported, but does not by
+            # itself gate the exit code the way a rejection does (review
+            # N15: "it never reads conflicts").
+            "conflicts": 0,
             "rejected": 0,
         }
         start = state.get("messages_offset", 0)
         rejected_detail = []
+        conflict_detail = []
         for off in range(start, len(items), BATCH):
             batch = items[off : off + BATCH]
             if not args.dry_run:
@@ -256,7 +276,9 @@ def main() -> int:
                 )
                 counts["accepted"] += len(res.get("accepted", []))
                 counts["duplicates"] += len(res.get("duplicates", []))
+                counts["conflicts"] += len(res.get("conflicts", []))
                 counts["rejected"] += len(res.get("rejected", []))
+                conflict_detail += list(res.get("conflicts", []))
                 rejected_detail += [
                     {"id": r.get("id"), "reason": r.get("reason")}
                     for r in res.get("rejected", [])
@@ -266,6 +288,7 @@ def main() -> int:
             print(f"messages {off + len(batch)}/{len(items)}", file=sys.stderr)
         summary["messages"] = counts | {
             "skipped_ids": [{"id": i, "reason": r} for i, r in skipped],
+            "conflict_ids": conflict_detail,
             "rejected_ids": rejected_detail,
         }
 
@@ -277,8 +300,10 @@ def main() -> int:
             "to_send": len(items),
             "accepted": 0,
             "duplicates": 0,
+            "rejected": 0,
         }
         start = state.get("presence_offset", 0)
+        presence_rejected_detail = []
         for off in range(start, len(items), BATCH):
             batch = items[off : off + BATCH]
             if not args.dry_run:
@@ -293,10 +318,25 @@ def main() -> int:
                 )
                 counts["accepted"] += int(res.get("accepted", 0))
                 counts["duplicates"] += int(res.get("duplicates", 0))
+                # re-review N15: the importer used to ignore presence
+                # `rejected` entirely -- a malformed/oversized presence
+                # event would silently vanish with no signal at all.
+                rejected_events = res.get("rejected", [])
+                counts["rejected"] += len(rejected_events)
+                presence_rejected_detail += [
+                    {"origin_id": r.get("origin_id"), "reason": r.get("reason")}
+                    for r in rejected_events
+                ]
             state["presence_offset"] = off + len(batch)
             save_state(args.state, state)
             print(f"presence {off + len(batch)}/{len(items)}", file=sys.stderr)
-        summary["presence"] = counts
+        summary["presence"] = counts | {"rejected_ids": presence_rejected_detail}
+
+    total_rejected = summary["messages"].get("rejected", 0) + summary["presence"].get(
+        "rejected", 0
+    )
+    summary["total_rejected"] = total_rejected
+    summary["allow_rejects"] = args.allow_rejects
 
     out = json.dumps(summary, indent=2)
     if args.report:
@@ -310,6 +350,21 @@ def main() -> int:
         for k, v in summary.items()
     }
     print(json.dumps(brief, indent=2))
+
+    # re-review N15: the importer used to always exit 0, so a partially
+    # rejected import looked identical to a fully successful one to any
+    # caller/CI job that only checks the exit code. A rejection is a row
+    # the CLOUD refused outright (a validation failure, an oversized body,
+    # ...) -- distinct from a "conflict" (accepted, but the id already
+    # existed with different content), which is expected on a re-run and
+    # never gates the exit code.
+    if total_rejected > 0 and not args.allow_rejects:
+        print(
+            f"error: {total_rejected} row(s) were rejected by the cloud tier "
+            "(see rejected_ids in --report, or pass --allow-rejects)",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
