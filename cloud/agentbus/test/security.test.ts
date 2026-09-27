@@ -23,6 +23,8 @@ import {
   CODEX_TOKEN,
   HUB_A,
   HUB_A_TOKEN,
+  NO_HOST_AGENT,
+  NO_HOST_AGENT_TOKEN,
   OPERATOR_TOKEN,
   postJson,
   putJson,
@@ -683,5 +685,41 @@ describe("N4: claim field validation (re-review)", () => {
       scope_path: "p".repeat(2000),
     });
     expect(scopePath.status).toBe(400);
+  });
+});
+
+describe("N7: a host-less agent-role token cannot self-assert origin_host (re-review)", () => {
+  it("silently drops a caller-supplied origin_host when the token has no configured host", async () => {
+    const { status, body } = await postJson<{ origin_host?: string }>(
+      "/messages",
+      { sender: NO_HOST_AGENT, recipient: "codex", topic: "status", body: "x", origin_host: "spark-0060" },
+      NO_HOST_AGENT_TOKEN,
+    );
+    expect(status).toBe(200);
+    // Not "spark-0060" (the old bug: a host-less token trusted the caller
+    // outright) and not literally required to be absent either — the fix
+    // is that the caller's claim is IGNORED, so it must not survive.
+    expect(body.origin_host).not.toBe("spark-0060");
+    expect(body).not.toHaveProperty("origin_host");
+  });
+
+  it("still omits origin_host when the caller supplies none at all", async () => {
+    const { status, body } = await postJson<{ origin_host?: string }>(
+      "/messages",
+      { sender: NO_HOST_AGENT, recipient: "codex", topic: "status", body: "y" },
+      NO_HOST_AGENT_TOKEN,
+    );
+    expect(status).toBe(200);
+    expect(body).not.toHaveProperty("origin_host");
+  });
+
+  it("a token WITH a configured host is unaffected: it still binds to its own host", async () => {
+    const { status, body } = await postJson<{ origin_host?: string }>(
+      "/messages",
+      { sender: "claude", recipient: "codex", topic: "status", body: "z" },
+      CLAUDE_TOKEN,
+    );
+    expect(status).toBe(200);
+    expect(body.origin_host).toBe("test-host");
   });
 });

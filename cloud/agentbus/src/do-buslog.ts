@@ -400,6 +400,27 @@ export class BusLog extends DurableObject<Env> {
     this.sql.exec("DELETE FROM pending_acks WHERE message_id = ?", messageId);
   }
 
+  /** Looks up the most recently stored message with this id (any origin —
+   * `id` alone is not globally unique post-M5, so this takes the newest
+   * match) and returns its recipient (`to_agent`), or `undefined` if no such
+   * message exists. Used by `/messages/:id/ack` and `/ack/batch` (review
+   * N6) to enforce "only the recipient, or a hub/operator token, may ack a
+   * message" BEFORE the ack side effects run: an agent-role caller acking a
+   * message addressed to someone else used to return 200 and silently clear
+   * the real recipient's pending ack. A message that cannot be found (an
+   * unknown/expired id) imposes no restriction — there is nothing to
+   * protect, and callers have always been able to ack a bogus id. */
+  getMessageRecipient(messageId: string): string | undefined {
+    this.ensureSchema();
+    const row = this.sql
+      .exec<Row<{ to_agent: string }>>(
+        "SELECT to_agent FROM messages WHERE id = ? ORDER BY seq DESC LIMIT 1",
+        messageId,
+      )
+      .toArray()[0];
+    return row?.to_agent;
+  }
+
   listPendingAcks(agent?: string): PendingAck[] {
     this.ensureSchema();
     const rows = agent

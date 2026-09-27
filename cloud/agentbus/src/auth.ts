@@ -240,11 +240,19 @@ export function bindOptionalAgent(identity: Identity, requested: string | undefi
 }
 
 /** Binds `origin_host`: an `agent`-role token with a configured `host` must
- * match or omit it; a token with no configured host trusts the caller
- * (best-effort — nothing to compare against). Hub/operator tokens may
- * assert any host (they're relaying on behalf of a real on-site machine). */
+ * match or omit it. An `agent`-role token with NO configured `host` used to
+ * trust whatever the caller sent — a self-asserted `origin_host` with no
+ * binding behind it at all (re-review N7: "spark-0060" was accepted from a
+ * token that names no host). It now IGNORES the caller's value in that case
+ * (the field is simply omitted) rather than either trusting it or hard
+ *-rejecting a token shape that may already be deployed. Hub/operator tokens
+ * may still assert any host (they're relaying on behalf of a real on-site
+ * machine). */
 export function bindOriginHost(identity: Identity, requested: string | undefined): string | undefined {
-  if (identity.role === "agent" && identity.host) {
+  if (identity.role === "agent") {
+    if (!identity.host) {
+      return undefined;
+    }
     if (requested && requested !== identity.host) {
       throw new ForbiddenError(
         `origin_host '${requested}' does not match the bearer token's host '${identity.host}'`,

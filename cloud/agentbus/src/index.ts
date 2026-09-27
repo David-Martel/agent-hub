@@ -338,6 +338,17 @@ app.post("/messages/:id/ack", async (c) => {
     assertNoPhi(ackBody);
 
     const stub = busLogStub(c.env);
+    // "Ack only the recipient, or hub/operator" (re-review N6): an
+    // agent-role token vouches for nobody but itself (bindAgent above
+    // already enforced that), so it may only clear an ack for a message
+    // actually addressed to it, or a broadcast. hub/operator tokens
+    // vouch for any on-site agent and bypass this check.
+    if (identity.role === "agent") {
+      const recipient = await stub.getMessageRecipient(messageId);
+      if (recipient !== undefined && recipient !== agent && recipient !== "all") {
+        throw new ForbiddenError(`ack rejected: '${agent}' is not the recipient of message '${messageId}'`);
+      }
+    }
     const { message: ackMessage } = await stub.insertMessage({
       id: uuidv7(),
       timestamp_utc: formatTimestampUtc(),
@@ -416,6 +427,21 @@ app.post("/ack/batch", async (c) => {
 
     const stub = busLogStub(c.env);
     const originHub = bindOriginHubForDirectWrite(identity, undefined, cloudIdentity(c.env));
+    // Re-review N6, applied to the batch route: validate EVERY id's
+    // recipient before acking ANY of them, so one unauthorized id in the
+    // middle of a batch cannot leave earlier acks already applied while the
+    // request as a whole fails. This does not give full atomicity against
+    // other mid-batch failures (that is N8's scope for /messages/batch) but
+    // it does close the specific "acked some, then 403'd" gap for this
+    // authorization check.
+    if (identity.role === "agent") {
+      for (const messageId of ids) {
+        const recipient = await stub.getMessageRecipient(messageId);
+        if (recipient !== undefined && recipient !== agent && recipient !== "all") {
+          throw new ForbiddenError(`ack rejected: '${agent}' is not the recipient of message '${messageId}'`);
+        }
+      }
+    }
     const acked: string[] = [];
     for (const messageId of ids) {
       await stub.insertMessage({

@@ -21,6 +21,11 @@ export const HUB_B_TOKEN = "test-token-hub-b-01234567890123456789012";
 export const HUB_A = "asuspro13";
 export const HUB_B = "spark-0060";
 export const OPERATOR_TOKEN = "test-token-operator-01234567890123456789";
+/** Agent-role token with NO configured `host` (re-review N7): exercises the
+ * "a host-less agent-role token cannot self-assert origin_host" fix in
+ * `bindOriginHost` (`src/auth.ts`). Agent identity: `roaming-agent`. */
+export const NO_HOST_AGENT_TOKEN = "test-token-nohost-012345678901234567890";
+export const NO_HOST_AGENT = "roaming-agent";
 
 /** Default caller identity for tests that don't care which agent they are. */
 export const DEFAULT_TOKEN = CLAUDE_TOKEN;

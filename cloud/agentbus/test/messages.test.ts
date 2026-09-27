@@ -222,17 +222,17 @@ describe("POST /messages/batch", () => {
 
 describe("POST /messages/:id/ack", () => {
   it("acks a message and clears its pending-ack record", async () => {
+    // Recipient is "claude" itself (a self-addressed message) so the acking
+    // identity below IS the recipient (re-review N6: acking is now
+    // restricted to the recipient, or a hub/operator token — see the
+    // dedicated N6 describe block for the rejection case).
     const sent = await postJson<{ id: string }>("/messages", {
       sender: "claude",
-      recipient: "ack-test-agent",
+      recipient: "claude",
       topic: "status",
       body: "needs an ack",
       request_ack: true,
     });
-    // "Ack only for yourself" (agent-hub#82): the acking `agent` is the
-    // bearer identity (claude), not the message's `recipient` field — those
-    // are two different things (who is acking vs. who the original message
-    // was addressed to).
     const { status, body } = await postJson<{ ack_sent: boolean; acked_message_id: string }>(
       `/messages/${sent.body.id}/ack`,
       { agent: "claude" },
@@ -241,7 +241,7 @@ describe("POST /messages/:id/ack", () => {
     expect(body.ack_sent).toBe(true);
     expect(body.acked_message_id).toBe(sent.body.id);
 
-    const pending = await apiJson<Array<{ message_id: string }>>("/pending-acks?agent=ack-test-agent");
+    const pending = await apiJson<Array<{ message_id: string }>>("/pending-acks?agent=claude");
     expect(pending.body.some((p) => p.message_id === sent.body.id)).toBe(false);
   });
 
@@ -257,9 +257,13 @@ describe("POST /messages/:id/ack", () => {
   });
 
   it("REJECTS acking as a different agent (403 — review 'ack only for yourself')", async () => {
+    // Recipient is "codex" so the eventual codex-authenticated ack below is
+    // ALSO the recipient — isolating this test to the identity-binding
+    // check (bindAgent) rather than tripping the separate N6 recipient
+    // check too.
     const sent = await postJson<{ id: string }>("/messages", {
       sender: "claude",
-      recipient: "ack-mismatch-agent",
+      recipient: "codex",
       topic: "status",
       body: "needs an ack",
       request_ack: true,
@@ -268,13 +272,60 @@ describe("POST /messages/:id/ack", () => {
     // different agent's identity.
     const { status } = await postJson(`/messages/${sent.body.id}/ack`, { agent: "codex" });
     expect(status).toBe(403);
-    // A codex-authenticated ack for the same message is fine.
+    // A codex-authenticated ack for the same message is fine — codex IS the
+    // recipient.
     const asCodex = await postJson<{ ack_sent: boolean }>(
       `/messages/${sent.body.id}/ack`,
       { agent: "codex" },
       CODEX_TOKEN,
     );
     expect(asCodex.status).toBe(200);
+  });
+
+  it("REJECTS acking a message addressed to someone else, even as your own valid identity (re-review N6)", async () => {
+    const sent = await postJson<{ id: string }>("/messages", {
+      sender: "claude",
+      recipient: "someone-else",
+      topic: "status",
+      body: "needs an ack",
+      request_ack: true,
+    });
+    // codex authenticates as itself (no identity-binding violation) but is
+    // not the recipient ("someone-else") — this used to return 200 and
+    // silently clear "someone-else"'s pending ack.
+    const { status } = await postJson(`/messages/${sent.body.id}/ack`, { agent: "codex" }, CODEX_TOKEN);
+    expect(status).toBe(403);
+
+    const pending = await apiJson<Array<{ message_id: string }>>("/pending-acks?agent=someone-else");
+    expect(pending.body.some((p) => p.message_id === sent.body.id)).toBe(true);
+  });
+
+  it("a broadcast (to: 'all') may be acked by any agent (re-review N6)", async () => {
+    const sent = await postJson<{ id: string }>("/messages", {
+      sender: "claude",
+      recipient: "all",
+      topic: "status",
+      body: "broadcast needing ack",
+      request_ack: true,
+    });
+    const { status } = await postJson(`/messages/${sent.body.id}/ack`, { agent: "codex" }, CODEX_TOKEN);
+    expect(status).toBe(200);
+  });
+
+  it("a hub-role token may ack a message addressed to a different agent (vouching, re-review N6)", async () => {
+    const sent = await postJson<{ id: string }>("/messages", {
+      sender: "claude",
+      recipient: "someone-else",
+      topic: "status",
+      body: "needs an ack",
+      request_ack: true,
+    });
+    const { status } = await postJson(
+      `/messages/${sent.body.id}/ack`,
+      { agent: "someone-else" },
+      HUB_A_TOKEN,
+    );
+    expect(status).toBe(200);
   });
 });
 
@@ -302,23 +353,19 @@ describe("POST /read/batch and POST /ack/batch", () => {
   });
 
   it("batch-acks several message ids at once", async () => {
-    const first = await postJson<{ id: string }>("/messages", {
-      sender: "claude",
-      recipient: "batch-ack-agent",
-      topic: "status",
-      body: "one",
-      request_ack: true,
-    });
-    const second = await postJson<{ id: string }>("/messages", {
-      sender: "claude",
-      recipient: "batch-ack-agent",
-      topic: "status",
-      body: "two",
-      request_ack: true,
-    });
+    // Both messages are addressed to "claude" itself, so the acking
+    // identity below (also claude) is the recipient (re-review N6).
+    const first = await postJson<{ id: string }>(
+      "/messages",
+      { sender: "codex", recipient: "claude", topic: "status", body: "one", request_ack: true },
+      CODEX_TOKEN,
+    );
+    const second = await postJson<{ id: string }>(
+      "/messages",
+      { sender: "codex", recipient: "claude", topic: "status", body: "two", request_ack: true },
+      CODEX_TOKEN,
+    );
 
-    // Acking identity is the bearer's own agent (claude), not the messages'
-    // recipient field (agent-hub#82: "ack only for yourself").
     const { status, body } = await postJson<{ acked: number; message_ids: string[] }>("/ack/batch", {
       agent: "claude",
       message_ids: [first.body.id, second.body.id],
@@ -326,6 +373,32 @@ describe("POST /read/batch and POST /ack/batch", () => {
     expect(status).toBe(200);
     expect(body.acked).toBe(2);
     expect(body.message_ids).toEqual([first.body.id, second.body.id]);
+  });
+
+  it("REJECTS a batch ack when ANY id in the batch is addressed to someone else, applying none of them (re-review N6)", async () => {
+    const mine = await postJson<{ id: string }>(
+      "/messages",
+      { sender: "codex", recipient: "claude", topic: "status", body: "mine", request_ack: true },
+      CODEX_TOKEN,
+    );
+    const notMine = await postJson<{ id: string }>(
+      "/messages",
+      { sender: "codex", recipient: "someone-else", topic: "status", body: "not mine", request_ack: true },
+      CODEX_TOKEN,
+    );
+
+    const { status } = await postJson("/ack/batch", {
+      agent: "claude",
+      message_ids: [mine.body.id, notMine.body.id],
+    });
+    expect(status).toBe(403);
+
+    // Neither pending ack was cleared — the unauthorized id in the batch
+    // blocked the whole batch, not just itself.
+    const pendingMine = await apiJson<Array<{ message_id: string }>>("/pending-acks?agent=claude");
+    expect(pendingMine.body.some((p) => p.message_id === mine.body.id)).toBe(true);
+    const pendingNotMine = await apiJson<Array<{ message_id: string }>>("/pending-acks?agent=someone-else");
+    expect(pendingNotMine.body.some((p) => p.message_id === notMine.body.id)).toBe(true);
   });
 });
 

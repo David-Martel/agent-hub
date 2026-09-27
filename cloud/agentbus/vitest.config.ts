@@ -32,6 +32,10 @@ export default defineConfig({
             "test-token-hub-a-01234567890123456789012": { agent: "hub-a-relay", role: "hub", hub: "asuspro13" },
             "test-token-hub-b-01234567890123456789012": { agent: "hub-b-relay", role: "hub", hub: "spark-0060" },
             "test-token-operator-01234567890123456789": { agent: "operator", role: "operator" },
+            // re-review N7: an agent-role token with NO `host` field, to
+            // exercise bindOriginHost's fix (a host-less agent-role token
+            // must not be able to self-assert origin_host).
+            "test-token-nohost-012345678901234567890": { agent: "roaming-agent", role: "agent" },
           }),
         },
       },
