@@ -25,6 +25,34 @@ use serde_json::{Map, Value};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Process-wide `reqwest::Client`, built once and cheaply cloned by every
+/// [`HttpMcpTransport`]. Mirrors `agent-bus-cli`'s `server_mode::SERVER_CLIENT`
+/// pattern (#78 review item 6): `mcp.rs`'s `call_tool_now` constructs a fresh
+/// `HttpMcpTransport` on every MCP tool call, and `reqwest::Client` is
+/// `Clone` + internally `Arc`'d (connection pool, TLS config), so sharing one
+/// avoids rebuilding the TLS stack and a fresh connection pool per call.
+///
+/// Deliberately does NOT carry the bearer token (unlike `SERVER_CLIENT`,
+/// which bakes it into default headers): [`HttpMcpTransport`] keeps
+/// `auth_token` per-instance and attaches it per-request via
+/// [`HttpMcpTransport::authed`], because tests in this module construct
+/// transports with different tokens in the same process — baking the token
+/// into the shared client would make the first-constructed token "stick"
+/// for every later instance.
+static SHARED_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn shared_client() -> reqwest::Client {
+    SHARED_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .connect_timeout(CONNECT_TIMEOUT)
+                .timeout(REQUEST_TIMEOUT)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
+        })
+        .clone()
+}
+
 /// Reqwest-backed [`RemoteMcpTransport`] for the stdio MCP server.
 pub(crate) struct HttpMcpTransport {
     client: reqwest::Client,
@@ -34,11 +62,7 @@ pub(crate) struct HttpMcpTransport {
 impl HttpMcpTransport {
     pub(crate) fn new(settings: &Settings) -> Self {
         Self {
-            client: reqwest::Client::builder()
-                .connect_timeout(CONNECT_TIMEOUT)
-                .timeout(REQUEST_TIMEOUT)
-                .build()
-                .unwrap_or_else(|_| reqwest::Client::new()),
+            client: shared_client(),
             auth_token: settings.auth_token.clone(),
         }
     }

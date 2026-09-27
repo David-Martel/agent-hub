@@ -191,7 +191,16 @@ fn resolve_optional_url(
 ///
 /// Tiers (env beats config as a whole tier, matching every other setting):
 /// 1. `AGENT_BUS_SERVER_URLS` env var — comma-separated, entries trimmed,
-///    blanks dropped.
+///    blanks dropped. `AGENT_BUS_SERVER_URLS=""` (present but empty, or
+///    containing only commas/whitespace) resolves to an empty list for THIS
+///    tier and falls through to tier 2, exactly like the var being unset —
+///    there is no "explicit local-only override" sentinel. This matches the
+///    existing `AGENT_BUS_SERVER_URL=""` precedent (also "treated as
+///    absent", see the `server_url_empty_...` tests below) and is
+///    deliberate: an empty env var is far more likely to be an unset-but-
+///    exported shell artifact than a real request to go local-only, and a
+///    caller that genuinely wants local-only mode can simply not set either
+///    var and not configure `server_urls`/`server_url` in `config.json`.
 /// 2. `AGENT_BUS_SERVER_URL` env var — single URL.
 /// 3. `server_urls` in config.json — list, blanks dropped.
 /// 4. `server_url` in config.json — single URL.
@@ -200,7 +209,18 @@ fn resolve_optional_url(
 /// Whenever only a single URL is configured (tiers 2 or 4), the result is a
 /// one-element list so `server_urls.first()` is identical to the historical
 /// `server_url` field.
+///
+/// The final list is deduplicated by exact string match, preserving the
+/// first occurrence's position (`[a, b, a]` becomes `[a, b]`). This is
+/// intentionally exact-string only — no trailing-slash or case
+/// normalization — so a literal repeat (e.g. copy-paste in
+/// `AGENT_BUS_SERVER_URLS`) doesn't get probed twice and doesn't complicate
+/// "authoritative == index 0" with a duplicate of the same string.
 fn resolve_server_url_list(cfg: &ConfigFile) -> Vec<String> {
+    dedup_preserve_order(resolve_server_url_list_tiers(cfg))
+}
+
+fn resolve_server_url_list_tiers(cfg: &ConfigFile) -> Vec<String> {
     if let Ok(raw) = std::env::var("AGENT_BUS_SERVER_URLS") {
         let list: Vec<String> = raw
             .split(',')
@@ -236,6 +256,16 @@ fn resolve_server_url_list(cfg: &ConfigFile) -> Vec<String> {
         }
     }
     Vec::new()
+}
+
+/// Deduplicate by exact string match, preserving the first occurrence's
+/// position. See [`resolve_server_url_list`]'s doc comment for why this is
+/// exact-string only.
+fn dedup_preserve_order(urls: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::with_capacity(urls.len());
+    urls.into_iter()
+        .filter(|url| seen.insert(url.clone()))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1190,5 +1220,109 @@ mod tests {
             cfg.server_urls,
             Some(vec!["http://a:8400".to_owned(), "http://b:8400".to_owned()])
         );
+    }
+
+    #[test]
+    fn server_urls_dedups_exact_repeats_preserving_first_occurrence_order() {
+        with_server_url_env(
+            Some("http://a:8400,http://b:8400,http://a:8400"),
+            None,
+            || {
+                assert_eq!(
+                    resolve_server_url_list(&ConfigFile::default()),
+                    vec!["http://a:8400".to_owned(), "http://b:8400".to_owned()],
+                    "a literal repeat must not be probed twice, and the first \
+                 occurrence's position (not the last) must win so index 0 \
+                 stays authoritative"
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn server_urls_dedup_is_exact_string_only_not_normalized() {
+        // A trailing-slash or case difference is a DIFFERENT string on
+        // purpose (see resolve_server_url_list's doc comment) -- this is not
+        // a bug to fix here, just documenting the boundary so it isn't
+        // mistaken for one later.
+        with_server_url_env(
+            Some("http://a:8400,http://a:8400/,HTTP://A:8400"),
+            None,
+            || {
+                assert_eq!(
+                    resolve_server_url_list(&ConfigFile::default()),
+                    vec![
+                        "http://a:8400".to_owned(),
+                        "http://a:8400/".to_owned(),
+                        "HTTP://A:8400".to_owned(),
+                    ]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn server_urls_config_dedups_too() {
+        with_server_url_env(None, None, || {
+            let cfg = ConfigFile {
+                server_urls: Some(vec![
+                    "http://cfg-a:8400".to_owned(),
+                    "http://cfg-b:8400".to_owned(),
+                    "http://cfg-a:8400".to_owned(),
+                ]),
+                ..ConfigFile::default()
+            };
+            assert_eq!(
+                resolve_server_url_list(&cfg),
+                vec![
+                    "http://cfg-a:8400".to_owned(),
+                    "http://cfg-b:8400".to_owned()
+                ]
+            );
+        });
+    }
+
+    /// #78 review item 6: `AGENT_BUS_SERVER_URLS=""` (present in the
+    /// environment but empty) must fall through to the next tier exactly
+    /// like the var being unset — it is NOT a "force local-only" sentinel.
+    /// The discriminating case is an empty env var with a real config-file
+    /// list still configured: if `""` meant "go local-only", this would
+    /// return an empty list; since it means "absent", it must return the
+    /// config-file list untouched. See `resolve_server_url_list`'s doc
+    /// comment for the full tier order and rationale.
+    #[test]
+    fn server_urls_env_present_but_empty_falls_through_to_config_not_local_only() {
+        with_server_url_env(Some(""), None, || {
+            let cfg = ConfigFile {
+                server_urls: Some(vec![
+                    "http://cfg-a:8400".to_owned(),
+                    "http://cfg-b:8400".to_owned(),
+                ]),
+                ..ConfigFile::default()
+            };
+            assert_eq!(
+                resolve_server_url_list(&cfg),
+                vec![
+                    "http://cfg-a:8400".to_owned(),
+                    "http://cfg-b:8400".to_owned()
+                ],
+                "AGENT_BUS_SERVER_URLS=\"\" must be treated as absent, not as an \
+                 explicit override to local-only mode"
+            );
+        });
+    }
+
+    /// Same as above but with nothing at all configured downstream, so the
+    /// end-to-end result really is local-only -- proving the empty-string
+    /// case falls all the way through the tier chain rather than getting
+    /// stuck partway.
+    #[test]
+    fn server_urls_env_present_but_empty_and_nothing_else_configured_is_local_only() {
+        with_server_url_env(Some("  ,  ,"), None, || {
+            assert_eq!(
+                resolve_server_url_list(&ConfigFile::default()),
+                Vec::<String>::new()
+            );
+        });
     }
 }
