@@ -992,7 +992,11 @@ fn dispatch_mcp_method(
                     })
                 })
                 .collect();
-            serde_json::json!({"result": {"tools": tools}})
+            serde_json::json!({"result": {
+                "tools": tools,
+                "ttlMs": 0,
+                "cacheScope": "private",
+            }})
         }
 
         "tools/call" => {
@@ -4253,6 +4257,17 @@ mod tests {
     fn dispatch_mcp_method_tools_list_matches_transport_agnostic_definitions() {
         let settings = agent_bus_core::settings::Settings::from_env();
         let response = dispatch_mcp_method(&settings, "tools/list", &serde_json::json!({}));
+        assert_eq!(response["result"]["ttlMs"], 0);
+        assert_eq!(response["result"]["cacheScope"], "private");
+        assert!(
+            response["result"].get("resultType").is_none(),
+            "the legacy HTTP endpoint must retain its negotiated result shape"
+        );
+        let decoded: rmcp::model::ListToolsResult =
+            serde_json::from_value(response["result"].clone())
+                .expect("HTTP cache hints satisfy the SDK wire types");
+        assert_eq!(decoded.ttl_ms, Some(0));
+        assert_eq!(decoded.cache_scope, Some(rmcp::model::CacheScope::Private));
         let tools = response["result"]["tools"]
             .as_array()
             .expect("tools/list must return an array");
