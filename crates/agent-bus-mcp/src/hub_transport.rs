@@ -209,49 +209,77 @@ mod tests {
         message
     }
 
-    /// Proves an `https://` candidate (e.g. `https://agentbus.dtmventures.com`,
-    /// item 5) is actually handled by an HTTPS-capable connector, using the
-    /// SAME client [`HttpMcpTransport`] sends real requests with -- not a
-    /// hand-rolled one.
+    /// Proves the real transport emits a TLS `ClientHello` for HTTPS.
     ///
-    /// This is a connect-level test, not a full TLS handshake against a real
-    /// certificate (a self-signed local TLS server is more machinery than
-    /// this needs): the discriminator is the shape of the failure against an
-    /// address nothing listens on. Confirmed empirically before this reqwest
-    /// feature was linked: connecting to `https://127.0.0.1:1/health`
-    /// (`crates/agent-bus-mcp/Cargo.toml` `reqwest` with no TLS backend at
-    /// all, i.e. `default-features = false` and no `rustls` feature) fails
-    /// immediately with `"invalid URL, scheme is not http"` -- reqwest
-    /// refuses to even attempt the connection. With the `rustls` feature
-    /// linked, the SAME request instead fails with `"tcp connect error"`
-    /// (connection refused), proving the scheme was accepted and a real
-    /// socket connect was attempted. If this test starts failing with
-    /// "scheme is not http" again, the `rustls` feature was dropped from
-    /// `Cargo.toml`.
+    /// The fixture closes after reading the handshake prefix; certificate
+    /// validation and a completed TLS session are outside this test's scope.
     #[test]
     fn https_candidate_reaches_a_real_connect_attempt_not_a_scheme_rejection() {
         let transport = transport_with_token(None);
         let rt = tokio::runtime::Runtime::new().expect("build test runtime");
-        let result = rt.block_on(async {
-            transport
-                .client
-                .get("https://127.0.0.1:1/health")
-                .send()
+        let (result, hello) = rt.block_on(async {
+            use tokio::io::AsyncReadExt;
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
+                .expect("bind HTTPS fixture");
+            let addr = listener.local_addr().expect("fixture local address");
+            let receive_hello = async {
+                let (mut stream, _) = listener.accept().await?;
+                let mut hello = [0_u8; 6];
+                stream.read_exact(&mut hello).await?;
+                Ok::<_, std::io::Error>(hello)
+            };
+
+            tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::join!(
+                    transport
+                        .client
+                        .get(format!("https://{addr}/health"))
+                        .send(),
+                    receive_hello
+                )
+            })
+            .await
+            .expect("HTTPS fixture and request must finish within five seconds")
         });
 
-        let err = result.expect_err("port 1 must not have a listener");
+        let hello = hello.expect("fixture must receive a TLS handshake prefix");
+        assert_eq!(hello[0], 0x16, "expected TLS handshake record");
+        assert_eq!(hello[1], 0x03, "expected TLS record version major");
+        assert!(hello[2] <= 0x03, "expected TLS legacy record version");
+        assert!(u16::from_be_bytes([hello[3], hello[4]]) > 0);
+        assert_eq!(hello[5], 0x01, "expected ClientHello handshake message");
+
+        let err = result.expect_err("fixture closes before completing TLS");
         let message = full_error_chain(&err);
         assert!(
-            !message.to_lowercase().contains("scheme is not http"),
-            "https:// was rejected before any connection was attempted -- the \
-             `rustls` feature is missing from agent-bus-mcp's reqwest dependency; \
-             got: {message}"
+            !err.is_builder(),
+            "HTTPS must reach the connector rather than fail request building: {message}"
         );
+    }
+
+    #[test]
+    fn unsupported_scheme_is_rejected_before_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind scheme fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("make scheme fixture nonblocking");
+        let addr = listener.local_addr().expect("fixture local address");
+        let transport = transport_with_token(None);
+        let rt = tokio::runtime::Runtime::new().expect("build test runtime");
+        let err = rt
+            .block_on(transport.client.get(format!("ftp://{addr}/health")).send())
+            .expect_err("FTP must not be accepted by the HTTP transport");
+        let message = full_error_chain(&err);
+        assert!(err.is_builder(), "expected scheme rejection: {message}");
         assert!(
-            message.contains("tcp connect error"),
-            "expected a real TCP connect attempt (and failure) once the scheme \
-             was accepted; got: {message}"
+            message.to_lowercase().contains("scheme"),
+            "expected an unsupported-scheme diagnostic: {message}"
+        );
+        assert_eq!(
+            listener.accept().expect_err("FTP must not connect").kind(),
+            std::io::ErrorKind::WouldBlock
         );
     }
 
