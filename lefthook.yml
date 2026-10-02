@@ -40,7 +40,7 @@ pre-push:
     rust-audit:
       run: |
         command -v cargo-audit >/dev/null 2>&1 || {
-          echo "ERROR: cargo-audit is not installed (cargo install cargo-audit --locked)" >&2
+          echo 'ERROR: cargo-audit is not installed (cargo install cargo-audit --locked)' >&2
           exit 1
         }
         cargo audit
