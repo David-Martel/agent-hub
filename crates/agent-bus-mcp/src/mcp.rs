@@ -9,8 +9,9 @@ use std::sync::Arc;
 use anyhow::Result;
 use rmcp::ServerHandler;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities, Tool,
+    CacheScope, CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock,
+    Implementation, InitializeResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
+    Tool,
 };
 
 use agent_bus_core::mcp_dispatch::{ToolDefinition, tool_definitions, validate_tool_arguments};
@@ -46,6 +47,13 @@ impl AgentBusMcpServer {
 
     pub(crate) fn tool_list() -> Vec<Tool> {
         tool_definitions().into_iter().map(to_rmcp_tool).collect()
+    }
+
+    /// Return catalog cache hints without sharing across authorization contexts.
+    fn tool_list_result() -> ListToolsResult {
+        ListToolsResult::with_all_items(Self::tool_list())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)
     }
 
     fn is_known_tool(name: &str) -> bool {
@@ -124,7 +132,7 @@ impl ServerHandler for AgentBusMcpServer {
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, rmcp::ErrorData>> + Send + '_ {
-        std::future::ready(Ok(ListToolsResult::with_all_items(Self::tool_list())))
+        std::future::ready(Ok(Self::tool_list_result()))
     }
 
     fn call_tool(
@@ -156,6 +164,40 @@ mod tests {
             17,
             "expected 17 MCP tools after lease renewal/release and knock support"
         );
+    }
+
+    #[test]
+    fn tool_list_result_serializes_cache_hints_for_current_clients() {
+        let result = serde_json::to_value(AgentBusMcpServer::tool_list_result())
+            .expect("serialize tools/list result");
+        assert_eq!(result["ttlMs"], 0);
+        assert_eq!(result["cacheScope"], "private");
+        assert_eq!(result["resultType"], "complete");
+        assert_eq!(
+            result["tools"].as_array().expect("tools array").len(),
+            agent_bus_core::mcp_dispatch::TOOL_COUNT
+        );
+
+        let decoded: ListToolsResult =
+            serde_json::from_value(result).expect("cache hints satisfy the SDK wire types");
+        assert_eq!(decoded.ttl_ms, Some(0));
+        assert_eq!(decoded.cache_scope, Some(CacheScope::Private));
+    }
+
+    #[test]
+    fn tool_list_result_cache_hints_reject_invalid_wire_types() {
+        for (field, invalid) in [
+            ("ttlMs", serde_json::json!("0")),
+            ("cacheScope", serde_json::json!("shared")),
+        ] {
+            let mut result = serde_json::to_value(AgentBusMcpServer::tool_list_result())
+                .expect("serialize tools/list result");
+            result[field] = invalid;
+            assert!(
+                serde_json::from_value::<ListToolsResult>(result).is_err(),
+                "invalid {field} must not satisfy the cache-hint wire contract"
+            );
+        }
     }
 
     #[test]
