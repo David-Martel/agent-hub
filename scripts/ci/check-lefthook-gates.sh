@@ -20,7 +20,12 @@ repo="$(git rev-parse --show-toplevel)"
 command -v lefthook >/dev/null || { echo "ERROR: lefthook is not installed" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "ERROR: python3 is required" >&2; exit 1; }
 
-work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/lefthook-gates.XXXXXX")"
+work_root="$(cd "${RUNNER_TEMP:-/tmp}" && pwd -P)"
+work="$(mktemp -d "$work_root/lefthook-gates.XXXXXX")"
+case "$work" in
+  "$work_root"/lefthook-gates.*) ;;
+  *) echo "ERROR: probe directory escaped its temporary root" >&2; exit 1 ;;
+esac
 trap 'rm -rf -- "$work"' EXIT
 
 # A snapshot of HEAD with fresh history, not a clone: CI checkouts are
@@ -30,6 +35,7 @@ git -C "$repo" archive HEAD | tar -x -C "$work/clone"
 git init -q --bare "$work/remote.git"
 cd "$work/clone"
 cp "$repo/lefthook.yml" lefthook.yml
+cp "$repo/scripts/check-conventional-commit.sh" scripts/check-conventional-commit.sh
 git init -q
 # Hermetic git identity/signing/hooks: nothing from the host config applies.
 git config user.name "lefthook-gate-probe"
@@ -40,6 +46,81 @@ git add -A
 git commit -q -m "chore: probe base"
 git remote add probe "$work/remote.git"
 git push -q probe HEAD:refs/heads/probe   # before hooks are installed
+
+# Exercise the real commit-msg command before replacing commands with markers.
+# A native Windows runner can truncate quoted multiline inline shell commands;
+# checking only the marker overlay cannot detect that failure.
+message_file="$work/commit message with spaces.txt"
+printf 'test: conventional policy probe\n' > "$message_file"
+if ! lefthook run commit-msg "$message_file" > "$work/conventional.log" 2>&1; then
+  echo "ERROR: conventional message hook failed"; cat "$work/conventional.log"; exit 1
+fi
+if grep -q 'WARNING: Consider conventional commit format' "$work/conventional.log"; then
+  echo "ERROR: conventional message emitted an advisory warning"; exit 1
+fi
+printf 'Rewrite the procedure guide\n' > "$message_file"
+if ! lefthook run commit-msg "$message_file" > "$work/advisory.log" 2>&1; then
+  echo "ERROR: nonconventional message must remain advisory"; cat "$work/advisory.log"; exit 1
+fi
+if ! grep -q 'WARNING: Consider conventional commit format' "$work/advisory.log"; then
+  echo "ERROR: nonconventional message omitted its advisory warning"; exit 1
+fi
+if lefthook run commit-msg "$work/missing message.txt" > "$work/unreadable.log" 2>&1; then
+  echo "ERROR: missing commit message must fail the hook"; exit 1
+fi
+if ! grep -q 'ERROR: conventional-commit check could not run' "$work/unreadable.log"; then
+  echo "ERROR: missing commit message omitted its failure diagnostic"; exit 1
+fi
+echo "conventional commit hook: valid, advisory and missing-file cases passed"
+
+# Keep the audit command's real shell invocation under test while supplying
+# controlled tool outcomes; the separate security gate runs the actual audit.
+mkdir "$work/audit-bin"
+cat > "$work/audit-bin/cargo" <<'SH'
+#!/usr/bin/env bash
+if [ "$#" -ne 1 ] || [ "$1" != audit ]; then
+  echo "ERROR: audit probe received an unexpected cargo command" >&2
+  exit 91
+fi
+echo "LEFTHOOK_AUDIT_EXECUTED"
+exit "${LEFTHOOK_AUDIT_TEST_STATUS:-0}"
+SH
+cp "$work/audit-bin/cargo" "$work/audit-bin/cargo-audit"
+chmod +x "$work/audit-bin/cargo" "$work/audit-bin/cargo-audit"
+# Native Windows hook shells may restore their login PATH. Inject the fixture
+# path inside the clone's command while retaining its original shell text.
+lefthook dump --format json > "$work/audit-config.json"
+# Preserve the POSIX path when passing through native Windows Python.
+audit_path_b64="$(printf '%s' "$work/audit-bin:$PATH" | base64 | tr -d '\r\n')"
+python3 - "$work/audit-config.json" "$audit_path_b64" <<'PY'
+import base64, json, shlex, sys
+cfg = json.load(open(sys.argv[1]))
+original = cfg["pre-push"]["commands"]["rust-audit"]["run"]
+fixture_path = base64.b64decode(sys.argv[2]).decode()
+overlay = {"pre-push": {"commands": {"rust-audit": {
+    "run": f"PATH={shlex.quote(fixture_path)}\nexport PATH\n" + original
+}}}}
+open("lefthook-local.yml", "w", newline="\n").write(json.dumps(overlay) + "\n")
+PY
+if ! LEFTHOOK_AUDIT_TEST_STATUS=0 \
+  lefthook run pre-push --force --command rust-audit > "$work/audit-pass.log" 2>&1; then
+  echo "ERROR: successful audit probe failed"; cat "$work/audit-pass.log"; exit 1
+fi
+if ! grep -q 'LEFTHOOK_AUDIT_EXECUTED' "$work/audit-pass.log"; then
+  echo "ERROR: audit command never executed its tool"; cat "$work/audit-pass.log"; exit 1
+fi
+if LEFTHOOK_AUDIT_TEST_STATUS=23 \
+  lefthook run pre-push --force --command rust-audit > "$work/audit-fail.log" 2>&1; then
+  echo "ERROR: failed audit probe must fail the hook"; exit 1
+fi
+if ! grep -q 'LEFTHOOK_AUDIT_EXECUTED' "$work/audit-fail.log"; then
+  echo "ERROR: audit failure came from invocation rather than tool result"; cat "$work/audit-fail.log"; exit 1
+fi
+if ! grep -q 'exit status 23' "$work/audit-fail.log"; then
+  echo "ERROR: audit tool exit status was not preserved"; cat "$work/audit-fail.log"; exit 1
+fi
+echo "audit hook invocation: tool success and failure cases passed"
+rm -- lefthook-local.yml
 
 lefthook dump --format json > "$work/config.json"
 python3 - "$work/config.json" "$work" <<'PY'
@@ -67,10 +148,10 @@ for hook, body in cfg.items():
                 errors.append(f"{hook}:{name}: glob {globs} matches no tracked file")
             else:
                 probes.add(match)
-open(f"{work}/clone/lefthook-local.yml", "w").write("\n".join(overlay) + "\n")
-open(f"{work}/expected.txt", "w").write("\n".join(expected) + "\n")
+open(f"{work}/clone/lefthook-local.yml", "w", newline="\n").write("\n".join(overlay) + "\n")
+open(f"{work}/expected.txt", "w", newline="\n").write("\n".join(expected) + "\n")
 # Fall back to any tracked file so glob-less commands still see a change.
-open(f"{work}/probes.txt", "w").write("\n".join(sorted(probes) or tracked[:1]) + "\n")
+open(f"{work}/probes.txt", "w", newline="\n").write("\n".join(sorted(probes) or tracked[:1]) + "\n")
 if errors:
     print("\n".join(f"ERROR: {e}" for e in errors), file=sys.stderr)
     sys.exit(1)

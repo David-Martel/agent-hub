@@ -40,7 +40,7 @@ pre-push:
     rust-audit:
       run: |
         command -v cargo-audit >/dev/null 2>&1 || {
-          echo "ERROR: cargo-audit is not installed (cargo install cargo-audit --locked)" >&2
+          echo 'ERROR: cargo-audit is not installed (cargo install cargo-audit --locked)' >&2
           exit 1
         }
         cargo audit
@@ -51,11 +51,4 @@ commit-msg:
     # check itself failing (unreadable message file, grep error) is an error:
     # grep exits 1 for "no match" and >1 for "could not run".
     conventional:
-      run: |
-        rc=0
-        grep -qE '^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)' "{1}" || rc=$?
-        case "$rc" in
-          0) ;;
-          1) echo "WARNING: Consider conventional commit format" ;;
-          *) echo "ERROR: conventional-commit check could not run (grep exit $rc)" >&2; exit "$rc" ;;
-        esac
+      run: bash scripts/check-conventional-commit.sh '{1}'
