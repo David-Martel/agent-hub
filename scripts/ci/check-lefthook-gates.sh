@@ -20,7 +20,12 @@ repo="$(git rev-parse --show-toplevel)"
 command -v lefthook >/dev/null || { echo "ERROR: lefthook is not installed" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "ERROR: python3 is required" >&2; exit 1; }
 
-work="$(mktemp -d "${RUNNER_TEMP:-/tmp}/lefthook-gates.XXXXXX")"
+work_root="$(cd "${RUNNER_TEMP:-/tmp}" && pwd -P)"
+work="$(mktemp -d "$work_root/lefthook-gates.XXXXXX")"
+case "$work" in
+  "$work_root"/lefthook-gates.*) ;;
+  *) echo "ERROR: probe directory escaped its temporary root" >&2; exit 1 ;;
+esac
 trap 'rm -rf -- "$work"' EXIT
 
 # A snapshot of HEAD with fresh history, not a clone: CI checkouts are
@@ -30,6 +35,7 @@ git -C "$repo" archive HEAD | tar -x -C "$work/clone"
 git init -q --bare "$work/remote.git"
 cd "$work/clone"
 cp "$repo/lefthook.yml" lefthook.yml
+cp "$repo/scripts/check-conventional-commit.sh" scripts/check-conventional-commit.sh
 git init -q
 # Hermetic git identity/signing/hooks: nothing from the host config applies.
 git config user.name "lefthook-gate-probe"
@@ -40,6 +46,32 @@ git add -A
 git commit -q -m "chore: probe base"
 git remote add probe "$work/remote.git"
 git push -q probe HEAD:refs/heads/probe   # before hooks are installed
+
+# Exercise the real commit-msg command before replacing commands with markers.
+# A native Windows runner can truncate quoted multiline inline shell commands;
+# checking only the marker overlay cannot detect that failure.
+message_file="$work/commit message with spaces.txt"
+printf 'test: conventional policy probe\n' > "$message_file"
+if ! lefthook run commit-msg "$message_file" > "$work/conventional.log" 2>&1; then
+  echo "ERROR: conventional message hook failed"; cat "$work/conventional.log"; exit 1
+fi
+if grep -q 'WARNING: Consider conventional commit format' "$work/conventional.log"; then
+  echo "ERROR: conventional message emitted an advisory warning"; exit 1
+fi
+printf 'Rewrite the procedure guide\n' > "$message_file"
+if ! lefthook run commit-msg "$message_file" > "$work/advisory.log" 2>&1; then
+  echo "ERROR: nonconventional message must remain advisory"; cat "$work/advisory.log"; exit 1
+fi
+if ! grep -q 'WARNING: Consider conventional commit format' "$work/advisory.log"; then
+  echo "ERROR: nonconventional message omitted its advisory warning"; exit 1
+fi
+if lefthook run commit-msg "$work/missing message.txt" > "$work/unreadable.log" 2>&1; then
+  echo "ERROR: missing commit message must fail the hook"; exit 1
+fi
+if ! grep -q 'ERROR: conventional-commit check could not run' "$work/unreadable.log"; then
+  echo "ERROR: missing commit message omitted its failure diagnostic"; exit 1
+fi
+echo "conventional commit hook: valid, advisory and missing-file cases passed"
 
 lefthook dump --format json > "$work/config.json"
 python3 - "$work/config.json" "$work" <<'PY'
@@ -67,10 +99,10 @@ for hook, body in cfg.items():
                 errors.append(f"{hook}:{name}: glob {globs} matches no tracked file")
             else:
                 probes.add(match)
-open(f"{work}/clone/lefthook-local.yml", "w").write("\n".join(overlay) + "\n")
-open(f"{work}/expected.txt", "w").write("\n".join(expected) + "\n")
+open(f"{work}/clone/lefthook-local.yml", "w", newline="\n").write("\n".join(overlay) + "\n")
+open(f"{work}/expected.txt", "w", newline="\n").write("\n".join(expected) + "\n")
 # Fall back to any tracked file so glob-less commands still see a change.
-open(f"{work}/probes.txt", "w").write("\n".join(sorted(probes) or tracked[:1]) + "\n")
+open(f"{work}/probes.txt", "w", newline="\n").write("\n".join(sorted(probes) or tracked[:1]) + "\n")
 if errors:
     print("\n".join(f"ERROR: {e}" for e in errors), file=sys.stderr)
     sys.exit(1)
