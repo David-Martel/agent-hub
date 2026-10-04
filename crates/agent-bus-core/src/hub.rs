@@ -31,7 +31,11 @@
 //! making [`resolve_hub`]'s selection logic trivially unit-testable with a
 //! fake probe.
 
+use crate::hub_cache::{CacheOs, HubCache, candidates_fingerprint, default_cache_path};
+use crate::hub_candidates::{HubAuth, HubRole, SystemEnv, validate_candidates};
+use crate::settings::Settings;
 use serde::Serialize;
+use std::time::{Duration, SystemTime};
 
 /// What a candidate hub's `/health` probe found, when it succeeded.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -138,9 +142,182 @@ pub fn resolve_hub(
     HubBackend::Offline { tried }
 }
 
+/// Resolve configured roles and credentials, optionally reusing a last-good URL.
+///
+/// The cached URL is always authenticated and probed again before use. Cache
+/// failure never changes authority or permits a local-store fallback.
+pub fn resolve_configured_hub(
+    settings: &Settings,
+    mut probe: impl FnMut(&str) -> Option<ProbeInfo>,
+) -> HubBackend {
+    resolve_settings_hub(settings, &mut probe, false)
+}
+
+/// Probe only the configured claims authority, bypassing cached fallbacks.
+pub fn resolve_authoritative_hub(
+    settings: &Settings,
+    mut probe: impl FnMut(&str) -> Option<ProbeInfo>,
+) -> HubBackend {
+    resolve_settings_hub(settings, &mut probe, true)
+}
+
+fn resolution_cache(settings: &Settings) -> Option<HubCache> {
+    default_cache_path(CacheOs::current(), &SystemEnv)
+        .map(|path| HubCache::new(path, Duration::from_secs(settings.hub_cache_ttl_seconds)))
+}
+
+/// Invalidate a last-good URL after a failed real operation.
+pub fn invalidate_configured_cache(settings: &Settings) {
+    if let Some(cache) = resolution_cache(settings) {
+        cache.invalidate();
+    }
+}
+
+fn resolve_settings_hub(
+    settings: &Settings,
+    probe: &mut impl FnMut(&str) -> Option<ProbeInfo>,
+    authority_only: bool,
+) -> HubBackend {
+    let candidates = settings.effective_hub_candidates();
+    if settings.hub_config_error.is_some() || validate_candidates(&candidates).is_err() {
+        return HubBackend::Offline {
+            tried: settings.server_urls.clone(),
+        };
+    }
+    if candidates.is_empty() {
+        return HubBackend::Local;
+    }
+    let auth = HubAuth::new(settings.auth_token.clone(), candidates.clone());
+    let cache = resolution_cache(settings);
+    let fingerprint = candidates_fingerprint(&candidates);
+    let mut order = Vec::with_capacity(candidates.len());
+    if !authority_only
+        && let Some(cache) = &cache
+        && let Some(cached) = cache.load(&fingerprint, SystemTime::now())
+        && let Some(index) = candidates
+            .iter()
+            .position(|candidate| candidate.url == cached.url && candidate.role == cached.role)
+    {
+        order.push(index);
+    }
+    for index in 0..candidates.len() {
+        if !order.contains(&index) {
+            order.push(index);
+        }
+    }
+    let mut tried = Vec::with_capacity(candidates.len());
+    for index in order {
+        let candidate = &candidates[index];
+        if authority_only && candidate.role != HubRole::Authoritative {
+            continue;
+        }
+        tried.push(candidate.url.clone());
+        if let Err(reason) = auth.credential_for(candidate, &SystemEnv) {
+            tracing::debug!(reason = %reason, "hub candidate credential unavailable");
+            continue;
+        }
+        if let Some(info) = probe(&candidate.url) {
+            if let Some(cache) = &cache
+                && let Err(error) = cache.store(
+                    &fingerprint,
+                    &candidate.url,
+                    candidate.role,
+                    SystemTime::now(),
+                )
+            {
+                tracing::debug!(kind = ?error.kind(), "hub resolution cache write failed");
+            }
+            return HubBackend::Remote {
+                url: candidate.url.clone(),
+                authoritative: candidate.role == HubRole::Authoritative,
+                hub_build: info.build_version,
+                tried,
+            };
+        }
+    }
+    if let Some(cache) = cache {
+        cache.invalidate();
+    }
+    HubBackend::Offline { tried }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn configured_settings(urls: &[&str]) -> Settings {
+        let mut settings = Settings::from_env();
+        settings.server_urls = urls.iter().map(|url| (*url).to_owned()).collect();
+        settings.hub_candidates = crate::hub_candidates::build_candidates(
+            &settings.server_urls,
+            &std::collections::BTreeMap::new(),
+        );
+        settings.hub_cache_ttl_seconds = 0;
+        settings.auth_token = None;
+        settings.hub_config_error = None;
+        settings
+    }
+
+    #[test]
+    fn explicit_second_authority_is_used_for_claims() {
+        let mut settings =
+            configured_settings(&["http://fallback.lan:8400", "http://authority.lan:8400"]);
+        settings.hub_candidates[0].role = HubRole::Fallback;
+        settings.hub_candidates[1].role = HubRole::Authoritative;
+        let mut probed = Vec::new();
+        let backend = resolve_authoritative_hub(&settings, |url| {
+            probed.push(url.to_owned());
+            Some(ProbeInfo::default())
+        });
+        assert_eq!(probed, vec!["http://authority.lan:8400"]);
+        assert!(matches!(
+            backend,
+            HubBackend::Remote {
+                authoritative: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn missing_explicit_credential_skips_probe_instead_of_using_global() {
+        let mut settings =
+            configured_settings(&["http://missing-token.lan:8400", "http://fallback.lan:8400"]);
+        let directory = tempfile::tempdir().expect("temporary credential directory");
+        settings.hub_candidates[0].auth = crate::hub_candidates::CandidateAuth::TokenFile(
+            directory
+                .path()
+                .join("absent-token")
+                .to_string_lossy()
+                .into_owned(),
+        );
+        settings.auth_token = Some("local-fixture-token".to_owned());
+        let mut probed = Vec::new();
+        let backend = resolve_configured_hub(&settings, |url| {
+            probed.push(url.to_owned());
+            Some(ProbeInfo::default())
+        });
+        assert_eq!(probed, vec!["http://fallback.lan:8400"]);
+        assert!(matches!(
+            backend,
+            HubBackend::Remote {
+                authoritative: false,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn invalid_configuration_never_enters_local_mode_or_probes() {
+        let mut settings = configured_settings(&[]);
+        settings.hub_config_error = Some("malformed candidates".to_owned());
+        assert!(
+            resolve_configured_hub(&settings, |_| panic!(
+                "invalid config must perform no network request"
+            ))
+            .is_offline()
+        );
+    }
 
     fn urls(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| (*s).to_owned()).collect()

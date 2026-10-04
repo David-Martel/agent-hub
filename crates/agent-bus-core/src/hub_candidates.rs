@@ -6,7 +6,8 @@
 //! and must never receive the on-site hub's token. This module models each
 //! candidate's role and credential source explicitly, and enforces a
 //! fail-closed guard: the global token is never sent to a `cloud` candidate,
-//! nor to an `https` candidate whose host is a public DNS name.
+//! nor to a public HTTP or HTTPS candidate. Unknown request URLs may use
+//! the global token only for the recognized private service-admin endpoints.
 //!
 //! Everything here is pure or takes an injectable [`CredentialEnv`], so the
 //! parsing, the guard and the token selection are unit-testable without
@@ -17,15 +18,16 @@ use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use url::{Host, Url};
 
 /// What a hub candidate is allowed to do.
 ///
 /// Only an [`HubRole::Authoritative`] candidate may grant, renew, release or
 /// resolve exclusive claims. A [`HubRole::Cloud`] candidate is never
 /// authoritative and never receives the global token.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HubRole {
     /// The single claims authority (index 0 unless configured otherwise).
@@ -50,8 +52,12 @@ impl HubRole {
     /// Parse a config value, ASCII-case-insensitively. `None` if unknown.
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
-        let _ = value;
-        todo!("stub")
+        match value.trim().to_ascii_lowercase().as_str() {
+            "authoritative" => Some(Self::Authoritative),
+            "fallback" => Some(Self::Fallback),
+            "cloud" => Some(Self::Cloud),
+            _ => None,
+        }
     }
 }
 
@@ -142,17 +148,18 @@ pub struct SystemEnv;
 
 impl CredentialEnv for SystemEnv {
     fn var(&self, name: &str) -> Option<String> {
-        let _ = name;
-        todo!("stub")
+        std::env::var(name).ok()
     }
 
     fn read_to_string(&self, path: &Path) -> io::Result<String> {
-        let _ = path;
-        todo!("stub")
+        std::fs::read_to_string(path)
     }
 
     fn home_dir(&self) -> Option<PathBuf> {
-        todo!("stub")
+        let name = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        self.var(name)
+            .filter(|value| !value.trim().is_empty())
+            .map(PathBuf::from)
     }
 }
 
@@ -167,8 +174,145 @@ impl CredentialEnv for SystemEnv {
 /// key (a typo must never silently fall back to the global token), both
 /// `token_file` and `token_env`, a blank token reference, or an unknown role.
 pub fn parse_candidate_entries(value: &Value) -> Result<Vec<CandidateSpec>, String> {
-    let _ = value;
-    todo!("stub")
+    let entries = value
+        .as_array()
+        .ok_or("candidate configuration must be an array")?;
+    let mut specs = Vec::with_capacity(entries.len());
+    let mut seen = BTreeMap::<String, CandidateSpec>::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let spec = match entry {
+            Value::String(raw) if raw.trim().is_empty() => continue,
+            Value::String(raw) => CandidateSpec {
+                url: raw.trim().to_owned(),
+                role: None,
+                auth: CandidateAuth::Global,
+            },
+            Value::Object(fields) => parse_candidate_object(fields)
+                .map_err(|error| format!("candidate entry {}: {error}", index + 1))?,
+            _ => {
+                return Err(format!(
+                    "candidate entry {} must be a URL string or object",
+                    index + 1
+                ));
+            }
+        };
+        let parsed = parse_hub_url(&spec.url, false)
+            .map_err(|error| format!("candidate entry {} url: {error}", index + 1))?;
+        let key = base_key(&parsed);
+        if let Some(previous) = seen.get(&key) {
+            if previous.role != spec.role || previous.auth != spec.auth {
+                return Err(format!(
+                    "candidate entry {} conflicts with a duplicate URL",
+                    index + 1
+                ));
+            }
+            continue;
+        }
+        seen.insert(key, spec.clone());
+        specs.push(spec);
+    }
+    Ok(specs)
+}
+
+fn parse_candidate_object(
+    fields: &serde_json::Map<String, Value>,
+) -> Result<CandidateSpec, String> {
+    for name in fields.keys() {
+        if !matches!(name.as_str(), "url" | "role" | "token_file" | "token_env") {
+            return Err(format!("unknown candidate key {name:?}"));
+        }
+    }
+    let url = text_field(fields, "url")?.ok_or("url is required")?;
+    let role = text_field(fields, "role")?
+        .map(|raw| {
+            HubRole::parse(raw).ok_or_else(|| {
+                "unknown role; expected authoritative, fallback, or cloud".to_owned()
+            })
+        })
+        .transpose()?;
+    let file = text_field(fields, "token_file")?;
+    let variable = text_field(fields, "token_env")?;
+    let auth = match (file, variable) {
+        (Some(_), Some(_)) => {
+            return Err("token_file and token_env are mutually exclusive".to_owned());
+        }
+        (Some(path), None) if !path.chars().any(char::is_control) => {
+            CandidateAuth::TokenFile(path.to_owned())
+        }
+        (Some(_), None) => return Err("token_file contains invalid characters".to_owned()),
+        (None, Some(name)) if valid_env_name(name) => CandidateAuth::TokenEnv(name.to_owned()),
+        (None, Some(_)) => return Err("token_env must be an environment variable name".to_owned()),
+        (None, None) => CandidateAuth::Global,
+    };
+    Ok(CandidateSpec {
+        url: url.to_owned(),
+        role,
+        auth,
+    })
+}
+
+fn text_field<'a>(
+    fields: &'a serde_json::Map<String, Value>,
+    name: &str,
+) -> Result<Option<&'a str>, String> {
+    let Some(value) = fields.get(name) else {
+        return Ok(None);
+    };
+    let text = value
+        .as_str()
+        .ok_or_else(|| format!("{name} must be a string"))?
+        .trim();
+    if text.is_empty() {
+        return Err(format!("{name} must not be blank"));
+    }
+    Ok(Some(text))
+}
+
+fn valid_env_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// Parse a base URL without exposing userinfo or query values in diagnostics.
+///
+/// # Errors
+/// Rejects malformed/non-HTTP URLs, userinfo, queries and fragments.
+pub(crate) fn validate_hub_base_url(value: &str) -> Result<(), String> {
+    parse_hub_url(value, false).map(|_| ())
+}
+
+fn parse_hub_url(value: &str, allow_query: bool) -> Result<Url, String> {
+    if value
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Err("URL contains whitespace or control characters".to_owned());
+    }
+    let parsed = Url::parse(value).map_err(|_error| "invalid absolute HTTP URL".to_owned())?;
+    if value
+        .get(..parsed.scheme().len() + 3)
+        .is_none_or(|prefix| prefix.to_ascii_lowercase() != format!("{}://", parsed.scheme()))
+        || value.contains('\\')
+    {
+        return Err("URL must be an absolute HTTP URL without backslashes".to_owned());
+    }
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host().is_none() {
+        return Err("URL must use http or https and include a host".to_owned());
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("URL userinfo is not allowed".to_owned());
+    }
+    if parsed.fragment().is_some() || (!allow_query && parsed.query().is_some()) {
+        return Err("URL fragment or base query is not allowed".to_owned());
+    }
+    Ok(parsed)
+}
+
+fn base_key(url: &Url) -> String {
+    url.as_str().trim_end_matches('/').to_owned()
 }
 
 /// Parse a JSON text with [`parse_candidate_entries`].
@@ -177,8 +321,79 @@ pub fn parse_candidate_entries(value: &Value) -> Result<Vec<CandidateSpec>, Stri
 /// A message when the text is not valid JSON, or any error from
 /// [`parse_candidate_entries`].
 pub fn parse_candidate_json(raw: &str) -> Result<Vec<CandidateSpec>, String> {
-    let _ = raw;
-    todo!("stub")
+    let value: UniqueJson =
+        serde_json::from_str(raw).map_err(|_error| "invalid candidate JSON".to_owned())?;
+    parse_candidate_entries(&value.0)
+}
+
+/// Preserve JSON's value shape while rejecting duplicate object keys.
+#[derive(Debug)]
+struct UniqueJson(Value);
+
+/// Deserialize optional candidate configuration without duplicate object keys.
+pub(crate) fn deserialize_candidate_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Option::<UniqueJson>::deserialize(deserializer).map(|value| value.map(|value| value.0))
+}
+
+impl<'de> Deserialize<'de> for UniqueJson {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = UniqueJson;
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("JSON with unique object keys")
+            }
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(UniqueJson(Value::Bool(value)))
+            }
+            fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(UniqueJson(Value::from(value)))
+            }
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(UniqueJson(Value::from(value)))
+            }
+            fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Self::Value, E> {
+                serde_json::Number::from_f64(value)
+                    .map(|number| UniqueJson(Value::Number(number)))
+                    .ok_or_else(|| E::custom("invalid JSON number"))
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(UniqueJson(Value::String(value.to_owned())))
+            }
+            fn visit_string<E: serde::de::Error>(self, value: String) -> Result<Self::Value, E> {
+                Ok(UniqueJson(Value::String(value)))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(UniqueJson(Value::Null))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut sequence: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = Vec::new();
+                while let Some(value) = sequence.next_element::<UniqueJson>()? {
+                    values.push(value.0);
+                }
+                Ok(UniqueJson(Value::Array(values)))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut values = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if values.contains_key(&key) {
+                        return Err(serde::de::Error::custom("duplicate JSON object key"));
+                    }
+                    values.insert(key, map.next_value::<UniqueJson>()?.0);
+                }
+                Ok(UniqueJson(Value::Object(values)))
+            }
+        }
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 /// Combine the ordered URL list with the explicit per-URL specs into
@@ -189,8 +404,27 @@ pub fn build_candidates(
     urls: &[String],
     specs: &BTreeMap<String, CandidateSpec>,
 ) -> Vec<HubCandidate> {
-    let _ = (urls, specs);
-    todo!("stub")
+    urls.iter()
+        .enumerate()
+        .map(|(index, url)| {
+            let spec = specs.get(url).or_else(|| {
+                let parsed = parse_hub_url(url, false).ok()?;
+                specs.values().find(|spec| {
+                    parse_hub_url(&spec.url, false)
+                        .is_ok_and(|other| base_key(&parsed) == base_key(&other))
+                })
+            });
+            HubCandidate {
+                url: url.clone(),
+                role: spec.and_then(|spec| spec.role).unwrap_or(if index == 0 {
+                    HubRole::Authoritative
+                } else {
+                    HubRole::Fallback
+                }),
+                auth: spec.map_or(CandidateAuth::Global, |spec| spec.auth.clone()),
+            }
+        })
+        .collect()
 }
 
 /// Reject configurations with more than one authoritative candidate: exactly
@@ -199,8 +433,25 @@ pub fn build_candidates(
 /// # Errors
 /// A message naming every authoritative candidate when there is more than one.
 pub fn validate_candidates(candidates: &[HubCandidate]) -> Result<(), String> {
-    let _ = candidates;
-    todo!("stub")
+    let mut urls = std::collections::BTreeSet::new();
+    for candidate in candidates {
+        let url = parse_hub_url(&candidate.url, false)?;
+        if !urls.insert(base_key(&url)) {
+            return Err("duplicate canonical hub URL".to_owned());
+        }
+    }
+    let authorities: Vec<&str> = candidates
+        .iter()
+        .filter(|candidate| candidate.role == HubRole::Authoritative)
+        .map(|candidate| candidate.url.as_str())
+        .collect();
+    if authorities.len() > 1 {
+        return Err(format!(
+            "multiple authoritative candidates: {}",
+            authorities.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 /// `true` when `url` is `https` and its host is a public DNS name or public
@@ -210,8 +461,72 @@ pub fn validate_candidates(candidates: &[HubCandidate]) -> Result<(), String> {
 /// `https` URL whose host cannot be determined counts as public.
 #[must_use]
 pub fn is_public_https_target(url: &str) -> bool {
-    let _ = url;
-    todo!("stub")
+    let Ok(parsed) = Url::parse(url) else {
+        return url.trim().to_ascii_lowercase().starts_with("https:");
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    public_host(&parsed)
+}
+
+fn public_host(parsed: &Url) -> bool {
+    match parsed.host() {
+        Some(Host::Ipv4(address)) => !private_ipv4(address),
+        Some(Host::Ipv6(address)) => {
+            let first = address.segments()[0];
+            !(address.is_loopback()
+                || address.is_unspecified()
+                || first & 0xfe00 == 0xfc00
+                || first & 0xffc0 == 0xfe80
+                || address.to_ipv4_mapped().is_some_and(private_ipv4))
+        }
+        Some(Host::Domain(host)) => {
+            let host = host.trim_end_matches('.').to_ascii_lowercase();
+            host.contains('.')
+                && host != "home.arpa"
+                && ![".localhost", ".lan", ".local", ".internal", ".home.arpa"]
+                    .iter()
+                    .any(|suffix| host.ends_with(suffix))
+        }
+        None => true,
+    }
+}
+
+fn private_ipv4(address: std::net::Ipv4Addr) -> bool {
+    let octets = address.octets();
+    address.is_private()
+        || address.is_loopback()
+        || address.is_link_local()
+        || address.is_unspecified()
+        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
+}
+
+fn token_value(raw: &str) -> Result<BearerToken, SkipReason> {
+    let token = raw.trim();
+    let body = token.trim_end_matches('=');
+    if body.is_empty()
+        || !body
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-._~+/".contains(&byte))
+    {
+        return Err(SkipReason("credential is empty or malformed".to_owned()));
+    }
+    Ok(BearerToken::new(token))
+}
+
+fn expanded_token_path(value: &str, env: &dyn CredentialEnv) -> Result<PathBuf, SkipReason> {
+    if value == "~" || value.starts_with("~/") || value.starts_with("~\\") {
+        let home = env
+            .home_dir()
+            .ok_or_else(|| SkipReason("cannot expand ~ without a home directory".to_owned()))?;
+        return Ok(if value == "~" {
+            home
+        } else {
+            home.join(&value[2..])
+        });
+    }
+    Ok(PathBuf::from(value))
 }
 
 impl HubCandidate {
@@ -231,8 +546,44 @@ impl HubCandidate {
         global: Option<&str>,
         env: &dyn CredentialEnv,
     ) -> Result<Option<BearerToken>, SkipReason> {
-        let _ = (global, env);
-        todo!("stub")
+        validate_hub_base_url(&self.url).map_err(SkipReason)?;
+        match &self.auth {
+            CandidateAuth::Global => {
+                if self.role == HubRole::Cloud
+                    || public_host(&parse_hub_url(&self.url, false).map_err(SkipReason)?)
+                {
+                    return Err(SkipReason("candidate requires its own token_file or token_env; global credentials are forbidden".to_owned()));
+                }
+                global
+                    .filter(|raw| !raw.trim().is_empty())
+                    .map(token_value)
+                    .transpose()
+            }
+            CandidateAuth::TokenFile(path) => {
+                if path.trim().is_empty() || path.chars().any(char::is_control) {
+                    return Err(SkipReason("invalid token_file reference".to_owned()));
+                }
+                let expanded = expanded_token_path(path, env)?;
+                let raw = env.read_to_string(&expanded).map_err(|error| {
+                    SkipReason(format!(
+                        "cannot read token_file {path:?}: {:?}",
+                        error.kind()
+                    ))
+                })?;
+                token_value(&raw).map(Some)
+            }
+            CandidateAuth::TokenEnv(name) => {
+                if !valid_env_name(name) {
+                    return Err(SkipReason("invalid token_env reference".to_owned()));
+                }
+                let raw = env
+                    .var(name)
+                    .ok_or_else(|| SkipReason(format!("token_env {name} is not set")))?;
+                token_value(&raw)
+                    .map(Some)
+                    .map_err(|_error| SkipReason(format!("token_env {name} is empty or malformed")))
+            }
+        }
     }
 }
 
@@ -279,9 +630,9 @@ impl HubAuth {
     }
 
     /// Token for a request URL: the candidate whose base URL the request
-    /// falls under (longest match), else legacy string-entry semantics (the
-    /// global token, still subject to the guard) for URLs that belong to no
-    /// candidate, such as the local service-admin endpoints.
+    /// falls under (longest match). Unmatched URLs may carry the global
+    /// token only at private `/admin/service`, `/admin/service/control`,
+    /// or `/health` endpoints.
     ///
     /// # Errors
     /// [`SkipReason`] when the request must not carry any token.
@@ -290,8 +641,52 @@ impl HubAuth {
         url: &str,
         env: &dyn CredentialEnv,
     ) -> Result<Option<BearerToken>, SkipReason> {
-        let _ = (url, env);
-        todo!("stub")
+        let request = parse_hub_url(url, true).map_err(SkipReason)?;
+        let mut matching = None;
+        let mut longest = 0;
+        for candidate in &self.candidates {
+            let base = parse_hub_url(&candidate.url, false).map_err(SkipReason)?;
+            let path = base.path().trim_end_matches('/');
+            let request_path = request.path();
+            if base.origin() == request.origin()
+                && (path.is_empty()
+                    || request_path == path
+                    || request_path
+                        .strip_prefix(path)
+                        .is_some_and(|suffix| suffix.starts_with('/')))
+            {
+                if matching.is_some() && path.len() == longest {
+                    return Err(SkipReason("ambiguous canonical hub URL match".to_owned()));
+                }
+                if matching.is_none() || path.len() > longest {
+                    matching = Some(candidate);
+                    longest = path.len();
+                }
+            }
+        }
+        if let Some(candidate) = matching {
+            return self.credential_for(candidate, env);
+        }
+        if public_host(&request)
+            || !matches!(
+                request.path(),
+                "/admin/service" | "/admin/service/control" | "/health"
+            )
+        {
+            return Err(SkipReason(
+                "unmatched request URL is not a private service endpoint".to_owned(),
+            ));
+        }
+        HubCandidate {
+            url: format!(
+                "{}{}",
+                request.origin().ascii_serialization(),
+                request.path()
+            ),
+            role: HubRole::Fallback,
+            auth: CandidateAuth::Global,
+        }
+        .authorization(self.global.as_deref(), env)
     }
 }
 
@@ -302,6 +697,124 @@ mod tests {
     use std::collections::HashMap;
 
     const GLOBAL: &str = "global-sekret-token";
+
+    #[test]
+    fn duplicate_fields_and_conflicting_canonical_candidates_are_rejected() {
+        #[derive(Debug, Deserialize)]
+        struct Config {
+            #[serde(default, deserialize_with = "deserialize_candidate_value")]
+            server_urls: Option<Value>,
+        }
+        for raw in [
+            r#"[{"url":"http://hub.lan","url":"http://other.lan"}]"#,
+            r#"[{"url":"http://hub.lan","token_env":"A","token_env":"B"}]"#,
+            r#"[{"url":"http://HUB.lan:80/","token_env":"A"},{"url":"http://hub.lan","token_env":"B"}]"#,
+        ] {
+            assert!(parse_candidate_json(raw).is_err(), "{raw}");
+        }
+        assert!(
+            serde_json::from_str::<Config>(
+                r#"{"server_urls":[{"url":"http://hub.lan","role":"fallback","role":"cloud"}]}"#
+            )
+            .is_err()
+        );
+        let config: Config =
+            serde_json::from_str(r#"{"server_urls":["http://hub.lan"]}"#).expect("valid config");
+        assert_eq!(
+            parse_candidate_entries(config.server_urls.as_ref().expect("urls")).expect("parse")[0]
+                .url,
+            "http://hub.lan"
+        );
+        assert!(
+            serde_json::from_str::<Config>("{}")
+                .expect("absent")
+                .server_urls
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn unsafe_urls_and_role_diagnostics_never_echo_supplied_secrets() {
+        for url in [
+            "http://user:secret@hub.lan",
+            "https://hub.lan/?token=secret",
+            "http://hub.lan/#secret",
+            "file:///secret",
+            "http:hub.lan",
+            "http://hub.lan\\secret",
+        ] {
+            let raw = serde_json::json!([{ "url": url }]);
+            let error = parse_candidate_entries(&raw).expect_err("unsafe URL");
+            assert!(!error.contains("secret"), "{error}");
+        }
+        let error = parse_candidate_json(r#"[{"url":"http://hub.lan","role":"secret-role"}]"#)
+            .expect_err("unknown role");
+        assert!(!error.contains("secret-role"));
+    }
+
+    #[test]
+    fn public_http_and_unrecognized_private_endpoints_cannot_receive_global_credentials() {
+        let env = FakeEnv::default();
+        let auth = HubAuth::new(Some(GLOBAL.to_owned()), Vec::new());
+        for url in [
+            "http://example.com/health",
+            "https://example.com/health",
+            "http://localhost:8400/messages",
+            "http://localhost:8400/admin/service/extra",
+        ] {
+            assert!(auth.credential_for_url(url, &env).is_err(), "{url}");
+        }
+        for url in [
+            "http://localhost:8400/health",
+            "http://hub.lan/admin/service",
+            "https://10.0.0.1/admin/service/control",
+        ] {
+            assert_eq!(
+                auth.credential_for_url(url, &env)
+                    .expect("private endpoint")
+                    .expect("token")
+                    .expose(),
+                GLOBAL
+            );
+        }
+        assert!(
+            candidate(
+                "http://example.com",
+                HubRole::Fallback,
+                CandidateAuth::Global
+            )
+            .authorization(Some(GLOBAL), &env)
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn configured_path_prefix_requires_a_segment_boundary_and_parsed_origin() {
+        let mut env = FakeEnv::default();
+        env.vars.insert("OWN".to_owned(), "own-token".to_owned());
+        let auth = HubAuth::new(
+            Some(GLOBAL.to_owned()),
+            vec![candidate(
+                "http://HUB.lan:80/sub/",
+                HubRole::Fallback,
+                CandidateAuth::TokenEnv("OWN".to_owned()),
+            )],
+        );
+        assert_eq!(
+            auth.credential_for_url("http://hub.lan/sub/health?x=1", &env)
+                .expect("match")
+                .expect("own token")
+                .expose(),
+            "own-token"
+        );
+        for url in [
+            "http://hub.lan/submarine",
+            "http://hub.lan:81/sub/health",
+            "http://hub.lan.evil/sub/health",
+        ] {
+            assert!(auth.credential_for_url(url, &env).is_err(), "{url}");
+        }
+    }
 
     /// In-memory environment recording every file path it was asked to read.
     #[derive(Default)]
@@ -493,7 +1006,11 @@ mod tests {
     #[test]
     fn unknown_role_is_rejected_and_lists_the_valid_ones() {
         let err = parse(r#"[{"url": "http://a:8400", "role": "primary"}]"#).expect_err("role");
-        assert!(err.contains("primary"), "{err}");
+        assert!(err.contains("unknown role"), "{err}");
+        assert!(
+            !err.contains("primary"),
+            "untrusted role is redacted: {err}"
+        );
         assert!(
             err.contains("authoritative") && err.contains("fallback") && err.contains("cloud"),
             "{err}"
@@ -977,12 +1494,20 @@ mod tests {
     #[test]
     fn a_base_url_only_matches_at_a_path_boundary() {
         let (auth, env) = roaming_auth();
-        // "http://a.lan:8400" must not claim "http://a.lan:84001/..." (a
-        // different host:port that merely shares a prefix) -- that URL
-        // belongs to no candidate, so legacy semantics apply (global token).
+        // A valid different port must not inherit the configured origin's
+        // credential. Only recognized private service endpoints fall back.
         assert_eq!(
-            token_for(&auth, &env, "http://a.lan:84001/x").as_deref(),
+            token_for(&auth, &env, "http://a.lan:840/admin/service").as_deref(),
             Some(GLOBAL)
+        );
+        assert!(
+            auth.credential_for_url("http://a.lan:84001/x", &env)
+                .is_err(),
+            "port 84001 is invalid"
+        );
+        assert!(
+            auth.credential_for_url("http://a.lan:840/x", &env).is_err(),
+            "unmatched non-service path is denied"
         );
         assert_eq!(
             token_for(&auth, &env, "http://b.lan:8400").as_deref(),

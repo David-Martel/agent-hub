@@ -11,11 +11,30 @@
 //! every failure (unwritable directory, corrupt file, concurrent writer) is
 //! non-fatal: the cache is an optimisation, never a dependency.
 
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use crate::hub_candidates::{CredentialEnv, HubCandidate, HubRole};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::hub_candidates::{
+    CandidateAuth, CredentialEnv, HubCandidate, HubRole, validate_hub_base_url,
+};
+
+const CACHE_VERSION: u32 = 1;
+const MAX_CACHE_BYTES: u64 = 131_072;
+const HEX: &[u8; 16] = b"0123456789abcdef";
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CacheEntry {
+    version: u32,
+    fingerprint: String,
+    url: String,
+    role: HubRole,
+    resolved_at_unix_ms: u64,
+}
 
 /// Default time-to-live of a cached resolution, in seconds.
 pub const DEFAULT_TTL_SECONDS: u64 = 60;
@@ -82,8 +101,35 @@ impl HubCache {
     /// wrong-version, mismatched or future-dated entry is a miss.
     #[must_use]
     pub fn load(&self, fingerprint: &str, now: SystemTime) -> Option<CachedHub> {
-        let _ = (fingerprint, now);
-        todo!("stub")
+        if !self.enabled() {
+            return None;
+        }
+        let file = std::fs::File::open(&self.path).ok()?;
+        let mut bytes = Vec::new();
+        file.take(MAX_CACHE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .ok()?;
+        if bytes.len() as u64 > MAX_CACHE_BYTES {
+            return None;
+        }
+        let entry: CacheEntry = serde_json::from_slice(&bytes).ok()?;
+        if entry.version != CACHE_VERSION
+            || entry.fingerprint != fingerprint
+            || validate_hub_base_url(&entry.url).is_err()
+        {
+            return None;
+        }
+        let resolved =
+            SystemTime::UNIX_EPOCH.checked_add(Duration::from_millis(entry.resolved_at_unix_ms))?;
+        let age = now.duration_since(resolved).ok()?;
+        if age >= self.ttl {
+            return None;
+        }
+        Some(CachedHub {
+            url: entry.url,
+            role: entry.role,
+            age,
+        })
     }
 
     /// Record `url` as the last good hub for `fingerprint`. A no-op when the
@@ -98,13 +144,70 @@ impl HubCache {
         role: HubRole,
         now: SystemTime,
     ) -> io::Result<()> {
-        let _ = (fingerprint, url, role, now);
-        todo!("stub")
+        if !self.enabled() {
+            return Ok(());
+        }
+        validate_hub_base_url(url)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        let elapsed = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_err(|_error| {
+                io::Error::new(io::ErrorKind::InvalidInput, "cache time precedes epoch")
+            })?;
+        let timestamp = u64::try_from(elapsed.as_millis()).map_err(|_error| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "cache time exceeds supported range",
+            )
+        })?;
+        let leaf = self
+            .path
+            .file_name()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "cache needs a filename"))?;
+        if cfg!(windows) && reserved_windows_leaf(&leaf.to_string_lossy()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "reserved cache filename",
+            ));
+        }
+        let parent = self
+            .path
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let temporary = parent.join(format!(".hub-resolution-{}.tmp", uuid::Uuid::new_v4()));
+        let entry = CacheEntry {
+            version: CACHE_VERSION,
+            fingerprint: fingerprint.to_owned(),
+            url: url.to_owned(),
+            role,
+            resolved_at_unix_ms: timestamp,
+        };
+        let bytes = serde_json::to_vec(&entry).map_err(io::Error::other)?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        let cleanup = TemporaryCacheFile(temporary.clone());
+        let write_result = file.write_all(&bytes).and_then(|()| file.sync_all());
+        drop(file);
+        write_result?;
+        std::fs::rename(&temporary, &self.path)?;
+        drop(cleanup);
+        Ok(())
     }
 
     /// Delete the cache file. Absence is not an error.
     pub fn invalidate(&self) {
-        todo!("stub")
+        if !self.enabled() {
+            return;
+        }
+        if let Err(error) = std::fs::remove_file(&self.path)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::debug!(kind = ?error.kind(), "hub cache invalidation failed");
+        }
     }
 }
 
@@ -113,29 +216,184 @@ impl HubCache {
 /// cache. It is a hash, and it never covers a token value.
 #[must_use]
 pub fn candidates_fingerprint(candidates: &[HubCandidate]) -> String {
-    let _ = candidates;
-    todo!("stub")
+    fn field(hash: &mut Sha256, bytes: &[u8]) {
+        hash.update((bytes.len() as u64).to_le_bytes());
+        hash.update(bytes);
+    }
+    let mut hash = Sha256::new();
+    field(&mut hash, b"agent-bus-hub-candidates-v1");
+    for candidate in candidates {
+        field(&mut hash, candidate.url.as_bytes());
+        field(&mut hash, candidate.role.as_str().as_bytes());
+        match &candidate.auth {
+            CandidateAuth::Global => field(&mut hash, b"global"),
+            CandidateAuth::TokenFile(path) => {
+                field(&mut hash, b"file");
+                field(&mut hash, path.as_bytes());
+            }
+            CandidateAuth::TokenEnv(name) => {
+                field(&mut hash, b"env");
+                field(&mut hash, name.as_bytes());
+            }
+        }
+    }
+    hash.finalize()
+        .iter()
+        .flat_map(|byte| {
+            [
+                char::from(HEX[usize::from(byte >> 4)]),
+                char::from(HEX[usize::from(byte & 15)]),
+            ]
+        })
+        .collect()
 }
 
 /// The default cache file location: `AGENT_BUS_HUB_CACHE_FILE` when set,
 /// else `<platform cache dir>/agent-bus/hub-resolution.json`.
 #[must_use]
 pub fn default_cache_path(os: CacheOs, env: &dyn CredentialEnv) -> Option<PathBuf> {
-    let _ = (os, env);
-    todo!("stub")
+    let nonblank = |name: &str| {
+        env.var(name)
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| PathBuf::from(value.trim()))
+    };
+    if let Some(path) = nonblank("AGENT_BUS_HUB_CACHE_FILE") {
+        return Some(path);
+    }
+    let root = match os {
+        CacheOs::Windows => nonblank("LOCALAPPDATA").or_else(|| {
+            env.home_dir()
+                .map(|home| home.join("AppData").join("Local"))
+        }),
+        CacheOs::MacOs => env
+            .home_dir()
+            .map(|home| home.join("Library").join("Caches")),
+        CacheOs::Unix => nonblank("XDG_CACHE_HOME")
+            // Interpret XDG paths with Unix semantics even when callers are
+            // inspecting another platform's configuration from Windows.
+            .filter(|path| path.as_os_str().to_string_lossy().starts_with('/'))
+            .or_else(|| env.home_dir().map(|home| home.join(".cache"))),
+    }?;
+    Some(root.join("agent-bus").join("hub-resolution.json"))
+}
+
+fn reserved_windows_leaf(leaf: &str) -> bool {
+    let trimmed = leaf.trim_end_matches(['.', ' ']);
+    let stem = trimmed.split('.').next().unwrap_or("").to_ascii_uppercase();
+    matches!(stem.as_str(), "$NULL" | "AUX" | "CON" | "NUL" | "PRN")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+}
+
+#[derive(Debug)]
+struct TemporaryCacheFile(PathBuf);
+
+impl Drop for TemporaryCacheFile {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.0)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            tracing::debug!(kind = ?error.kind(), "hub cache temporary cleanup failed");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hub_candidates::CandidateAuth;
     use std::collections::HashMap;
     use std::path::Path;
 
     const TTL: Duration = Duration::from_secs(60);
 
+    #[test]
+    fn invalid_store_inputs_do_not_create_cache_directories() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = cache_in(&dir, TTL);
+        for url in [
+            "http://user:secret@hub.lan",
+            "http://hub.lan/?secret=1",
+            "file:///secret",
+        ] {
+            assert!(cache.store("fp", url, HubRole::Fallback, t0()).is_err());
+            assert!(!cache.path.parent().expect("parent").exists());
+        }
+        assert!(
+            cache
+                .store(
+                    "fp",
+                    "http://hub.lan",
+                    HubRole::Fallback,
+                    SystemTime::UNIX_EPOCH - Duration::from_secs(1)
+                )
+                .is_err()
+        );
+        assert!(!cache.path.parent().expect("parent").exists());
+    }
+
+    #[test]
+    fn failed_atomic_replacement_preserves_destination_and_removes_owned_temporary_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = cache_in(&dir, TTL);
+        std::fs::create_dir_all(&cache.path).expect("directory destination");
+        let marker = cache.path.join("preserved");
+        std::fs::write(&marker, b"owned-by-another-object").expect("marker");
+        assert!(
+            cache
+                .store("fp", "http://hub.lan", HubRole::Fallback, t0())
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(&marker).expect("preserved"),
+            b"owned-by-another-object"
+        );
+        let entries: Vec<_> = std::fs::read_dir(cache.path.parent().expect("parent"))
+            .expect("list")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        assert_eq!(
+            entries,
+            vec![std::ffi::OsString::from("hub-resolution.json")]
+        );
+    }
+
+    #[test]
+    fn oversized_unknown_field_duplicate_field_and_unsafe_url_cache_entries_are_misses() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = cache_in(&dir, TTL);
+        cache
+            .store("fp", "http://hub.lan", HubRole::Fallback, t0())
+            .expect("seed");
+        let original = std::fs::read_to_string(&cache.path).expect("read");
+        let mut entry: serde_json::Value = serde_json::from_str(&original).expect("json");
+        entry["url"] = serde_json::Value::String("http://user:secret@hub.lan".to_owned());
+        let unsafe_url = serde_json::to_string(&entry).expect("serialize");
+        let unknown = original.replacen('{', "{\"unknown\":1,", 1);
+        let duplicate = original.replacen('{', "{\"version\":1,", 1);
+        for text in [
+            unsafe_url,
+            unknown,
+            duplicate,
+            " ".repeat(usize::try_from(MAX_CACHE_BYTES + 1).expect("small size")),
+        ] {
+            std::fs::write(&cache.path, text).expect("write");
+            assert!(cache.load("fp", t0()).is_none());
+        }
+    }
+
+    #[test]
+    fn disabled_invalidation_leaves_existing_cache_untouched() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = cache_in(&dir, Duration::ZERO);
+        std::fs::create_dir_all(cache.path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&cache.path, b"untouched").expect("seed");
+        cache.invalidate();
+        assert_eq!(std::fs::read(&cache.path).expect("read"), b"untouched");
+    }
+
     fn t0() -> SystemTime {
-        SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000)
+        SystemTime::UNIX_EPOCH + Duration::from_hours(500_000)
     }
 
     fn cache_in(dir: &tempfile::TempDir, ttl: Duration) -> HubCache {
@@ -475,6 +733,12 @@ mod tests {
             default_cache_path(CacheOs::Unix, &relative),
             Some(PathBuf::from("/home/u/.cache").join(tail())),
             "a relative XDG_CACHE_HOME is ignored per the XDG spec"
+        );
+        let windows_path = env_with(&[("XDG_CACHE_HOME", "C:/cache")], Some("/home/u"));
+        assert_eq!(
+            default_cache_path(CacheOs::Unix, &windows_path),
+            Some(PathBuf::from("/home/u/.cache").join(tail())),
+            "a Windows drive path is not an absolute Unix XDG path"
         );
     }
 

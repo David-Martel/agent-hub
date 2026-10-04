@@ -9,20 +9,22 @@
 //! HTTP client directly from a runtime worker thread would panic
 //! ("Cannot start a runtime from within a runtime").
 //!
-//! Credentials (the bearer token) are read once from [`Settings`] at
-//! construction — never accepted as an inline MCP argument — matching the
-//! issue's requirement that credentials load from env/config only.
+//! Candidate credentials are resolved for each request from startup configuration,
+//! never accepted as inline MCP arguments or attached as client default headers.
 
-use std::sync::OnceLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use agent_bus_core::error::{AgentBusError, Result};
 use agent_bus_core::hub::ProbeInfo;
+use agent_bus_core::hub::invalidate_configured_cache;
+use agent_bus_core::hub_candidates::{HubAuth, SystemEnv};
 use agent_bus_core::remote_dispatch::RemoteMcpTransport;
 use agent_bus_core::settings::Settings;
+use agent_bus_core::settings::redact_url;
 use serde_json::{Map, Value};
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Process-wide `reqwest::Client`, built once and cheaply cloned by every
@@ -32,46 +34,82 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// `Clone` + internally `Arc`'d (connection pool, TLS config), so sharing one
 /// avoids rebuilding the TLS stack and a fresh connection pool per call.
 ///
-/// Deliberately does NOT carry the bearer token (unlike `SERVER_CLIENT`,
-/// which bakes it into default headers): [`HttpMcpTransport`] keeps
-/// `auth_token` per-instance and attaches it per-request via
+/// Deliberately does NOT carry bearer tokens: [`HttpMcpTransport`] keeps
+/// candidate configuration per-instance and attaches credentials per-request via
 /// [`HttpMcpTransport::authed`], because tests in this module construct
 /// transports with different tokens in the same process — baking the token
 /// into the shared client would make the first-constructed token "stick"
 /// for every later instance.
-static SHARED_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+type ClientResult = std::result::Result<reqwest::Client, String>;
+static SHARED_CLIENTS: OnceLock<Mutex<HashMap<u64, ClientResult>>> = OnceLock::new();
 
-fn shared_client() -> reqwest::Client {
-    SHARED_CLIENT
-        .get_or_init(|| {
+fn shared_client(connect_timeout_ms: u64) -> ClientResult {
+    let mut clients = SHARED_CLIENTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_error| "guarded HTTP client cache lock poisoned".to_owned())?;
+    clients
+        .entry(connect_timeout_ms)
+        .or_insert_with(|| {
             reqwest::Client::builder()
-                .connect_timeout(CONNECT_TIMEOUT)
+                .connect_timeout(Duration::from_millis(connect_timeout_ms))
                 .timeout(REQUEST_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
-                .unwrap_or_else(|_| reqwest::Client::new())
+                .map_err(|error| format!("failed to build guarded hub HTTP client: {error}"))
         })
         .clone()
 }
 
 /// Reqwest-backed [`RemoteMcpTransport`] for the stdio MCP server.
 pub(crate) struct HttpMcpTransport {
-    client: reqwest::Client,
-    auth_token: Option<String>,
+    client: ClientResult,
+    settings: Settings,
 }
 
 impl HttpMcpTransport {
     pub(crate) fn new(settings: &Settings) -> Self {
         Self {
-            client: shared_client(),
-            auth_token: settings.auth_token.clone(),
+            client: shared_client(settings.probe_connect_timeout_ms),
+            settings: settings.clone(),
         }
     }
 
-    fn authed(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.auth_token {
-            Some(token) if !token.trim().is_empty() => builder.bearer_auth(token),
-            _ => builder,
+    fn client(&self) -> Result<&reqwest::Client> {
+        self.client
+            .as_ref()
+            .map_err(|error| AgentBusError::Internal(error.clone()))
+    }
+
+    fn authed(
+        &self,
+        url: &str,
+        builder: reqwest::RequestBuilder,
+    ) -> Result<reqwest::RequestBuilder> {
+        if let Some(error) = &self.settings.hub_config_error {
+            return Err(AgentBusError::InvalidParams(format!(
+                "invalid hub candidate configuration: {error}"
+            )));
         }
+        if !(1..=30_000).contains(&self.settings.probe_connect_timeout_ms) {
+            return Err(AgentBusError::InvalidParams(
+                "probe_connect_timeout_ms must be between 1 and 30000".to_owned(),
+            ));
+        }
+        let auth = HubAuth::new(
+            self.settings.auth_token.clone(),
+            self.settings.effective_hub_candidates(),
+        );
+        let token = auth.credential_for_url(url, &SystemEnv).map_err(|reason| {
+            AgentBusError::InvalidParams(format!(
+                "refusing request to {}: {reason}",
+                redact_url(url)
+            ))
+        })?;
+        Ok(match token {
+            Some(token) => builder.bearer_auth(token.expose()),
+            None => builder,
+        })
     }
 }
 
@@ -97,8 +135,13 @@ fn run_future<T>(future: impl Future<Output = T>) -> T {
 impl RemoteMcpTransport for HttpMcpTransport {
     fn probe_health(&self, url: &str) -> Option<ProbeInfo> {
         run_future(async {
+            let health_url = format!("{url}/health");
             let response = self
-                .authed(self.client.get(format!("{url}/health")))
+                .authed(&health_url, self.client().ok()?.get(&health_url))
+                .ok()?
+                .timeout(Duration::from_millis(
+                    self.settings.probe_connect_timeout_ms,
+                ))
                 .send()
                 .await
                 .ok()?;
@@ -123,57 +166,140 @@ impl RemoteMcpTransport for HttpMcpTransport {
                 "method": "tools/call",
                 "params": {"name": name, "arguments": args},
             });
-            let response = self
-                .authed(self.client.post(format!("{url}/mcp")))
+            let client = self.client()?;
+            let request = self
+                .authed(&format!("{url}/mcp"), client.post(format!("{url}/mcp")))?
                 .json(&request_body)
-                .send()
+                .build()
+                .map_err(|error| {
+                    AgentBusError::Internal(format!("failed to build guarded MCP request: {error}"))
+                })?;
+            let sent_token = request
+                .headers()
+                .get(reqwest::header::AUTHORIZATION)
+                .and_then(|header| header.to_str().ok())
+                .and_then(|header| header.strip_prefix("Bearer "))
+                .map(str::to_owned);
+            let url = redact_url(url);
+            let response = client
+                .execute(request)
                 .await
+                .inspect_err(|_| invalidate_configured_cache(&self.settings))
                 .map_err(|e| {
                     AgentBusError::Internal(format!(
-                        "remote hub {url} unreachable for '{name}': {e}"
+                        "remote hub {url} unreachable for '{name}': {}",
+                        redact_sent_token(&e.to_string(), sent_token.as_deref())
                     ))
                 })?;
 
-            let status = response.status();
-            let body: Value = response.json().await.map_err(|e| {
+            decode_tool_response(response, &url, name, sent_token.as_deref())
+                .await
+                .inspect_err(|_| invalidate_configured_cache(&self.settings))
+        })
+    }
+}
+
+async fn decode_tool_response(
+    response: reqwest::Response,
+    url: &str,
+    name: &str,
+    sent_token: Option<&str>,
+) -> Result<Value> {
+    let status = response.status();
+    if matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    ) {
+        return Err(AgentBusError::Internal(format!(
+            "remote hub {url} returned HTTP {status} for '{name}': candidate credential rejected; check this candidate's token_file/token_env configuration"
+        )));
+    }
+    if status == reqwest::StatusCode::NOT_IMPLEMENTED {
+        return Err(AgentBusError::Internal(format!(
+            "remote hub {url} returned HTTP 501 for '{name}': HTTP MCP is not implemented by this hub tier"
+        )));
+    }
+    let body: Value = response.json().await.map_err(|e| {
+        AgentBusError::Internal(format!(
+            "remote hub {url} returned a non-JSON response for '{name}' (HTTP {status}): {}",
+            redact_sent_token(&e.to_string(), sent_token)
+        ))
+    })?;
+
+    if let Some(error) = body.get("error") {
+        return Err(AgentBusError::Internal(format!(
+            "remote hub {url} rejected '{name}': {}",
+            redact_json_body(error, sent_token)
+        )));
+    }
+    if !status.is_success() {
+        return Err(AgentBusError::Internal(format!(
+            "remote hub {url} returned HTTP {status} for '{name}': {}",
+            redact_json_body(&body, sent_token)
+        )));
+    }
+
+    // The hub's /mcp bridge wraps the tool's JSON result as a
+    // stringified `content[0].text` block (see
+    // `dispatch_mcp_method` in agent-bus-http's http.rs) to match
+    // the MCP tools/call response shape. Unwrap it back to a value.
+    unwrap_tool_result(&body, url, name, sent_token)
+}
+
+fn unwrap_tool_result(
+    body: &Value,
+    url: &str,
+    name: &str,
+    sent_token: Option<&str>,
+) -> Result<Value> {
+    let text = body
+        .get("result")
+        .and_then(|r| r.get("content"))
+        .and_then(|c| c.get(0))
+        .and_then(|block| block.get("text"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            AgentBusError::Internal(format!(
+                "remote hub {url} returned an unexpected tools/call shape for '{name}': {}",
+                redact_json_body(body, sent_token)
+            ))
+        })?;
+
+    serde_json::from_str(text).map_err(|e| {
                 AgentBusError::Internal(format!(
-                    "remote hub {url} returned a non-JSON response for '{name}' (HTTP {status}): {e}"
-                ))
-            })?;
-
-            if let Some(error) = body.get("error") {
-                return Err(AgentBusError::Internal(format!(
-                    "remote hub {url} rejected '{name}': {error}"
-                )));
-            }
-            if !status.is_success() {
-                return Err(AgentBusError::Internal(format!(
-                    "remote hub {url} returned HTTP {status} for '{name}': {body}"
-                )));
-            }
-
-            // The hub's /mcp bridge wraps the tool's JSON result as a
-            // stringified `content[0].text` block (see
-            // `dispatch_mcp_method` in agent-bus-http's http.rs) to match
-            // the MCP tools/call response shape. Unwrap it back to a value.
-            let text = body
-                .get("result")
-                .and_then(|r| r.get("content"))
-                .and_then(|c| c.get(0))
-                .and_then(|block| block.get("text"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| {
-                    AgentBusError::Internal(format!(
-                        "remote hub {url} returned an unexpected tools/call shape for '{name}': {body}"
-                    ))
-                })?;
-
-            serde_json::from_str(text).map_err(|e| {
-                AgentBusError::Internal(format!(
-                    "remote hub {url} returned unparseable tool result for '{name}': {e}"
+                    "remote hub {url} returned unparseable tool result for '{name}' (line {}, column {}); response body omitted", e.line(), e.column()
                 ))
             })
-        })
+}
+
+fn redact_sent_token(text: &str, sent_token: Option<&str>) -> String {
+    match sent_token.filter(|token| !token.is_empty()) {
+        Some(token) => text.replace(token, "<redacted>"),
+        None => text.to_owned(),
+    }
+}
+
+fn redact_json_body(body: &Value, sent_token: Option<&str>) -> Value {
+    match body {
+        Value::String(text) => Value::String(redact_sent_token(text, sent_token)),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| redact_json_body(value, sent_token))
+                .collect(),
+        ),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        redact_sent_token(key, sent_token),
+                        redact_json_body(value, sent_token),
+                    )
+                })
+                .collect(),
+        ),
+        _ => body.clone(),
     }
 }
 
@@ -191,6 +317,375 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
+
+    fn accept_bounded(listener: &TcpListener) -> std::net::TcpStream {
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking fixture listener");
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    stream
+                        .set_nonblocking(false)
+                        .expect("blocking fixture stream");
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .expect("fixture read timeout");
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .expect("fixture write timeout");
+                    return stream;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "fixture accept timed out"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("fixture accept failed: {error}"),
+            }
+        }
+    }
+
+    /// Capture real requests with bounded accept/read timeouts so auth failures
+    /// cannot leave a fixture thread waiting forever.
+    fn capture_mock(
+        status: u16,
+        extra_headers: String,
+        count: usize,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let body = if status == 401 {
+            r#"{"error":"reflected synthetic-rejected-token"}"#
+        } else {
+            r#"{"build_version":"fixture","jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{}"}]}}"#
+        };
+        capture_mock_body(status, extra_headers, count, body)
+    }
+
+    fn capture_mock_body(
+        status: u16,
+        extra_headers: String,
+        count: usize,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind capture fixture");
+        listener.set_nonblocking(true).expect("nonblocking fixture");
+        let address = listener.local_addr().expect("capture address");
+        let handle = std::thread::spawn(move || {
+            let mut captured = Vec::new();
+            for _ in 0..count {
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "capture accept timed out"
+                            );
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("capture accept failed: {error}"),
+                    }
+                };
+                stream
+                    .set_nonblocking(false)
+                    .expect("blocking capture stream");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .expect("read timeout");
+                let mut reader = BufReader::new(stream.try_clone().expect("clone fixture stream"));
+                let mut headers = String::new();
+                let mut content_length = 0;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).expect("read request headers");
+                    if line.trim().is_empty() {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':')
+                        && name.eq_ignore_ascii_case("content-length")
+                    {
+                        content_length = value.trim().parse::<usize>().expect("content length");
+                    }
+                    headers.push_str(&line);
+                }
+                reader
+                    .read_exact(&mut vec![0; content_length])
+                    .expect("read request body");
+                write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{extra_headers}\r\n{body}", body.len()).expect("write fixture response");
+                stream.flush().expect("flush fixture response");
+                captured.push(headers.to_lowercase());
+            }
+            captured
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn isolated_settings() -> Settings {
+        let mut settings = Settings::from_env();
+        settings.server_url = None;
+        settings.server_urls.clear();
+        settings.hub_candidates.clear();
+        settings.hub_config_error = None;
+        settings.auth_token = None;
+        settings.hub_cache_ttl_seconds = 0;
+        settings.probe_connect_timeout_ms = 750;
+        settings
+    }
+
+    struct TokenFixture(std::path::PathBuf);
+
+    impl TokenFixture {
+        fn new(token: &str) -> Self {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "agent-bus-transport-token-{}-{unique}",
+                std::process::id()
+            ));
+            std::fs::write(&path, token).expect("write synthetic fixture token");
+            Self(path)
+        }
+    }
+
+    impl Drop for TokenFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn candidate_token_file_is_resolved_again_for_each_real_request() {
+        use agent_bus_core::hub_candidates::{CandidateAuth, HubCandidate, HubRole};
+        let (url, handle) = capture_mock(200, String::new(), 2);
+        let fixture = TokenFixture::new("candidate-token-before");
+        let mut settings = isolated_settings();
+        settings.auth_token = Some("onsite-token-must-not-leak".to_owned());
+        settings.server_urls = vec![url.clone()];
+        settings.hub_candidates = vec![HubCandidate {
+            url: url.clone(),
+            role: HubRole::Cloud,
+            auth: CandidateAuth::TokenFile(fixture.0.to_string_lossy().into_owned()),
+        }];
+        let transport = HttpMcpTransport::new(&settings);
+        transport
+            .call_tool(&url, "bus_health", &Map::new())
+            .expect("first candidate request");
+        std::fs::write(&fixture.0, "candidate-token-after").expect("rotate synthetic token");
+        transport
+            .call_tool(&url, "bus_health", &Map::new())
+            .expect("second candidate request");
+        let requests = handle.join().expect("capture fixture completion");
+        assert!(requests[0].contains("authorization: bearer candidate-token-before\r\n"));
+        assert!(requests[1].contains("authorization: bearer candidate-token-after\r\n"));
+        assert!(
+            requests
+                .iter()
+                .all(|headers| !headers.contains("onsite-token-must-not-leak"))
+        );
+    }
+
+    #[test]
+    fn redirect_is_rejected_without_forwarding_credentials_or_connecting_to_target() {
+        let target = TcpListener::bind("127.0.0.1:0").expect("bind redirect target");
+        target
+            .set_nonblocking(true)
+            .expect("nonblocking redirect target");
+        let (url, handle) = capture_mock(
+            302,
+            format!(
+                "Location: http://{}/mcp\r\n",
+                target.local_addr().expect("target address")
+            ),
+            1,
+        );
+        let mut settings = isolated_settings();
+        settings.auth_token = Some("synthetic-onsite-token".to_owned());
+        settings.server_urls = vec![url.clone()];
+        let transport = HttpMcpTransport::new(&settings);
+        let error = transport
+            .call_tool(&url, "bus_health", &Map::new())
+            .expect_err("redirect must fail");
+        assert!(error.to_string().contains("HTTP 302"), "{error}");
+        let requests = handle.join().expect("redirect fixture completion");
+        assert!(requests[0].contains("authorization: bearer synthetic-onsite-token\r\n"));
+        assert_eq!(
+            target
+                .accept()
+                .expect_err("redirect target must not be contacted")
+                .kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn invalid_candidate_configuration_refuses_probe_and_tool_before_network_io() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind invalid-config target");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking invalid-config target");
+        let url = format!("http://{}", listener.local_addr().expect("target address"));
+        let mut settings = isolated_settings();
+        settings.hub_config_error = Some("unknown candidate field".to_owned());
+        let transport = HttpMcpTransport::new(&settings);
+        assert!(transport.probe_health(&url).is_none());
+        let error = transport
+            .call_tool(&url, "bus_health", &Map::new())
+            .expect_err("invalid config must fail");
+        assert!(error.to_string().contains("unknown candidate field"));
+        assert_eq!(
+            listener
+                .accept()
+                .expect_err("invalid config must not connect")
+                .kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn bearer_rejection_is_not_reported_as_a_successful_tool_result() {
+        let (url, handle) = capture_mock(401, "WWW-Authenticate: Bearer\r\n".to_owned(), 1);
+        let mut settings = isolated_settings();
+        settings.auth_token = Some("synthetic-rejected-token".to_owned());
+        settings.server_urls = vec![url.clone()];
+        let transport = HttpMcpTransport::new(&settings);
+        let error = transport
+            .call_tool(&url, "bus_health", &Map::new())
+            .expect_err("401 must fail");
+        assert!(error.to_string().contains("HTTP 401"));
+        assert!(!error.to_string().contains("synthetic-rejected-token"));
+        let requests = handle.join().expect("401 fixture completion");
+        assert!(requests[0].contains("authorization: bearer synthetic-rejected-token\r\n"));
+    }
+
+    #[test]
+    fn escaped_bearer_reflection_is_scrubbed_from_rpc_http_and_shape_errors() {
+        for (status, body, expected) in [
+            (
+                200,
+                r#"{"jsonrpc":"2.0","error":{"message":"rejected \u0061bc\/def", "\u0061bc\/def":"reflection"}}"#,
+                "rejected",
+            ),
+            (
+                500,
+                r#"{"message":"maintenance \u0061bc\/def", "\u0061bc\/def":"reflection"}"#,
+                "HTTP 500",
+            ),
+            (
+                200,
+                r#"{"message":"unexpected \u0061bc\/def", "\u0061bc\/def":"reflection"}"#,
+                "unexpected tools/call shape",
+            ),
+        ] {
+            let (url, handle) = capture_mock_body(status, String::new(), 1, body);
+            let transport = transport_with_token(Some("abc/def"), &url);
+            let error = transport
+                .call_tool(&url, "bus_health", &Map::new())
+                .expect_err("fixture response must fail");
+            let message = error.to_string();
+            assert!(
+                !message.contains("abc/def"),
+                "sent token must not be included in error"
+            );
+            assert!(
+                message.contains("<redacted>"),
+                "decoded JSON keys and strings must be scrubbed"
+            );
+            assert!(message.contains(expected), "useful diagnostic must remain");
+            let requests = handle.join().expect("reflection fixture completion");
+            assert!(
+                requests[0].contains("authorization: bearer abc/def\r\n"),
+                "fixture must receive the token actually tested"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_rpc_and_tool_result_errors_do_not_reflect_the_sent_token() {
+        for body in [
+            "not-json abc/def",
+            r#"{"jsonrpc":"2.0","result":{"content":[{"text":"not-json abc/def"}]}}"#,
+        ] {
+            let (url, handle) = capture_mock_body(200, String::new(), 1, body);
+            let transport = transport_with_token(Some("abc/def"), &url);
+            let error = transport
+                .call_tool(&url, "bus_health", &Map::new())
+                .expect_err("malformed payload must fail");
+            assert!(!error.to_string().contains("abc/def"));
+            assert!(
+                error.to_string().contains("JSON")
+                    || error.to_string().contains("unparseable tool result")
+            );
+            assert!(
+                handle.join().expect("fixture completion")[0]
+                    .contains("authorization: bearer abc/def\r\n")
+            );
+        }
+    }
+
+    #[test]
+    fn successful_mcp_business_payload_is_not_changed_by_diagnostic_redaction() {
+        let body =
+            r#"{"jsonrpc":"2.0","result":{"content":[{"text":"{\"business\":\"abc/def\"}"}]}}"#;
+        let (url, handle) = capture_mock_body(200, String::new(), 1, body);
+        let transport = transport_with_token(Some("abc/def"), &url);
+        let value = transport
+            .call_tool(&url, "bus_health", &Map::new())
+            .expect("valid business result");
+        assert_eq!(
+            value["business"], "abc/def",
+            "only diagnostic copies may be scrubbed"
+        );
+        assert!(
+            handle.join().expect("fixture completion")[0]
+                .contains("authorization: bearer abc/def\r\n")
+        );
+    }
+
+    #[test]
+    fn deferred_cloud_mcp_is_reported_as_unsupported() {
+        let (url, handle) = capture_mock(501, String::new(), 1);
+        let mut settings = isolated_settings();
+        settings.server_urls = vec![url.clone()];
+        let transport = HttpMcpTransport::new(&settings);
+        let error = transport
+            .call_tool(&url, "bus_health", &Map::new())
+            .expect_err("501 must fail");
+        assert!(error.to_string().contains("HTTP MCP is not implemented"));
+        handle.join().expect("501 fixture completion");
+    }
+
+    #[test]
+    fn cached_client_builder_failure_is_returned_without_an_insecure_fallback() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind builder-failure target");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking builder-failure target");
+        let url = format!("http://{}", listener.local_addr().expect("target address"));
+        let transport = HttpMcpTransport {
+            client: Err("fixture client construction failed".to_owned()),
+            settings: isolated_settings(),
+        };
+        assert!(transport.probe_health(&url).is_none());
+        let error = transport
+            .call_tool(&url, "bus_health", &Map::new())
+            .expect_err("builder failure must be returned");
+        assert!(
+            error
+                .to_string()
+                .contains("fixture client construction failed")
+        );
+        assert_eq!(
+            listener
+                .accept()
+                .expect_err("builder failure must not connect")
+                .kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
 
     /// `reqwest::Error`'s `Display` only prints its own top-level message
     /// ("error sending request for url ..."); the discriminating text lives
@@ -215,7 +710,7 @@ mod tests {
     /// validation and a completed TLS session are outside this test's scope.
     #[test]
     fn https_candidate_reaches_a_real_connect_attempt_not_a_scheme_rejection() {
-        let transport = transport_with_token(None);
+        let transport = transport_with_token(None, "http://localhost:8400");
         let rt = tokio::runtime::Runtime::new().expect("build test runtime");
         let (result, hello) = rt.block_on(async {
             use tokio::io::AsyncReadExt;
@@ -234,7 +729,8 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(5), async {
                 tokio::join!(
                     transport
-                        .client
+                        .client()
+                        .expect("guarded test client")
                         .get(format!("https://{addr}/health"))
                         .send(),
                     receive_hello
@@ -266,10 +762,16 @@ mod tests {
             .set_nonblocking(true)
             .expect("make scheme fixture nonblocking");
         let addr = listener.local_addr().expect("fixture local address");
-        let transport = transport_with_token(None);
+        let transport = transport_with_token(None, "http://localhost:8400");
         let rt = tokio::runtime::Runtime::new().expect("build test runtime");
         let err = rt
-            .block_on(transport.client.get(format!("ftp://{addr}/health")).send())
+            .block_on(
+                transport
+                    .client()
+                    .expect("guarded test client")
+                    .get(format!("ftp://{addr}/health"))
+                    .send(),
+            )
             .expect_err("FTP must not be accepted by the HTTP transport");
         let message = full_error_chain(&err);
         assert!(err.is_builder(), "expected scheme rejection: {message}");
@@ -292,7 +794,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
         let addr = listener.local_addr().expect("mock local addr");
         let handle = std::thread::spawn(move || -> String {
-            let (mut stream, _) = listener.accept().expect("accept mock connection");
+            let mut stream = accept_bounded(&listener);
             let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
             let mut request_line = String::new();
             let _ = reader.read_line(&mut request_line);
@@ -325,9 +827,10 @@ mod tests {
         (format!("http://{addr}"), handle)
     }
 
-    fn transport_with_token(token: Option<&str>) -> HttpMcpTransport {
-        let mut settings = Settings::from_env();
+    fn transport_with_token(token: Option<&str>, url: &str) -> HttpMcpTransport {
+        let mut settings = isolated_settings();
         settings.auth_token = token.map(str::to_owned);
+        settings.server_urls = vec![url.to_owned()];
         HttpMcpTransport::new(&settings)
     }
 
@@ -337,7 +840,7 @@ mod tests {
             200,
             r#"{"ok": true, "database_ok": true, "storage_ready": true, "build_version": "0.5.0 (75ec8f8)"}"#,
         );
-        let transport = transport_with_token(None);
+        let transport = transport_with_token(None, &url);
         let info = transport
             .probe_health(&url)
             .expect("healthy response must probe ok");
@@ -348,7 +851,7 @@ mod tests {
     #[test]
     fn probe_health_returns_none_on_non_2xx() {
         let (url, handle) = spawn_one_shot_mock(500, r#"{"ok": false}"#);
-        let transport = transport_with_token(None);
+        let transport = transport_with_token(None, &url);
         assert!(transport.probe_health(&url).is_none());
         handle.join().expect("mock thread must not panic");
     }
@@ -359,7 +862,7 @@ mod tests {
             200,
             r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"ok\":true,\"database_ok\":true,\"storage_ready\":true,\"build_version\":\"0.5.0 (75ec8f8)\"}"}]}}"#,
         );
-        let transport = transport_with_token(Some("secret-token"));
+        let transport = transport_with_token(Some("secret-token"), &url);
         let value = transport
             .call_tool(&url, "bus_health", &Map::new())
             .expect("call_tool must unwrap the nested JSON-RPC text result");
@@ -382,7 +885,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock listener");
         let addr = listener.local_addr().expect("mock local addr");
         let handle = std::thread::spawn(move || -> String {
-            let (mut stream, _) = listener.accept().expect("accept mock connection");
+            let mut stream = accept_bounded(&listener);
             let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
             let mut headers = String::new();
             loop {
@@ -407,7 +910,7 @@ mod tests {
             let _ = stream.flush();
             headers
         });
-        let transport = transport_with_token(Some("secret-token"));
+        let transport = transport_with_token(Some("secret-token"), &format!("http://{addr}"));
         let _ = transport.call_tool(&format!("http://{addr}"), "bus_health", &Map::new());
         let headers = handle.join().expect("mock thread must not panic");
         assert!(
