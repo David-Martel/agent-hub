@@ -15,10 +15,10 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A canned response for one `(method, path)` pair.
 struct MockRoute {
@@ -42,6 +42,8 @@ struct MockHub {
     handle: Option<JoinHandle<()>>,
     hit_count: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
+    milestones: Arc<Mutex<Vec<String>>>,
+    started_at: Instant,
 }
 
 impl MockHub {
@@ -55,18 +57,36 @@ impl MockHub {
         let stop = Arc::new(AtomicBool::new(false));
         let counter = Arc::clone(&hit_count);
         let stop_flag = Arc::clone(&stop);
+        let milestones = Arc::new(Mutex::new(Vec::new()));
+        let thread_milestones = Arc::clone(&milestones);
+        let started_at = Instant::now();
         let handle = std::thread::spawn(move || {
             while !stop_flag.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        let _ = stream.set_nonblocking(false);
                         counter.fetch_add(1, Ordering::SeqCst);
-                        serve_one(stream, &routes);
+                        record_milestone(&thread_milestones, started_at, "accept");
+                        if let Err(error) =
+                            serve_one(stream, &routes, &thread_milestones, started_at)
+                        {
+                            record_milestone(
+                                &thread_milestones,
+                                started_at,
+                                &format!("socket-error {:?}", error.kind()),
+                            );
+                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(5));
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        record_milestone(
+                            &thread_milestones,
+                            started_at,
+                            &format!("accept-error {:?}", error.kind()),
+                        );
+                        break;
+                    }
                 }
             }
         });
@@ -75,6 +95,8 @@ impl MockHub {
             handle: Some(handle),
             hit_count,
             stop,
+            milestones,
+            started_at,
         }
     }
 
@@ -85,52 +107,160 @@ impl MockHub {
     fn hits(&self) -> usize {
         self.hit_count.load(Ordering::SeqCst)
     }
+
+    fn diagnostics(&self) -> Vec<String> {
+        self.milestones
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 impl Drop for MockHub {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
         if let Some(handle) = self.handle.take() {
-            // The accept loop polls the stop flag at most every 5ms, so this
-            // always returns promptly.
-            let _ = handle.join();
+            // Idle accepts poll every 5ms. An active transaction has a total
+            // two-second I/O budget and returns on incomplete input/errors.
+            if handle.join().is_err() {
+                record_milestone(&self.milestones, self.started_at, "thread-panicked");
+            }
         }
     }
 }
 
-fn serve_one(mut stream: TcpStream, routes: &[MockRoute]) {
-    let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line).unwrap_or(0) == 0 {
-        return;
+fn record_milestone(milestones: &Mutex<Vec<String>>, started_at: Instant, detail: &str) {
+    milestones
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(format!("{:?}: {detail}", started_at.elapsed()));
+}
+
+fn remaining_io_budget(deadline: Instant) -> std::io::Result<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::TimedOut))
+}
+
+fn read_fixture_line(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+) -> std::io::Result<String> {
+    let mut line = Vec::new();
+    loop {
+        reader
+            .get_ref()
+            .set_read_timeout(Some(remaining_io_budget(deadline)?))?;
+        let chunk = reader.fill_buf()?;
+        if chunk.is_empty() {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        let count = chunk
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(chunk.len(), |position| position + 1);
+        if line.len() + count > 8192 {
+            return Err(std::io::ErrorKind::InvalidData.into());
+        }
+        let complete = chunk[count - 1] == b'\n';
+        line.extend_from_slice(&chunk[..count]);
+        reader.consume(count);
+        if complete {
+            return String::from_utf8(line)
+                .map_err(|_error| std::io::ErrorKind::InvalidData.into());
+        }
     }
+}
+
+fn consume_fixture_body(
+    reader: &mut BufReader<TcpStream>,
+    deadline: Instant,
+    content_length: usize,
+) -> std::io::Result<()> {
+    if content_length > 65_536 {
+        return Err(std::io::ErrorKind::InvalidData.into());
+    }
+    let mut buffer = [0_u8; 1024];
+    let mut remaining = content_length;
+    while remaining > 0 {
+        reader
+            .get_ref()
+            .set_read_timeout(Some(remaining_io_budget(deadline)?))?;
+        let count = remaining.min(buffer.len());
+        let read = reader.read(&mut buffer[..count])?;
+        if read == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        remaining -= read;
+    }
+    Ok(())
+}
+
+fn write_fixture_response(
+    stream: &mut TcpStream,
+    deadline: Instant,
+    response: &[u8],
+) -> std::io::Result<()> {
+    let mut written = 0;
+    while written < response.len() {
+        stream.set_write_timeout(Some(remaining_io_budget(deadline)?))?;
+        let count = stream.write(&response[written..])?;
+        if count == 0 {
+            return Err(std::io::ErrorKind::WriteZero.into());
+        }
+        written += count;
+    }
+    stream.set_write_timeout(Some(remaining_io_budget(deadline)?))?;
+    stream.flush()
+}
+
+fn serve_one(
+    mut stream: TcpStream,
+    routes: &[MockRoute],
+    milestones: &Mutex<Vec<String>>,
+    started_at: Instant,
+) -> std::io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut reader = BufReader::new(stream.try_clone()?);
+    let request_line = read_fixture_line(&mut reader, deadline)?;
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("").to_owned();
     let full_path = parts.next().unwrap_or("").to_owned();
     let path = full_path.split('?').next().unwrap_or("").to_owned();
+    let route = routes.iter().find(|r| r.method == method && r.path == path);
+    let request_description = route.map_or_else(
+        || "request <unmatched>".to_owned(),
+        |matched| format!("request {} {}", matched.method, matched.path),
+    );
+    record_milestone(milestones, started_at, &request_description);
 
     let mut content_length: usize = 0;
+    let mut header_count = 0;
     loop {
-        let mut header_line = String::new();
-        if reader.read_line(&mut header_line).unwrap_or(0) == 0 {
-            break;
-        }
+        let header_line = read_fixture_line(&mut reader, deadline)?;
         let trimmed = header_line.trim_end();
         if trimmed.is_empty() {
             break;
         }
+        header_count += 1;
+        if header_count > 64 {
+            return Err(std::io::ErrorKind::InvalidData.into());
+        }
         if let Some((name, value)) = trimmed.split_once(':')
             && name.eq_ignore_ascii_case("content-length")
         {
-            content_length = value.trim().parse().unwrap_or(0);
+            content_length = value
+                .trim()
+                .parse()
+                .map_err(|_error| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
         }
     }
-    if content_length > 0 {
-        let mut body = vec![0_u8; content_length];
-        let _ = reader.read_exact(&mut body);
-    }
+    consume_fixture_body(&mut reader, deadline, content_length)?;
 
-    let route = routes.iter().find(|r| r.method == method && r.path == path);
     let response = if let Some(r) = route {
         format!(
             "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -139,15 +269,16 @@ fn serve_one(mut stream: TcpStream, routes: &[MockRoute]) {
             r.body
         )
     } else {
-        let body = format!(r#"{{"error": "no mock route for {method} {path}"}}"#);
+        let body = r#"{"error": "no mock route"}"#;
         format!(
             "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
             body.len(),
             body
         )
     };
-    let _ = stream.write_all(response.as_bytes());
-    let _ = stream.flush();
+    write_fixture_response(&mut stream, deadline, response.as_bytes())?;
+    record_milestone(milestones, started_at, "response-complete");
+    Ok(())
 }
 
 fn isolated_config_path(label: &str) -> std::path::PathBuf {
@@ -164,16 +295,41 @@ fn isolated_config_path(label: &str) -> std::path::PathBuf {
 /// A CLI subprocess with `server_urls` set to `candidates`, Redis/PG pinned
 /// to a closed port (127.0.0.1:1 — nothing listens there), and an isolated
 /// config file. Never touches a real backend of any kind.
-fn agent_bus_with_hub_candidates(candidates: &[String], label: &str) -> Command {
+fn isolated_agent_bus(label: &str) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
     cmd.env("AGENT_BUS_CONFIG", isolated_config_path(label));
-    cmd.env("AGENT_BUS_SERVER_URLS", candidates.join(","));
     cmd.env_remove("AGENT_BUS_SERVER_URL");
+    cmd.env_remove("AGENT_BUS_SERVER_URLS");
+    cmd.env_remove("AGENT_BUS_SERVER_CANDIDATES");
+    cmd.env_remove("AGENT_BUS_AUTH_TOKEN");
+    cmd.env("AGENT_BUS_HUB_CACHE_TTL_SECONDS", "0");
+    cmd.env("AGENT_BUS_PROBE_CONNECT_TIMEOUT_MS", "750");
+    cmd.env("AGENT_BUS_STARTUP_ENABLED", "false");
+    for variable in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "NO_PROXY",
+        "no_proxy",
+    ] {
+        cmd.env_remove(variable);
+    }
+    cmd.env("NO_PROXY", "localhost,127.0.0.1,::1");
+    cmd.env("no_proxy", "localhost,127.0.0.1,::1");
     cmd.env("AGENT_BUS_REDIS_URL", "redis://127.0.0.1:1/0");
     cmd.env(
         "AGENT_BUS_DATABASE_URL",
         "postgresql://postgres@127.0.0.1:1/none",
     );
+    cmd
+}
+
+fn agent_bus_with_hub_candidates(candidates: &[String], label: &str) -> Command {
+    let mut cmd = isolated_agent_bus(label);
+    cmd.env("AGENT_BUS_SERVER_URLS", candidates.join(","));
     cmd
 }
 
@@ -458,15 +614,7 @@ fn health_reports_offline_explicitly_and_exits_non_zero() {
 /// swallowing the other's identity.
 #[test]
 fn local_only_mode_never_reports_the_offline_hub_wording() {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
-    cmd.env("AGENT_BUS_CONFIG", isolated_config_path("local-only"));
-    cmd.env_remove("AGENT_BUS_SERVER_URL");
-    cmd.env_remove("AGENT_BUS_SERVER_URLS");
-    cmd.env("AGENT_BUS_REDIS_URL", "redis://127.0.0.1:1/0");
-    cmd.env(
-        "AGENT_BUS_DATABASE_URL",
-        "postgresql://postgres@127.0.0.1:1/none",
-    );
+    let mut cmd = isolated_agent_bus("local-only");
     let output = cmd
         .args(["health", "--encoding", "json"])
         .output()
@@ -528,13 +676,16 @@ fn send_falls_over_to_the_second_candidate_when_the_first_is_dead() {
 
     assert!(
         output.status.success(),
-        "stdout: {}\nstderr: {}",
+        "stdout: {}\nstderr: {}\nTCP accepts: {}\nmock milestones: {:?}",
         stdout_of(&output),
-        stderr_of(&output)
+        stderr_of(&output),
+        hub.hits(),
+        hub.diagnostics()
     );
     assert!(
         hub.hits() >= 1,
-        "the reachable second candidate must have been used"
+        "the reachable second candidate must have been used; mock milestones: {:?}",
+        hub.diagnostics()
     );
 }
 
@@ -615,12 +766,12 @@ fn claim_reports_pending_when_only_a_non_authoritative_candidate_answers() {
         stderr.contains("claim pending: no authoritative hub reachable"),
         "got: {stderr}"
     );
-    // Exactly one request must have reached the mock hub -- the /health
-    // probe used to resolve the backend. Its /channels/arbitrate route (the
-    // actual grant) must never be hit; if it had been, `hits()` would be 2.
+    // Claims resolve the authoritative role directly, without probing a
+    // fallback for unrelated reads. Neither health nor arbitrate may reach
+    // this non-authoritative candidate, even when it would grant the claim.
     assert_eq!(
         hub.hits(),
-        1,
-        "the non-authoritative candidate's arbitrate route must never be called"
+        0,
+        "authoritative-only claims must make no request to a fallback candidate"
     );
 }
