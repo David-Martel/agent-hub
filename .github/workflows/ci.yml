@@ -347,7 +347,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL fixture startup failed' }
             $ready = $false
             for ($attempt = 0; $attempt -lt 30; $attempt++) {
-              & docker exec $pgId pg_isready -U postgres -d agent_bus_smoke
+              # The entrypoint's temporary initialization server accepts Unix
+              # socket connections before the final TCP server is available.
+              & docker exec $pgId pg_isready -h 127.0.0.1 -U postgres -d agent_bus_smoke
               if ($LASTEXITCODE -eq 0) { $ready = $true; break }
               Start-Sleep -Seconds 1
             }
