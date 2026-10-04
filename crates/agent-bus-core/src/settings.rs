@@ -6,7 +6,12 @@
 //! 3. Hardcoded defaults
 
 use crate::error::Result;
+use crate::hub_candidates::{
+    CandidateSpec, HubCandidate, build_candidates, parse_candidate_entries, parse_candidate_json,
+    validate_candidates,
+};
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // Config file
@@ -47,7 +52,15 @@ pub struct ConfigFile {
     /// whole tier; `server_url` remains a single-entry convenience alias.
     ///
     /// Example: `["http://10.60.4.2:8400", "http://asuspro13.local:8400", "http://100.64.0.3:8400"]`
-    pub server_urls: Option<Vec<String>>,
+    #[serde(
+        default,
+        deserialize_with = "crate::hub_candidates::deserialize_candidate_value"
+    )]
+    pub server_urls: Option<serde_json::Value>,
+    pub probe_connect_timeout_ms: Option<u64>,
+    pub hub_cache_ttl_seconds: Option<u64>,
+    #[serde(skip)]
+    pub configuration_error: Option<String>,
     /// Suppress non-fatal degraded-mode warnings that would otherwise mix into
     /// machine-readable stdout/stderr captures.
     pub machine_safe: Option<bool>,
@@ -96,14 +109,26 @@ pub fn load_config_file() -> ConfigFile {
             }
             Err(err) => {
                 tracing::debug!(
-                    "agent-bus config at {} could not be parsed ({}); using defaults",
+                    "agent-bus config at {} could not be parsed (line {}, column {}); refusing backend access",
                     path.display(),
-                    err
+                    err.line(),
+                    err.column()
                 );
-                ConfigFile::default()
+                ConfigFile {
+                    configuration_error: Some(format!(
+                        "invalid agent-bus configuration (line {}, column {})",
+                        err.line(),
+                        err.column()
+                    )),
+                    ..ConfigFile::default()
+                }
             }
         },
-        Err(_) => ConfigFile::default(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => ConfigFile::default(),
+        Err(_) => ConfigFile {
+            configuration_error: Some("agent-bus configuration could not be read".to_owned()),
+            ..ConfigFile::default()
+        },
     }
 }
 
@@ -136,6 +161,7 @@ fn maybe_write_default_config(path: &std::path::Path) {
   "startup_body": "agent-bus is up and running",
   "machine_safe": false
 }
+
 "#;
     if std::fs::write(path, default_json).is_ok() {
         tracing::debug!("wrote default agent-bus config to {}", path.display());
@@ -145,6 +171,13 @@ fn maybe_write_default_config(path: &std::path::Path) {
 // ---------------------------------------------------------------------------
 // 3-tier resolver helpers
 // ---------------------------------------------------------------------------
+
+fn load_settings_config() -> ConfigFile {
+    if let Some(path) = config_file_path() {
+        maybe_write_default_config(&path);
+    }
+    load_config_file()
+}
 
 /// Return the first non-`None` value among: env var → config file value → hardcoded default.
 fn resolve(env_key: &str, config_value: Option<&str>, default: &str) -> String {
@@ -164,6 +197,13 @@ where
         return parsed;
     }
     config_value.unwrap_or(default)
+}
+
+fn resolve_nonempty(env_key: &str, config_value: Option<String>) -> Option<String> {
+    std::env::var(env_key)
+        .ok()
+        .filter(|value| !value.is_empty())
+        .or_else(|| config_value.filter(|value| !value.is_empty()))
 }
 
 /// Three-tier resolution for an optional string that has a non-`None` hardcoded default.
@@ -216,10 +256,12 @@ fn resolve_optional_url(
 /// normalization — so a literal repeat (e.g. copy-paste in
 /// `AGENT_BUS_SERVER_URLS`) doesn't get probed twice and doesn't complicate
 /// "authoritative == index 0" with a duplicate of the same string.
+#[cfg(test)]
 fn resolve_server_url_list(cfg: &ConfigFile) -> Vec<String> {
     dedup_preserve_order(resolve_server_url_list_tiers(cfg))
 }
 
+#[cfg(test)]
 fn resolve_server_url_list_tiers(cfg: &ConfigFile) -> Vec<String> {
     if let Ok(raw) = std::env::var("AGENT_BUS_SERVER_URLS") {
         let list: Vec<String> = raw
@@ -239,11 +281,10 @@ fn resolve_server_url_list_tiers(cfg: &ConfigFile) -> Vec<String> {
         }
     }
     if let Some(list) = cfg.server_urls.as_ref() {
-        let list: Vec<String> = list
-            .iter()
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
+        let list: Vec<String> = parse_candidate_entries(list)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|spec| spec.url)
             .collect();
         if !list.is_empty() {
             return list;
@@ -261,11 +302,108 @@ fn resolve_server_url_list_tiers(cfg: &ConfigFile) -> Vec<String> {
 /// Deduplicate by exact string match, preserving the first occurrence's
 /// position. See [`resolve_server_url_list`]'s doc comment for why this is
 /// exact-string only.
+#[cfg(test)]
 fn dedup_preserve_order(urls: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::with_capacity(urls.len());
     urls.into_iter()
         .filter(|url| seen.insert(url.clone()))
         .collect()
+}
+
+/// Select an entire credential tier before resolving individual entries.
+fn resolve_candidate_settings(cfg: &ConfigFile) -> (Vec<HubCandidate>, Option<String>) {
+    let json = std::env::var("AGENT_BUS_SERVER_CANDIDATES").ok();
+    let list = std::env::var("AGENT_BUS_SERVER_URLS").ok();
+    let single = std::env::var("AGENT_BUS_SERVER_URL").ok();
+    resolve_candidate_tiers(cfg, json.as_deref(), list.as_deref(), single.as_deref())
+}
+
+fn legacy_specs(urls: impl IntoIterator<Item = String>) -> Vec<CandidateSpec> {
+    urls.into_iter()
+        .map(|url| CandidateSpec {
+            url,
+            role: None,
+            auth: crate::hub_candidates::CandidateAuth::Global,
+        })
+        .collect()
+}
+
+fn resolve_candidate_tiers(
+    cfg: &ConfigFile,
+    json: Option<&str>,
+    list: Option<&str>,
+    single: Option<&str>,
+) -> (Vec<HubCandidate>, Option<String>) {
+    if let Some(error) = &cfg.configuration_error {
+        return (Vec::new(), Some(error.clone()));
+    }
+    let list = list
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let single = single.map(str::trim).filter(|url| !url.is_empty());
+    let parsed = if let Some(raw) = json {
+        parse_candidate_json(raw).and_then(|entries| {
+            if entries.is_empty() {
+                Err("AGENT_BUS_SERVER_CANDIDATES must contain at least one hub".to_owned())
+            } else {
+                Ok(entries)
+            }
+        })
+    } else if !list.is_empty() {
+        Ok(legacy_specs(list))
+    } else if let Some(url) = single {
+        Ok(legacy_specs([url.to_owned()]))
+    } else if let Some(raw) = &cfg.server_urls {
+        parse_candidate_entries(raw).map(|entries| {
+            if entries.is_empty() {
+                legacy_specs(
+                    cfg.server_url
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|url| !url.is_empty())
+                        .map(str::to_owned),
+                )
+            } else {
+                entries
+            }
+        })
+    } else {
+        Ok(legacy_specs(
+            cfg.server_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+                .map(str::to_owned),
+        ))
+    };
+    let entries = match parsed {
+        Ok(entries) => entries,
+        Err(error) => return (Vec::new(), Some(error)),
+    };
+    let mut specs = BTreeMap::new();
+    let mut urls = Vec::new();
+    for entry in entries {
+        if let Some(existing) = specs.get(&entry.url) {
+            if existing != &entry {
+                return (
+                    Vec::new(),
+                    Some("conflicting hub candidate definitions".to_owned()),
+                );
+            }
+        } else {
+            urls.push(entry.url.clone());
+            specs.insert(entry.url.clone(), entry);
+        }
+    }
+    let candidates = build_candidates(&urls, &specs);
+    let error = validate_candidates(&candidates).err();
+    (candidates, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -299,24 +437,31 @@ pub struct Settings {
     /// When set, CLI commands route through this HTTP server URL instead of
     /// connecting to Redis directly.  Enables remote or containerised deployments.
     ///
-    /// Resolution order: `AGENT_BUS_SERVER_URL` env var → `server_url` in
-    /// config.json → `None` (direct Redis mode).
+    /// First URL from the resolved candidate tier; see `hub_candidates`.
     ///
     /// Example values: `"http://localhost:8400"`, `"http://192.168.1.100:8400"`
     pub server_url: Option<String>,
-    /// Ordered candidate hub URLs, tried in order with a short connect
-    /// timeout by [`crate::hub::resolve_hub`]. The first that answers
-    /// `/health` is used; if it is index 0 the hub is `authoritative`,
-    /// otherwise it is a fallback. Empty means local-only mode (this process
+    /// Ordered compatibility URL projection of the resolved candidate tier.
+    /// [`crate::hub::resolve_configured_hub`] uses each candidate's credential
+    /// source and role. Empty means local-only mode (this process
     /// IS the store, e.g. running on the hub host itself).
     ///
     /// `server_url` is always `server_urls.first().cloned()`, so every
     /// existing single-URL caller keeps working unchanged.
     ///
-    /// Resolution order: `AGENT_BUS_SERVER_URLS` (comma-separated) env var →
+    /// Resolution order: `AGENT_BUS_SERVER_CANDIDATES` JSON env var →
+    /// `AGENT_BUS_SERVER_URLS` (comma-separated) env var →
     /// `AGENT_BUS_SERVER_URL` (single) env var → `server_urls` in config.json
     /// → `server_url` in config.json → empty (local-only).
     pub server_urls: Vec<String>,
+    /// Resolved credential sources and roles for the selected configuration tier.
+    pub hub_candidates: Vec<HubCandidate>,
+    /// Maximum time spent connecting to one hub.
+    pub probe_connect_timeout_ms: u64,
+    /// Cross-process resolution cache lifetime; zero disables it.
+    pub hub_cache_ttl_seconds: u64,
+    /// Invalid configuration must fail closed before any backend operation.
+    pub hub_config_error: Option<String>,
     /// Suppress non-fatal warnings that otherwise pollute machine-readable
     /// output captures during degraded-mode fallbacks.
     pub machine_safe: bool,
@@ -339,18 +484,50 @@ pub struct Settings {
 }
 
 impl Settings {
+    /// Construct deterministic unit-test settings without reading host configuration.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            redis_url: "redis://127.0.0.1:1/0".to_owned(),
+            database_url: Some("postgresql://postgres@127.0.0.1:1/offline".to_owned()),
+            stream_key: "agent_bus:messages".to_owned(),
+            channel_key: "agent_bus:events".to_owned(),
+            presence_prefix: "agent_bus:presence:".to_owned(),
+            message_table: "agent_bus.messages".to_owned(),
+            presence_event_table: "agent_bus.presence_events".to_owned(),
+            stream_maxlen: 100_000,
+            service_agent_id: "agent-bus".to_owned(),
+            service_name: "AgentHub".to_owned(),
+            startup_enabled: false,
+            startup_recipient: "all".to_owned(),
+            startup_topic: "status".to_owned(),
+            startup_body: "unit test fixture".to_owned(),
+            server_host: "localhost".to_owned(),
+            session_id: None,
+            server_url: None,
+            server_urls: Vec::new(),
+            hub_candidates: Vec::new(),
+            probe_connect_timeout_ms: 750,
+            hub_cache_ttl_seconds: 0,
+            hub_config_error: None,
+            machine_safe: false,
+            auth_token: None,
+            allow_remote: false,
+        }
+    }
+
     /// Build [`Settings`] using the three-tier resolution order:
     /// env vars > config file > hardcoded defaults.
     #[must_use]
     pub fn from_env() -> Self {
         // Write a starter config if the file is absent (best-effort, silent on
         // failure so we never prevent the process from starting).
-        if let Some(path) = config_file_path() {
-            maybe_write_default_config(&path);
-        }
-
-        let cfg = load_config_file();
-        let server_urls = resolve_server_url_list(&cfg);
+        let cfg = load_settings_config();
+        let (hub_candidates, hub_config_error) = resolve_candidate_settings(&cfg);
+        let server_urls = hub_candidates
+            .iter()
+            .map(|candidate| candidate.url.clone())
+            .collect::<Vec<_>>();
 
         let startup_enabled_str = resolve(
             "AGENT_BUS_STARTUP_ENABLED",
@@ -429,22 +606,28 @@ impl Settings {
             ),
             // Session ID: env var overrides config file; empty string is
             // treated as absent so callers can unset a file-configured value.
-            session_id: std::env::var("AGENT_BUS_SESSION_ID")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .or_else(|| cfg.session_id.filter(|s| !s.is_empty())),
+            session_id: resolve_nonempty("AGENT_BUS_SESSION_ID", cfg.session_id),
             // Server URL for HTTP client mode: single-entry alias for
             // `server_urls.first()`, always kept in sync so every existing
             // caller that reads `server_url` alone keeps working unchanged.
             server_url: server_urls.first().cloned(),
             server_urls,
+            hub_candidates,
+            hub_config_error,
+            probe_connect_timeout_ms: resolve_parse(
+                "AGENT_BUS_PROBE_CONNECT_TIMEOUT_MS",
+                cfg.probe_connect_timeout_ms,
+                750,
+            ),
+            hub_cache_ttl_seconds: resolve_parse(
+                "AGENT_BUS_HUB_CACHE_TTL_SECONDS",
+                cfg.hub_cache_ttl_seconds,
+                60,
+            ),
             machine_safe: resolve_parse("AGENT_BUS_MACHINE_SAFE", cfg.machine_safe, false),
             // Bearer token for the HTTP server: env var overrides config file;
             // empty string treated as absent (no auth required).
-            auth_token: std::env::var("AGENT_BUS_AUTH_TOKEN")
-                .ok()
-                .filter(|s| !s.is_empty())
-                .or_else(|| cfg.auth_token.filter(|s| !s.is_empty())),
+            auth_token: resolve_nonempty("AGENT_BUS_AUTH_TOKEN", cfg.auth_token),
             allow_remote: resolve_parse("AGENT_BUS_ALLOW_REMOTE", cfg.allow_remote, false),
         }
     }
@@ -468,6 +651,16 @@ impl Settings {
     /// settings.validate().expect("default settings should be valid");
     /// ```
     pub fn validate(&self) -> Result<()> {
+        if let Some(error) = &self.hub_config_error {
+            return Err(crate::error::AgentBusError::InvalidParams(error.clone()));
+        }
+        if self.probe_connect_timeout_ms == 0 || self.probe_connect_timeout_ms > 30_000 {
+            return Err(crate::error::AgentBusError::InvalidParams(
+                "probe_connect_timeout_ms must be between 1 and 30000".to_owned(),
+            ));
+        }
+        validate_candidates(&self.effective_hub_candidates())
+            .map_err(crate::error::AgentBusError::InvalidParams)?;
         validate_localhost_url(&self.redis_url, "AGENT_BUS_REDIS_URL")?;
         if let Some(ref db_url) = self.database_url {
             validate_localhost_url(db_url, "AGENT_BUS_DATABASE_URL")?;
@@ -503,6 +696,27 @@ impl Settings {
     #[must_use]
     pub fn log_non_fatal_warnings(&self) -> bool {
         !self.machine_safe
+    }
+
+    /// Preserve callers that update the legacy URL list after construction.
+    #[must_use]
+    pub fn effective_hub_candidates(&self) -> Vec<HubCandidate> {
+        let urls = self
+            .hub_candidates
+            .iter()
+            .map(|candidate| candidate.url.as_str())
+            .collect::<Vec<_>>();
+        if urls
+            == self
+                .server_urls
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        {
+            self.hub_candidates.clone()
+        } else {
+            build_candidates(&self.server_urls, &BTreeMap::new())
+        }
     }
 }
 
@@ -632,6 +846,24 @@ pub fn redact_url(value: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn starter_config_is_valid_json_and_preserves_existing_bytes() {
+        let directory = tempfile::tempdir().expect("temporary config directory");
+        let path = directory.path().join("nested/config.json");
+        maybe_write_default_config(&path);
+        let bytes = std::fs::read(&path).expect("starter config created");
+        let config: ConfigFile =
+            serde_json::from_slice(&bytes).expect("starter config must remain valid JSON");
+        assert_eq!(config.service_name.as_deref(), Some("AgentHub"));
+        assert_eq!(config.server_host.as_deref(), Some("localhost"));
+        std::fs::write(&path, b"existing configuration bytes").expect("existing fixture");
+        maybe_write_default_config(&path);
+        assert_eq!(
+            std::fs::read(&path).expect("existing config preserved"),
+            b"existing configuration bytes"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // ConfigFile::default — all fields are None
     // -----------------------------------------------------------------------
@@ -697,11 +929,13 @@ mod tests {
 
     #[test]
     fn settings_from_env_has_sane_defaults() {
-        let s = Settings::from_env();
-        assert!(s.redis_url.starts_with("redis://"));
-        assert!(!s.stream_key.is_empty());
-        assert!(!s.channel_key.is_empty());
-        assert!(s.stream_maxlen > 0);
+        with_server_url_env(None, None, || {
+            let s = Settings::from_env();
+            assert!(s.redis_url.starts_with("redis://"));
+            assert!(!s.stream_key.is_empty());
+            assert!(!s.channel_key.is_empty());
+            assert!(s.stream_maxlen > 0);
+        });
     }
 
     #[test]
@@ -730,28 +964,28 @@ mod tests {
 
     #[test]
     fn validate_rejects_non_localhost_redis() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.redis_url = "redis://remote-host:6380/0".to_owned();
         assert!(s.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_non_localhost_database() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.database_url = Some("postgresql://postgres@remote:5432/db".to_owned());
         assert!(s.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_non_localhost_server_host() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.server_host = "0.0.0.0".to_owned();
         assert!(s.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_remote_bind_without_auth_token() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.server_host = "0.0.0.0".to_owned();
         s.allow_remote = true;
         s.auth_token = None;
@@ -762,7 +996,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_remote_bind_with_allow_and_token() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.redis_url = "redis://localhost:6380/0".to_owned();
         s.database_url = Some("postgresql://postgres@localhost:5432/db".to_owned());
         s.server_host = "0.0.0.0".to_owned();
@@ -773,7 +1007,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_localhost_variants() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.redis_url = "redis://localhost:6380/0".to_owned();
         s.database_url = Some("postgresql://postgres@localhost:5432/db".to_owned());
         s.server_host = "localhost".to_owned();
@@ -782,7 +1016,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_127_0_0_1() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.redis_url = "redis://127.0.0.1:6380/0".to_owned();
         s.server_host = "127.0.0.1".to_owned();
         assert!(s.validate().is_ok());
@@ -790,7 +1024,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_bracketed_ipv6_backend_urls() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.redis_url = "redis://[::1]:6380/0".to_owned();
         s.database_url = Some("postgresql://postgres@[::1]:5300/redis_backend".to_owned());
         assert!(s.validate().is_ok());
@@ -824,7 +1058,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_none_database() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.database_url = None;
         assert!(s.validate().is_ok());
     }
@@ -835,28 +1069,28 @@ mod tests {
 
     #[test]
     fn validate_rejects_empty_stream_key() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.stream_key = String::new();
         assert!(s.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_stream_key_with_spaces() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.stream_key = "bad stream key".to_owned();
         assert!(s.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_empty_table_name() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.message_table = String::new();
         assert!(s.validate().is_err());
     }
 
     #[test]
     fn validate_accepts_dotted_table_name() {
-        let s = Settings::from_env();
+        let s = Settings::for_test();
         // default is "agent_bus.messages" which contains a dot — should pass
         assert!(s.validate().is_ok());
     }
@@ -1032,14 +1266,13 @@ mod tests {
 
     #[test]
     fn settings_from_env_server_url_is_none_by_default() {
-        // When AGENT_BUS_SERVER_URL is not set, server_url must be None.
-        // We can't guarantee the env state in a shared test runner, but we can
-        // verify the field exists and is Option<String>.
-        let s = Settings::from_env();
-        // server_url is either None or a non-empty string — never empty.
-        if let Some(ref url) = s.server_url {
-            assert!(!url.is_empty(), "server_url must not be an empty string");
-        }
+        with_server_url_env(None, None, || {
+            let s = Settings::from_env();
+            assert_eq!(s.server_url, None);
+            assert!(s.server_urls.is_empty());
+            assert!(s.hub_candidates.is_empty());
+            assert_eq!(s.hub_config_error, None);
+        });
     }
 
     #[test]
@@ -1051,7 +1284,7 @@ mod tests {
 
     #[test]
     fn log_non_fatal_warnings_disabled_when_machine_safe_enabled() {
-        let mut s = Settings::from_env();
+        let mut s = Settings::for_test();
         s.machine_safe = true;
         assert!(!s.log_non_fatal_warnings());
     }
@@ -1063,31 +1296,45 @@ mod tests {
     /// Serializes access to the `AGENT_BUS_SERVER_URL{,S}` env vars across
     /// this module's tests: `cargo test` runs tests in this file on multiple
     /// threads by default, and these vars are process-global.
-    #[expect(
-        clippy::semicolon_outside_block,
-        reason = "clippy::semicolon_outside_block and clippy::semicolon_if_nothing_returned \
-                  disagree on where the ; belongs for a multi-statement unsafe block used as a \
-                  statement; keeping the ; on each inner statement reads clearer here"
-    )]
     fn with_server_url_env<T>(urls: Option<&str>, url: Option<&str>, f: impl FnOnce() -> T) -> T {
+        struct RestoreEnvironment(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl Drop for RestoreEnvironment {
+            fn drop(&mut self) {
+                // SAFETY: the owning test retains LOCK until this guard drops.
+                unsafe {
+                    for (key, value) in &self.0 {
+                        match value {
+                            Some(value) => std::env::set_var(key, value),
+                            None => std::env::remove_var(key),
+                        }
+                    }
+                }
+            }
+        }
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         let _guard = LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Isolate from the host's real ~/.config/agent-bus/config.json: on a
-        // machine whose config lists server_urls (e.g. a roaming client), the
-        // "empty means local-only" assertions would otherwise read that file
-        // and fail. Point AGENT_BUS_CONFIG at a path that cannot exist.
-        let prev_config = std::env::var_os("AGENT_BUS_CONFIG");
-        let missing_config = std::env::temp_dir().join(format!(
-            "agent-bus-settings-test-no-config-{}.json",
-            std::process::id()
-        ));
+        // Isolate from the host's real config and every candidate env tier.
+        let _restore = RestoreEnvironment(
+            [
+                "AGENT_BUS_CONFIG",
+                "AGENT_BUS_SERVER_CANDIDATES",
+                "AGENT_BUS_SERVER_URLS",
+                "AGENT_BUS_SERVER_URL",
+            ]
+            .into_iter()
+            .map(|key| (key, std::env::var_os(key)))
+            .collect(),
+        );
+        let directory = tempfile::tempdir().expect("isolated settings fixture");
+        let missing_config = directory.path().join("config.json");
         // SAFETY: serialized by LOCK; no other thread touches these vars
         // while the guard is held (every test in this module goes through
         // this helper or leaves them untouched).
         unsafe {
             std::env::set_var("AGENT_BUS_CONFIG", &missing_config);
+            std::env::remove_var("AGENT_BUS_SERVER_CANDIDATES");
             match urls {
                 Some(v) => std::env::set_var("AGENT_BUS_SERVER_URLS", v),
                 None => std::env::remove_var("AGENT_BUS_SERVER_URLS"),
@@ -1097,17 +1344,7 @@ mod tests {
                 None => std::env::remove_var("AGENT_BUS_SERVER_URL"),
             }
         }
-        let result = f();
-        // SAFETY: same justification as above.
-        unsafe {
-            match prev_config {
-                Some(v) => std::env::set_var("AGENT_BUS_CONFIG", v),
-                None => std::env::remove_var("AGENT_BUS_CONFIG"),
-            }
-            std::env::remove_var("AGENT_BUS_SERVER_URLS");
-            std::env::remove_var("AGENT_BUS_SERVER_URL");
-        }
-        result
+        f()
     }
 
     #[test]
@@ -1172,10 +1409,10 @@ mod tests {
     fn server_urls_falls_back_to_config_list_when_env_absent() {
         with_server_url_env(None, None, || {
             let cfg = ConfigFile {
-                server_urls: Some(vec![
+                server_urls: Some(serde_json::json!([
                     "http://cfg-a:8400".to_owned(),
                     "http://cfg-b:8400".to_owned(),
-                ]),
+                ])),
                 ..ConfigFile::default()
             };
             assert_eq!(
@@ -1232,7 +1469,92 @@ mod tests {
         let cfg: ConfigFile = serde_json::from_str(json).expect("valid JSON");
         assert_eq!(
             cfg.server_urls,
-            Some(vec!["http://a:8400".to_owned(), "http://b:8400".to_owned()])
+            Some(serde_json::json!(["http://a:8400", "http://b:8400"]))
+        );
+    }
+
+    #[test]
+    fn object_candidates_preserve_token_sources_and_roles() {
+        with_server_url_env(None, None, || {
+            let cfg: ConfigFile = serde_json::from_value(serde_json::json!({
+                "server_urls": ["http://hub.lan:8400", {"url":"https://agentbus.example.com", "token_env":"CLOUD_AGENT_TOKEN", "role":"cloud"}]
+            })).expect("valid object configuration");
+            let (candidates, error) = resolve_candidate_settings(&cfg);
+            assert_eq!(error, None);
+            assert_eq!(candidates.len(), 2);
+            assert_eq!(candidates[1].role, crate::hub_candidates::HubRole::Cloud);
+            assert_eq!(
+                candidates[1].auth,
+                crate::hub_candidates::CandidateAuth::TokenEnv("CLOUD_AGENT_TOKEN".to_owned())
+            );
+        });
+    }
+
+    #[test]
+    fn explicit_json_tier_cannot_accidentally_create_local_mode() {
+        let cfg = ConfigFile {
+            server_url: Some("http://hub.lan:8400".to_owned()),
+            ..ConfigFile::default()
+        };
+        for raw in ["[]", "[\"\", \" \"]", "not-json"] {
+            let (candidates, error) = resolve_candidate_tiers(&cfg, Some(raw), None, None);
+            assert!(candidates.is_empty());
+            assert!(
+                error.is_some(),
+                "{raw} must block local I/O rather than override the configured hub"
+            );
+        }
+    }
+
+    #[test]
+    fn json_tier_preserves_its_cloud_credential_over_legacy_overrides() {
+        let (candidates, error) = resolve_candidate_tiers(
+            &ConfigFile::default(),
+            Some(
+                r#"[{"url":"https://cloud.example.com","role":"cloud","token_env":"CLOUD_TOKEN"}]"#,
+            ),
+            Some("http://legacy.lan:8400"),
+            Some("http://single.lan:8400"),
+        );
+        assert_eq!(error, None);
+        assert_eq!(candidates[0].url, "https://cloud.example.com");
+        assert_eq!(
+            candidates[0].auth,
+            crate::hub_candidates::CandidateAuth::TokenEnv("CLOUD_TOKEN".to_owned())
+        );
+        assert_eq!(candidates[0].role, crate::hub_candidates::HubRole::Cloud);
+    }
+
+    #[test]
+    fn candidate_typo_and_conflicting_duplicates_fail_closed() {
+        with_server_url_env(None, None, || {
+            for raw in [
+                serde_json::json!([{"url":"https://cloud.example.com","token_en":"CLOUD_TOKEN"}]),
+                serde_json::json!([{"url":"http://hub.lan:8400","role":"fallback"},{"url":"http://hub.lan:8400","role":"authoritative"}]),
+            ] {
+                let cfg = ConfigFile {
+                    server_urls: Some(raw),
+                    ..ConfigFile::default()
+                };
+                let (candidates, error) = resolve_candidate_settings(&cfg);
+                assert!(candidates.is_empty());
+                assert!(error.is_some());
+            }
+        });
+    }
+
+    #[test]
+    fn configuration_error_blocks_local_backend() {
+        let mut settings = Settings::for_test();
+        settings.hub_config_error = Some("invalid candidate configuration".to_owned());
+        settings.server_urls.clear();
+        settings.hub_candidates.clear();
+        assert!(
+            settings
+                .validate()
+                .expect_err("invalid configuration must never become local mode")
+                .to_string()
+                .contains("invalid candidate")
         );
     }
 
@@ -1279,11 +1601,11 @@ mod tests {
     fn server_urls_config_dedups_too() {
         with_server_url_env(None, None, || {
             let cfg = ConfigFile {
-                server_urls: Some(vec![
+                server_urls: Some(serde_json::json!([
                     "http://cfg-a:8400".to_owned(),
                     "http://cfg-b:8400".to_owned(),
                     "http://cfg-a:8400".to_owned(),
-                ]),
+                ])),
                 ..ConfigFile::default()
             };
             assert_eq!(
@@ -1308,10 +1630,10 @@ mod tests {
     fn server_urls_env_present_but_empty_falls_through_to_config_not_local_only() {
         with_server_url_env(Some(""), None, || {
             let cfg = ConfigFile {
-                server_urls: Some(vec![
+                server_urls: Some(serde_json::json!([
                     "http://cfg-a:8400".to_owned(),
                     "http://cfg-b:8400".to_owned(),
-                ]),
+                ])),
                 ..ConfigFile::default()
             };
             assert_eq!(

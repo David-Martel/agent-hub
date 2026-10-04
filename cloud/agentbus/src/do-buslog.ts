@@ -309,7 +309,12 @@ export class BusLog extends DurableObject<Env> {
     if (this.initialized) return;
     this.sql.exec(SCHEMA);
     this.initialized = true;
-    this.maybeScheduleRetention(this.env.RETENTION_DAYS);
+    this.ctx.waitUntil(
+      this.maybeScheduleRetention(this.env.RETENTION_DAYS).catch(() => {
+        // Background scheduling must not fail the write, but remains visible.
+        console.error("BusLog background retention alarm scheduling failed");
+      }),
+    );
   }
 
   // -- Messages --------------------------------------------------------------
@@ -1015,21 +1020,14 @@ export class BusLog extends DurableObject<Env> {
    * `ensureSchema()` in the first place.) Off by default (no alarm is ever
    * set when `RETENTION_DAYS` is unset/0/invalid), matching the task's "off
    * or long by default" requirement. */
-  maybeScheduleRetention(retentionDays: string | undefined): void {
+  async maybeScheduleRetention(retentionDays: string | undefined): Promise<void> {
     const days = Number(retentionDays);
     if (!retentionDays || !Number.isFinite(days) || days <= 0) return;
-    this.ctx.storage
-      .getAlarm()
-      .then((existing) => {
-        if (existing !== null) return undefined;
-        // Run roughly daily; the exact cadence doesn't matter as long as
-        // it's less than the retention window itself.
-        return this.ctx.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1000);
-      })
-      .catch(() => {
-        // Best-effort: a failure to schedule the alarm must never fail the
-        // write path that triggered this call.
-      });
+    const existing = await this.ctx.storage.getAlarm();
+    if (existing !== null) return;
+    // Direct RPC callers await completion and receive storage failures.
+    // Run roughly daily, less than the retention window itself.
+    await this.ctx.storage.setAlarm(Date.now() + 24 * 60 * 60 * 1000);
   }
 
   /** Test/ops-only accessor for the currently scheduled alarm time (ms

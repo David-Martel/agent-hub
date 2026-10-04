@@ -38,11 +38,14 @@ use crate::output::{
     Encoding, format_health_toon, output, output_message, output_messages, output_presence,
 };
 use crate::redis_bus::{bus_list_messages, connect};
+#[cfg(feature = "server-mode")]
 use crate::server_mode::{
-    active_hub_backend, http_get, http_post, http_put, offline_error, post_service_action,
-    query_windows_service_state, resolve_authoritative_claim_url, resolve_hub_url,
-    resolved_service_base_url, sc_action, service_status_payload, use_server_mode, wait_for_health,
-    wait_for_windows_service_state,
+    active_hub_backend, http_get, http_post, http_put, offline_error,
+    resolve_authoritative_claim_url, resolve_hub_url, use_server_mode,
+};
+use crate::server_mode::{
+    post_service_action, query_windows_service_state, resolved_service_base_url, sc_action,
+    service_status_payload, wait_for_health, wait_for_windows_service_state,
 };
 use crate::settings::{Settings, loopback_url_candidates};
 #[cfg(feature = "server-mode")]

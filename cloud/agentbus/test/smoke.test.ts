@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
-import { runDurableObjectAlarm } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { BusLog } from "../src/do-buslog";
+import type { Env } from "../src/env";
 
 describe("smoke: DO RPC + SQLite storage backend", () => {
   it("BusLog stub answers an RPC call", async () => {
@@ -138,47 +140,60 @@ describe("smoke: retention alarm (agent-hub#82, off by default)", () => {
     const id = env.BUS_LOG.idFromName(`retention-june-import-${crypto.randomUUID()}`);
     const stub = env.BUS_LOG.get(id);
 
-    // A message "authored" in June -- well past a 90-day window measured
-    // from its own timestamp_utc, but ingested into THIS store just now
-    // (insertMessage always stamps ingested_at_utc with the real current
-    // time, by design -- see do-buslog.ts).
-    const juneMessageId = crypto.randomUUID();
-    const { inserted } = await stub.insertMessage({
-      id: juneMessageId,
-      origin_hub: "asuspro13",
-      timestamp_utc: "2026-06-01T00:00:00.000000Z",
-      protocol_version: "1.0",
-      from: "codex",
-      to: "claude",
-      topic: "status",
-      body: "a June-dated historical import",
-      tags: [],
-      priority: "normal",
-      request_ack: false,
-      metadata: {},
-    });
-    expect(inserted).toBe(true);
+    await runInDurableObject(stub, async (_instance, state) => {
+      // A real production instance over this DO's actual SQLite state,
+      // with an explicit binding; never mutate the isolate's shared env.
+      const controlledEnv: Env = { ...env, RETENTION_DAYS: "90" };
+      const bus = new BusLog(state, controlledEnv);
+      const juneMessageId = crypto.randomUUID();
+      const expiredMessageId = crypto.randomUUID();
+      const message = {
+        origin_hub: "asuspro13",
+        timestamp_utc: "2026-06-01T00:00:00.000000Z",
+        protocol_version: "1.0",
+        from: "codex",
+        to: "claude",
+        topic: "status",
+        body: "a June-dated historical import",
+        tags: [],
+        priority: "normal",
+        request_ack: false,
+        metadata: {},
+      };
+      expect(bus.insertMessage({ ...message, id: juneMessageId }).inserted).toBe(true);
+      expect(bus.insertMessage({ ...message, id: expiredMessageId }).inserted).toBe(true);
 
-    // Exercise the real production code path: this.env.RETENTION_DAYS,
-    // read fresh by alarm() on every invocation. `env` here is the exact
-    // object the Workers runtime hands to every Durable Object
-    // construction in this isolate, so mutating it is visible to
-    // `this.env` inside the DO.
-    const previousRetentionDays = env.RETENTION_DAYS;
-    env.RETENTION_DAYS = "90";
-    try {
-      await stub.maybeScheduleRetention("90");
-      await runDurableObjectAlarm(stub);
-    } finally {
-      env.RETENTION_DAYS = previousRetentionDays;
-    }
+      // Only the control's cloud-ingest time expires. Both authored dates
+      // are old, so pruning authored time or doing nothing each fails.
+      state.storage.sql.exec(
+        "UPDATE messages SET ingested_at_utc = ? WHERE origin_hub = ? AND id = ?",
+        new Date(Date.now() - 91 * 24 * 60 * 60 * 1000).toISOString(),
+        "asuspro13",
+        expiredMessageId,
+      );
+      const query = {
+        agent: "claude",
+        since_ms: Date.parse("2026-01-01T00:00:00Z"),
+        limit: 100,
+        include_broadcast: true,
+      };
+      expect(bus.listMessages(query).map((row) => row.id).sort()).toEqual(
+        [juneMessageId, expiredMessageId].sort(),
+      );
 
-    const survivors = await stub.listMessages({
-      agent: "claude",
-      since_ms: Date.parse("2026-01-01T00:00:00Z"),
-      limit: 100,
-      include_broadcast: true,
+      await bus.maybeScheduleRetention(controlledEnv.RETENTION_DAYS);
+      expect(await bus.debugGetAlarmTime()).not.toBeNull();
+      // Match the real alarm lifecycle, then call the production handler
+      // on the instance whose retention binding we explicitly control.
+      await state.storage.deleteAlarm();
+      expect(await bus.debugGetAlarmTime()).toBeNull();
+      await bus.alarm();
+
+      const survivors = bus.listMessages(query);
+      expect(survivors.some((m) => m.id === juneMessageId)).toBe(true);
+      expect(survivors.some((m) => m.id === expiredMessageId)).toBe(false);
+      expect(survivors).toHaveLength(1);
+      expect(await bus.debugGetAlarmTime()).toBeGreaterThan(Date.now());
     });
-    expect(survivors.some((m) => m.id === juneMessageId)).toBe(true);
   });
 });

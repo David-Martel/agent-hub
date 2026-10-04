@@ -1,66 +1,157 @@
 //! Shared HTTP client helpers for CLI server-mode routing.
 
-use std::sync::OnceLock;
+#[cfg(feature = "server-mode")]
+use std::collections::HashMap;
+#[cfg(feature = "server-mode")]
+use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(any(feature = "server-mode", windows))]
 use std::time::Duration;
 
-use anyhow::{Context as _, Result};
+#[cfg(any(feature = "server-mode", windows))]
+use anyhow::Context as _;
+use anyhow::Result;
+#[cfg(feature = "server-mode")]
 use reqwest::StatusCode;
 
-use agent_bus_core::hub::{HubBackend, ProbeInfo, resolve_hub};
+#[cfg(feature = "server-mode")]
+use agent_bus_core::hub::HubBackend;
+#[cfg(feature = "server-mode")]
+use agent_bus_core::hub::{
+    ProbeInfo, invalidate_configured_cache, resolve_authoritative_hub, resolve_configured_hub,
+};
+#[cfg(feature = "server-mode")]
+use agent_bus_core::hub_candidates::{HubAuth, SystemEnv};
+#[cfg(feature = "server-mode")]
+use agent_bus_core::settings::redact_url;
 
 use crate::settings::Settings;
 
 #[cfg(feature = "server-mode")]
-static SERVER_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-
+type ClientResult = std::result::Result<Arc<reqwest::Client>, String>;
 #[cfg(feature = "server-mode")]
-const SERVER_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+static SERVER_CLIENTS: OnceLock<Mutex<HashMap<u64, ClientResult>>> = OnceLock::new();
+
 #[cfg(feature = "server-mode")]
 const SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Bearer token for cross-machine server-mode requests, resolved once from
-/// [`Settings`] (env `AGENT_BUS_AUTH_TOKEN` → `config.json` → `None`).
+/// Startup configuration; credentials themselves are resolved for each request.
 #[cfg(feature = "server-mode")]
-static SERVER_AUTH_TOKEN: OnceLock<Option<String>> = OnceLock::new();
+static SERVER_SETTINGS: OnceLock<Settings> = OnceLock::new();
 
-/// Record the configured auth token so server-mode requests can attach
-/// `Authorization: Bearer <token>`. Call once after settings are loaded and
-/// before any server-mode HTTP call. No-op if the HTTP client was already
-/// built.
+/// Record candidate configuration before the first server-mode request.
 #[cfg(feature = "server-mode")]
 pub(crate) fn init_server_auth(settings: &Settings) {
-    let _ = SERVER_AUTH_TOKEN.set(settings.auth_token.clone());
+    let _ = SERVER_SETTINGS.set(settings.clone());
 }
 
 #[cfg(not(feature = "server-mode"))]
 pub(crate) fn init_server_auth(_settings: &Settings) {}
 
 #[cfg(feature = "server-mode")]
-fn server_client() -> &'static reqwest::Client {
-    SERVER_CLIENT.get_or_init(|| {
-        let mut builder = reqwest::Client::builder()
-            .connect_timeout(SERVER_CONNECT_TIMEOUT)
-            .timeout(SERVER_REQUEST_TIMEOUT);
-        if let Some(Some(token)) = SERVER_AUTH_TOKEN.get()
-            && let Ok(mut header) =
-                reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
-        {
-            header.set_sensitive(true);
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert(reqwest::header::AUTHORIZATION, header);
-            builder = builder.default_headers(headers);
-        }
-        builder.build().unwrap_or_else(|_| reqwest::Client::new())
+fn server_settings() -> Settings {
+    SERVER_SETTINGS
+        .get()
+        .cloned()
+        .unwrap_or_else(Settings::from_env)
+}
+
+#[cfg(feature = "server-mode")]
+fn client_for_settings(settings: &Settings) -> Result<Arc<reqwest::Client>> {
+    let mut clients = SERVER_CLIENTS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .map_err(|_error| anyhow::anyhow!("guarded HTTP client cache lock poisoned"))?;
+    clients
+        .entry(settings.probe_connect_timeout_ms)
+        .or_insert_with(|| {
+            reqwest::Client::builder()
+                .connect_timeout(Duration::from_millis(settings.probe_connect_timeout_ms))
+                .timeout(SERVER_REQUEST_TIMEOUT)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .map(Arc::new)
+                .map_err(|error| {
+                    format!("failed to build guarded server-mode HTTP client: {error}")
+                })
+        })
+        .clone()
+        .map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+#[cfg(feature = "server-mode")]
+fn server_client() -> Result<Arc<reqwest::Client>> {
+    client_for_settings(&server_settings())
+}
+
+#[cfg(feature = "server-mode")]
+fn authed_request(
+    settings: &Settings,
+    url: &str,
+    request: reqwest::RequestBuilder,
+) -> Result<reqwest::RequestBuilder> {
+    reject_hub_config_error(settings)?;
+    let auth = HubAuth::new(
+        settings.auth_token.clone(),
+        settings.effective_hub_candidates(),
+    );
+    let token = auth
+        .credential_for_url(url, &SystemEnv)
+        .map_err(|reason| anyhow::anyhow!("refusing request to {}: {reason}", redact_url(url)))?;
+    Ok(match token {
+        Some(token) => request.bearer_auth(token.expose()),
+        None => request,
     })
 }
 
 #[cfg(feature = "server-mode")]
-fn server_auth_configured() -> bool {
-    matches!(SERVER_AUTH_TOKEN.get(), Some(Some(token)) if !token.trim().is_empty())
+fn reject_hub_config_error(settings: &Settings) -> Result<()> {
+    if let Some(error) = &settings.hub_config_error {
+        anyhow::bail!("invalid hub candidate configuration: {error}");
+    }
+    if !(1..=30_000).contains(&settings.probe_connect_timeout_ms) {
+        anyhow::bail!("probe_connect_timeout_ms must be between 1 and 30000");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "server-mode")]
+async fn send_json(
+    settings: &Settings,
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+    payload: Option<&serde_json::Value>,
+    timeout: Option<Duration>,
+) -> Result<serde_json::Value> {
+    let mut request = authed_request(settings, url, client.request(method.clone(), url))?;
+    if let Some(payload) = payload {
+        request = request.json(payload);
+    }
+    if let Some(timeout) = timeout {
+        request = request.timeout(timeout);
+    }
+    let request = request
+        .build()
+        .context("failed to build guarded hub request")?;
+    let sent_token = request
+        .headers()
+        .get(reqwest::header::AUTHORIZATION)
+        .and_then(|header| header.to_str().ok())
+        .and_then(|header| header.strip_prefix("Bearer "))
+        .map(str::to_owned);
+    let response = client
+        .execute(request)
+        .await
+        .inspect_err(|_| invalidate_configured_cache(settings))
+        .with_context(|| format!("{method} {url} failed"))?;
+    decode_json_response(method.as_str(), url, response, sent_token.as_deref())
+        .await
+        .inspect_err(|_| invalidate_configured_cache(settings))
 }
 
 #[cfg(feature = "server-mode")]
 fn http_status_error(method: &str, url: &str, status: StatusCode, body: &str) -> anyhow::Error {
+    let url = redact_url(url);
     let body = body.trim();
     let body = if body.is_empty() {
         "<empty response body>"
@@ -68,12 +159,12 @@ fn http_status_error(method: &str, url: &str, status: StatusCode, body: &str) ->
         body
     };
 
-    if status == StatusCode::UNAUTHORIZED && !server_auth_configured() {
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
         anyhow::anyhow!(
-            "{method} {url} returned HTTP {status}: {body}. \
-             The AgentHub service requires bearer-token auth, but this client has no \
-             AGENT_BUS_AUTH_TOKEN/auth_token configured. Set AGENT_BUS_AUTH_TOKEN or \
-             add auth_token to AGENT_BUS_CONFIG (~/.config/agent-bus/config.json)."
+            "{method} {url} returned HTTP {status}. \
+             The AgentHub service requires bearer-token auth. Check this candidate's \
+             token_file/token_env or the permitted AGENT_BUS_AUTH_TOKEN/auth_token configuration; \
+             never reuse the on-site token for a public cloud candidate."
         )
     } else {
         anyhow::anyhow!("{method} {url} returned HTTP {status}: {body}")
@@ -85,6 +176,7 @@ async fn decode_json_response(
     method: &str,
     url: &str,
     response: reqwest::Response,
+    sent_token: Option<&str>,
 ) -> Result<serde_json::Value> {
     let status = response.status();
     let text = response
@@ -94,18 +186,51 @@ async fn decode_json_response(
     let parsed = serde_json::from_str::<serde_json::Value>(&text);
 
     if !status.is_success() {
-        return match parsed {
-            Ok(body) => Err(http_status_error(method, url, status, &body.to_string())),
-            Err(_) => Err(http_status_error(method, url, status, &text)),
+        let diagnostic = match &parsed {
+            Ok(body) => redact_json_body(body, sent_token).to_string(),
+            Err(_) => "<non-JSON response body omitted>".to_owned(),
         };
+        return Err(http_status_error(method, url, status, &diagnostic));
     }
 
-    parsed.with_context(|| {
-        format!(
-            "{method} {url} returned HTTP {status} but the response was not JSON: {}",
-            text.trim()
-        )
+    parsed.map_err(|error| {
+        anyhow::anyhow!("{method} {} returned HTTP {status} but the response was not JSON (line {}, column {}); response body omitted",
+            redact_url(url), error.line(), error.column())
     })
+}
+
+#[cfg(feature = "server-mode")]
+fn redact_sent_token(text: &str, sent_token: Option<&str>) -> String {
+    match sent_token.filter(|token| !token.is_empty()) {
+        Some(token) => text.replace(token, "<redacted>"),
+        None => text.to_owned(),
+    }
+}
+
+#[cfg(feature = "server-mode")]
+fn redact_json_body(body: &serde_json::Value, sent_token: Option<&str>) -> serde_json::Value {
+    use serde_json::Value;
+    match body {
+        Value::String(text) => Value::String(redact_sent_token(text, sent_token)),
+        Value::Array(values) => Value::Array(
+            values
+                .iter()
+                .map(|value| redact_json_body(value, sent_token))
+                .collect(),
+        ),
+        Value::Object(fields) => Value::Object(
+            fields
+                .iter()
+                .map(|(key, value)| {
+                    (
+                        redact_sent_token(key, sent_token),
+                        redact_json_body(value, sent_token),
+                    )
+                })
+                .collect(),
+        ),
+        _ => body.clone(),
+    }
 }
 
 #[cfg(feature = "server-mode")]
@@ -129,20 +254,32 @@ fn run_server_future<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
 /// `AGENT_BUS_SERVER_URL`) is enough to opt a command into server mode (#78).
 #[cfg(feature = "server-mode")]
 pub(crate) fn use_server_mode(settings: &Settings) -> bool {
-    !settings.server_urls.is_empty()
+    settings.hub_config_error.is_some() || !settings.server_urls.is_empty()
 }
 
-#[cfg(not(feature = "server-mode"))]
-pub(crate) fn use_server_mode(_settings: &Settings) -> bool {
-    false
-}
-
-/// Probe one candidate hub's `/health` for [`resolve_hub`]. Returns `None` on
+/// Probe one candidate hub's `/health` for [`resolve_configured_hub`]. Returns `None` on
 /// any failure — unreachable, timeout, non-2xx, or an unparseable body —
-/// [`resolve_hub`] does not distinguish why a probe failed.
+/// [`resolve_configured_hub`] does not distinguish why a probe failed.
 #[cfg(feature = "server-mode")]
-fn probe_hub_health(url: &str) -> Option<ProbeInfo> {
-    let health = http_get(&format!("{url}/health")).ok()?;
+fn probe_hub_health(settings: &Settings, url: &str) -> Option<ProbeInfo> {
+    let client = client_for_settings(settings).ok()?;
+    let health_url = format!("{url}/health");
+    let health = match run_server_future(send_json(
+        settings,
+        &client,
+        reqwest::Method::GET,
+        &health_url,
+        None,
+        Some(Duration::from_millis(settings.probe_connect_timeout_ms)),
+    )) {
+        Ok(health) => health,
+        Err(error) => {
+            // send_json already scrubs the actual sent credential from
+            // diagnostics; never log request headers or raw response bodies.
+            tracing::debug!(hub = %redact_url(url), error = %format!("{error:#}"), "hub health probe failed");
+            return None;
+        }
+    };
     Some(ProbeInfo {
         build_version: health
             .get("build_version")
@@ -159,17 +296,13 @@ fn probe_hub_health(url: &str) -> Option<ProbeInfo> {
 /// exactly the split-brain island #78 reports.
 #[cfg(feature = "server-mode")]
 pub(crate) fn active_hub_backend(settings: &Settings) -> HubBackend {
-    resolve_hub(&settings.server_urls, probe_hub_health)
-}
-
-#[cfg(not(feature = "server-mode"))]
-pub(crate) fn active_hub_backend(_settings: &Settings) -> HubBackend {
-    HubBackend::Local
+    resolve_configured_hub(settings, &mut |url: &str| probe_hub_health(settings, url))
 }
 
 /// Render an `HubBackend::Offline` state as the loud, explicit error used by
 /// CLI commands that must refuse rather than silently read or write a local
 /// store when no configured hub candidate answered.
+#[cfg(feature = "server-mode")]
 pub(crate) fn offline_error(command: &str, tried: &[String]) -> anyhow::Error {
     anyhow::anyhow!(
         "{command}: offline: no authoritative hub reachable (tried {tried:?}). This client is \
@@ -188,6 +321,7 @@ pub(crate) fn offline_error(command: &str, tried: &[String]) -> anyhow::Error {
 /// once a second, later hub tier exists (e.g. a Cloudflare-hosted fallback),
 /// there must be exactly one claims authority, never a grant against
 /// whichever candidate happened to answer.
+#[cfg(feature = "server-mode")]
 pub(crate) fn claim_pending_error(command: &str, tried: &[String]) -> anyhow::Error {
     anyhow::anyhow!(
         "{command}: claim pending: no authoritative hub reachable (tried {tried:?}); exclusive \
@@ -209,6 +343,7 @@ pub(crate) fn claim_pending_error(command: &str, tried: &[String]) -> anyhow::Er
 /// call site guards on [`use_server_mode`] first).
 #[cfg(feature = "server-mode")]
 pub(crate) fn resolve_hub_url(settings: &Settings, command: &str) -> Result<String> {
+    reject_hub_config_error(settings)?;
     match active_hub_backend(settings) {
         HubBackend::Remote { url, .. } => Ok(url),
         HubBackend::Offline { tried } => Err(offline_error(command, &tried)),
@@ -237,7 +372,8 @@ pub(crate) fn resolve_authoritative_claim_url(
     settings: &Settings,
     command: &str,
 ) -> Result<String> {
-    match active_hub_backend(settings) {
+    reject_hub_config_error(settings)?;
+    match resolve_authoritative_hub(settings, &mut |url: &str| probe_hub_health(settings, url)) {
         HubBackend::Remote {
             url,
             authoritative: true,
@@ -262,20 +398,16 @@ pub(crate) fn resolve_authoritative_claim_url(
 /// or JSON deserialisation fails.
 #[cfg(feature = "server-mode")]
 pub(crate) fn http_get(url: &str) -> Result<serde_json::Value> {
-    let url = url.to_owned();
-    run_server_future(async move {
-        let response = server_client()
-            .get(&url)
-            .send()
-            .await
-            .with_context(|| format!("GET {url} failed"))?;
-        decode_json_response("GET", &url, response).await
-    })
-}
-
-#[cfg(not(feature = "server-mode"))]
-pub(crate) fn http_get(_url: &str) -> Result<serde_json::Value> {
-    anyhow::bail!("HTTP GET requires the 'server-mode' feature")
+    let settings = server_settings();
+    let client = server_client()?;
+    run_server_future(send_json(
+        &settings,
+        &client,
+        reqwest::Method::GET,
+        url,
+        None,
+        None,
+    ))
 }
 
 /// Performs a `POST` request with a JSON body and returns the parsed JSON
@@ -287,22 +419,16 @@ pub(crate) fn http_get(_url: &str) -> Result<serde_json::Value> {
 /// or JSON deserialisation fails.
 #[cfg(feature = "server-mode")]
 pub(crate) fn http_post(url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
-    let url = url.to_owned();
-    let payload = body.clone();
-    run_server_future(async move {
-        let response = server_client()
-            .post(&url)
-            .json(&payload)
-            .send()
-            .await
-            .with_context(|| format!("POST {url} failed"))?;
-        decode_json_response("POST", &url, response).await
-    })
-}
-
-#[cfg(not(feature = "server-mode"))]
-pub(crate) fn http_post(_url: &str, _body: &serde_json::Value) -> Result<serde_json::Value> {
-    anyhow::bail!("HTTP POST requires the 'server-mode' feature")
+    let settings = server_settings();
+    let client = server_client()?;
+    run_server_future(send_json(
+        &settings,
+        &client,
+        reqwest::Method::POST,
+        url,
+        Some(body),
+        None,
+    ))
 }
 
 /// Performs a `PUT` request with a JSON body and returns the parsed JSON
@@ -313,22 +439,16 @@ pub(crate) fn http_post(_url: &str, _body: &serde_json::Value) -> Result<serde_j
 /// Returns an error on network failure, non-2xx response, or JSON error.
 #[cfg(feature = "server-mode")]
 pub(crate) fn http_put(url: &str, body: &serde_json::Value) -> Result<serde_json::Value> {
-    let url = url.to_owned();
-    let payload = body.clone();
-    run_server_future(async move {
-        let response = server_client()
-            .put(&url)
-            .json(&payload)
-            .send()
-            .await
-            .with_context(|| format!("PUT {url} failed"))?;
-        decode_json_response("PUT", &url, response).await
-    })
-}
-
-#[cfg(not(feature = "server-mode"))]
-pub(crate) fn http_put(_url: &str, _body: &serde_json::Value) -> Result<serde_json::Value> {
-    anyhow::bail!("HTTP PUT requires the 'server-mode' feature")
+    let settings = server_settings();
+    let client = server_client()?;
+    run_server_future(send_json(
+        &settings,
+        &client,
+        reqwest::Method::PUT,
+        url,
+        Some(body),
+        None,
+    ))
 }
 
 pub(crate) fn resolved_service_base_url(settings: &Settings, base_url: Option<&str>) -> String {
@@ -374,13 +494,17 @@ pub(crate) fn wait_for_health(base_url: &str, timeout_seconds: u64) -> Result<se
     #[cfg(feature = "server-mode")]
     {
         let base_url = base_url.to_owned();
+        let settings = server_settings();
+        reject_hub_config_error(&settings)?;
         run_server_future(async move {
             let deadline =
                 tokio::time::Instant::now() + Duration::from_secs(timeout_seconds.max(1));
             let health_url = format!("{base_url}/health");
 
             loop {
-                if let Ok(response) = server_client().get(&health_url).send().await
+                let request =
+                    authed_request(&settings, &health_url, server_client()?.get(&health_url))?;
+                if let Ok(response) = request.send().await
                     && response.status().is_success()
                 {
                     let body: serde_json::Value = response
@@ -520,6 +644,321 @@ pub(crate) fn service_status_payload(
 #[cfg(all(test, feature = "server-mode"))]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+
+    fn isolated_settings() -> Settings {
+        let mut settings = Settings::from_env();
+        settings.server_url = None;
+        settings.server_urls.clear();
+        settings.hub_candidates.clear();
+        settings.hub_config_error = None;
+        settings.hub_cache_ttl_seconds = 0;
+        settings.auth_token = None;
+        settings.probe_connect_timeout_ms = 750;
+        settings
+    }
+
+    fn capture_mock(
+        status: u16,
+        extra_headers: String,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        let body = if status == 401 {
+            r#"{"error":"reflected synthetic-cli-rejected-token"}"#
+        } else {
+            r#"{"ok":true}"#
+        };
+        capture_mock_body(status, extra_headers, body)
+    }
+
+    fn capture_mock_body(
+        status: u16,
+        extra_headers: String,
+        body: &'static str,
+    ) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind CLI fixture");
+        listener.set_nonblocking(true).expect("nonblocking fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let handle = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "CLI fixture accept timed out"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("CLI fixture accept failed: {error}"),
+                }
+            };
+            stream
+                .set_nonblocking(false)
+                .expect("blocking fixture stream");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("fixture read timeout");
+            let mut reader = BufReader::new(stream.try_clone().expect("clone fixture stream"));
+            let mut headers = String::new();
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("read request header");
+                if line.trim().is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse::<usize>().expect("content length");
+                }
+                headers.push_str(&line);
+            }
+            reader
+                .read_exact(&mut vec![0; length])
+                .expect("drain request body");
+            write!(stream, "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{extra_headers}\r\n{body}", body.len()).expect("write fixture response");
+            stream.flush().expect("flush fixture response");
+            headers.to_lowercase()
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    #[test]
+    fn real_cli_post_and_put_resolve_rotated_candidate_file_without_global_token() {
+        use agent_bus_core::hub_candidates::{CandidateAuth, HubCandidate, HubRole};
+        let (first, first_handle) = capture_mock(200, String::new());
+        let (second, second_handle) = capture_mock(200, String::new());
+        let file = tempfile::NamedTempFile::new().expect("synthetic token file");
+        std::fs::write(file.path(), "cli-candidate-before").expect("write fixture token");
+        let mut settings = isolated_settings();
+        settings.auth_token = Some("global-onsite-must-not-leak".to_owned());
+        settings.server_urls = vec![first.clone(), second.clone()];
+        settings.hub_candidates = settings
+            .server_urls
+            .iter()
+            .map(|url| HubCandidate {
+                url: url.clone(),
+                role: HubRole::Cloud,
+                auth: CandidateAuth::TokenFile(file.path().to_string_lossy().into_owned()),
+            })
+            .collect();
+        let client = client_for_settings(&settings).expect("guarded client");
+        let body = serde_json::json!({"fixture":true});
+        run_server_future(send_json(
+            &settings,
+            &client,
+            reqwest::Method::POST,
+            &format!("{first}/messages"),
+            Some(&body),
+            None,
+        ))
+        .expect("first request");
+        std::fs::write(file.path(), "cli-candidate-after").expect("rotate fixture token");
+        run_server_future(send_json(
+            &settings,
+            &client,
+            reqwest::Method::PUT,
+            &format!("{second}/presence/fixture"),
+            Some(&body),
+            None,
+        ))
+        .expect("second request");
+        let before = first_handle.join().expect("first fixture completion");
+        let after = second_handle.join().expect("second fixture completion");
+        assert!(before.starts_with("post /messages "));
+        assert!(after.starts_with("put /presence/fixture "));
+        assert!(before.contains("authorization: bearer cli-candidate-before\r\n"));
+        assert!(after.contains("authorization: bearer cli-candidate-after\r\n"));
+        assert!(!before.contains("global-onsite-must-not-leak"));
+        assert!(!after.contains("global-onsite-must-not-leak"));
+    }
+
+    #[test]
+    fn real_cli_get_does_not_follow_redirect_or_forward_onsite_token() {
+        let target = TcpListener::bind("127.0.0.1:0").expect("bind redirect target");
+        target.set_nonblocking(true).expect("nonblocking target");
+        let (source, handle) = capture_mock(
+            302,
+            format!(
+                "Location: http://{}/messages\r\n",
+                target.local_addr().expect("target address")
+            ),
+        );
+        let mut settings = isolated_settings();
+        settings.auth_token = Some("synthetic-cli-onsite-token".to_owned());
+        settings.server_urls = vec![source.clone()];
+        let client = client_for_settings(&settings).expect("guarded client");
+        let error = run_server_future(send_json(
+            &settings,
+            &client,
+            reqwest::Method::GET,
+            &format!("{source}/messages"),
+            None,
+            None,
+        ))
+        .expect_err("redirect must fail");
+        assert!(error.to_string().contains("HTTP 302"));
+        let headers = handle.join().expect("redirect fixture completion");
+        assert!(headers.contains("authorization: bearer synthetic-cli-onsite-token\r\n"));
+        assert_eq!(
+            target
+                .accept()
+                .expect_err("redirect target must not connect")
+                .kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn real_cli_request_rejects_invalid_configuration_before_connecting() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind invalid-config fixture");
+        listener.set_nonblocking(true).expect("nonblocking fixture");
+        let url = format!(
+            "http://{}/health",
+            listener.local_addr().expect("fixture address")
+        );
+        let mut settings = isolated_settings();
+        settings.hub_config_error = Some("unknown hub option".to_owned());
+        let client = client_for_settings(&settings).expect("guarded client");
+        let error = run_server_future(send_json(
+            &settings,
+            &client,
+            reqwest::Method::GET,
+            &url,
+            None,
+            None,
+        ))
+        .expect_err("invalid configuration must fail");
+        assert!(error.to_string().contains("unknown hub option"));
+        assert!(
+            use_server_mode(&settings),
+            "invalid candidates must never choose local mode"
+        );
+        assert_eq!(
+            listener
+                .accept()
+                .expect_err("invalid config must not connect")
+                .kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn real_cli_unauthorized_response_keeps_candidate_auth_guidance_without_token() {
+        let (url, handle) = capture_mock(401, "WWW-Authenticate: Bearer\r\n".to_owned());
+        let mut settings = isolated_settings();
+        settings.auth_token = Some("synthetic-cli-rejected-token".to_owned());
+        settings.server_urls = vec![url.clone()];
+        let client = client_for_settings(&settings).expect("guarded client");
+        let error = run_server_future(send_json(
+            &settings,
+            &client,
+            reqwest::Method::GET,
+            &format!("{url}/messages"),
+            None,
+            None,
+        ))
+        .expect_err("401 must fail");
+        assert!(error.to_string().contains("token_file/token_env"));
+        assert!(error.to_string().contains("HTTP 401"));
+        assert!(!error.to_string().contains("synthetic-cli-rejected-token"));
+        let headers = handle.join().expect("401 fixture completion");
+        assert!(headers.contains("authorization: bearer synthetic-cli-rejected-token\r\n"));
+    }
+
+    #[test]
+    fn cli_client_factory_reuses_the_exact_client_for_the_same_timeout() {
+        let settings = isolated_settings();
+        let first = client_for_settings(&settings).expect("first guarded client");
+        let second = client_for_settings(&settings).expect("second guarded client");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "probes must reuse the actual TLS client and connection pool"
+        );
+        let mut changed = settings.clone();
+        changed.probe_connect_timeout_ms += 1;
+        let different = client_for_settings(&changed).expect("different timeout client");
+        assert!(
+            !Arc::ptr_eq(&first, &different),
+            "different timeout policies require distinct clients"
+        );
+    }
+
+    #[test]
+    fn reflected_bearer_in_escaped_json_and_malformed_success_is_never_in_cli_errors() {
+        for (status, body) in [
+            (
+                500,
+                r#"{"error":"maintenance \u0061bc\/def", "\u0061bc\/def":"nested reflection \u0061bc\/def"}"#,
+            ),
+            (200, "not-json abc/def"),
+        ] {
+            let (url, handle) = capture_mock_body(status, String::new(), body);
+            let mut settings = isolated_settings();
+            settings.auth_token = Some("abc/def".to_owned());
+            settings.server_urls = vec![url.clone()];
+            let client = client_for_settings(&settings).expect("guarded client");
+            let error = run_server_future(send_json(
+                &settings,
+                &client,
+                reqwest::Method::GET,
+                &format!("{url}/messages"),
+                None,
+                None,
+            ))
+            .expect_err("fixture response must fail");
+            let message = format!("{error:#}");
+            assert!(!message.contains("abc/def"), "sent token must be redacted");
+            if status == 500 {
+                assert!(
+                    message.contains("maintenance"),
+                    "useful diagnostic must remain"
+                );
+                assert!(
+                    message.contains("<redacted>"),
+                    "decoded keys and strings must be scrubbed"
+                );
+            } else {
+                assert!(message.contains("response body omitted"));
+            }
+            let headers = handle.join().expect("reflection fixture completion");
+            assert!(
+                headers.contains("authorization: bearer abc/def\r\n"),
+                "fixture must receive the token actually tested"
+            );
+        }
+    }
+
+    #[test]
+    fn successful_cli_business_payload_is_not_changed_by_diagnostic_redaction() {
+        let (url, handle) = capture_mock_body(200, String::new(), r#"{"business":"abc/def"}"#);
+        let mut settings = isolated_settings();
+        settings.auth_token = Some("abc/def".to_owned());
+        settings.server_urls = vec![url.clone()];
+        let client = client_for_settings(&settings).expect("guarded client");
+        let value = run_server_future(send_json(
+            &settings,
+            &client,
+            reqwest::Method::GET,
+            &format!("{url}/messages"),
+            None,
+            None,
+        ))
+        .expect("valid business response");
+        assert_eq!(
+            value["business"], "abc/def",
+            "only diagnostic copies may be scrubbed"
+        );
+        assert!(
+            handle
+                .join()
+                .expect("fixture completion")
+                .contains("authorization: bearer abc/def\r\n")
+        );
+    }
 
     #[test]
     fn http_status_error_explains_missing_bearer_token() {
@@ -557,34 +996,67 @@ mod tests {
     /// by every `server-mode` HTTP call (`http_get`/`http_post`/`http_put`),
     /// not a hand-rolled client.
     ///
-    /// Connect-level test, not a full TLS handshake against a real
-    /// certificate: the discriminator is the shape of the failure against an
-    /// address nothing listens on. Confirmed empirically before the `rustls`
-    /// feature was added to this crate's `reqwest` dependency: connecting to
-    /// `https://127.0.0.1:1/health` with NO TLS backend linked fails
-    /// immediately with `"invalid URL, scheme is not http"` (reqwest refuses
-    /// to even attempt the connection); with `rustls` linked, the same
-    /// request instead fails with `"tcp connect error"` (connection
-    /// refused), proving the scheme was accepted and a real socket connect
-    /// was attempted. `anyhow::Error`'s alternate `{:#}` `Display` is used to
-    /// print the full context chain (`http_get`'s `.with_context()` message
-    /// plus the underlying `reqwest::Error` and its own source chain) --
-    /// plain `{}`/`.to_string()` only prints the outermost context frame.
+    /// The real TCP peer records a TLS `ClientHello` before closing without a
+    /// certificate. This proves TLS support independently of platform-specific
+    /// connection-refused/timeout diagnostics, without trusting a test CA.
     #[test]
     fn server_client_accepts_https_candidates_for_the_cloud_hub_tier() {
-        let result = http_get("https://127.0.0.1:1/health");
-        let message = format!("{:#}", result.expect_err("port 1 must not have a listener"));
+        let mut settings = isolated_settings();
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind TLS fixture");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking TLS fixture");
+        let url = format!("https://{}", listener.local_addr().expect("TLS address"));
+        let peer = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "TLS fixture accept timed out"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("TLS fixture accept failed: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).expect("blocking TLS stream");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("TLS read deadline");
+            let mut header = [0; 6];
+            stream
+                .read_exact(&mut header)
+                .expect("read TLS ClientHello");
+            header
+        });
+        settings.server_urls = vec![url.clone()];
+        let client = client_for_settings(&settings).expect("guarded HTTPS client");
+        let result = run_server_future(send_json(
+            &settings,
+            &client,
+            reqwest::Method::GET,
+            &format!("{url}/health"),
+            None,
+            None,
+        ));
+        let message = format!(
+            "{:#}",
+            result.expect_err("peer closes without a TLS certificate")
+        );
+        let header = peer.join().expect("TLS peer completion");
+        assert_eq!(header[0], 0x16, "TLS handshake record required");
+        assert_eq!(header[1], 0x03, "TLS record major version required");
+        assert_eq!(header[5], 0x01, "TLS ClientHello required");
+        assert!(u16::from_be_bytes([header[3], header[4]]) >= 4);
 
         assert!(
             !message.to_lowercase().contains("scheme is not http"),
             "https:// was rejected before any connection was attempted -- the \
              `rustls` feature is missing from agent-bus-cli's reqwest dependency; \
              got: {message}"
-        );
-        assert!(
-            message.contains("tcp connect error"),
-            "expected a real TCP connect attempt (and failure) once the scheme \
-             was accepted; got: {message}"
         );
     }
 }

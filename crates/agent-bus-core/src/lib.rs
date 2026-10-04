@@ -10,6 +10,8 @@ pub mod codex_bridge;
 pub mod error;
 pub mod history_catalog;
 pub mod hub;
+pub mod hub_cache;
+pub mod hub_candidates;
 pub mod journal;
 pub mod mcp_dispatch;
 pub mod models;

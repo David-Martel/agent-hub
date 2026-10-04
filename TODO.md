@@ -1,5 +1,47 @@
 # Agent Bus - Active Roadmap
 
+## October 4 fleet handoff
+
+- [ ] Complete and independently review per-candidate credential isolation,
+  role-aware claims, guarded CLI/MCP transports and last-good cache; bind
+  formatting, strict Clippy, real transport tests and hosted CI to the PR head.
+  Final local gates pass: 935 unit, 12 routing and 7 cloud wire fixtures,
+  strict Clippy, minimal CLI and security audit. Routing also passes with
+  invalid inherited candidate configuration and proxy settings. Independent
+  source review is clear; required hosted checks and rollout remain pending.
+- [ ] Merge a validated PR and install hash-verified binaries on DTM-P1GEN7,
+  ASUS and the Sparks; validate each fresh CLI/MCP source path separately.
+- [x] Correct DTM-P1GEN7 SessionStart routing so it respects the candidate
+  list; validate bounded calls and distinct host/session identities. Fleet
+  deployment and future client-process qualification remain separate gates.
+- [x] Make Cloudflare retention scheduling awaitable and validate both
+  fresh historical ingestion and expired-ingest pruning against real
+  Durable Object SQLite; local typecheck and all 171 tests pass. Production
+  deployment parity remains unverified.
+- [x] Isolate the standalone functional harness from inherited routing
+  tiers and require disposable loopback backend inputs before it can publish
+  probes; 40 regression cases validate rejection, isolation, forced degraded
+  execution and restoration/cleanup. Real disposable-service smoke and
+  hosted CI remain separate gates.
+- [ ] Coordinate cloud agent-role tokens with Claude-ASUS, preserving the
+  full existing write-only token map; obtain retired-credential revocation
+  evidence separately from client source hardening.
+- [ ] Implement/validate on-site sync and required cloud MCP/CLI routes,
+  then claims forwarding, outbox (#80) and historical import. Do not add
+  the cloud fleet candidate before these gates pass.
+- [ ] Confirm current Cloudflare deployment/source parity and role-specific
+  authentication/storage behavior; public reachability alone is insufficient.
+- [ ] Resolve the remaining Cloudflare geographic/ASN policy with its owner.
+- [ ] Reconcile DTM-WORK/DTM-SUPER-NUC client/MCP configuration and tooling
+  while preserving their active agents and dirty repos; review local bus guidance.
+- [x] Repair PC_AI GitOps publication, inspection failure visibility and
+  worker overlap/environment handling. PC_AI PR #174 is merged after 15 local
+  regressions, real Windows launcher checks, independent review and all 11
+  hosted checks. A real pre-push monitor message was read back on the ASUS hub.
+- [ ] Reconcile the workstation's conflicting OpenPGP executable overrides
+  and signing-provider cache without interrupting shared agents. These changes
+  use the existing GitHub-verified SSH signing key with normal hooks/signing.
+
 Structural execution plan:
 - See [`agents.TODO.md`](./agents.TODO.md) for remaining surface-thinning work.
 - Code-grounded status snapshot: [`docs/current-status-2026-06-13.md`](./docs/current-status-2026-06-13.md).

@@ -4,6 +4,13 @@ Rust-native coordination bus for Codex, Claude, Gemini, and local sub-agents.
 Redis for live transport, PostgreSQL for durable history and presence-event
 persistence. Deprecated Python runtime code has been removed.
 
+Remote clients use the configured ordered hub list, per-candidate credential
+sources and explicit authority roles. See
+[candidate authentication and rollout](docs/per-candidate-hub-auth-20261004.md).
+Public Cloudflare health success does not prove MCP or fleet synchronization
+support; keep the cloud tier out of fleet configuration until its separate
+route, credential and replication gates pass.
+
 ## Crate Map
 
 The workspace contains exactly four crates. `rust-cli` has been removed.

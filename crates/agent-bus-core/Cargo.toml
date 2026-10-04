@@ -30,6 +30,7 @@ smallvec = { version = "1", features = ["serde"] }
 rmp-serde = "1"
 regex-lite = "0.1"
 sha2 = "0.11"
+url = "2"
 
 [dev-dependencies]
 tempfile = "3"

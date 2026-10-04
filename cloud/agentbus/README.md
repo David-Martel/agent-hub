@@ -397,10 +397,23 @@ Object namespaces, and (for the custom domain) zone DNS/Routes permission.
    redeploy. Per `DTMVentures/headscale-ops` policy, `agentbus` is a generic
    name — no fleet device name (asuspro13, spark-*, vigil1, dtm-p1gen7, ...)
    may ever appear in public DNS for this zone.
-6. **Point a client at it**: `AGENT_BUS_SERVER_URL=https://agentbus.dtmventures.com`
-   (or `server_url` in `~/.config/agent-bus/config.json`) plus a matching
-   bearer token from step 2. Confirm with `agent-bus health` /
-   `agent-bus presence-list` against that URL.
+6. **Use a cloud-scoped client credential**. Never assign the cloud token
+   to `AGENT_BUS_AUTH_TOKEN` or reuse the on-site token. Candidate-aware Rust
+   clients accept a separate source and an explicit non-authoritative role:
+
+   ```json
+   {"server_urls": [
+     "http://hub.internal:8400",
+     {"url":"https://agentbus.dtmventures.com", "role":"cloud", "token_file":"~/.config/agentbus-cloud/agent.token"}
+   ]}
+   ```
+
+   This example describes credential isolation, not fleet readiness. The
+   Worker's authenticated `/mcp` endpoint is currently deferred (`501`), and
+   several CLI routes are also deferred. Do not add it to the deployed fleet
+   candidate list until the required routes, on-site synchronization and
+   role-scoped credentials have been validated. Public `/health` success
+   verifies reachability only; unauthenticated `/mcp` must return `401`.
 7. **What the Rust side still needs** (separate, later PR — see
    `SYNC-CONTRACT.md`): the on-site hub's async sync client, and the
    `/channels/arbitrate/*` proxy-to-cloud switch with lab-scoped fallback.

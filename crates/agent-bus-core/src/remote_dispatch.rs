@@ -23,7 +23,10 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value};
 
 use crate::error::{AgentBusError, Result};
-use crate::hub::{HubBackend, ProbeInfo, resolve_hub};
+use crate::hub::{
+    HubBackend, ProbeInfo, invalidate_configured_cache, resolve_authoritative_hub,
+    resolve_configured_hub,
+};
 use crate::mcp_dispatch::McpToolDispatch;
 use crate::ops::admin::health as ops_health;
 use crate::settings::Settings;
@@ -43,7 +46,7 @@ const HUB_CACHE_TTL: Duration = Duration::from_secs(15);
 /// entry, and so unit tests using different candidate lists never see each
 /// other's cached results.
 type HubCacheEntry = (HubBackend, Instant);
-type HubCacheMap = HashMap<Vec<String>, HubCacheEntry>;
+type HubCacheMap = HashMap<String, HubCacheEntry>;
 
 static HUB_CACHE: OnceLock<Mutex<HubCacheMap>> = OnceLock::new();
 
@@ -56,9 +59,11 @@ fn hub_cache() -> &'static Mutex<HubCacheMap> {
 /// scratch. Called whenever a call against the cached remote hub actually
 /// fails -- a briefly-cached "it was reachable 10 seconds ago" must not
 /// survive a live proof that it currently is not.
-fn invalidate_hub_cache(candidates: &[String]) {
+fn invalidate_hub_cache(settings: &Settings) {
     if let Ok(mut guard) = hub_cache().lock() {
-        guard.remove(candidates);
+        guard.remove(&crate::hub_cache::candidates_fingerprint(
+            &settings.effective_hub_candidates(),
+        ));
     }
 }
 
@@ -137,17 +142,23 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
     /// that it currently is not.
     #[must_use]
     pub fn resolve_backend(&self) -> HubBackend {
-        let candidates = &self.settings.server_urls;
+        let candidates =
+            crate::hub_cache::candidates_fingerprint(&self.settings.effective_hub_candidates());
+        if self.settings.hub_config_error.is_some() {
+            return HubBackend::Offline {
+                tried: self.settings.server_urls.clone(),
+            };
+        }
         if let Ok(guard) = hub_cache().lock()
-            && let Some((backend, at)) = guard.get(candidates)
+            && let Some((backend, at)) = guard.get(&candidates)
             && at.elapsed() < HUB_CACHE_TTL
         {
             return backend.clone();
         }
 
-        let backend = resolve_hub(candidates, |url| self.transport.probe_health(url));
+        let backend = resolve_configured_hub(self.settings, |url| self.transport.probe_health(url));
         if let Ok(mut guard) = hub_cache().lock() {
-            guard.insert(candidates.clone(), (backend.clone(), Instant::now()));
+            guard.insert(candidates, (backend.clone(), Instant::now()));
         }
         backend
     }
@@ -173,11 +184,12 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
     /// the resolved remote hub call fails, or every configured hub candidate
     /// is unreachable.
     pub fn dispatch_tool(&self, name: &str, args: &Map<String, Value>) -> Result<Value> {
+        if let Some(error) = &self.settings.hub_config_error {
+            return Err(AgentBusError::InvalidParams(error.clone()));
+        }
         if name == "bus_health" {
             return Ok(self.bus_health_report());
         }
-
-        let backend = self.resolve_backend();
 
         // Claim-authority tools (grant/renew/release/resolve an exclusive
         // claim) must go ONLY to the authoritative (first-priority)
@@ -189,13 +201,16 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
         // pending" answer, distinct from the generic offline error other
         // tools get.
         if is_claim_authority_tool(name) {
-            return match backend {
+            return match resolve_authoritative_hub(self.settings, |url| {
+                self.transport.probe_health(url)
+            }) {
                 HubBackend::Remote {
                     url,
                     authoritative: true,
                     ..
                 } => self.transport.call_tool(&url, name, args).inspect_err(|_| {
-                    invalidate_hub_cache(&self.settings.server_urls);
+                    invalidate_hub_cache(self.settings);
+                    invalidate_configured_cache(self.settings);
                 }),
                 HubBackend::Remote { tried, .. } | HubBackend::Offline { tried } => {
                     Err(claim_pending_error(name, &tried))
@@ -204,14 +219,15 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
             };
         }
 
-        match backend {
+        match self.resolve_backend() {
             HubBackend::Local => self.local.dispatch_tool(name, args),
             HubBackend::Remote { url, .. } => {
                 self.transport.call_tool(&url, name, args).inspect_err(|_| {
                     // The cached backend just proved itself stale (reachable
                     // moments ago, failing now) -- never let the rest of the
                     // TTL window keep routing calls at it blind.
-                    invalidate_hub_cache(&self.settings.server_urls);
+                    invalidate_hub_cache(self.settings);
+                    invalidate_configured_cache(self.settings);
                 })
             }
             HubBackend::Offline { tried } => Err(AgentBusError::Internal(format!(
@@ -232,7 +248,8 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
                     // Same reasoning as dispatch_tool's Remote arm: a cached
                     // backend that just failed a real call must not survive
                     // the rest of the TTL window.
-                    invalidate_hub_cache(&self.settings.server_urls);
+                    invalidate_hub_cache(self.settings);
+                    invalidate_configured_cache(self.settings);
                     serde_json::json!({
                         "ok": false,
                         "database_ok": false,
@@ -304,7 +321,7 @@ mod tests {
     }
 
     fn test_settings(server_urls: &[String]) -> Settings {
-        let mut settings = Settings::from_env();
+        let mut settings = Settings::for_test();
         settings.redis_url = "redis://127.0.0.1:1/0".to_owned();
         settings.database_url = Some("postgresql://postgres@127.0.0.1:1/none".to_owned());
         settings.server_urls = server_urls.to_owned();

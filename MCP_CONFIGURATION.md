@@ -1,5 +1,21 @@
 # MCP Configuration
 
+## Fleet clients
+
+Use the dedicated `agent-bus-mcp.exe` binary for stdio clients. Let it load
+the centrally managed `~/.config/agent-bus/config.json`; do not force a
+localhost URL in every repo's `mcp.json` or put bearer tokens inline. An
+explicit per-process URL override wins over the configured candidate list.
+On DTM-P1GEN7 the fleet authority is ASUS; the local maintenance hub on
+port 18400 is independent. See the
+[candidate authentication guide](docs/per-candidate-hub-auth-20261004.md)
+for schema, timeouts, cache behavior and deployment gates.
+
+After an upgrade, verify a fresh stdio process routes `bus_health` to the
+expected remote build and refuses claims against fallback/cloud hubs.
+Existing live clients retain their loaded binary and startup configuration
+until their owning agent restarts them.
+
 ## Local runtime
 
 Current code-grounded status:

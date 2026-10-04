@@ -23,6 +23,19 @@ env:
   AGENT_BUS_BUILD_REVISION: ${{ github.sha }}
   CARGO_TERM_COLOR: always
   RUST_LOG: error
+  # Self-hosted runners must never inherit a developer's fleet credentials,
+  # routing config or live storage URLs for unit/build jobs.
+  AGENT_BUS_CONFIG: .tmp/ci/${{ github.run_id }}-${{ github.run_attempt }}/agent-bus-config.json
+  AGENT_BUS_REDIS_URL: redis://127.0.0.1:1/0
+  AGENT_BUS_DATABASE_URL: postgresql://postgres@127.0.0.1:1/none
+  AGENT_BUS_SERVER_URL: ""
+  AGENT_BUS_SERVER_URLS: ""
+  AGENT_BUS_AUTH_TOKEN: ""
+  AGENT_BUS_TEST_REDIS_URL: ""
+  AGENT_BUS_TEST_DATABASE_URL: ""
+  AGENT_BUS_TEST_SERVER_URL: ""
+  AGENT_BUS_STARTUP_ENABLED: "false"
+  AGENT_BUS_HUB_CACHE_TTL_SECONDS: "0"
 
 jobs:
   format:
@@ -90,6 +103,8 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Minimal CLI feature configuration
+        run: cargo check -p agent-bus --no-default-features
 
   test-unit:
     name: Unit Tests
@@ -97,7 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
-      - run: cargo test --workspace --lib --bins -- --test-threads=4
+      - run: env -u AGENT_BUS_SERVER_CANDIDATES cargo test --workspace --lib --bins -- --test-threads=4
       - name: Non-ignored integration tests (no live backend of any kind)
         shell: bash
         # `--tests` here is deliberately NOT `--workspace --tests -- --ignored`
@@ -114,7 +129,8 @@ jobs:
           AGENT_BUS_DATABASE_URL: postgresql://postgres@127.0.0.1:1/none
         run: |
           set -euo pipefail
-          env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_SERVER_URLS \
+          env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_SERVER_URLS -u AGENT_BUS_SERVER_CANDIDATES -u AGENT_BUS_AUTH_TOKEN \
+            AGENT_BUS_HUB_CACHE_TTL_SECONDS=0 \
             cargo test --workspace --tests -- --test-threads=4
 
   test-integration:
@@ -181,7 +197,7 @@ jobs:
           # resolves localhost to ::1 first, which is the case the server's
           # explicit IPv4 loopback bind exists for (run 36083746826 failed
           # here before it).
-          env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_AUTH_TOKEN -u AGENT_BUS_SERVER_HOST \
+          env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_SERVER_URLS -u AGENT_BUS_SERVER_CANDIDATES -u AGENT_BUS_AUTH_TOKEN -u AGENT_BUS_SERVER_HOST \
             AGENT_BUS_CONFIG="$RUNNER_TEMP/agent-bus-ci-config.json" \
             AGENT_BUS_REDIS_URL="$AGENT_BUS_TEST_REDIS_URL" \
             AGENT_BUS_DATABASE_URL="$AGENT_BUS_TEST_DATABASE_URL" \
@@ -213,7 +229,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cargo test --workspace --tests --no-fail-fast -- --ignored --test-threads=1 \
+          env -u AGENT_BUS_SERVER_CANDIDATES cargo test --workspace --tests --no-fail-fast -- --ignored --test-threads=1 \
             2>&1 | tee "$RUNNER_TEMP/backend-tests.log"
           passed="$(grep -E '^test result:' "$RUNNER_TEMP/backend-tests.log" |
             awk '{s += $4} END {print s + 0}')"
@@ -310,12 +326,50 @@ jobs:
         shell: pwsh
         run: |
           $smokeToken = [guid]::NewGuid().ToString("N")
-          ./scripts/test-agent-bus-functional.ps1 `
-            -CliPath "$PWD/ci-artifacts/windows-x64/agent-bus.exe" `
-            -HttpBinaryPath "$PWD/ci-artifacts/windows-x64/agent-bus-http.exe" `
-            -HttpPort 8412 `
-            -HttpAuthToken $smokeToken `
-            -SkipForcedDegraded
+          $suffix = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-smoke"
+          if ($suffix -notmatch '^[0-9]+-[0-9]+-smoke$') { throw 'Unsafe smoke fixture identity' }
+          $owned = [Collections.Generic.List[string]]::new()
+          try {
+            $redisId = (& docker create --name "agenthub-redis-$suffix" `
+              --memory 128m --cpus 0.5 --publish 127.0.0.1:16382:6379 `
+              redis:7-alpine redis-server --save "" --appendonly no | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or $redisId -notmatch '^[a-f0-9]{64}$') { throw 'Redis fixture startup failed' }
+            $owned.Add($redisId)
+            & docker start $redisId
+            if ($LASTEXITCODE -ne 0) { throw 'Redis fixture startup failed' }
+            $pgId = (& docker create --name "agenthub-pg-$suffix" `
+              --memory 512m --cpus 1 --publish 127.0.0.1:15302:5432 `
+              --env POSTGRES_DB=agent_bus_smoke --env "POSTGRES_PASSWORD=$smokeToken" `
+              postgres:17-alpine | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or $pgId -notmatch '^[a-f0-9]{64}$') { throw 'PostgreSQL fixture startup failed' }
+            $owned.Add($pgId)
+            & docker start $pgId
+            if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL fixture startup failed' }
+            $ready = $false
+            for ($attempt = 0; $attempt -lt 30; $attempt++) {
+              & docker exec $pgId pg_isready -U postgres -d agent_bus_smoke
+              if ($LASTEXITCODE -eq 0) { $ready = $true; break }
+              Start-Sleep -Seconds 1
+            }
+            if (-not $ready) { throw 'PostgreSQL fixture did not become ready' }
+            $env:AGENT_BUS_REDIS_URL = 'redis://127.0.0.1:16382/0'
+            $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres:$smokeToken@127.0.0.1:15302/agent_bus_smoke"
+            Remove-Item Env:AGENT_BUS_SERVER_CANDIDATES -ErrorAction SilentlyContinue
+            ./scripts/test-agent-bus-functional.ps1 `
+              -CliPath "$PWD/ci-artifacts/windows-x64/agent-bus.exe" `
+              -HttpBinaryPath "$PWD/ci-artifacts/windows-x64/agent-bus-http.exe" `
+              -HttpPort 8412 `
+              -HttpAuthToken $smokeToken `
+              -RequirePostgres `
+              -SkipForcedDegraded
+          } finally {
+            $cleanupFailures = [Collections.Generic.List[string]]::new()
+            foreach ($id in $owned) {
+              & docker rm --force $id
+              if ($LASTEXITCODE -ne 0) { $cleanupFailures.Add($id) }
+            }
+            if ($cleanupFailures.Count) { throw "Failed to clean owned smoke containers: $($cleanupFailures -join ', ')" }
+          }
 
   audit:
     name: Security Audit
@@ -340,7 +394,11 @@ jobs:
       # Same strictness as the Linux clippy job: cfg(windows) code is only
       # linted here, so a warning in it must fail this job.
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace --lib --bins -- --test-threads=4
+      - shell: pwsh
+        run: |
+          Remove-Item Env:AGENT_BUS_SERVER_CANDIDATES -ErrorAction SilentlyContinue
+          cargo test --workspace --lib --bins -- --test-threads=4
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: cargo build --release --workspace --bins
       - name: History catalog migration contract
         shell: pwsh
@@ -362,6 +420,7 @@ jobs:
             }
             $env:AGENT_BUS_TEST_DATABASE_URL =
               "postgresql://postgres@127.0.0.1:5300/$historyDb"
+            Remove-Item Env:AGENT_BUS_SERVER_CANDIDATES -ErrorAction SilentlyContinue
             cargo test -p agent-bus-core --test history_catalog_postgres -- --nocapture
             if ($LASTEXITCODE -ne 0) {
               throw "History catalog migration contract failed"
@@ -382,6 +441,9 @@ jobs:
       - name: Validate Codex MCP config parsing and launch environment
         shell: pwsh
         run: ./scripts/test-agent-client-config-validator.ps1
+      - name: Validate functional smoke isolation and cleanup
+        shell: pwsh
+        run: ./scripts/test-agent-bus-functional-isolation.ps1
       - name: Record and upload Windows release provenance
         shell: pwsh
         run: |
