@@ -33,8 +33,14 @@
   authentication/storage behavior; public reachability alone is insufficient.
 - [ ] Resolve the remaining Cloudflare geographic/ASN policy with its owner.
 - [ ] Reconcile DTM-WORK/DTM-SUPER-NUC client/MCP configuration and tooling
-  while preserving their active agents and dirty repos; review local bus
-  guidance and the PC_AI GitOps monitor's unauthenticated posting/worker overlap.
+  while preserving their active agents and dirty repos; review local bus guidance.
+- [x] Repair PC_AI GitOps publication, inspection failure visibility and
+  worker overlap/environment handling. PC_AI PR #174 is merged after 15 local
+  regressions, real Windows launcher checks, independent review and all 11
+  hosted checks. A real pre-push monitor message was read back on the ASUS hub.
+- [ ] Reconcile the workstation's conflicting OpenPGP executable overrides
+  and signing-provider cache without interrupting shared agents. These changes
+  use the existing GitHub-verified SSH signing key with normal hooks/signing.
 
 Structural execution plan:
 - See [`agents.TODO.md`](./agents.TODO.md) for remaining surface-thinning work.

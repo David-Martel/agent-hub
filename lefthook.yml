@@ -34,15 +34,7 @@ pre-push:
         AGENT_BUS_REDIS_URL: redis://127.0.0.1:1/0
         AGENT_BUS_DATABASE_URL: postgresql://postgres@127.0.0.1:1/none
         AGENT_BUS_HUB_CACHE_TTL_SECONDS: "0"
-      run: |
-        set -eu
-        fixture_config="$(mktemp "${TMPDIR:-/tmp}/agent-bus-hooks.XXXXXXXX.json")"
-        trap 'rm -f -- "$fixture_config"' EXIT
-        printf '{}' > "$fixture_config"
-        env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_SERVER_URLS -u AGENT_BUS_SERVER_CANDIDATES -u AGENT_BUS_AUTH_TOKEN \
-          -u AGENT_BUS_TEST_REDIS_URL -u AGENT_BUS_TEST_DATABASE_URL -u AGENT_BUS_TEST_SERVER_URL \
-          AGENT_BUS_CONFIG="$fixture_config" AGENT_BUS_STARTUP_ENABLED=false \
-          cargo test --workspace --quiet
+      run: bash scripts/test-agent-bus-isolated.sh
 
     # Blocking. A missing cargo-audit is a failure, not a skip: a gate that
     # cannot run must say so rather than pass.
