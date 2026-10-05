@@ -2,6 +2,8 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 . (Join-Path (Split-Path -Parent $PSScriptRoot) "rust-build-common.ps1")
+. (Join-Path $PSScriptRoot "cache-preflight.ps1")
+$cachePolicy = Get-Content -LiteralPath (Join-Path $PSScriptRoot "windows-cache-policy.json") -Raw | ConvertFrom-Json
 
 $cacheRoot = if ($env:AGENT_HUB_CI_CACHE_ROOT) {
     $env:AGENT_HUB_CI_CACHE_ROOT
@@ -34,7 +36,7 @@ $env:PATH = "$toolchainBin;$($env:PATH)"
 $env:CARGO_TARGET_DIR = $cargoTarget
 $env:CARGO_INCREMENTAL = "0"
 $env:SCCACHE_DIR = $sccacheDir
-$env:SCCACHE_SERVER_PORT = "4228"
+$env:SCCACHE_SERVER_PORT = [string]$cachePolicy.server_port
 
 # Never carry a previous runner/job wrapper into discovery or a failed health probe.
 Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
@@ -51,27 +53,16 @@ if ($sccache) {
     } else {
         $sccache.Source
     }
-    try {
-        $sccacheVersion = (& $sccachePath --version | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0) {
-            throw "sccache version query failed ($LASTEXITCODE)"
-        }
-        if ($sccacheVersion -ne "sccache 0.16.0") {
-            Write-Warning "Expected sccache 0.16.0, found $sccacheVersion at $sccachePath"
-        }
-        # Probe the canonical shared daemon without restarting it or resetting stats.
-        if (Initialize-AgentBusSccacheServer -SccachePath $sccachePath) {
-            $env:RUSTC_WRAPPER = $sccachePath
-            Write-Host "sccache enabled ($sccachePath; cache directory $sccacheDir)"
-        } else {
-            Write-Warning "sccache is unhealthy; continuing with persistent Cargo outputs"
-        }
-    } catch {
-        Write-Warning "sccache discovery failed; continuing with persistent Cargo outputs: $($_.Exception.Message)"
+    $sccacheVersion = (& $sccachePath --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $sccacheVersion -cne "sccache $($cachePolicy.version)") {
+        throw "Expected sccache $($cachePolicy.version), found '$sccacheVersion' at $sccachePath"
     }
+    $cacheProof = Invoke-AgentBusCachePreflight -SccachePath $sccachePath -RustcPath $rustcPath `
+        -TargetDirectory $cargoTarget -Policy $cachePolicy
+    $env:RUSTC_WRAPPER = $sccachePath
+    Write-Host "sccache qualified ($sccachePath; port $($cacheProof.server_port); real Rust cache hit)"
 } else {
-    Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-    Write-Warning "sccache is unavailable; continuing with persistent Cargo outputs"
+    throw 'Required Windows sccache executable is unavailable; refusing uncached CI fallback'
 }
 
 if ($env:GITHUB_ENV) {
@@ -79,7 +70,7 @@ if ($env:GITHUB_ENV) {
         "CARGO_TARGET_DIR=$cargoTarget"
         "CARGO_INCREMENTAL=0"
         "SCCACHE_DIR=$sccacheDir"
-        "SCCACHE_SERVER_PORT=4228"
+        "SCCACHE_SERVER_PORT=$($cachePolicy.server_port)"
     ) | Add-Content -Path $env:GITHUB_ENV -Encoding utf8
     # An empty entry also clears a stale wrapper inherited by subsequent steps.
     "RUSTC_WRAPPER=$($env:RUSTC_WRAPPER)" |

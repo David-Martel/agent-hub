@@ -138,26 +138,39 @@ $mode = (Get-Content -LiteralPath (Join-Path $PSScriptRoot "mode.txt") -Raw).Tri
 $global:LASTEXITCODE = 0
 switch ($args[0]) {
     "--version" {
-        if ($mode -eq "version-failure") {
-            $global:LASTEXITCODE = 2
-            Write-Output "version unavailable"
-        } else {
-            Write-Output "sccache 0.16.0"
-        }
+        if ($mode -eq "version-failure") { $global:LASTEXITCODE = 2; "version unavailable" }
+        else { "sccache 0.18.0" }
     }
     "--show-stats" {
-        switch ($mode) {
-            "mismatched" { Write-Output "Mismatch of client/server versions" }
-            "transport-failure" {
-                $global:LASTEXITCODE = 1
-                Write-Output "Failed to read response header: connection attempt timed out (os error 10060)"
-            }
-            "probe-exception" { throw "fixture health probe exception" }
-            default { Write-Output "Compile requests 0" }
-        }
+        if ($mode -eq "transport-failure") { throw "Failed to read response header (os error10060)" }
+        if ($mode -eq "probe-exception") { throw "fixture health probe exception" }
+        $counter = Join-Path $PSScriptRoot "compile-count.txt"
+        $count = if (Test-Path -LiteralPath $counter) { [int](Get-Content -LiteralPath $counter) } else { 0 }
+        $executed = if ($mode -eq "synthetic") { 0 } else { $count }
+        $hits = if ($mode -eq "no-hit") { 0 } else { [Math]::Max(0, $count - 1) }
+        $counts = if ($hits) { @{ Rust = $hits } } else { @{} }
+        @{version = $(if ($mode -eq "mismatched") { "0.16.0" } else { "0.18.0" }); stats = @{
+            requests_executed = $executed; cache_hits = @{counts = $counts};
+            requests_not_cacheable = $(if ($mode -eq "non-cacheable") { $count } else { 0 });
+            requests_unsupported_compiler = 0; cache_timeouts = 0; compile_fails = 0;
+            cache_read_errors = $(if ($mode -eq "read-error") { $count } else { 0 }); cache_write_errors = 0;
+            non_cacheable_compilations = 0; cache_errors = @{counts = $(if ($mode -eq "cache-error") { @{Rust = $count} } else { @{} })}
+        }} | ConvertTo-Json -Depth 5 -Compress
     }
-    default { throw "Forbidden or unexpected sccache invocation: $($args -join ' ')" }
+    default {
+        if ($args[0] -notlike "*rustc.ps1" -or $args -notcontains "--emit=link") {
+            throw "Unexpected cache invocation: $($args -join ' ')"
+        }
+        if ($mode -eq "compile-failure") { throw "fixture compiler failure" }
+        $counter = Join-Path $PSScriptRoot "compile-count.txt"
+        $count = if (Test-Path -LiteralPath $counter) { [int](Get-Content -LiteralPath $counter) } else { 0 }
+        ($count + 1) | Set-Content -LiteralPath $counter
+        $outputIndex = [Array]::IndexOf($args, "--out-dir")
+        $artifact = Join-Path $args[$outputIndex + 1] "libagent_hub_cache_preflight.rlib"
+        $(if ($mode -eq "artifact-drift") { "fixture artifact$count" } else { "fixture artifact" }) | Set-Content -LiteralPath $artifact
+    }
 }
+exit $global:LASTEXITCODE
 '@ | Set-Content -LiteralPath (Join-Path $fixtureRoot "sccache.ps1") -Encoding utf8
 
         $fixtureRustup = Join-Path $fixtureRoot "rustup.ps1"
@@ -179,7 +192,20 @@ switch ($args[0]) {
         $env:RUNNER_ARCH = "X64"
         $env:RUSTC_WRAPPER = "stale-runner-wrapper"
         "RUSTC_WRAPPER=stale-runner-wrapper" | Set-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
-        & $ciSetupPath
+        $setupFailure = $null
+        try { & $ciSetupPath } catch { $setupFailure = $_.Exception.Message }
+        if ($Mode -ne "healthy") {
+            if (-not $setupFailure) { throw "$Mode fixture: unhealthy cache silently admitted" }
+            if ($env:RUSTC_WRAPPER) { throw "$Mode fixture: exported unhealthy wrapper" }
+            $wrapperEntries = @(Get-Content -LiteralPath $env:GITHUB_ENV | Where-Object { $_ -like "RUSTC_WRAPPER=*" })
+            if ($wrapperEntries.Count -ne 1) { throw "$Mode fixture: failed preflight exported GITHUB_ENV" }
+            $compilerCalls = @(Get-Content -LiteralPath (Join-Path $fixtureRoot "calls.jsonl") |
+                ForEach-Object { $_ | ConvertFrom-Json } | Where-Object { $_.command -in @("cargo", "rustc") })
+            if ($compilerCalls.Count) { throw "$Mode fixture: compiler work continued after failed admission" }
+            Write-Output "CI setup refusal passed: $Mode ($setupFailure)"
+            return
+        }
+        if ($setupFailure) { throw "Healthy cache admission failed: $setupFailure" }
 
         $expectedWrapper = if ($Mode -eq "healthy") { $fixtureSccache } else { $null }
         if ($env:RUSTC_WRAPPER -ne $expectedWrapper) {
@@ -210,14 +236,20 @@ switch ($args[0]) {
             throw "$Mode fixture: pinned toolchain/component setup changed"
         }
         $cacheCalls = @($calls | Where-Object { $_.command -eq "sccache" })
-        $expectedCacheCalls = switch ($Mode) {
-            "absent" { @() }
-            "version-failure" { @("--version") }
-            default { @("--version", "--show-stats") }
+        if ($cacheCalls.Count -ne 5 -or ($cacheCalls[0].arguments -join " ") -cne "--version" -or
+            ($cacheCalls[1].arguments -join " ") -cne "--show-stats --stats-format=json" -or
+            ($cacheCalls[4].arguments -join " ") -cne "--show-stats --stats-format=json") {
+            throw "Expected version, baseline, two serial actual compilers and final real stats"
         }
-        if ((@($cacheCalls | ForEach-Object { $_.arguments }) -join " ") -cne ($expectedCacheCalls -join " ")) {
-            throw "$Mode fixture: unexpected cache commands (shared daemon must remain untouched)"
+        foreach ($call in @($cacheCalls[2], $cacheCalls[3])) {
+            if ($call.arguments -notcontains "--emit=link" -or $call.arguments -notcontains "-Dwarnings") {
+                throw "Actual cacheable strict compiler preflight missing"
+            }
         }
+        $proofPath = Join-Path $expectedTarget "cache-preflight/proof.json"
+        $proof = Get-Content -LiteralPath $proofPath -Raw | ConvertFrom-Json
+        if ($proof.after.stats.requests_executed -ne 2 -or $proof.after.stats.cache_hits.counts.Rust -ne 1 -or
+            $proof.wrapper_fallback -ne $false) { throw "Real cache receipt missing" }
         if (@($cacheCalls | Where-Object { $_.wrapper }).Count -ne 0) {
             throw "$Mode fixture: stale wrapper remained during cache discovery"
         }
@@ -277,7 +309,49 @@ switch ($args[0]) {
     }
 }
 
-foreach ($mode in @("healthy", "mismatched", "transport-failure", "probe-exception", "version-failure", "absent")) {
+foreach ($mode in @("healthy", "mismatched", "transport-failure", "probe-exception", "version-failure", "absent", "synthetic", "no-hit", "non-cacheable", "compile-failure", "read-error", "cache-error", "artifact-drift")) {
     Test-AgentBusCiSetupFixture -Mode $mode
+}
+. (Join-Path $PSScriptRoot "ci/cache-preflight.ps1")
+$controlRoot = Join-Path ([IO.Path]::GetTempPath()) ("agent-bus-cache-controls-" + [guid]::NewGuid())
+$foreign = $null
+try {
+    New-Item -ItemType Directory -Path $controlRoot | Out-Null
+    $policy = Get-Content -LiteralPath (Join-Path $PSScriptRoot "ci/windows-cache-policy.json") -Raw | ConvertFrom-Json
+    $ownedDirectory = Join-Path $controlRoot "cache-preflight"
+    New-Item -ItemType Directory -Path $ownedDirectory | Out-Null
+    $sentinel = Join-Path $ownedDirectory "foreign.txt"
+    [IO.File]::WriteAllText($sentinel, "preserve foreign bytes")
+    try {
+        $null = Invoke-AgentBusCachePreflight -SccachePath "must-not-execute" -RustcPath "must-not-execute" -TargetDirectory $controlRoot -Policy $policy
+        throw "Foreign directory admitted"
+    } catch { if ($_.Exception.Message -cne "Refuse foreign cache preflight directory") { throw } }
+    if ([IO.File]::ReadAllText($sentinel) -cne "preserve foreign bytes") { throw "Foreign file changed" }
+    $policy.server_port = 4810
+    try {
+        $null = Invoke-AgentBusCachePreflight -SccachePath "must-not-execute" -RustcPath "must-not-execute" -TargetDirectory $controlRoot -Policy $policy
+        throw "Shared cache port admitted"
+    } catch { if ($_.Exception.Message -cne "Invalid dedicated Windows cache policy") { throw } }
+    $slowScript = Join-Path $controlRoot "slow.ps1"
+    [IO.File]::WriteAllText($slowScript, 'Start-Sleep -Seconds 30')
+    $foreign = [Diagnostics.Process]::new()
+    $foreign.StartInfo.FileName = (Get-Process -Id $PID).Path
+    $foreign.StartInfo.UseShellExecute = $false
+    foreach ($argument in @('-NoLogo', '-NoProfile', '-File', $slowScript)) { $foreign.StartInfo.ArgumentList.Add($argument) }
+    if (-not $foreign.Start()) { throw "Foreign control process failed to start" }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $null = Invoke-AgentBusCacheCommand -Executable $slowScript -Arguments @() -TimeoutSeconds 1
+        throw "Client timeout not enforced"
+    } catch { if ($_.Exception.Message -cne "Cache preflight client timed out; daemon left untouched") { throw } }
+    $clock.Stop()
+    if ($clock.Elapsed.TotalSeconds -gt 5 -or $foreign.HasExited) { throw "Timeout escaped bound or terminated foreign process" }
+    Write-Output "Cache controls passed: foreign path and shared port refused; bounded owned-client timeout preserved foreign process"
+} finally {
+    if ($foreign) {
+        if (-not $foreign.HasExited) { $foreign.Kill(); $foreign.WaitForExit() }
+        $foreign.Dispose()
+    }
+    Remove-Item -LiteralPath $controlRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Output "Rust build helper regression fixtures passed."
