@@ -248,7 +248,14 @@ Objective:
 Detailed execution plan:
 [`docs/phase3-crate-split-plan-2026-04-04.md`](./docs/phase3-crate-split-plan-2026-04-04.md)
 
-Blockers identified (2026-04-04):
+The workspace split has landed. Current crate locations are in the
+[README crate map](./README.md#crate-map); remaining CLI transport coupling and
+shim removal are recorded in [TODO.md](./TODO.md). The following blockers and
+sequences preserve the original migration history, not current deployment steps.
+
+### Historical Phase 3 migration plan (2026-04-04)
+
+Blockers identified at that checkpoint:
 
 1. `http.rs` imports `AgentBusMcpServer` for MCP-HTTP bridge → need shared
    `McpToolDispatch` in core.
@@ -385,15 +392,24 @@ Required doc updates per milestone:
   workflows.
 - [`MCP_CONFIGURATION.md`](./MCP_CONFIGURATION.md): exact MCP surface guidance.
 
-When Phase 3 starts:
+### Historical Phase 3 documentation checklist — completed
 
 - Add an explicit crate map to `README.md`.
 - Add migration notes for any changed artifact paths.
 - Add a one-paragraph “how to find the right crate” note for agents.
 
-## Recommended Execution Order
+## Current Remaining Structural Work
 
-Do the remaining work in this order:
+Use the current remaining-work entry in [TODO.md](./TODO.md) and the
+"Still structurally incomplete" section above: resolve how CLI `serve` owns its
+HTTP/MCP transports, then remove re-export shims only after callers use core
+directly. Re-measure duplication before planning further extraction. Preserve
+transport parity and installer/client contracts through those changes.
+
+### Historical Migration Execution Order
+
+The sequence below records the completed workspace migration. It is not an
+instruction to recreate crates or rerun installation on a live fleet host.
 
 1. Finish Phase 1A inbox/message shared ops.
 2. Finish Phase 1B claim/channel shared ops.

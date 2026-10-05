@@ -2,23 +2,21 @@
 
 ## Project Structure & Module Organization
 
-The repo now has a top-level Cargo workspace with `rust-cli/` plus
-`crates/agent-bus-core`, `crates/agent-bus-cli`, `crates/agent-bus-http`, and
-`crates/agent-bus-mcp`.
+The top-level [Cargo workspace](./Cargo.toml) contains exactly four crates;
+`rust-cli/` has been removed.
 
-Current code-grounded split status (2026-04-04):
-- `agent-bus-core` owns extracted shared logic: storage adapters, validation,
-  token helpers, channels, typed ops (~1,670 lines across 7 ops modules),
-  agent profiles (`AgentProfile` trait), and validated task cards (`TaskCard`).
-- `rust-cli/` remains the primary runtime crate and still owns `lib.rs`,
-  `cli.rs`, `commands.rs`, `http.rs`, `mcp.rs`, `server_mode.rs`,
-  `mcp_discovery.rs`, benches, and integration tests.
-- The surface crates currently wrap `rust-cli`; they are not yet fully
-  independent implementations.
-- `scripts/` still builds and deploys through `rust-cli/`.
-- Phase 1 (ops consolidation) and Phase 2 (transport normalization) of
-  `agents.TODO.md` are complete. Phase 3 (crate split) is planned with
-  blockers identified in `docs/phase3-crate-split-plan-2026-04-04.md`.
+- `crates/agent-bus-core`: shared storage, validation, models, typed ops,
+  bootstrap, and MCP dispatch.
+- `crates/agent-bus-cli` (package `agent-bus`): CLI commands, server-mode bridge,
+  inline HTTP/MCP `serve`, benches, and CLI/HTTP integration tests.
+- `crates/agent-bus-http`: long-running HTTP/SSE service and MCP-HTTP endpoint.
+- `crates/agent-bus-mcp`: dedicated MCP stdio server.
+
+The crate split is complete. The CLI still links transport dependencies for
+inline `serve` and carries re-export shims; surface thinning remains open in
+[`TODO.md`](./TODO.md). Use the [README crate map](./README.md#crate-map) to
+locate a contribution and [`agents.TODO.md`](./agents.TODO.md) for structural
+work. Dated refactor plans describe their historical checkpoints.
 
 Supporting material remains split across `scripts/` for PowerShell automation,
 `examples/mcp/` for client configs, and `docs/` for design notes, assessments,
@@ -27,19 +25,33 @@ status snapshots, and agent templates.
 Canonical structural refactor plan:
 - [`agents.TODO.md`](./agents.TODO.md)
 
-Code-grounded status snapshot:
-- [`docs/current-status-2026-04-03.md`](./docs/current-status-2026-04-03.md)
+Dated post-split architecture snapshot:
+- [`docs/current-status-2026-06-13.md`](./docs/current-status-2026-06-13.md)
+  (test counts and runtime observations are historical; use current source and
+  fresh receipts for validation).
 
 ## Build, Test, and Development Commands
 
-- `cargo build --release` in `rust-cli/`: build the shipping CLI binary.
-- `cargo test --workspace --lib --bins` at repo root: fast code-grounded check across the workspace without requiring live Redis/HTTP services.
-- `cargo test --bin agent-bus` in `rust-cli/`: run Rust unit tests.
+Run from the repository root with the compiler pinned by
+[`rust-toolchain.toml`](./rust-toolchain.toml) (currently Rust 1.98.1). Linux
+uses native Cargo; Windows build automation uses PowerShell. On deployment
+hosts, run ordinary QA in an isolated disposable container with source mounted
+read-only; do not inherit live bus configuration or credentials.
+
+- `cargo build --release -p agent-bus -p agent-bus-http -p agent-bus-mcp`: build the three shipping binaries.
+- `bash scripts/test-agent-bus-isolated.sh`: canonical pre-push workspace test entry point; sanitizes inherited configuration and pins stores to closed ports.
+- `cargo test --workspace --lib --bins`: CI's unit selection, with the isolation settings in its `test-unit` job. No live backend is required.
+- `cargo test -p agent-bus --lib <test_filter>`: select CLI command library unit tests inside the same isolated environment. `--bin agent-bus` does not select those library tests.
 - `cargo test --workspace --tests -- --ignored --test-threads=1` at repo root: run the `#[ignore]`d backend tests. They require `AGENT_BUS_TEST_REDIS_URL`, `AGENT_BUS_TEST_DATABASE_URL` and `AGENT_BUS_TEST_SERVER_URL` pointing at DISPOSABLE backends and fail (never skip) when those are unset or unreachable; the live bus ports 6380/5300/8400 are refused. CI's `test-integration` job shows how to start them.
-- `cargo fmt --all --check` and `cargo clippy --all-targets -- -D warnings` in `rust-cli/`: match CI formatting and lint gates.
+- `cargo fmt --all --check` and `cargo clippy --workspace --all-targets -- -D warnings`: match CI formatting and lint gates.
+- `cargo check -p agent-bus --no-default-features`: CI's minimal CLI feature check.
 - `pwsh -NoLogo -NoProfile -File build.ps1 -FastRelease`: repo-root fast iteration build using the shared target-dir, linker, and `sccache` setup.
 
-Set local services with `AGENT_BUS_REDIS_URL` and `AGENT_BUS_DATABASE_URL` when running integration flows.
+[`ci.yml`](./.github/workflows/ci.yml) and
+[`release.yml`](./.github/workflows/release.yml) define the current Linux X64,
+Linux ARM64, Windows X64, and Docker validation/artifact jobs. The
+[fleet runner guide](./docs/fleet-build-runners.md) describes routing and trust
+limits. Backend tests must use disposable services, never the fleet bus.
 
 ## Coding Style & Naming Conventions
 
@@ -47,11 +59,14 @@ Use Rust 2024 edition defaults with `rustfmt` width 100 and field init shorthand
 
 ## Testing Guidelines
 
-Place integration coverage in `rust-cli/tests/*_test.rs`. Shared unit coverage
-for extracted logic now primarily lives under `crates/agent-bus-core/src/*`.
-Current test inventory: 394 unit tests in `agent-bus-core`, 92 unit tests in
-`rust-cli` (486 total). `http_integration_test.rs` is a skeleton needing test
-functions. 10 integration tests in `rust-cli/tests/` require live Redis/PG.
+Place CLI/HTTP integration coverage in `crates/agent-bus-cli/tests/*_test.rs`;
+shared unit coverage belongs beside the affected module in
+`crates/agent-bus-core/src/`. `http_integration_test.rs` contains real backend
+tests. Disposable loopback controls such as `hub_routing_test.rs` run without
+external services; ignored backend tests run in CI's `test-integration` job
+against its disposable Redis/PostgreSQL/HTTP instances and fail when their
+required endpoints are unavailable. Derive counts from the exact test run,
+including selected/passed/ignored totals, rather than copying dated inventories.
 No fixed coverage percentage is enforced, but every feature change should add
 or update tests in the affected runtime. Prefer focused unit tests first, then
 integration coverage for Redis/PostgreSQL behavior, HTTP endpoints, and MCP
@@ -71,8 +86,8 @@ Jules (Google's async coding agent) reads this file. It runs in a Google-hosted 
   `pwsh -c 'Install-Module Pester,PSScriptAnalyzer -Force -Scope CurrentUser'`. Never point a test at a live bus port. The `#[ignore]`d
   backend tests need disposable backends; if you cannot start them, say so and skip them.
 - **Run these (no services needed):** `cargo fmt --all --check`,
-  `cargo clippy --all-targets -- -D warnings` in `rust-cli/`, and
-  `cargo test --workspace --lib --bins` at the repo root. Report exactly what you ran and the
+  `cargo clippy --workspace --all-targets -- -D warnings`, and
+  `bash scripts/test-agent-bus-isolated.sh` at the repo root. Report exactly what you ran and the
   result. Never guess a result you could not run.
 - **Review-only tasks** (the prompt says so): do not commit, push or open a PR. End the session
   with the findings as your final message: numbered, each with SEVERITY, file:line, failure

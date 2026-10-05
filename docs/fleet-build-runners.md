@@ -20,9 +20,10 @@ Each runner must have `sccache` installed and reachable from `PATH`.
 `scripts/ci/setup-rust.sh` verifies it before setting `RUSTC_WRAPPER`. An
 unhealthy cache falls back to ordinary Cargo instead of blocking CI.
 The same bootstrap adds `$HOME/.local/bin` and `$HOME/.cargo/bin` to `PATH` and
-installs a minimal stable rustup toolchain when a runner cache volume contains
+bootstraps rustup without a default toolchain when a runner cache volume contains
 no usable Cargo shim. It then installs the compiler pinned by
-`rust-toolchain.toml` (plus rustfmt and clippy), which is the one every job
+[`rust-toolchain.toml`](../rust-toolchain.toml) (currently Rust 1.98.1, plus
+rustfmt and clippy), which is the one every job
 actually uses; the Windows `setup-rust.ps1` does the same. Changing the pin
 invalidates each runner's compiled cache once, since sccache keys include the
 compiler.
@@ -57,17 +58,29 @@ revision and verify it in both the CLI and HTTP binaries before publication.
 
 ## Public-repository trust boundary
 
-Fleet runners and their Redis cache are trusted infrastructure. The fleet
-workflow (`ci.yml`) is triggered only by pushes to branches in this repository
-and explicit manual dispatches. It must never regain a `pull_request` or
-`pull_request_target` trigger.
+Fleet runners and their Redis cache are trusted infrastructure. The current
+[`ci.yml`](../.github/workflows/ci.yml) runs on `pull_request`, pushes to `main`,
+and explicit manual dispatch. PR events provide their own check contexts;
+feature-branch pushes do not trigger a second matrix. Superseded PR runs may be
+cancelled, while a running main validation is allowed to finish.
 
-Same-repository pull requests are validated by their trusted branch push
-through `ci.yml`; a duplicate `pull_request` workflow would spend the same
-fleet capacity twice. Fork code must never execute on ASUS, Spark,
-dtm-p1gen7, Docker, or the fleet cache. Review a fork without execution, then
-cherry-pick accepted commits onto a repository-owned branch to run the trusted
-push matrix. Do not use `pull_request_target` to work around that boundary.
+These triggers select validation events, not a complete authorization boundary.
+The workflow routes PR jobs to self-hosted runners; it does not contain a
+repository-ownership filter for fork PRs. Do not claim that fork execution is
+prevented by the YAML. Runner access and any GitHub approval controls must be
+verified before permitting untrusted code to execute on fleet infrastructure.
+Review untrusted contributions without execution until the CI owner has
+established an acceptable isolation and authorization boundary. Do not use
+`pull_request_target` to execute untrusted code with trusted credentials.
+
+Ordinary CI pins live storage URLs to closed ports and clears fleet routing and
+authentication settings. Its backend integration job creates disposable
+services and the tests refuse the live bus ports. This protects the ordinary
+test configuration from accidentally reaching the live bus; it does not make
+arbitrary PR code safe or prove that a runner's filesystem, Docker socket,
+network, or shared cache is isolated. Never provide developer credentials or
+live bus access to an ordinary validation job. The current workflow and
+runner provisioning must be reviewed together before changing this boundary.
 
 A network cache beyond this link-local Redis service may be enabled by
 configuring a supported authenticated sccache backend in the runner service
