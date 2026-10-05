@@ -49,10 +49,8 @@ use crate::server_mode::{
 };
 use crate::settings::{Settings, loopback_url_candidates};
 #[cfg(feature = "server-mode")]
-use crate::validation::{
-    auto_fit_schema, infer_schema_from_topic, validate_message_schema, validate_priority,
-};
-use crate::validation::{non_empty, parse_metadata_arg};
+use crate::validation::{auto_fit_schema, validate_message_schema, validate_priority};
+use crate::validation::{non_empty, parse_metadata_arg, resolve_message_schema};
 
 #[cfg(test)]
 use crate::ops::{extra_filter_fetch_limit, message_matches_filters};
@@ -486,7 +484,8 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
         let to = non_empty(args.to_agent, "--to-agent")?;
         let topic = non_empty(args.topic, "--topic")?;
         let body = non_empty(args.body, "--body")?;
-        let effective_schema = infer_schema_from_topic(topic, args.schema);
+        let effective_schema = resolve_message_schema("cli", args.schema, topic)?
+            .map(agent_bus_core::validation::MessageSchema::as_str);
         let fitted_body = auto_fit_schema(body, effective_schema);
         validate_message_schema(&fitted_body, effective_schema)?;
 
@@ -501,6 +500,7 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
             "request_ack": args.request_ack,
             "tags": args.tags,
             "metadata": meta,
+            "schema": effective_schema,
         });
         if let Some(tid) = args.thread_id.as_deref() {
             payload["thread_id"] = serde_json::Value::String(tid.to_owned());
@@ -1161,6 +1161,8 @@ pub(crate) fn cmd_spool_send(
     let to = non_empty(to_agent, "--to-agent")?;
     let topic = non_empty(topic, "--topic")?;
     let body = non_empty(body, "--body")?;
+    // Reject invalid explicit names before creating or appending an offline spool.
+    resolve_message_schema("cli", schema, topic)?;
     let meta = parse_metadata_arg(metadata)?;
     let path = std::path::Path::new(spool_path);
     if let Some(parent) = path.parent()

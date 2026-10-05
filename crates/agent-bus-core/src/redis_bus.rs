@@ -26,7 +26,7 @@ use crate::postgres_store::{
 use crate::settings::{
     Settings, loopback_url_candidates, redact_url, refuse_live_bus_in_unit_tests,
 };
-use crate::validation::infer_schema_from_topic;
+use crate::validation::{MessageSchema, infer_schema_from_topic};
 
 /// Open a new synchronous Redis connection using the URL from `settings`.
 ///
@@ -966,6 +966,7 @@ fn prepare_message(
     reply_to: Option<&str>,
     metadata: &serde_json::Value,
     session_id: Option<&str>,
+    schema: Option<MessageSchema>,
 ) -> PreparedMessage {
     let id = Uuid::now_v7().to_string();
     let ts = {
@@ -983,7 +984,9 @@ fn prepare_message(
 
     // Schema inference: annotate metadata with `_schema` when the topic maps
     // to a known schema so all transports see a consistent annotation.
-    let inferred_schema = infer_schema_from_topic(topic, None);
+    let inferred_schema = schema
+        .map(MessageSchema::as_str)
+        .or_else(|| infer_schema_from_topic(topic, None));
 
     // LZ4 compression for bodies above the threshold.
     let compressed: Option<String> = if body.len() > COMPRESS_THRESHOLD {
@@ -1002,28 +1005,30 @@ fn prepare_message(
     let is_compressed = compressed.is_some();
 
     // Build merged metadata in one pass: schema annotation + compression markers.
-    let final_metadata: serde_json::Value = if inferred_schema.is_some() || is_compressed {
-        let mut map = match metadata {
-            serde_json::Value::Object(m) => m.clone(),
-            _ => serde_json::Map::new(),
+    let final_metadata: serde_json::Value =
+        if inferred_schema.is_some() || is_compressed || metadata.get("_schema").is_some() {
+            let mut map = match metadata {
+                serde_json::Value::Object(m) => m.clone(),
+                _ => serde_json::Map::new(),
+            };
+            map.remove("_schema");
+            if let Some(schema) = inferred_schema {
+                map.insert(
+                    "_schema".to_owned(),
+                    serde_json::Value::String(schema.to_owned()),
+                );
+            }
+            if is_compressed {
+                map.insert("_compressed".to_owned(), serde_json::json!("lz4"));
+                map.insert(
+                    "_original_size".to_owned(),
+                    serde_json::Value::Number(body.len().into()),
+                );
+            }
+            serde_json::Value::Object(map)
+        } else {
+            metadata.clone()
         };
-        if let Some(schema) = inferred_schema {
-            map.insert(
-                "_schema".to_owned(),
-                serde_json::Value::String(schema.to_owned()),
-            );
-        }
-        if is_compressed {
-            map.insert("_compressed".to_owned(), serde_json::json!("lz4"));
-            map.insert(
-                "_original_size".to_owned(),
-                serde_json::Value::Number(body.len().into()),
-            );
-        }
-        serde_json::Value::Object(map)
-    } else {
-        metadata.clone()
-    };
 
     // Task 4.1: inject session tag when a session_id is configured.
     // Build the effective tags, adding "session:<id>" only when not already
@@ -1093,6 +1098,13 @@ pub struct BatchSendPayload {
     pub metadata: serde_json::Value,
 }
 
+/// Checked schema carried alongside the unchanged legacy batch payload.
+#[derive(Debug)]
+pub struct CheckedBatchSendPayload {
+    pub payload: BatchSendPayload,
+    pub schema: Option<MessageSchema>,
+}
+
 /// Send multiple messages in a single Redis pipeline round-trip.
 ///
 /// All XADD commands are batched into one [`redis::Pipeline`] executed with a
@@ -1114,14 +1126,38 @@ pub struct BatchSendPayload {
 /// Panics if the notification pipeline returns more stream IDs than messages
 /// indexed for notification — which cannot happen in correct operation because
 /// `message_indexes` and the pipeline entries are appended in lockstep.
-#[expect(
-    clippy::too_many_lines,
-    reason = "XADD pipeline + PUBLISH pipeline + PG enqueue + pending-ack pipeline in one fn"
-)]
 pub fn bus_post_messages_batch_with_notifications(
     conn: &mut redis::Connection,
     settings: &Settings,
     payloads: Vec<BatchSendPayload>,
+    pg_writer: Option<&PgWriter>,
+    has_sse_subscribers: bool,
+) -> Result<Vec<PostedMessage>> {
+    let checked = payloads
+        .into_iter()
+        .map(|payload| CheckedBatchSendPayload {
+            payload,
+            schema: None,
+        })
+        .collect();
+    bus_post_messages_batch_with_schema(conn, settings, checked, pg_writer, has_sse_subscribers)
+}
+
+/// Post a checked-schema batch without changing the legacy payload shape.
+///
+/// # Errors
+/// Returns an error if the Redis pipeline fails.
+///
+/// # Panics
+/// Panics if notification pipeline results violate the Redis protocol.
+#[expect(
+    clippy::too_many_lines,
+    reason = "XADD pipeline + PUBLISH pipeline + PG enqueue + pending-ack pipeline in one fn"
+)]
+pub fn bus_post_messages_batch_with_schema(
+    conn: &mut redis::Connection,
+    settings: &Settings,
+    payloads: Vec<CheckedBatchSendPayload>,
     pg_writer: Option<&PgWriter>,
     has_sse_subscribers: bool,
 ) -> Result<Vec<PostedMessage>> {
@@ -1133,7 +1169,7 @@ pub fn bus_post_messages_batch_with_notifications(
     // Pure-computation pass: consume payloads and prepare all messages before
     // any I/O.  Moving out of the Vec here avoids a redundant clone.
     let mut prepared: Vec<PreparedMessage> = Vec::with_capacity(payloads.len());
-    for p in payloads {
+    for CheckedBatchSendPayload { payload: p, schema } in payloads {
         prepared.push(prepare_message(
             &p.from,
             &p.to,
@@ -1146,6 +1182,7 @@ pub fn bus_post_messages_batch_with_notifications(
             p.reply_to.as_deref(),
             &p.metadata,
             session_id,
+            schema,
         ));
     }
 
@@ -1410,11 +1447,7 @@ pub fn bus_post_messages_batch(
 /// the presence JSON fails to serialize.
 #[expect(
     clippy::too_many_arguments,
-    reason = "maps directly to protocol fields plus has_sse_subscribers flag"
-)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "compression + schema inference + PG persistence in one atomic unit"
+    reason = "compatibility wrapper preserves protocol arguments"
 )]
 pub fn bus_post_message_with_notifications(
     conn: &mut redis::Connection,
@@ -1431,6 +1464,54 @@ pub fn bus_post_message_with_notifications(
     metadata: &serde_json::Value,
     pg_writer: Option<&PgWriter>,
     has_sse_subscribers: bool,
+) -> Result<PostedMessage> {
+    bus_post_message_with_schema(
+        conn,
+        settings,
+        from,
+        to,
+        topic,
+        body,
+        thread_id,
+        tags,
+        priority,
+        request_ack,
+        reply_to,
+        metadata,
+        pg_writer,
+        has_sse_subscribers,
+        None,
+    )
+}
+
+/// Post using a checked schema independent of caller metadata.
+///
+/// # Errors
+/// Returns an error if Redis posting fails.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "maps directly to protocol fields plus has_sse_subscribers flag"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "compression + schema inference + PG persistence in one atomic unit"
+)]
+pub fn bus_post_message_with_schema(
+    conn: &mut redis::Connection,
+    settings: &Settings,
+    from: &str,
+    to: &str,
+    topic: &str,
+    body: &str,
+    thread_id: Option<&str>,
+    tags: &[String],
+    priority: &str,
+    request_ack: bool,
+    reply_to: Option<&str>,
+    metadata: &serde_json::Value,
+    pg_writer: Option<&PgWriter>,
+    has_sse_subscribers: bool,
+    schema: Option<MessageSchema>,
 ) -> Result<PostedMessage> {
     let id = Uuid::now_v7().to_string();
     // Fix 3: pre-allocate a 32-byte buffer and write directly into it, avoiding
@@ -1450,7 +1531,9 @@ pub fn bus_post_message_with_notifications(
     // both the schema annotation and the optional compression markers.  This
     // avoids the two successive `m.clone()` calls the previous code made when
     // both schema inference and compression fired on the same message.
-    let inferred_schema = infer_schema_from_topic(topic, None);
+    let inferred_schema = schema
+        .map(MessageSchema::as_str)
+        .or_else(|| infer_schema_from_topic(topic, None));
 
     // --- LZ4 body compression ------------------------------------------------
     // Compress bodies above the threshold to reduce Redis memory and payload
@@ -1479,36 +1562,39 @@ pub fn bus_post_message_with_notifications(
 
     // Build final metadata in one clone, merging schema + compression markers.
     let final_metadata_owned: serde_json::Value;
-    let final_metadata: &serde_json::Value = if inferred_schema.is_some() || compressed.is_some() {
-        let mut map = match metadata {
-            serde_json::Value::Object(m) => m.clone(),
-            _ => serde_json::Map::new(),
+    let final_metadata: &serde_json::Value =
+        if inferred_schema.is_some() || compressed.is_some() || metadata.get("_schema").is_some() {
+            let mut map = match metadata {
+                serde_json::Value::Object(m) => m.clone(),
+                _ => serde_json::Map::new(),
+            };
+            map.remove("_schema");
+            if let Some(schema) = inferred_schema {
+                map.insert(
+                    "_schema".to_owned(),
+                    serde_json::Value::String(schema.to_owned()),
+                );
+            }
+            if compressed.is_some() {
+                map.insert("_compressed".to_owned(), serde_json::json!("lz4"));
+                map.insert(
+                    "_original_size".to_owned(),
+                    serde_json::Value::Number(body.len().into()),
+                );
+            }
+            final_metadata_owned = serde_json::Value::Object(map);
+            &final_metadata_owned
+        } else {
+            metadata
         };
-        if let Some(schema) = inferred_schema {
-            map.insert(
-                "_schema".to_owned(),
-                serde_json::Value::String(schema.to_owned()),
-            );
-        }
-        if compressed.is_some() {
-            map.insert("_compressed".to_owned(), serde_json::json!("lz4"));
-            map.insert(
-                "_original_size".to_owned(),
-                serde_json::Value::Number(body.len().into()),
-            );
-        }
-        final_metadata_owned = serde_json::Value::Object(map);
-        &final_metadata_owned
-    } else {
-        metadata
-    };
     // effective_metadata for the returned Message is the schema-annotated map
     // (without compression markers, since the returned body is uncompressed).
-    let effective_metadata: &serde_json::Value = if inferred_schema.is_some() {
-        final_metadata
-    } else {
-        metadata
-    };
+    let effective_metadata: &serde_json::Value =
+        if inferred_schema.is_some() || metadata.get("_schema").is_some() {
+            final_metadata
+        } else {
+            metadata
+        };
     // -------------------------------------------------------------------------
 
     // Task 4.1: inject session tag when a session_id is configured.
@@ -3654,6 +3740,7 @@ mod tests {
             None,
             &meta,
             None,
+            None,
         );
         // id must be a valid UUID (36-char hyphenated string)
         assert_eq!(pm.message.id.len(), 36, "id should be UUID length");
@@ -3680,6 +3767,7 @@ mod tests {
             None,
             &meta,
             None,
+            None,
         );
         assert_eq!(pm.message.metadata["_schema"], "status");
     }
@@ -3698,6 +3786,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
             None,
         );
         assert!(!pm.is_compressed, "short body should not be compressed");
@@ -3719,6 +3808,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
             None,
         );
         assert!(pm.is_compressed, "large body should be compressed");
@@ -3751,6 +3841,7 @@ mod tests {
             None,
             &meta,
             None,
+            None,
         );
         assert_eq!(pm.message.reply_to.as_deref(), Some("alice"));
     }
@@ -3770,6 +3861,7 @@ mod tests {
             Some("charlie"),
             &meta,
             None,
+            None,
         );
         assert_eq!(pm.message.reply_to.as_deref(), Some("charlie"));
     }
@@ -3788,6 +3880,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
             None,
         );
         assert!(
@@ -3811,6 +3904,7 @@ mod tests {
             None,
             &meta,
             None,
+            None,
         );
         assert_eq!(pm.thread_str, "tid-123");
         assert_eq!(pm.message.thread_id, Some("tid-123".to_owned()));
@@ -3830,6 +3924,7 @@ mod tests {
             true,
             None,
             &meta,
+            None,
             None,
         );
         assert_eq!(pm.ack_str, "true");
@@ -3851,6 +3946,7 @@ mod tests {
             None,
             &meta,
             None,
+            None,
         );
         assert_eq!(pm.ack_str, "false");
         assert!(!pm.message.request_ack);
@@ -3861,7 +3957,7 @@ mod tests {
         let tags = vec!["alpha".to_owned(), "beta".to_owned()];
         let meta = serde_json::Value::Object(serde_json::Map::new());
         let pm = prepare_message(
-            "a", "b", "t", "body", None, &tags, "normal", false, None, &meta, None,
+            "a", "b", "t", "body", None, &tags, "normal", false, None, &meta, None, None,
         );
         let parsed: Vec<String> =
             serde_json::from_str(&pm.tags_json).expect("tags_json not valid JSON");
@@ -3887,6 +3983,7 @@ mod tests {
             None,
             &meta,
             Some("sprint-42"),
+            None,
         );
         assert!(
             pm.message.tags.iter().any(|t| t == "session:sprint-42"),
@@ -3910,6 +4007,7 @@ mod tests {
             None,
             &meta,
             Some("sprint-42"),
+            None,
         );
         let count = pm
             .message
@@ -3934,6 +4032,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
             None,
         );
         assert!(
@@ -3961,6 +4060,7 @@ mod tests {
             Some("msg-root"), // reply_to points to the root message
             &meta,
             None,
+            None,
         );
         assert_eq!(
             pm.message.thread_id.as_deref(),
@@ -3985,6 +4085,7 @@ mod tests {
             Some("msg-root"), // reply_to differs
             &meta,
             None,
+            None,
         );
         assert_eq!(
             pm.message.thread_id.as_deref(),
@@ -4007,6 +4108,7 @@ mod tests {
             false,
             None, // no reply_to
             &meta,
+            None,
             None,
         );
         assert!(
@@ -4053,6 +4155,7 @@ mod tests {
             payload.request_ack,
             payload.reply_to.as_deref(),
             &payload.metadata,
+            None,
             None,
         );
         assert_eq!(pm.message.from, "alice");
@@ -4217,6 +4320,7 @@ mod tests {
             false,
             None,
             &meta,
+            None,
             None,
         );
         // UUIDv7 IDs start with a timestamp-derived prefix. Verify it

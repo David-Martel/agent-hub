@@ -315,3 +315,24 @@ agent-bus serve --transport mcp-http --port 8765
 - The workflow is designed for the existing self-hosted runner. The authoritative validation path remains the local PowerShell harnesses in `scripts\`.
 - The smoke harness records whether PostgreSQL was healthy or degraded, rather than hiding that distinction behind a generic green test run.
 - Bench CI runs both `throughput` and `bus_benchmarks`, then uploads Criterion output when available so Redis-backed hot-path regressions are visible over time.
+
+### Message schema authority
+
+An explicit `finding`, `status`, or `benchmark` schema takes precedence over
+schema inference from the topic. CLI, HTTP and MCP sends, batch sends and offline
+spool replay carry that checked schema through Redis and PostgreSQL persistence.
+For example, `--topic review --schema status --body CLEAR` remains a status message;
+it is not reclassified as a finding when stored.
+
+When schema is omitted, known topics retain their existing inference. HTTP and
+MCP default unknown topics to `status`; local CLI sends leave them unclassified.
+Canonical validated sends reject unknown explicit schema names on every transport,
+rather than silently replacing an invalid name with topic inference. The legacy
+`enforce_schema_for_transport` helper retains its documented fallback behavior for
+compatibility. Offline spool creation also rejects unknown explicit names.
+
+`metadata._schema` is a reserved, backend-produced annotation. Incoming metadata
+cannot select or override the checked schema: storage replaces it with the resolved
+schema, or removes it when the message has no schema. Other metadata is preserved.
+The wire fields and protocol version are unchanged; older requests without `schema`
+remain supported. Existing persisted messages are not rewritten by this correction.
