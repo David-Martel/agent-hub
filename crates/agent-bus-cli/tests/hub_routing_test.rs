@@ -355,6 +355,167 @@ fn stderr_of(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+#[cfg(feature = "server-mode")]
+#[test]
+fn service_status_reports_verified_admin_tier() {
+    let hub = MockHub::spawn(vec![MockRoute {
+        method: "GET",
+        path: "/admin/service",
+        status: 200,
+        body: r#"{"paused":false,"fixture":"verified-admin"}"#.to_owned(),
+    }]);
+    let output = isolated_agent_bus("service-status-positive")
+        .args([
+            "service",
+            "--action",
+            "status",
+            "--base-url",
+            &hub.url(),
+            "--service-name",
+            "agent-bus-disposable-missing-fixture",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run service status");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("status JSON");
+    assert_eq!(report["tier"], "server_admin");
+    assert_eq!(report["admin"]["fixture"], "verified-admin");
+    assert_eq!(hub.hits(), 1);
+}
+
+#[cfg(not(feature = "server-mode"))]
+#[test]
+fn service_status_without_server_mode_reports_metadata_without_http_probe() {
+    let hub = MockHub::spawn(vec![MockRoute {
+        method: "GET",
+        path: "/admin/service",
+        status: 200,
+        body: r#"{"fixture":"must-not-be-fetched"}"#.to_owned(),
+    }]);
+    let output = isolated_agent_bus("service-status-feature-disabled")
+        .args([
+            "service",
+            "--action",
+            "status",
+            "--base-url",
+            &hub.url(),
+            "--service-name",
+            "agent-bus-disposable-missing-fixture",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run feature-disabled service status");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("status JSON");
+    assert_eq!(report["tier"], "server_mode_unavailable");
+    assert!(report["admin"].is_null());
+    assert_eq!(hub.hits(), 0);
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn service_status_refuses_rejected_admin_access() {
+    let hub = MockHub::spawn(vec![MockRoute {
+        method: "GET",
+        path: "/admin/service",
+        status: 401,
+        body: r#"{"error":"fixture unauthorized"}"#.to_owned(),
+    }]);
+    let output = isolated_agent_bus("service-status-rejected")
+        .args([
+            "service",
+            "--action",
+            "status",
+            "--base-url",
+            &hub.url(),
+            "--service-name",
+            "agent-bus-disposable-missing-fixture",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run rejected service status");
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "failure must not emit a success report"
+    );
+    let diagnostic = stderr_of(&output);
+    assert!(
+        diagnostic.contains("server-mode service status admin fetch failed"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("401"), "{diagnostic}");
+    assert_eq!(hub.hits(), 1);
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn service_status_refuses_rejected_configured_authority_without_base_url_override() {
+    let hub = MockHub::spawn(vec![MockRoute {
+        method: "GET",
+        path: "/admin/service",
+        status: 401,
+        body: r#"{"error":"fixture unauthorized"}"#.to_owned(),
+    }]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "service-status-configured")
+        .args([
+            "service",
+            "--action",
+            "status",
+            "--service-name",
+            "agent-bus-disposable-missing-fixture",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run configured-authority service status");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let diagnostic = stderr_of(&output);
+    assert!(
+        diagnostic.contains("server-mode service status admin fetch failed"),
+        "{diagnostic}"
+    );
+    assert!(diagnostic.contains("401"), "{diagnostic}");
+    assert_eq!(hub.hits(), 1);
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn service_status_refuses_unreachable_admin_endpoint() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve disposable closed endpoint");
+    let base_url = format!("http://{}", listener.local_addr().expect("fixture address"));
+    drop(listener);
+    let output = isolated_agent_bus("service-status-unreachable")
+        .args([
+            "service",
+            "--action",
+            "status",
+            "--base-url",
+            &base_url,
+            "--service-name",
+            "agent-bus-disposable-missing-fixture",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run unreachable service status");
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "failure must not emit a success report"
+    );
+    let diagnostic = stderr_of(&output);
+    assert!(
+        diagnostic.contains("server-mode service status admin fetch failed"),
+        "{diagnostic}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // claims — remote routing (#78)
 // ---------------------------------------------------------------------------
