@@ -82,3 +82,7 @@ Jules (Google's async coding agent) reads this file. It runs in a Google-hosted 
   `agent-bus` build.
 - **Do not ask for confirmation.** State any assumption and continue. When the task is done,
   finish; do not stop to ask "should I proceed?".
+
+## Learned Backend Lifecycle Rules (append-only)
+
+- **[2026-10-05] HTTP shutdown is not managed-process termination.** A successful HTTP stop/flush response and a closed listener prove those operations only. Before declaring a managed hub stopped, verify its supervisor/service state and process exit independently; use the owning service manager to complete termination when the process remains active. Preserve flush/readback evidence and the first failure. Do not attribute a lingering process to SSE without connection or lifecycle evidence. A failed server-admin status request must fail visibly rather than return success with `admin: null`; Windows SCM-only and builds without server-mode must identify their narrower evidence tier.

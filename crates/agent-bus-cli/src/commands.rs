@@ -272,6 +272,50 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_stora
     }
 }
 
+fn service_status_report(
+    base_url: &str,
+    service_name: &str,
+    windows_service_state: Option<&str>,
+    admin_result: Result<Option<serde_json::Value>>,
+    local_windows_fallback: bool,
+) -> Result<serde_json::Value> {
+    let (admin_status, tier, admin_error) = match admin_result {
+        Ok(Some(status)) if status.is_object() => (Some(status), "server_admin", None),
+        Ok(Some(_)) => anyhow::bail!("server admin service status response must be a JSON object"),
+        Ok(None) => (
+            None,
+            if windows_service_state.is_some() {
+                "windows_service"
+            } else {
+                "server_mode_unavailable"
+            },
+            None,
+        ),
+        Err(error) if local_windows_fallback && windows_service_state.is_some() => {
+            (None, "windows_service", Some(format!("{error:#}")))
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "server-mode service status admin fetch failed against {}",
+                    agent_bus_core::settings::redact_url(base_url)
+                )
+            });
+        }
+    };
+    let mut report = service_status_payload(
+        base_url,
+        service_name,
+        windows_service_state,
+        admin_status.as_ref(),
+    );
+    report["tier"] = serde_json::json!(tier);
+    if let Some(error) = admin_error {
+        report["admin_error"] = serde_json::json!(error);
+    }
+    Ok(report)
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "service lifecycle command handles all maintenance actions in one place"
@@ -286,6 +330,12 @@ pub(crate) fn cmd_service(
     encoding: &Encoding,
 ) -> Result<()> {
     let action = action.trim().to_lowercase();
+    #[cfg(feature = "server-mode")]
+    let local_windows_fallback = cfg!(windows)
+        && !use_server_mode(settings)
+        && base_url.is_none_or(|value| value.trim().is_empty());
+    #[cfg(not(feature = "server-mode"))]
+    let local_windows_fallback = false;
     let base_url = resolved_service_base_url(settings, base_url);
     let service_name = service_name_override
         .filter(|value| !value.trim().is_empty())
@@ -293,19 +343,20 @@ pub(crate) fn cmd_service(
 
     match action.as_str() {
         "status" => {
-            #[cfg(feature = "server-mode")]
-            let admin_status = http_get(&format!("{base_url}/admin/service")).ok();
-            #[cfg(not(feature = "server-mode"))]
-            let admin_status = None;
-
             let windows_service_state = query_windows_service_state(service_name)?;
+            #[cfg(feature = "server-mode")]
+            let admin_result = http_get(&format!("{base_url}/admin/service")).map(Some);
+            #[cfg(not(feature = "server-mode"))]
+            let admin_result = Ok(None);
+
             output(
-                &service_status_payload(
+                &service_status_report(
                     &base_url,
                     service_name,
                     windows_service_state.as_deref(),
-                    admin_status.as_ref(),
-                ),
+                    admin_result,
+                    local_windows_fallback,
+                )?,
                 encoding,
             );
             Ok(())
@@ -2450,6 +2501,58 @@ mod tests {
 
     fn test_settings() -> Settings {
         Settings::from_env()
+    }
+
+    #[test]
+    fn service_status_report_labels_no_server_metadata_explicitly() {
+        let report = service_status_report("fixture", "fixture", None, Ok(None), false)
+            .expect("feature-disabled metadata report");
+        assert_eq!(report["tier"], "server_mode_unavailable");
+        assert!(report["admin"].is_null());
+    }
+
+    #[test]
+    fn service_status_report_rejects_null_admin_response_even_with_windows_fallback() {
+        let error = service_status_report(
+            "fixture",
+            "fixture",
+            Some("RUNNING"),
+            Ok(Some(serde_json::Value::Null)),
+            true,
+        )
+        .expect_err("a malformed HTTP success must not claim verified status");
+        assert!(error.to_string().contains("must be a JSON object"));
+    }
+
+    #[test]
+    fn service_status_report_preserves_local_windows_state_with_visible_admin_failure() {
+        let report = service_status_report(
+            "fixture",
+            "fixture",
+            Some("STOPPED"),
+            Err(anyhow::anyhow!("fixture admin unavailable")),
+            true,
+        )
+        .expect("local Windows status remains available without its HTTP daemon");
+        assert_eq!(report["tier"], "windows_service");
+        assert_eq!(report["windows_service_state"], "STOPPED");
+        assert_eq!(report["admin_error"], "fixture admin unavailable");
+        assert!(report["admin"].is_null());
+    }
+
+    #[test]
+    fn service_status_report_never_substitutes_local_windows_state_for_remote_failure() {
+        let error = service_status_report(
+            "fixture",
+            "fixture",
+            Some("RUNNING"),
+            Err(anyhow::anyhow!("fixture HTTP401")),
+            false,
+        )
+        .expect_err("remote status cannot be proven by a local service");
+        let diagnostic = format!("{error:#}");
+        assert!(diagnostic.contains("server-mode service status admin fetch failed"));
+        assert!(diagnostic.contains("fixture HTTP401"));
     }
 
     #[test]
