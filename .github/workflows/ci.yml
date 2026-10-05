@@ -356,6 +356,9 @@ jobs:
             if (-not $ready) { throw 'PostgreSQL fixture did not become ready' }
             $env:AGENT_BUS_REDIS_URL = 'redis://127.0.0.1:16382/0'
             $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres:$smokeToken@127.0.0.1:15302/agent_bus_smoke"
+            # Probe the same published Windows-host path used by the native CLI;
+            # container-local readiness cannot establish Docker port forwarding.
+            ./scripts/Wait-DisposableRedisReady.ps1 -RedisUrl $env:AGENT_BUS_REDIS_URL -TimeoutSeconds 30
             Remove-Item Env:AGENT_BUS_SERVER_CANDIDATES -ErrorAction SilentlyContinue
             ./scripts/test-agent-bus-functional.ps1 `
               -CliPath "$PWD/ci-artifacts/windows-x64/agent-bus.exe" `
@@ -446,6 +449,9 @@ jobs:
       - name: Validate functional smoke isolation and cleanup
         shell: pwsh
         run: ./scripts/test-agent-bus-functional-isolation.ps1
+      - name: Validate published Redis readiness behavior
+        shell: pwsh
+        run: ./scripts/test-disposable-redis-ready.ps1
       - name: Record and upload Windows release provenance
         shell: pwsh
         run: |
