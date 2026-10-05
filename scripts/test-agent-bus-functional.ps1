@@ -72,11 +72,29 @@ try {
         param([string]$CommandPath)
 
         $json = & $CommandPath "health" "--encoding" "json"
-        if ($LASTEXITCODE -ne 0) {
-            throw "health failed for $CommandPath"
+        $healthExit = $LASTEXITCODE
+        $health = $null
+        try { $health = $json | ConvertFrom-Json -AsHashtable -ErrorAction Stop }
+        catch { $health = $null }
+        $validJson = $health -is [Collections.IDictionary]
+        $validSchema = $validJson -and $health['ok'] -is [bool] -and
+            $health['storage_ready'] -is [bool] -and $health.Contains('database_ok') -and
+            ($null -eq $health['database_ok'] -or $health['database_ok'] -is [bool])
+        if ($healthExit -ne 0 -or -not $validSchema) {
+            # Health can contain endpoint URLs, credentials, and backend error
+            # text. Preserve only typed booleans and a fixed backend mode.
+            $values = @{}
+            foreach ($field in @('ok', 'database_ok', 'storage_ready')) {
+                $values[$field] = if ($validJson -and $health[$field] -is [bool]) { $health[$field].ToString().ToLowerInvariant() } else { 'unknown' }
+            }
+            $mode = 'unknown'
+            if ($validJson -and $health['backend'] -is [Collections.IDictionary] -and
+                $health['backend']['mode'] -in @('local', 'remote', 'offline')) { $mode = $health['backend']['mode'] }
+            $jsonState = if ($validJson) { 'valid' } else { 'invalid' }
+            throw "CLI health failed (exit=$healthExit; ok=$($values.ok); database_ok=$($values.database_ok); storage_ready=$($values.storage_ready); backend=$mode; json=$jsonState)."
         }
 
-        return $json | ConvertFrom-Json
+        return [pscustomobject]$health
     }
 
     function Invoke-WithDatabaseUrl {

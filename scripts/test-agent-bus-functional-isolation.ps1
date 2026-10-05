@@ -114,7 +114,7 @@ function Invoke-FixtureCase {
         }
         else {
             $expectedKinds = switch ($Failure) {
-                { $_ -in @('health-exit', 'health-not-ok', 'health-postgres') } { 'health' }
+                { $_ -like 'health-*' } { 'health' }
                 'cli-smoke' { 'health,cli' }
                 'http-smoke' { 'health,cli,http' }
                 'forced-cli' { 'health,cli,http,cli' }
@@ -122,6 +122,24 @@ function Invoke-FixtureCase {
                 default { throw "Unknown fixture failure: $Failure" }
             }
             Assert-Fixture -Condition (($events.kind -join ',') -eq $expectedKinds) -Message "$Name failure happened at the wrong phase"
+            if ($Failure -in @('health-exit', 'health-invalid-json', 'health-invalid-json-exit', 'health-malformed-fields', 'health-malformed-fields-success')) {
+                $expectedDiagnostic = switch ($Failure) {
+                    'health-exit' { 'CLI health failed (exit=7; ok=true; database_ok=true; storage_ready=true; backend=local; json=valid).' }
+                    'health-invalid-json' { 'CLI health failed (exit=0; ok=unknown; database_ok=unknown; storage_ready=unknown; backend=unknown; json=invalid).' }
+                    'health-invalid-json-exit' { 'CLI health failed (exit=9; ok=unknown; database_ok=unknown; storage_ready=unknown; backend=unknown; json=invalid).' }
+                    'health-malformed-fields' { 'CLI health failed (exit=7; ok=unknown; database_ok=unknown; storage_ready=unknown; backend=unknown; json=valid).' }
+                    'health-malformed-fields-success' { 'CLI health failed (exit=0; ok=unknown; database_ok=unknown; storage_ready=unknown; backend=unknown; json=valid).' }
+                }
+                Assert-Fixture -Condition ($failureMessage -ceq $expectedDiagnostic) -Message "$Name did not produce the exact safe health projection"
+                Assert-Fixture -Condition ($failureMessage -notmatch 'SYNTHETIC-SECRET|sensitive.invalid|redis://') -Message "$Name exposed raw health details"
+            }
+            if ($Failure -in @('health-string-ok', 'health-string-storage', 'health-string-database', 'health-missing-database')) {
+                Assert-Fixture -Condition ($failureMessage -match '^CLI health failed \(exit=0;') -Message "$Name allowed an invalid successful health schema"
+                Assert-Fixture -Condition ($failureMessage -notmatch 'SYNTHETIC-SECRET') -Message "$Name exposed malformed field data"
+            }
+            if ($Failure -eq 'health-null-database') {
+                Assert-Fixture -Condition ($failureMessage -eq 'PostgreSQL is required for this run but database_ok=false') -Message 'Nullable database health was incorrectly rejected as malformed'
+            }
         }
     }
     foreach ($key in $environmentKeys) {
@@ -159,9 +177,32 @@ param([Parameter(ValueFromRemainingArguments = $true)][string[]]$CommandArgument
 . (Join-Path $PSScriptRoot 'fixture-capture.ps1')
 if (($CommandArguments -join ',') -ne 'health,--encoding,json') { throw 'Unexpected CLI arguments' }
 Write-FixtureEvent -Kind health -Mode health
-$global:LASTEXITCODE = if ($env:PCAI_SMOKE_FIXTURE_FAILURE -eq 'health-exit') { 7 } else { 0 }
-@{ ok = ($env:PCAI_SMOKE_FIXTURE_FAILURE -ne 'health-not-ok');
-    database_ok = ($env:PCAI_SMOKE_FIXTURE_FAILURE -ne 'health-postgres') } | ConvertTo-Json -Compress
+$global:LASTEXITCODE = switch ($env:PCAI_SMOKE_FIXTURE_FAILURE) {
+    { $_ -in @('health-exit', 'health-malformed-fields') } { 7 }
+    'health-invalid-json-exit' { 9 }
+    default { 0 }
+}
+if ($env:PCAI_SMOKE_FIXTURE_FAILURE -in @('health-invalid-json', 'health-invalid-json-exit')) {
+    'SYNTHETIC-SECRET invalid JSON redis://sensitive.invalid'
+    return
+}
+if ($env:PCAI_SMOKE_FIXTURE_FAILURE -in @('health-malformed-fields', 'health-malformed-fields-success')) {
+    @{ ok = 'SYNTHETIC-SECRET'; database_ok = 1; storage_ready = 'true';
+        backend = @{ mode = 'redis://sensitive.invalid' } } | ConvertTo-Json -Compress
+    return
+}
+$payload = @{ ok = ($env:PCAI_SMOKE_FIXTURE_FAILURE -ne 'health-not-ok');
+    database_ok = ($env:PCAI_SMOKE_FIXTURE_FAILURE -ne 'health-postgres'); storage_ready = $true;
+    backend = @{ mode = 'local'; redis_url = 'redis://SYNTHETIC-SECRET@sensitive.invalid' };
+    error = 'SYNTHETIC-SECRET'; auth_token = 'SYNTHETIC-SECRET' }
+switch ($env:PCAI_SMOKE_FIXTURE_FAILURE) {
+    'health-string-ok' { $payload.ok = 'false' }
+    'health-string-storage' { $payload.storage_ready = 'SYNTHETIC-SECRET' }
+    'health-string-database' { $payload.database_ok = 'SYNTHETIC-SECRET' }
+    'health-missing-database' { $payload.Remove('database_ok') }
+    'health-null-database' { $payload.database_ok = $null }
+}
+$payload | ConvertTo-Json -Compress
 '@)
     [IO.File]::WriteAllText((Join-Path $fixtureRoot 'fake-http.ps1'), "throw 'HTTP binary must only be passed to the fake smoke sibling'")
     [IO.File]::WriteAllText((Join-Path $fixtureRoot 'test-agent-bus-cli-smoke.ps1'), @'
@@ -207,10 +248,14 @@ if ($env:PCAI_SMOKE_FIXTURE_FAILURE -eq 'http-smoke' -or
     }
     Invoke-FixtureCase -Name 'success synthetic original environment'
     Invoke-FixtureCase -Name 'success absent original environment generated token' -AbsentOriginals -Overrides @{ HttpAuthToken = '' }
-    foreach ($failure in @('health-exit', 'health-not-ok', 'cli-smoke', 'http-smoke', 'forced-cli', 'forced-http')) {
+    foreach ($failure in @('health-exit', 'health-invalid-json', 'health-invalid-json-exit', 'health-malformed-fields', 'health-malformed-fields-success', 'health-not-ok', 'cli-smoke', 'http-smoke', 'forced-cli', 'forced-http')) {
         Invoke-FixtureCase -Name "cleanup after $failure" -Failure $failure -ExpectFailure
     }
     Invoke-FixtureCase -Name 'cleanup after required Postgres unhealthy' -Failure health-postgres -Overrides @{ RequirePostgres = $true } -ExpectFailure
+    foreach ($failure in @('health-string-ok', 'health-string-storage', 'health-string-database', 'health-missing-database')) {
+        Invoke-FixtureCase -Name "schema refusal $failure" -Failure $failure -ExpectFailure
+    }
+    Invoke-FixtureCase -Name 'nullable database schema accepted but required Postgres unavailable' -Failure health-null-database -Overrides @{ RequirePostgres = $true } -ExpectFailure
     [pscustomobject]@{ sourceSha256 = $sourceHash; passed = $results.Count; failed = 0; cases = $results } | ConvertTo-Json -Depth 4
 }
 finally {
