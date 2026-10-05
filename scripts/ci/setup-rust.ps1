@@ -1,6 +1,8 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+. (Join-Path (Split-Path -Parent $PSScriptRoot) "rust-build-common.ps1")
+
 $cacheRoot = if ($env:AGENT_HUB_CI_CACHE_ROOT) {
     $env:AGENT_HUB_CI_CACHE_ROOT
 } else {
@@ -34,6 +36,9 @@ $env:CARGO_INCREMENTAL = "0"
 $env:SCCACHE_DIR = $sccacheDir
 $env:SCCACHE_SERVER_PORT = "4228"
 
+# Never carry a previous runner/job wrapper into discovery or a failed health probe.
+Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+
 $pinnedSccache = Join-Path $env:USERPROFILE ".cargo\bin\sccache.exe"
 $sccache = if (Test-Path -LiteralPath $pinnedSccache -PathType Leaf) {
     Get-Item -LiteralPath $pinnedSccache
@@ -46,15 +51,24 @@ if ($sccache) {
     } else {
         $sccache.Source
     }
-    $sccacheVersion = (& $sccachePath --version).Trim()
-    if ($sccacheVersion -ne "sccache 0.16.0") {
-        Write-Warning "Expected sccache 0.16.0, found $sccacheVersion at $sccachePath"
+    try {
+        $sccacheVersion = (& $sccachePath --version | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            throw "sccache version query failed ($LASTEXITCODE)"
+        }
+        if ($sccacheVersion -ne "sccache 0.16.0") {
+            Write-Warning "Expected sccache 0.16.0, found $sccacheVersion at $sccachePath"
+        }
+        # Probe the canonical shared daemon without restarting it or resetting stats.
+        if (Initialize-AgentBusSccacheServer -SccachePath $sccachePath) {
+            $env:RUSTC_WRAPPER = $sccachePath
+            Write-Host "sccache enabled ($sccachePath; cache directory $sccacheDir)"
+        } else {
+            Write-Warning "sccache is unhealthy; continuing with persistent Cargo outputs"
+        }
+    } catch {
+        Write-Warning "sccache discovery failed; continuing with persistent Cargo outputs: $($_.Exception.Message)"
     }
-    & $sccachePath --stop-server 2>$null | Out-Null
-    & $sccachePath --start-server | Out-Null
-    & $sccachePath --show-stats | Out-Null
-    $env:RUSTC_WRAPPER = $sccachePath
-    Write-Host "sccache enabled ($sccachePath; cache directory $sccacheDir)"
 } else {
     Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
     Write-Warning "sccache is unavailable; continuing with persistent Cargo outputs"
@@ -67,10 +81,9 @@ if ($env:GITHUB_ENV) {
         "SCCACHE_DIR=$sccacheDir"
         "SCCACHE_SERVER_PORT=4228"
     ) | Add-Content -Path $env:GITHUB_ENV -Encoding utf8
-    if ($env:RUSTC_WRAPPER) {
-        "RUSTC_WRAPPER=$($env:RUSTC_WRAPPER)" |
-            Add-Content -Path $env:GITHUB_ENV -Encoding utf8
-    }
+    # An empty entry also clears a stale wrapper inherited by subsequent steps.
+    "RUSTC_WRAPPER=$($env:RUSTC_WRAPPER)" |
+        Add-Content -Path $env:GITHUB_ENV -Encoding utf8
 }
 if ($env:GITHUB_PATH) {
     $toolchainBin | Add-Content -Path $env:GITHUB_PATH -Encoding utf8
