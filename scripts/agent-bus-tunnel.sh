@@ -20,8 +20,10 @@ timeout=${4:-20}
 [[ "$jump" != -* ]] || { echo "agent-bus tunnel: jump must not start with '-'" >&2; exit 2; }
 target_re='^[][A-Za-z0-9.:-]+:[0-9]+$'
 [[ "$target" =~ $target_re ]] || { echo "agent-bus tunnel: target must be host:port" >&2; exit 2; }
-[[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || { echo "agent-bus tunnel: invalid local port" >&2; exit 2; }
-[[ "$timeout" =~ ^[0-9]+$ ]] && (( timeout >= 1 )) || { echo "agent-bus tunnel: invalid timeout" >&2; exit 2; }
+[[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || { echo "agent-bus tunnel: invalid local port" >&2; exit 2; }
+[[ "$timeout" =~ ^[0-9]{1,4}$ ]] && (( 10#$timeout >= 1 )) || { echo "agent-bus tunnel: invalid timeout" >&2; exit 2; }
+port=$((10#$port))
+timeout=$((10#$timeout))
 
 health="http://127.0.0.1:${port}/health"
 forward="127.0.0.1:${port}:${target}"
@@ -51,6 +53,7 @@ for _ in $(seq 1 $((timeout * 2))); do
   fi
   sleep 0.5
 done
-pkill -f -- "-L $forward" 2>/dev/null || true
+# pkill matches a regex; escape the forward spec so IPv6 brackets match literally.
+pkill -f -- "-L $(printf '%s' "$forward" | sed 's/[][\\.*^$]/\\&/g')" 2>/dev/null || true
 echo "agent-bus tunnel: no /health answer on $health within ${timeout}s; forward stopped (log: $log)" >&2
 exit 1

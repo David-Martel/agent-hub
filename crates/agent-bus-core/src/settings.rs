@@ -433,8 +433,16 @@ fn resolve_location_settings(
 /// a value they could never match (bad characters, stray spaces) is dropped
 /// rather than served.
 fn resolve_hub_identity(config_value: Option<String>) -> Option<String> {
-    resolve_nonempty("AGENT_BUS_HUB_IDENTITY", config_value)
-        .filter(|identity| crate::network_location::valid_site_name(identity))
+    resolve_nonempty("AGENT_BUS_HUB_IDENTITY", config_value).filter(|identity| {
+        let valid = crate::network_location::valid_site_name(identity);
+        if !valid {
+            tracing::warn!(
+                "hub_identity is not [A-Za-z0-9._-]{{1,64}}; not reporting it, so clients \
+                 with a named `hub` route will reject this hub"
+            );
+        }
+        valid
+    })
 }
 
 fn candidate_urls(candidates: &[HubCandidate]) -> Vec<String> {
