@@ -15,6 +15,7 @@ pub mod hub_candidates;
 pub mod journal;
 pub mod mcp_dispatch;
 pub mod models;
+pub mod network_location;
 pub mod ops;
 pub mod output;
 pub mod postgres_store;

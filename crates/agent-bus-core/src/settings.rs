@@ -59,6 +59,12 @@ pub struct ConfigFile {
     pub server_urls: Option<serde_json::Value>,
     pub probe_connect_timeout_ms: Option<u64>,
     pub hub_cache_ttl_seconds: Option<u64>,
+    /// Named network locations used to order hub candidates by their
+    /// `sites`; see [`crate::network_location`].
+    pub network_locations: Option<serde_json::Value>,
+    /// The identity this process reports as `hub_identity` in `/health`
+    /// when it serves as a hub, so clients can verify a route's `hub`.
+    pub hub_identity: Option<String>,
     #[serde(skip)]
     pub configuration_error: Option<String>,
     /// Suppress non-fatal degraded-mode warnings that would otherwise mix into
@@ -324,6 +330,8 @@ fn legacy_specs(urls: impl IntoIterator<Item = String>) -> Vec<CandidateSpec> {
             url,
             role: None,
             auth: crate::hub_candidates::CandidateAuth::Global,
+            sites: Vec::new(),
+            hub: None,
         })
         .collect()
 }
@@ -406,6 +414,44 @@ fn resolve_candidate_tiers(
     (candidates, error)
 }
 
+/// Parse `network_locations`; an invalid rule set is reported, not fatal.
+fn resolve_location_settings(
+    cfg: &ConfigFile,
+) -> (Vec<crate::network_location::LocationRule>, Option<String>) {
+    cfg.network_locations
+        .as_ref()
+        .map_or(
+            (Vec::new(), None),
+            |raw| match crate::network_location::parse_location_rules(raw) {
+                Ok(rules) => (rules, None),
+                Err(error) => (Vec::new(), Some(error)),
+            },
+        )
+}
+
+/// `AGENT_BUS_HUB_IDENTITY` → `hub_identity`. Clients compare it exactly, so
+/// a value they could never match (bad characters, stray spaces) is dropped
+/// rather than served.
+fn resolve_hub_identity(config_value: Option<String>) -> Option<String> {
+    resolve_nonempty("AGENT_BUS_HUB_IDENTITY", config_value).filter(|identity| {
+        let valid = crate::network_location::valid_site_name(identity);
+        if !valid {
+            tracing::warn!(
+                "hub_identity is not [A-Za-z0-9._-]{{1,64}}; not reporting it, so clients \
+                 with a named `hub` route will reject this hub"
+            );
+        }
+        valid
+    })
+}
+
+fn candidate_urls(candidates: &[HubCandidate]) -> Vec<String> {
+    candidates
+        .iter()
+        .map(|candidate| candidate.url.clone())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
@@ -462,6 +508,18 @@ pub struct Settings {
     pub hub_cache_ttl_seconds: u64,
     /// Invalid configuration must fail closed before any backend operation.
     pub hub_config_error: Option<String>,
+    /// Location rules from `network_locations`; empty disables detection
+    /// unless `AGENT_BUS_NETWORK_LOCATION` is set.
+    pub network_locations: Vec<crate::network_location::LocationRule>,
+    /// Why `network_locations` was ignored, if it was invalid. Location only
+    /// orders probes, so a bad rule set degrades to configured order and is
+    /// reported in `health` instead of taking the client offline.
+    pub network_location_error: Option<String>,
+    /// Identity reported as `hub_identity` by `/health`.
+    ///
+    /// Resolution order: `AGENT_BUS_HUB_IDENTITY` env var → `hub_identity`
+    /// in config.json → `None` (not reported).
+    pub hub_identity: Option<String>,
     /// Suppress non-fatal warnings that otherwise pollute machine-readable
     /// output captures during degraded-mode fallbacks.
     pub machine_safe: bool,
@@ -510,6 +568,9 @@ impl Settings {
             probe_connect_timeout_ms: 750,
             hub_cache_ttl_seconds: 0,
             hub_config_error: None,
+            network_locations: Vec::new(),
+            network_location_error: None,
+            hub_identity: None,
             machine_safe: false,
             auth_token: None,
             allow_remote: false,
@@ -524,10 +585,8 @@ impl Settings {
         // failure so we never prevent the process from starting).
         let cfg = load_settings_config();
         let (hub_candidates, hub_config_error) = resolve_candidate_settings(&cfg);
-        let server_urls = hub_candidates
-            .iter()
-            .map(|candidate| candidate.url.clone())
-            .collect::<Vec<_>>();
+        let (network_locations, network_location_error) = resolve_location_settings(&cfg);
+        let server_urls = candidate_urls(&hub_candidates);
 
         let startup_enabled_str = resolve(
             "AGENT_BUS_STARTUP_ENABLED",
@@ -614,6 +673,9 @@ impl Settings {
             server_urls,
             hub_candidates,
             hub_config_error,
+            network_locations,
+            network_location_error,
+            hub_identity: resolve_hub_identity(cfg.hub_identity),
             probe_connect_timeout_ms: resolve_parse(
                 "AGENT_BUS_PROBE_CONNECT_TIMEOUT_MS",
                 cfg.probe_connect_timeout_ms,

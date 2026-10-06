@@ -32,7 +32,8 @@
 //! fake probe.
 
 use crate::hub_cache::{CacheOs, HubCache, candidates_fingerprint, default_cache_path};
-use crate::hub_candidates::{HubAuth, HubRole, SystemEnv, validate_candidates};
+use crate::hub_candidates::{HubAuth, HubCandidate, HubRole, SystemEnv, validate_candidates};
+use crate::network_location::{SystemNetwork, current_locations, location_order};
 use crate::settings::Settings;
 use serde::Serialize;
 use std::time::{Duration, SystemTime};
@@ -43,6 +44,10 @@ pub struct ProbeInfo {
     /// The hub's `build_version` (see [`crate::build_info::BUILD_VERSION`]),
     /// when the probe response carried one.
     pub build_version: Option<String>,
+    /// The hub's `hub_identity`, when it reports one. Compared with a
+    /// candidate's configured `hub`: a mismatch rejects the route, a missing
+    /// value is accepted (older hubs do not report identity).
+    pub hub_identity: Option<String>,
 }
 
 /// The backend a client is actually talking to, after resolving the
@@ -173,10 +178,62 @@ pub fn invalidate_configured_cache(settings: &Settings) {
     }
 }
 
+/// The client's current network locations under `settings`, or `None` when
+/// location-aware ordering is off (no `network_locations` rules and no
+/// `AGENT_BUS_NETWORK_LOCATION` override).
+#[must_use]
+pub fn current_network_locations(settings: &Settings) -> Option<Vec<String>> {
+    current_locations(&settings.network_locations, &SystemNetwork)
+}
+
+/// A candidate that names a `hub` is usable only when the probed hub reports
+/// exactly that `hub_identity`. A missing identity is a mismatch: several
+/// authoritative routes are valid only because they share one `hub`, so an
+/// unverified route (a dead tunnel whose port was reused, an older or
+/// unrelated hub) must never become a claims authority. Candidates without a
+/// `hub` keep the historical behaviour and accept any healthy hub.
+///
+/// This is a routing label, not authentication: the probe already carries
+/// the candidate's credential, and any process can report any identity.
+fn identity_matches(candidate: &HubCandidate, info: &ProbeInfo) -> bool {
+    candidate
+        .hub
+        .as_ref()
+        .is_none_or(|expected| info.hub_identity.as_ref() == Some(expected))
+}
+
+/// Cache key: the candidate fingerprint plus the location set, so a last-good
+/// route learned at one location is never tried first at another.
+fn routing_fingerprint(candidates: &[HubCandidate], locations: Option<&[String]>) -> String {
+    let base = candidates_fingerprint(candidates);
+    match locations {
+        None => base,
+        Some(names) => {
+            let mut names = names.to_vec();
+            names.sort_unstable();
+            format!("{base}@{}", names.join(","))
+        }
+    }
+}
+
 fn resolve_settings_hub(
     settings: &Settings,
     probe: &mut impl FnMut(&str) -> Option<ProbeInfo>,
     authority_only: bool,
+) -> HubBackend {
+    resolve_settings_hub_at(
+        settings,
+        probe,
+        authority_only,
+        current_network_locations(settings).as_deref(),
+    )
+}
+
+fn resolve_settings_hub_at(
+    settings: &Settings,
+    probe: &mut impl FnMut(&str) -> Option<ProbeInfo>,
+    authority_only: bool,
+    locations: Option<&[String]>,
 ) -> HubBackend {
     let candidates = settings.effective_hub_candidates();
     if settings.hub_config_error.is_some() || validate_candidates(&candidates).is_err() {
@@ -189,7 +246,7 @@ fn resolve_settings_hub(
     }
     let auth = HubAuth::new(settings.auth_token.clone(), candidates.clone());
     let cache = resolution_cache(settings);
-    let fingerprint = candidates_fingerprint(&candidates);
+    let fingerprint = routing_fingerprint(&candidates, locations);
     let mut order = Vec::with_capacity(candidates.len());
     if !authority_only
         && let Some(cache) = &cache
@@ -200,7 +257,7 @@ fn resolve_settings_hub(
     {
         order.push(index);
     }
-    for index in 0..candidates.len() {
+    for index in location_order(&candidates, locations) {
         if !order.contains(&index) {
             order.push(index);
         }
@@ -217,6 +274,14 @@ fn resolve_settings_hub(
             continue;
         }
         if let Some(info) = probe(&candidate.url) {
+            if !identity_matches(candidate, &info) {
+                tracing::debug!(
+                    expected = ?candidate.hub,
+                    reported = ?info.hub_identity,
+                    "hub candidate reached a different hub; skipping"
+                );
+                continue;
+            }
             if let Some(cache) = &cache
                 && let Err(error) = cache.store(
                     &fingerprint,
@@ -340,6 +405,7 @@ mod tests {
             assert_eq!(url, "http://a:8400", "must try candidates in order");
             Some(ProbeInfo {
                 build_version: Some("0.5.0 (abc123)".to_owned()),
+                hub_identity: None,
             })
         });
         assert_eq!(
@@ -361,6 +427,7 @@ mod tests {
         let backend = resolve_hub(&candidates, |url| {
             (url == "http://b:8400").then_some(ProbeInfo {
                 build_version: None,
+                hub_identity: None,
             })
         });
         assert_eq!(
@@ -401,6 +468,7 @@ mod tests {
             calls.push(url.to_owned());
             Some(ProbeInfo {
                 build_version: None,
+                hub_identity: None,
             })
         });
         assert!(backend.is_remote());
@@ -417,6 +485,7 @@ mod tests {
         let backend = resolve_hub(&candidates, |_| {
             Some(ProbeInfo {
                 build_version: Some("0.5.0".to_owned()),
+                hub_identity: None,
             })
         });
         match backend {
@@ -438,6 +507,7 @@ mod tests {
             assert_eq!(url, "https://agentbus.dtmventures.com");
             Some(ProbeInfo {
                 build_version: Some("0.5.0 (cloud)".to_owned()),
+                hub_identity: None,
             })
         });
         assert_eq!(
@@ -485,5 +555,193 @@ mod tests {
         let local = HubBackend::Local;
         let value = serde_json::to_value(&local).expect("serializable");
         assert_eq!(value["mode"], "local");
+    }
+
+    fn routed_settings() -> Settings {
+        let mut settings = configured_settings(&[
+            "http://10.0.0.1:8400",
+            "http://127.0.0.1:18400",
+            "http://192.168.1.9:8400",
+        ]);
+        settings.hub_candidates[0].sites = vec!["lab-fabric".to_owned()];
+        settings.hub_candidates[0].hub = Some("onsite".to_owned());
+        settings.hub_candidates[1].role = HubRole::Authoritative;
+        settings.hub_candidates[1].sites = vec!["campus".to_owned()];
+        settings.hub_candidates[1].hub = Some("onsite".to_owned());
+        settings.hub_candidates[2].role = HubRole::Fallback;
+        settings
+    }
+
+    #[test]
+    fn location_puts_the_local_route_first_and_keeps_its_authority() {
+        let settings = routed_settings();
+        let campus = vec!["campus".to_owned()];
+        let mut probed = Vec::new();
+        let backend = resolve_settings_hub_at(
+            &settings,
+            &mut |url: &str| {
+                probed.push(url.to_owned());
+                (url == "http://127.0.0.1:18400").then(|| ProbeInfo {
+                    build_version: None,
+                    hub_identity: Some("onsite".to_owned()),
+                })
+            },
+            false,
+            Some(&campus),
+        );
+        assert_eq!(probed, vec!["http://127.0.0.1:18400"]);
+        assert!(matches!(
+            backend,
+            HubBackend::Remote { authoritative: true, ref url, .. } if url == "http://127.0.0.1:18400"
+        ));
+    }
+
+    #[test]
+    fn unknown_location_still_probes_every_declared_route() {
+        let settings = routed_settings();
+        let mut probed = Vec::new();
+        let backend = resolve_settings_hub_at(
+            &settings,
+            &mut |url: &str| {
+                probed.push(url.to_owned());
+                None
+            },
+            false,
+            Some(&[]),
+        );
+        assert_eq!(
+            probed,
+            vec![
+                "http://10.0.0.1:8400",
+                "http://127.0.0.1:18400",
+                "http://192.168.1.9:8400"
+            ],
+            "with no matching site the configured order is kept"
+        );
+        assert!(backend.is_offline());
+    }
+
+    #[test]
+    fn claims_try_every_route_to_the_authority_in_location_order() {
+        let settings = routed_settings();
+        let campus = vec!["campus".to_owned()];
+        let mut probed = Vec::new();
+        let backend = resolve_settings_hub_at(
+            &settings,
+            &mut |url: &str| {
+                probed.push(url.to_owned());
+                None
+            },
+            true,
+            Some(&campus),
+        );
+        assert_eq!(
+            probed,
+            vec!["http://127.0.0.1:18400", "http://10.0.0.1:8400"]
+        );
+        assert!(backend.is_offline());
+    }
+
+    #[test]
+    fn a_route_reporting_another_hub_identity_is_rejected() {
+        let settings = routed_settings();
+        let campus = vec!["campus".to_owned()];
+        let backend = resolve_settings_hub_at(
+            &settings,
+            &mut |url: &str| {
+                Some(ProbeInfo {
+                    build_version: None,
+                    hub_identity: Some(if url == "http://127.0.0.1:18400" {
+                        "someone-else".to_owned()
+                    } else {
+                        "onsite".to_owned()
+                    }),
+                })
+            },
+            false,
+            Some(&campus),
+        );
+        // The impostor route is skipped and probing continues in location
+        // order to the next route that proves it is the named hub.
+        assert!(matches!(
+            backend,
+            HubBackend::Remote { ref url, authoritative: true, .. } if url == "http://10.0.0.1:8400"
+        ));
+    }
+
+    #[test]
+    fn a_named_route_requires_the_hub_to_report_its_identity() {
+        let settings = routed_settings();
+        let fabric = vec!["lab-fabric".to_owned()];
+        // Every hub answers without an identity: neither named route may be
+        // used, so only the unnamed fallback is reachable.
+        let backend = resolve_settings_hub_at(
+            &settings,
+            &mut |_url: &str| Some(ProbeInfo::default()),
+            false,
+            Some(&fabric),
+        );
+        assert!(matches!(
+            backend,
+            HubBackend::Remote { ref url, authoritative: false, .. } if url == "http://192.168.1.9:8400"
+        ));
+    }
+
+    #[test]
+    fn claims_never_accept_an_unverified_or_foreign_route() {
+        let settings = routed_settings();
+        let campus = vec!["campus".to_owned()];
+        for reported in [None, Some("someone-else".to_owned())] {
+            let mut probed = Vec::new();
+            let backend = resolve_settings_hub_at(
+                &settings,
+                &mut |url: &str| {
+                    probed.push(url.to_owned());
+                    Some(ProbeInfo {
+                        build_version: None,
+                        hub_identity: reported.clone(),
+                    })
+                },
+                true,
+                Some(&campus),
+            );
+            assert!(backend.is_offline(), "{reported:?} must not grant claims");
+            assert_eq!(
+                probed,
+                vec!["http://127.0.0.1:18400", "http://10.0.0.1:8400"]
+            );
+        }
+    }
+
+    #[test]
+    fn candidates_without_a_hub_name_keep_accepting_any_healthy_hub() {
+        let settings = configured_settings(&["http://10.0.0.1:8400"]);
+        let backend = resolve_settings_hub_at(
+            &settings,
+            &mut |_url: &str| Some(ProbeInfo::default()),
+            true,
+            None,
+        );
+        assert!(matches!(
+            backend,
+            HubBackend::Remote {
+                authoritative: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn routing_fingerprint_separates_locations() {
+        let candidates = routed_settings().hub_candidates;
+        let unaware = routing_fingerprint(&candidates, None);
+        let campus = routing_fingerprint(&candidates, Some(&["campus".to_owned()]));
+        let swapped =
+            routing_fingerprint(&candidates, Some(&["home".to_owned(), "campus".to_owned()]));
+        let sorted =
+            routing_fingerprint(&candidates, Some(&["campus".to_owned(), "home".to_owned()]));
+        assert_ne!(unaware, campus);
+        assert_ne!(campus, sorted);
+        assert_eq!(swapped, sorted, "location set order is irrelevant");
     }
 }

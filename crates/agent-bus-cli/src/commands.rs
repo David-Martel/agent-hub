@@ -185,6 +185,26 @@ pub(crate) fn cmd_history_status(settings: &Settings, encoding: &Encoding) -> Re
     Ok(())
 }
 
+/// Report the detected network locations (and any ignored location config)
+/// beside `backend`, so an operator can see why a route was preferred.
+#[cfg(feature = "server-mode")]
+fn insert_network_location(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    settings: &Settings,
+) {
+    map.insert(
+        "network_locations".to_owned(),
+        serde_json::to_value(agent_bus_core::hub::current_network_locations(settings))
+            .unwrap_or(serde_json::Value::Null),
+    );
+    if let Some(error) = &settings.network_location_error {
+        map.insert(
+            "network_location_error".to_owned(),
+            serde_json::Value::String(error.clone()),
+        );
+    }
+}
+
 pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_storage: bool) {
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
@@ -203,6 +223,7 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_stora
                                 "backend".to_owned(),
                                 serde_json::to_value(&backend).unwrap_or(serde_json::Value::Null),
                             );
+                            insert_network_location(map, settings);
                         }
                         output(&val, encoding);
                         // Never exit 0 on an unhealthy bus: a probe that prints
@@ -230,12 +251,15 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_stora
             agent_bus_core::hub::HubBackend::Offline { tried } => {
                 // Explicit, visible offline status — never a silent fallback
                 // to a local Redis read presented as fleet health.
-                let report = serde_json::json!({
+                let mut report = serde_json::json!({
                     "ok": false,
                     "database_ok": false,
                     "storage_ready": false,
                     "backend": {"mode": "offline", "tried": tried},
                 });
+                if let serde_json::Value::Object(ref mut map) = report {
+                    insert_network_location(map, settings);
+                }
                 output(&report, encoding);
                 std::process::exit(1);
             }
