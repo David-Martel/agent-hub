@@ -263,7 +263,6 @@ pub(crate) async fn http_health_handler(
     let exposed_bind =
         !(bind_host == "localhost" || bind_host == "127.0.0.1" || bind_host == "::1");
     let control = state.control_status.read().await.clone();
-    let hub_identity = state.settings.hub_identity.clone();
     let result =
         tokio::task::spawn_blocking(move || ops_health(&state.settings, Some(&pool_for_health)))
             .await
@@ -287,14 +286,6 @@ pub(crate) async fn http_health_handler(
             "maintenance".to_owned(),
             serde_json::to_value(&control).unwrap_or_default(),
         );
-        // Lets clients verify that a route configured with `hub` reaches
-        // this hub and not some other process on a reused address or port.
-        if let Some(identity) = &hub_identity {
-            map.insert(
-                "hub_identity".to_owned(),
-                serde_json::Value::String(identity.clone()),
-            );
-        }
 
         // F5: strip backend topology when the server is network-exposed (see above).
         if exposed_bind {

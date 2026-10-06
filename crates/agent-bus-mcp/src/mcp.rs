@@ -185,6 +185,9 @@ mod tests {
                         }
                         Err(error) => panic!("fixture accept: {error}"),
                     };
+                    // Windows accepts inherit the listener's non-blocking mode.
+                    // Restore blocking I/O before the client/header read race.
+                    stream.set_nonblocking(false).unwrap();
                     stream
                         .set_read_timeout(Some(Duration::from_secs(2)))
                         .unwrap();
@@ -257,11 +260,12 @@ mod tests {
     impl Drop for AuthorityFixture {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::Release);
-            self.thread
-                .take()
-                .unwrap()
-                .join()
-                .expect("fixture teardown");
+            let joined = self.thread.take().map(std::thread::JoinHandle::join);
+            // Keep a failing test's first cause instead of aborting on a
+            // second panic from the fixture worker during unwinding.
+            if !std::thread::panicking() {
+                joined.transpose().expect("fixture teardown");
+            }
         }
     }
 

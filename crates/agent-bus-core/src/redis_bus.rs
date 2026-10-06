@@ -2644,7 +2644,7 @@ pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
         pg_batches,
         pg_write_errors,
         pg_dropped_writes,
-        hub_identity: hub_identity(),
+        hub_identity: hub_identity(settings.hub_identity.as_deref()),
         redis_persistence,
         backup_age_seconds: latest_backup_age_seconds(),
         postgres_replication_lag_seconds: None,
@@ -2671,7 +2671,14 @@ fn info_value<'a>(info: &'a str, key: &str) -> Option<&'a str> {
     })
 }
 
-fn hub_identity() -> Option<String> {
+/// The identity a hub reports: the configured `hub_identity` (what clients
+/// verify named routes against, agent-hub#103) wins; otherwise the legacy
+/// `AGENT_BUS_HUB_ID` / host-name fallback. One source for both HTTP `/health`
+/// and MCP `bus_health`, so the two can never disagree.
+fn hub_identity(configured: Option<&str>) -> Option<String> {
+    if let Some(identity) = configured {
+        return Some(identity.to_owned());
+    }
     std::env::var("AGENT_BUS_HUB_ID")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .or_else(|_| std::env::var("HOSTNAME"))
@@ -2718,7 +2725,7 @@ pub fn health_error_fallback() -> Health {
         pg_batches: None,
         pg_write_errors: None,
         pg_dropped_writes: None,
-        hub_identity: hub_identity(),
+        hub_identity: hub_identity(None),
         redis_persistence: None,
         backup_age_seconds: latest_backup_age_seconds(),
         postgres_replication_lag_seconds: None,
@@ -3408,6 +3415,17 @@ pub fn check_overdue_acks(conn: &mut redis::Connection) -> Result<Vec<crate::mod
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn configured_hub_identity_is_reported_by_bus_health() {
+        let mut settings = crate::settings::Settings::for_test();
+        settings.hub_identity = Some("onsite-hub".to_owned());
+        assert_eq!(
+            bus_health(&settings, None).hub_identity.as_deref(),
+            Some("onsite-hub"),
+            "MCP bus_health and HTTP /health must report the configured identity"
+        );
+    }
+
     use super::*;
 
     fn sample_message() -> Message {

@@ -30,6 +30,10 @@ impl HttpPeer {
             while !stopping.load(Ordering::SeqCst) {
                 match listener.accept() {
                     Ok((mut socket, _)) => {
+                        // Windows sockets accepted from a non-blocking listener inherit
+                        // non-blocking mode; a read racing the client's write then
+                        // fails with WouldBlock (#104). The other fixtures do the same.
+                        socket.set_nonblocking(false).unwrap();
                         socket
                             .set_read_timeout(Some(Duration::from_secs(5)))
                             .unwrap();
@@ -85,7 +89,13 @@ impl HttpPeer {
 impl Drop for HttpPeer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        self.worker.take().unwrap().join().unwrap();
+        let joined = self.worker.take().map(JoinHandle::join);
+        // Never panic again while a failing test is already unwinding: that
+        // aborts the whole process (0xc0000409 on Windows) and hides the
+        // original assertion.
+        if !std::thread::panicking() {
+            joined.transpose().expect("HTTP fixture worker panicked");
+        }
     }
 }
 
