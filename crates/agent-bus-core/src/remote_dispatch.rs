@@ -271,6 +271,19 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
                 "backend".to_owned(),
                 serde_json::to_value(&backend).unwrap_or(Value::Null),
             );
+            if !backend.is_local() {
+                map.insert(
+                    "network_locations".to_owned(),
+                    serde_json::to_value(crate::hub::current_network_locations(self.settings))
+                        .unwrap_or(Value::Null),
+                );
+                if let Some(error) = &self.settings.network_location_error {
+                    map.insert(
+                        "network_location_error".to_owned(),
+                        Value::String(error.clone()),
+                    );
+                }
+            }
         }
         report
     }
@@ -300,6 +313,7 @@ mod tests {
                 .contains(&url.to_owned())
                 .then(|| ProbeInfo {
                     build_version: self.hub_build.clone(),
+                    hub_identity: None,
                 })
         }
 

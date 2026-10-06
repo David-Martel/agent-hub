@@ -211,8 +211,8 @@ impl HubCache {
     }
 }
 
-/// A stable fingerprint of the configured candidate list (URLs, roles and
-/// credential SOURCES, in order). A change to any of them invalidates the
+/// A stable fingerprint of the configured candidate list (URLs, roles,
+/// credential SOURCES, sites and hub names, in order). A change to any of them invalidates the
 /// cache. It is a hash, and it never covers a token value.
 #[must_use]
 pub fn candidates_fingerprint(candidates: &[HubCandidate]) -> String {
@@ -236,6 +236,14 @@ pub fn candidates_fingerprint(candidates: &[HubCandidate]) -> String {
                 field(&mut hash, name.as_bytes());
             }
         }
+        field(&mut hash, b"sites");
+        for site in &candidate.sites {
+            field(&mut hash, site.as_bytes());
+        }
+        field(
+            &mut hash,
+            candidate.hub.as_deref().unwrap_or_default().as_bytes(),
+        );
     }
     hash.finalize()
         .iter()
@@ -581,6 +589,8 @@ mod tests {
             url: url.to_owned(),
             role,
             auth,
+            sites: Vec::new(),
+            hub: None,
         }
     }
 

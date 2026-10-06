@@ -285,6 +285,10 @@ fn probe_hub_health(settings: &Settings, url: &str) -> Option<ProbeInfo> {
             .get("build_version")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned),
+        hub_identity: health
+            .get("hub_identity")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
     })
 }
 
@@ -743,6 +747,8 @@ mod tests {
                 url: url.clone(),
                 role: HubRole::Cloud,
                 auth: CandidateAuth::TokenFile(file.path().to_string_lossy().into_owned()),
+                sites: Vec::new(),
+                hub: None,
             })
             .collect();
         let client = client_for_settings(&settings).expect("guarded client");

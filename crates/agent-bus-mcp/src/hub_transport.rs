@@ -154,6 +154,10 @@ impl RemoteMcpTransport for HttpMcpTransport {
                     .get("build_version")
                     .and_then(Value::as_str)
                     .map(str::to_owned),
+                hub_identity: body
+                    .get("hub_identity")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
             })
         })
     }
@@ -469,6 +473,8 @@ mod tests {
             url: url.clone(),
             role: HubRole::Cloud,
             auth: CandidateAuth::TokenFile(fixture.0.to_string_lossy().into_owned()),
+            sites: Vec::new(),
+            hub: None,
         }];
         let transport = HttpMcpTransport::new(&settings);
         transport

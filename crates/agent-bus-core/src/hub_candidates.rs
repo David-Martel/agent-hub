@@ -82,6 +82,13 @@ pub struct CandidateSpec {
     pub role: Option<HubRole>,
     /// The credential source.
     pub auth: CandidateAuth,
+    /// Network locations where this candidate is the preferred path; empty
+    /// means "usable anywhere". Affects probe order only, never the role.
+    pub sites: Vec<String>,
+    /// The hub this URL reaches. Several authoritative candidates may share
+    /// one `hub` (different routes to the same claims authority); a probe
+    /// whose `/health` reports a different `hub_identity` is rejected.
+    pub hub: Option<String>,
 }
 
 /// A fully resolved candidate: URL, effective role and credential source.
@@ -93,6 +100,10 @@ pub struct HubCandidate {
     pub role: HubRole,
     /// The credential source.
     pub auth: CandidateAuth,
+    /// Network locations that prefer this candidate (see [`CandidateSpec::sites`]).
+    pub sites: Vec<String>,
+    /// The hub this URL reaches (see [`CandidateSpec::hub`]).
+    pub hub: Option<String>,
 }
 
 /// A bearer token. `Debug` never prints the value.
@@ -186,6 +197,8 @@ pub fn parse_candidate_entries(value: &Value) -> Result<Vec<CandidateSpec>, Stri
                 url: raw.trim().to_owned(),
                 role: None,
                 auth: CandidateAuth::Global,
+                sites: Vec::new(),
+                hub: None,
             },
             Value::Object(fields) => parse_candidate_object(fields)
                 .map_err(|error| format!("candidate entry {}: {error}", index + 1))?,
@@ -200,7 +213,11 @@ pub fn parse_candidate_entries(value: &Value) -> Result<Vec<CandidateSpec>, Stri
             .map_err(|error| format!("candidate entry {} url: {error}", index + 1))?;
         let key = base_key(&parsed);
         if let Some(previous) = seen.get(&key) {
-            if previous.role != spec.role || previous.auth != spec.auth {
+            if previous.role != spec.role
+                || previous.auth != spec.auth
+                || previous.sites != spec.sites
+                || previous.hub != spec.hub
+            {
                 return Err(format!(
                     "candidate entry {} conflicts with a duplicate URL",
                     index + 1
@@ -218,7 +235,10 @@ fn parse_candidate_object(
     fields: &serde_json::Map<String, Value>,
 ) -> Result<CandidateSpec, String> {
     for name in fields.keys() {
-        if !matches!(name.as_str(), "url" | "role" | "token_file" | "token_env") {
+        if !matches!(
+            name.as_str(),
+            "url" | "role" | "token_file" | "token_env" | "sites" | "hub"
+        ) {
             return Err(format!("unknown candidate key {name:?}"));
         }
     }
@@ -244,10 +264,40 @@ fn parse_candidate_object(
         (None, Some(_)) => return Err("token_env must be an environment variable name".to_owned()),
         (None, None) => CandidateAuth::Global,
     };
+    let sites = match fields.get("sites") {
+        None => Vec::new(),
+        Some(Value::Array(items)) => {
+            let mut sites: Vec<String> = Vec::with_capacity(items.len());
+            for item in items {
+                let site = item
+                    .as_str()
+                    .map(str::trim)
+                    .filter(|site| crate::network_location::valid_site_name(site))
+                    .ok_or("sites entries must match [A-Za-z0-9._-]{1,64}")?;
+                if !sites.iter().any(|seen| seen == site) {
+                    sites.push(site.to_owned());
+                }
+            }
+            sites
+        }
+        Some(_) => return Err("sites must be an array of site names".to_owned()),
+    };
+    let hub = text_field(fields, "hub")?
+        .map(str::trim)
+        .map(|hub| {
+            if crate::network_location::valid_site_name(hub) {
+                Ok(hub.to_owned())
+            } else {
+                Err("hub must match [A-Za-z0-9._-]{1,64}".to_owned())
+            }
+        })
+        .transpose()?;
     Ok(CandidateSpec {
         url: url.to_owned(),
         role,
         auth,
+        sites,
+        hub,
     })
 }
 
@@ -422,16 +472,21 @@ pub fn build_candidates(
                     HubRole::Fallback
                 }),
                 auth: spec.map_or(CandidateAuth::Global, |spec| spec.auth.clone()),
+                sites: spec.map(|spec| spec.sites.clone()).unwrap_or_default(),
+                hub: spec.and_then(|spec| spec.hub.clone()),
             }
         })
         .collect()
 }
 
-/// Reject configurations with more than one authoritative candidate: exactly
-/// one hub may ever grant a claim.
+/// Reject configurations with more than one claims authority: exactly one
+/// hub may ever grant a claim. Several authoritative candidates are allowed
+/// only as alternate routes to one hub, i.e. when every one of them names
+/// the same `hub`.
 ///
 /// # Errors
-/// A message naming every authoritative candidate when there is more than one.
+/// A message naming every authoritative candidate when they could reach
+/// more than one hub.
 pub fn validate_candidates(candidates: &[HubCandidate]) -> Result<(), String> {
     let mut urls = std::collections::BTreeSet::new();
     for candidate in candidates {
@@ -445,7 +500,14 @@ pub fn validate_candidates(candidates: &[HubCandidate]) -> Result<(), String> {
         .filter(|candidate| candidate.role == HubRole::Authoritative)
         .map(|candidate| candidate.url.as_str())
         .collect();
-    if authorities.len() > 1 {
+    let same_hub = candidates
+        .iter()
+        .filter(|candidate| candidate.role == HubRole::Authoritative)
+        .map(|candidate| candidate.hub.as_deref())
+        .collect::<Vec<_>>();
+    let routes_to_one_hub =
+        same_hub.first().is_some_and(Option::is_some) && same_hub.windows(2).all(|w| w[0] == w[1]);
+    if authorities.len() > 1 && !routes_to_one_hub {
         return Err(format!(
             "multiple authoritative candidates: {}",
             authorities.join(", ")
@@ -685,6 +747,8 @@ impl HubAuth {
             ),
             role: HubRole::Fallback,
             auth: CandidateAuth::Global,
+            sites: Vec::new(),
+            hub: None,
         }
         .authorization(self.global.as_deref(), env)
     }
@@ -848,6 +912,8 @@ mod tests {
             url: url.to_owned(),
             role,
             auth,
+            sites: Vec::new(),
+            hub: None,
         }
     }
 
@@ -873,11 +939,15 @@ mod tests {
                     url: "http://a:8400".to_owned(),
                     role: None,
                     auth: CandidateAuth::Global,
+                    sites: Vec::new(),
+                    hub: None,
                 },
                 CandidateSpec {
                     url: "http://b:8400".to_owned(),
                     role: None,
                     auth: CandidateAuth::Global,
+                    sites: Vec::new(),
+                    hub: None,
                 },
             ]
         );
@@ -896,6 +966,8 @@ mod tests {
                 url: "https://agentbus.dtmventures.com".to_owned(),
                 role: Some(HubRole::Cloud),
                 auth: CandidateAuth::TokenFile("~/.config/agentbus-cloud/agent-x.token".to_owned()),
+                sites: Vec::new(),
+                hub: None,
             }]
         );
     }
@@ -1578,6 +1650,71 @@ mod tests {
         assert!(
             auth.credential_for_url("http://b.lan:8400/x", &env)
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn sites_and_hub_parse_and_reject_bad_names() {
+        let specs = parse(
+            r#"[{"url": "http://127.0.0.1:18400", "role": "authoritative",
+                 "sites": ["campus", "campus", "lab-fabric"], "hub": "onsite"}]"#,
+        )
+        .expect("valid");
+        assert_eq!(
+            specs[0].sites,
+            vec!["campus".to_owned(), "lab-fabric".to_owned()]
+        );
+        assert_eq!(specs[0].hub.as_deref(), Some("onsite"));
+        for bad in [
+            r#"[{"url": "http://a:1", "sites": "campus"}]"#,
+            r#"[{"url": "http://a:1", "sites": [""]}]"#,
+            r#"[{"url": "http://a:1", "sites": ["has space"]}]"#,
+            r#"[{"url": "http://a:1", "sites": [3]}]"#,
+            r#"[{"url": "http://a:1", "hub": "bad/name"}]"#,
+        ] {
+            assert!(parse(bad).is_err(), "{bad} must be rejected");
+        }
+    }
+
+    #[test]
+    fn several_authorities_are_allowed_only_as_routes_to_one_hub() {
+        let route = |url: &str, hub: Option<&str>| HubCandidate {
+            url: url.to_owned(),
+            role: HubRole::Authoritative,
+            auth: CandidateAuth::Global,
+            sites: Vec::new(),
+            hub: hub.map(str::to_owned),
+        };
+        assert!(
+            validate_candidates(&[
+                route("http://a:8400", Some("onsite")),
+                route("http://127.0.0.1:18400", Some("onsite")),
+            ])
+            .is_ok()
+        );
+        for invalid in [
+            vec![
+                route("http://a:8400", Some("onsite")),
+                route("http://b:8400", Some("other")),
+            ],
+            vec![
+                route("http://a:8400", Some("onsite")),
+                route("http://b:8400", None),
+            ],
+            vec![route("http://a:8400", None), route("http://b:8400", None)],
+        ] {
+            assert!(validate_candidates(&invalid).is_err());
+        }
+        assert!(validate_candidates(&[route("http://a:8400", None)]).is_ok());
+    }
+
+    #[test]
+    fn a_duplicate_url_with_different_sites_conflicts() {
+        assert!(
+            parse(
+                r#"[{"url": "http://a:1", "sites": ["x"]}, {"url": "http://a:1/", "sites": ["y"]}]"#
+            )
+            .is_err()
         );
     }
 }
