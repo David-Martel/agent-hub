@@ -125,6 +125,55 @@ pub const SCHEMA_FINDING: &str = "finding";
 pub const SCHEMA_STATUS: &str = "status";
 pub const SCHEMA_BENCHMARK: &str = "benchmark";
 
+/// Checked message schema passed separately from user-controlled metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageSchema {
+    Finding,
+    Status,
+    Benchmark,
+}
+
+impl MessageSchema {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Finding => SCHEMA_FINDING,
+            Self::Status => SCHEMA_STATUS,
+            Self::Benchmark => SCHEMA_BENCHMARK,
+        }
+    }
+
+    /// # Errors
+    /// Rejects unknown explicit names rather than silently changing their meaning.
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            SCHEMA_FINDING => Ok(Self::Finding),
+            SCHEMA_STATUS => Ok(Self::Status),
+            SCHEMA_BENCHMARK => Ok(Self::Benchmark),
+            _ => Err(AgentBusError::InvalidParams(format!(
+                "unknown schema '{value}'; must be finding, status, or benchmark"
+            ))),
+        }
+    }
+}
+
+/// Resolve a checked schema, inferring only when no explicit name was supplied.
+///
+/// # Errors
+/// Returns an error for an unknown explicit schema on every transport.
+pub fn resolve_message_schema(
+    transport: &str,
+    explicit: Option<&str>,
+    topic: &str,
+) -> Result<Option<MessageSchema>> {
+    if let Some(name) = explicit {
+        return MessageSchema::parse(name).map(Some);
+    }
+    enforce_schema_for_transport(transport, None, topic)
+        .map(MessageSchema::parse)
+        .transpose()
+}
+
 /// Validate a message body against a named schema.
 ///
 /// Returns `Ok(())` when `schema` is `None` (no validation required) or when

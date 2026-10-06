@@ -4,14 +4,14 @@ use crate::error::Result;
 
 use crate::models::{Message, Presence};
 use crate::redis_bus::{
-    BatchSendPayload, PostedMessage, bus_list_messages_from_redis_with_filters,
-    bus_list_messages_with_filters, bus_post_message, bus_post_messages_batch_with_notifications,
-    bus_set_presence, clear_pending_ack,
+    BatchSendPayload, CheckedBatchSendPayload, PostedMessage,
+    bus_list_messages_from_redis_with_filters, bus_list_messages_with_filters, bus_post_message,
+    bus_post_message_with_schema, bus_post_messages_batch_with_schema, bus_set_presence,
+    clear_pending_ack,
 };
 use crate::settings::Settings;
 use crate::validation::{
-    auto_fit_schema, enforce_schema_for_transport, non_empty, validate_message_schema,
-    validate_priority,
+    auto_fit_schema, non_empty, resolve_message_schema, validate_message_schema, validate_priority,
 };
 
 use super::{MessageFilters, scoped_required_tags};
@@ -148,27 +148,29 @@ pub fn validated_post_message(
     let topic = non_empty(req.topic, "topic")?;
     let body = non_empty(req.body, "body")?;
 
-    let effective_schema = enforce_schema_for_transport(req.transport, req.schema, topic);
+    let schema = resolve_message_schema(req.transport, req.schema, topic)?;
+    let effective_schema = schema.map(crate::validation::MessageSchema::as_str);
     let fitted_body = auto_fit_schema(body, effective_schema);
     validate_message_schema(&fitted_body, effective_schema)?;
 
-    post_message(
+    Ok(bus_post_message_with_schema(
         conn,
         settings,
-        &PostMessageRequest {
-            sender,
-            recipient,
-            topic,
-            body: &fitted_body,
-            thread_id: req.thread_id,
-            tags: req.tags,
-            priority: req.priority,
-            request_ack: req.request_ack,
-            reply_to: req.reply_to,
-            metadata: req.metadata,
-            has_sse_subscribers: req.has_sse_subscribers,
-        },
-    )
+        sender,
+        recipient,
+        topic,
+        &fitted_body,
+        req.thread_id,
+        req.tags,
+        req.priority,
+        req.request_ack,
+        req.reply_to,
+        req.metadata,
+        crate::pg_writer(),
+        req.has_sse_subscribers,
+        schema,
+    )?
+    .message)
 }
 
 /// Post an acknowledgement message for `request.message_id`.
@@ -326,7 +328,7 @@ pub struct ValidatedBatchItem {
 /// Each item is validated (priority, non-empty fields, schema
 /// enforcement/fitting) and the first failing item causes the entire batch to
 /// be rejected.  On success the messages are posted atomically via
-/// [`bus_post_messages_batch_with_notifications`].
+/// [`bus_post_messages_batch_with_schema`].
 ///
 /// # Errors
 ///
@@ -339,7 +341,7 @@ pub fn validated_batch_send(
     transport: &str,
     has_sse_subscribers: bool,
 ) -> Result<Vec<PostedMessage>> {
-    let mut payloads: Vec<BatchSendPayload> = Vec::with_capacity(items.len());
+    let mut payloads: Vec<CheckedBatchSendPayload> = Vec::with_capacity(items.len());
 
     for (idx, item) in items.iter().enumerate() {
         // Tag every per-item validation failure with its batch index *and* the
@@ -355,8 +357,9 @@ pub fn validated_batch_send(
         let topic = non_empty(&item.topic, "topic").map_err(at)?;
         let body = non_empty(&item.body, "body").map_err(at)?;
 
-        let effective_schema =
-            enforce_schema_for_transport(transport, item.schema.as_deref(), topic);
+        let schema =
+            resolve_message_schema(transport, item.schema.as_deref(), topic).map_err(at)?;
+        let effective_schema = schema.map(crate::validation::MessageSchema::as_str);
         let fitted_body = auto_fit_schema(body, effective_schema);
         validate_message_schema(&fitted_body, effective_schema).map_err(|e| {
             crate::error::AgentBusError::Internal(format!(
@@ -370,21 +373,24 @@ pub fn validated_batch_send(
             item.metadata.clone()
         };
 
-        payloads.push(BatchSendPayload {
-            from: sender.to_owned(),
-            to: recipient.to_owned(),
-            topic: topic.to_owned(),
-            body: fitted_body,
-            thread_id: item.thread_id.clone(),
-            tags: item.tags.clone(),
-            priority: item.priority.clone(),
-            request_ack: item.request_ack,
-            reply_to: item.reply_to.clone(),
-            metadata,
+        payloads.push(CheckedBatchSendPayload {
+            schema,
+            payload: BatchSendPayload {
+                from: sender.to_owned(),
+                to: recipient.to_owned(),
+                topic: topic.to_owned(),
+                body: fitted_body,
+                thread_id: item.thread_id.clone(),
+                tags: item.tags.clone(),
+                priority: item.priority.clone(),
+                request_ack: item.request_ack,
+                reply_to: item.reply_to.clone(),
+                metadata,
+            },
         });
     }
 
-    bus_post_messages_batch_with_notifications(
+    bus_post_messages_batch_with_schema(
         conn,
         settings,
         payloads,
@@ -400,6 +406,343 @@ pub fn validated_batch_send(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RESP fixture captures real production XADD fields on an ephemeral socket.
+    /// It has no backing Redis or PostgreSQL service and accepts one connection.
+    struct RedisFixture {
+        url: String,
+        commands: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+        worker: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl RedisFixture {
+        fn new() -> Self {
+            use std::io::{BufRead, Read, Write};
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("redis://{}/0", listener.local_addr().unwrap());
+            let commands = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let captured = std::sync::Arc::clone(&commands);
+            let worker = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(socket.try_clone().unwrap());
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap() == 0 {
+                        break;
+                    }
+                    assert!(line.starts_with('*'));
+                    let count: usize = line[1..].trim().parse().unwrap();
+                    let mut args = Vec::new();
+                    for _ in 0..count {
+                        line.clear();
+                        reader.read_line(&mut line).unwrap();
+                        assert!(line.starts_with('$'));
+                        let size: usize = line[1..].trim().parse().unwrap();
+                        let mut bytes = vec![0; size + 2];
+                        reader.read_exact(&mut bytes).unwrap();
+                        assert_eq!(&bytes[size..], b"\r\n");
+                        bytes.truncate(size);
+                        args.push(String::from_utf8(bytes).unwrap());
+                    }
+                    let response = match args[0].as_str() {
+                        "XADD" => "$3\r\n1-0\r\n",
+                        "CLIENT" => "+OK\r\n",
+                        _ => ":0\r\n",
+                    };
+                    captured.lock().unwrap().push(args);
+                    socket.write_all(response.as_bytes()).unwrap();
+                }
+            });
+            Self {
+                url,
+                commands,
+                worker: Some(worker),
+            }
+        }
+
+        fn connection(&self) -> redis::Connection {
+            redis::Client::open(self.url.as_str())
+                .unwrap()
+                .get_connection()
+                .unwrap()
+        }
+
+        fn xadds(&self) -> Vec<Vec<String>> {
+            self.commands
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|cmd| cmd[0] == "XADD")
+                .cloned()
+                .collect()
+        }
+    }
+
+    impl Drop for RedisFixture {
+        fn drop(&mut self) {
+            self.worker.take().unwrap().join().unwrap();
+        }
+    }
+
+    fn stored_field<'a>(command: &'a [String], name: &str) -> &'a str {
+        command[6..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .find(|pair| pair[0] == name)
+            .unwrap()[1]
+            .as_str()
+    }
+
+    #[test]
+    fn explicit_schema_survives_validated_send_all_transports_and_compression() {
+        for transport in ["cli", "http", "mcp"] {
+            for large in [false, true] {
+                let fixture = RedisFixture::new();
+                let mut conn = fixture.connection();
+                let settings = crate::test_support::offline_settings();
+                let body = if large {
+                    "CLEAR ".repeat(2_000)
+                } else {
+                    "CLEAR".to_owned()
+                };
+                let metadata = serde_json::json!({"_schema":"benchmark", "receipt":"kept"});
+                let message = validated_post_message(
+                    &mut conn,
+                    &settings,
+                    &ValidatedSendRequest {
+                        sender: "test",
+                        recipient: "all",
+                        topic: "review",
+                        body: &body,
+                        priority: "normal",
+                        schema: Some("status"),
+                        tags: &[],
+                        thread_id: None,
+                        reply_to: None,
+                        request_ack: false,
+                        metadata: &metadata,
+                        transport,
+                        has_sse_subscribers: false,
+                    },
+                )
+                .unwrap();
+                assert_eq!(message.body, body.trim());
+                assert_eq!(message.metadata["_schema"], "status");
+                assert_eq!(message.metadata["receipt"], "kept");
+                let records = fixture.xadds();
+                assert_eq!(records.len(), 1);
+                let stored: serde_json::Value =
+                    serde_json::from_str(stored_field(&records[0], "metadata")).unwrap();
+                assert_eq!(stored["_schema"], "status");
+                let stored_body = stored_field(&records[0], "body");
+                if large {
+                    assert_eq!(stored["_compressed"], "lz4");
+                    assert_eq!(
+                        {
+                            use base64::Engine as _;
+                            let bytes = base64::engine::general_purpose::STANDARD
+                                .decode(stored_body)
+                                .unwrap();
+                            String::from_utf8(lz4_flex::decompress_size_prepended(&bytes).unwrap())
+                                .unwrap()
+                        },
+                        body.trim()
+                    );
+                } else {
+                    assert_eq!(stored_body, body);
+                }
+                // PgWriter receives this exact Message; serialization must preserve authority.
+                let pg_record = serde_json::to_value(&message).unwrap();
+                assert_eq!(pg_record["metadata"]["_schema"], stored["_schema"]);
+                drop(conn);
+            }
+        }
+    }
+
+    #[test]
+    fn batch_explicit_inferred_and_unknown_topic_annotations_are_authoritative() {
+        let fixture = RedisFixture::new();
+        let mut conn = fixture.connection();
+        let settings = crate::test_support::offline_settings();
+        let items: Vec<_> = [
+            ("review", Some("status")),
+            ("review", None),
+            ("custom", None),
+        ]
+        .into_iter()
+        .map(|(topic, schema)| ValidatedBatchItem {
+            sender: "test".to_owned(),
+            recipient: "all".to_owned(),
+            topic: topic.to_owned(),
+            body: "CLEAR ".repeat(2_000),
+            priority: "normal".to_owned(),
+            schema: schema.map(str::to_owned),
+            tags: vec![],
+            thread_id: None,
+            reply_to: None,
+            request_ack: false,
+            metadata: serde_json::json!({"_schema":"benchmark"}),
+        })
+        .collect();
+        let messages = validated_batch_send(&mut conn, &settings, &items, "cli", false).unwrap();
+        let records = fixture.xadds();
+        assert_eq!(records.len(), 3);
+        for (index, expected) in [Some("status"), Some("finding"), None]
+            .into_iter()
+            .enumerate()
+        {
+            let stored: serde_json::Value =
+                serde_json::from_str(stored_field(&records[index], "metadata")).unwrap();
+            assert_eq!(
+                stored.get("_schema").and_then(serde_json::Value::as_str),
+                expected
+            );
+            assert_eq!(
+                messages[index]
+                    .message
+                    .metadata
+                    .get("_schema")
+                    .and_then(serde_json::Value::as_str),
+                expected
+            );
+            assert_eq!(stored["_compressed"], "lz4");
+        }
+        drop(conn);
+    }
+
+    #[test]
+    fn unknown_explicit_schema_rejected_without_any_storage_write() {
+        let fixture = RedisFixture::new();
+        let mut conn = fixture.connection();
+        let settings = crate::test_support::offline_settings();
+        for transport in ["cli", "http", "mcp"] {
+            let result = validated_post_message(
+                &mut conn,
+                &settings,
+                &ValidatedSendRequest {
+                    sender: "test",
+                    recipient: "all",
+                    topic: "review",
+                    body: "CLEAR",
+                    priority: "normal",
+                    schema: Some("bogus"),
+                    tags: &[],
+                    thread_id: None,
+                    reply_to: None,
+                    request_ack: false,
+                    metadata: &serde_json::json!({}),
+                    transport,
+                    has_sse_subscribers: false,
+                },
+            );
+            assert!(result.unwrap_err().to_string().contains("unknown schema"));
+        }
+        assert!(fixture.xadds().is_empty());
+        drop(conn);
+    }
+
+    #[test]
+    fn omitted_schema_keeps_transport_defaults_and_removes_spoofed_annotations() {
+        for (transport, topic, expected) in [
+            ("cli", "review", Some("finding")),
+            ("cli", "custom", None),
+            ("http", "custom", Some("status")),
+            ("mcp", "custom", Some("status")),
+        ] {
+            let fixture = RedisFixture::new();
+            let mut conn = fixture.connection();
+            let settings = crate::test_support::offline_settings();
+            let message = validated_post_message(
+                &mut conn,
+                &settings,
+                &ValidatedSendRequest {
+                    sender: "test",
+                    recipient: "all",
+                    topic,
+                    body: "CLEAR",
+                    priority: "normal",
+                    schema: None,
+                    tags: &[],
+                    thread_id: None,
+                    reply_to: None,
+                    request_ack: false,
+                    metadata: &serde_json::json!({"_schema":"benchmark"}),
+                    transport,
+                    has_sse_subscribers: false,
+                },
+            )
+            .unwrap();
+            let records = fixture.xadds();
+            let stored: serde_json::Value =
+                serde_json::from_str(stored_field(&records[0], "metadata")).unwrap();
+            assert_eq!(
+                stored.get("_schema").and_then(serde_json::Value::as_str),
+                expected
+            );
+            assert_eq!(
+                message
+                    .metadata
+                    .get("_schema")
+                    .and_then(serde_json::Value::as_str),
+                expected
+            );
+            drop(conn);
+        }
+    }
+
+    #[test]
+    fn invalid_later_batch_schema_rejects_entire_batch_before_storage() {
+        let fixture = RedisFixture::new();
+        let mut conn = fixture.connection();
+        let settings = crate::test_support::offline_settings();
+        let items: Vec<_> = ["status", "bogus"]
+            .into_iter()
+            .map(|schema| ValidatedBatchItem {
+                sender: "test".to_owned(),
+                recipient: "all".to_owned(),
+                topic: "review".to_owned(),
+                body: "CLEAR".to_owned(),
+                priority: "normal".to_owned(),
+                schema: Some(schema.to_owned()),
+                tags: vec![],
+                thread_id: None,
+                reply_to: None,
+                request_ack: false,
+                metadata: serde_json::json!({}),
+            })
+            .collect();
+        for transport in ["cli", "http", "mcp"] {
+            let error =
+                validated_batch_send(&mut conn, &settings, &items, transport, false).unwrap_err();
+            assert!(error.to_string().contains("item 1"));
+            assert!(error.to_string().contains("unknown schema"));
+        }
+        assert!(fixture.xadds().is_empty());
+        drop(conn);
+    }
+
+    #[test]
+    fn actual_mcp_dispatch_preserves_explicit_schema_and_rejects_unknown() {
+        let fixture = RedisFixture::new();
+        let mut settings = crate::test_support::offline_settings();
+        settings.redis_url = fixture.url.clone();
+        let dispatcher = crate::mcp_dispatch::McpToolDispatch::new(&settings);
+        let mut args = serde_json::json!({"sender":"test", "recipient":"all", "topic":"review",
+            "body":"CLEAR", "schema":"status", "metadata":{"_schema":"finding"}})
+        .as_object()
+        .unwrap()
+        .clone();
+        let message = dispatcher.dispatch_tool("post_message", &args).unwrap();
+        assert_eq!(message["metadata"]["_schema"], "status");
+        assert_eq!(message["body"], "CLEAR");
+        args.insert("schema".to_owned(), serde_json::json!("bogus"));
+        assert!(dispatcher.dispatch_tool("post_message", &args).is_err());
+        assert_eq!(fixture.xadds().len(), 1);
+    }
 
     // -- validated_post_message: validation-only paths -------------------------
     //
@@ -452,7 +795,7 @@ mod tests {
     }
 
     #[test]
-    fn validated_send_rejects_invalid_schema() {
+    fn legacy_schema_helper_unknown_name_retains_fallback_behavior() {
         // When transport="mcp" and schema=Some("bogus"), enforce_schema_for_transport
         // falls through the unknown explicit schema, finds no topic match for
         // "general", and defaults to "status".  So "bogus" does NOT propagate

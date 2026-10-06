@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "version": "0.18.0",
+  "server_port": 4228,
+  "command_timeout_seconds": 30,
+  "preflight_directory": "cache-preflight"
+}
