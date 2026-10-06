@@ -124,9 +124,9 @@ impl ServerHandler for AgentBusMcpServer {
         )
     }
 
-    // Both handlers are synchronous (tool dispatch does blocking backend I/O),
-    // so they return an already-completed future, as rmcp's own defaults do,
-    // rather than an `async fn` with no `.await` (clippy::unused_async_trait_impl).
+    // Catalog construction is pure, so an already-completed future is safe.
+    // Tool dispatch does blocking backend I/O and must wait until first poll,
+    // without an `async fn` with no `.await` (clippy::unused_async_trait_impl).
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -140,7 +140,7 @@ impl ServerHandler for AgentBusMcpServer {
         request: CallToolRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl Future<Output = Result<CallToolResponse, rmcp::ErrorData>> + Send + '_ {
-        std::future::ready(self.call_tool_now(&request))
+        std::future::poll_fn(move |_| std::task::Poll::Ready(self.call_tool_now(&request)))
     }
 }
 
@@ -148,6 +148,217 @@ impl ServerHandler for AgentBusMcpServer {
 mod tests {
     use super::*;
     use agent_bus_core::redis_bus::notification_cursor_key;
+
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    use agent_bus_core::hub_candidates::{CandidateAuth, HubCandidate, HubRole};
+    use rmcp::model::RequestId;
+    use rmcp::service::{RequestContext, RoleServer, serve_directly};
+
+    /// A disposable authority, with bounded I/O and joined fixture teardown.
+    struct AuthorityFixture {
+        url: String,
+        requests: Arc<Mutex<Vec<String>>>,
+        stop: Arc<AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl AuthorityFixture {
+        fn new() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("fixture bind");
+            listener.set_nonblocking(true).expect("fixture nonblocking");
+            let url = format!("http://localhost:{}", listener.local_addr().unwrap().port());
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let captured = Arc::clone(&requests);
+            let stopping = Arc::clone(&stop);
+            let thread = std::thread::spawn(move || {
+                while !stopping.load(Ordering::Acquire) {
+                    let mut stream = match listener.accept() {
+                        Ok((stream, _)) => stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5));
+                            continue;
+                        }
+                        Err(error) => panic!("fixture accept: {error}"),
+                    };
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    stream
+                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut request = String::new();
+                    let mut length = 0;
+                    loop {
+                        let mut line = String::new();
+                        reader.read_line(&mut line).expect("fixture headers");
+                        if line.trim().is_empty() {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':')
+                            && name.eq_ignore_ascii_case("content-length")
+                        {
+                            length = value.trim().parse::<usize>().unwrap();
+                        }
+                        request.push_str(&line);
+                    }
+                    let mut body = vec![0; length];
+                    reader.read_exact(&mut body).expect("fixture request body");
+                    request.push_str("\r\n");
+                    request.push_str(std::str::from_utf8(&body).unwrap());
+                    let response = if request.starts_with("POST ") {
+                        r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"fixture\":\"authority\",\"status\":\"granted\"}"}],"isError":false}}"#
+                    } else {
+                        r#"{"build_version":"fixture","hub_identity":"fixture-authority"}"#
+                    };
+                    captured.lock().unwrap().push(request);
+                    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
+                    stream.flush().unwrap();
+                }
+            });
+            Self {
+                url,
+                requests,
+                stop,
+                thread: Some(thread),
+            }
+        }
+
+        fn settings(&self) -> Settings {
+            let mut settings = Settings::from_env();
+            settings.server_url = Some(self.url.clone());
+            settings.server_urls = vec![self.url.clone()];
+            settings.hub_candidates = vec![HubCandidate {
+                url: self.url.clone(),
+                role: HubRole::Authoritative,
+                auth: CandidateAuth::Global,
+                sites: Vec::new(),
+                hub: Some("fixture-authority".to_owned()),
+            }];
+            settings.hub_config_error = None;
+            settings.auth_token = None;
+            settings.network_locations.clear();
+            settings.network_location_error = None;
+            settings.hub_cache_ttl_seconds = 0;
+            settings.probe_connect_timeout_ms = 750;
+            settings
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    impl Drop for AuthorityFixture {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            self.thread
+                .take()
+                .unwrap()
+                .join()
+                .expect("fixture teardown");
+        }
+    }
+
+    fn claim_request() -> CallToolRequestParams {
+        CallToolRequestParams::new("claim_resource").with_arguments(
+            serde_json::json!({"agent": "fixture-agent", "resource": "fixture-resource"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unpolled_tool_future_makes_no_authority_requests() {
+        let fixture = AuthorityFixture::new();
+        let (transport, _client) = tokio::io::duplex(1024);
+        let mut running = serve_directly::<RoleServer, _, _, _, _>(
+            AgentBusMcpServer::new(fixture.settings()),
+            transport,
+            None,
+        );
+        let context = RequestContext::new(RequestId::Number(1), running.peer().clone());
+        let future = running.service().call_tool(claim_request(), context);
+        assert!(
+            fixture.requests().is_empty(),
+            "constructing a future must not dispatch"
+        );
+        drop(future);
+        assert!(
+            fixture.requests().is_empty(),
+            "dropping an unpolled future must not dispatch"
+        );
+        running.close().await.expect("close in-memory service");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn polled_tool_future_dispatches_once_to_configured_authority() {
+        let fixture = AuthorityFixture::new();
+        let (transport, _client) = tokio::io::duplex(1024);
+        let mut running = serve_directly::<RoleServer, _, _, _, _>(
+            AgentBusMcpServer::new(fixture.settings()),
+            transport,
+            None,
+        );
+        let context = RequestContext::new(RequestId::Number(1), running.peer().clone());
+        let future = running.service().call_tool(claim_request(), context);
+        assert!(fixture.requests().is_empty());
+        let response = future.await.expect("valid tool response");
+        let CallToolResponse::Complete(result) = response else {
+            panic!("expected complete response");
+        };
+        let wire = serde_json::to_value(result).unwrap();
+        let text = wire["content"][0]["text"].as_str().expect("remote text");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(text).unwrap(),
+            serde_json::json!({"fixture": "authority", "status": "granted"})
+        );
+        let requests = fixture.requests();
+        let calls: Vec<_> = requests
+            .iter()
+            .filter(|request| request.starts_with("POST "))
+            .collect();
+        assert_eq!(calls.len(), 1, "exactly one remote mutation");
+        assert!(calls[0].starts_with("POST /mcp "));
+        let body: serde_json::Value =
+            serde_json::from_str(calls[0].split_once("\r\n\r\n").unwrap().1).unwrap();
+        assert_eq!(body["method"], "tools/call");
+        assert_eq!(body["params"]["name"], "claim_resource");
+        assert_eq!(
+            body["params"]["arguments"],
+            serde_json::Value::Object(claim_request().arguments.unwrap())
+        );
+        running.close().await.expect("close in-memory service");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalid_tool_future_refuses_before_authority_probe() {
+        let fixture = AuthorityFixture::new();
+        let (transport, _client) = tokio::io::duplex(1024);
+        let mut running = serve_directly::<RoleServer, _, _, _, _>(
+            AgentBusMcpServer::new(fixture.settings()),
+            transport,
+            None,
+        );
+        for request in [
+            CallToolRequestParams::new("claim_resource"),
+            CallToolRequestParams::new("unknown_fixture_tool"),
+        ] {
+            let context = RequestContext::new(RequestId::Number(1), running.peer().clone());
+            let future = running.service().call_tool(request, context);
+            assert!(fixture.requests().is_empty());
+            let error = future.await.expect_err("invalid tool must fail");
+            assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(fixture.requests().is_empty(), "validation precedes routing");
+        }
+        running.close().await.expect("close in-memory service");
+    }
 
     /// Helper: create a dispatch instance for tests that do not need Redis/PG.
     fn test_dispatch() -> agent_bus_core::mcp_dispatch::McpToolDispatch<'static> {
