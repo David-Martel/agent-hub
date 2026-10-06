@@ -429,6 +429,14 @@ fn resolve_location_settings(
         )
 }
 
+/// `AGENT_BUS_HUB_IDENTITY` → `hub_identity`. Clients compare it exactly, so
+/// a value they could never match (bad characters, stray spaces) is dropped
+/// rather than served.
+fn resolve_hub_identity(config_value: Option<String>) -> Option<String> {
+    resolve_nonempty("AGENT_BUS_HUB_IDENTITY", config_value)
+        .filter(|identity| crate::network_location::valid_site_name(identity))
+}
+
 fn candidate_urls(candidates: &[HubCandidate]) -> Vec<String> {
     candidates
         .iter()
@@ -659,7 +667,7 @@ impl Settings {
             hub_config_error,
             network_locations,
             network_location_error,
-            hub_identity: resolve_nonempty("AGENT_BUS_HUB_IDENTITY", cfg.hub_identity),
+            hub_identity: resolve_hub_identity(cfg.hub_identity),
             probe_connect_timeout_ms: resolve_parse(
                 "AGENT_BUS_PROBE_CONNECT_TIMEOUT_MS",
                 cfg.probe_connect_timeout_ms,

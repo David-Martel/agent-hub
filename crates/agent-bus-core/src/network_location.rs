@@ -195,7 +195,7 @@ pub fn parse_location_rules(value: &Value) -> Result<Vec<LocationRule>, String> 
 /// What the local machine currently looks like on the network.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NetworkSignals {
-    /// Non-loopback addresses on interfaces that are up.
+    /// Non-loopback addresses on interfaces that are operationally up.
     pub addresses: Vec<IpAddr>,
     /// Connection-specific DNS suffixes / search domains of active links.
     pub dns_suffixes: Vec<String>,
@@ -268,31 +268,24 @@ pub fn current_locations(rules: &[LocationRule], probe: &dyn NetworkProbe) -> Op
 
 /// Probe order for `candidates` at `locations`.
 ///
-/// With `None` (location-unaware) the configured order is returned
-/// unchanged. Otherwise candidates are grouped, keeping configured order
-/// within each group:
-///
-/// 1. candidates whose `sites` include a current location;
-/// 2. candidates with no `sites` (usable anywhere);
-/// 3. candidates declared only for other sites — still probed, last, so a
-///    wrong detection costs time, never reachability.
+/// Candidates whose `sites` include a current location move to the front;
+/// every other candidate follows in configured order. With `None`
+/// (location-unaware) or no match, the configured order is unchanged, so a
+/// wrong or spoofed detection (DNS suffixes come from DHCP) can only promote
+/// a route the operator declared for that site; it never demotes the
+/// configured preference among the rest.
 #[must_use]
 pub fn location_order(candidates: &[HubCandidate], locations: Option<&[String]>) -> Vec<usize> {
     let Some(locations) = locations else {
         return (0..candidates.len()).collect();
     };
     let rank = |candidate: &HubCandidate| {
-        if candidate.sites.is_empty() {
-            1
-        } else if candidate
-            .sites
-            .iter()
-            .any(|site| locations.iter().any(|location| location == site))
-        {
-            0
-        } else {
-            2
-        }
+        u8::from(
+            !candidate
+                .sites
+                .iter()
+                .any(|site| locations.iter().any(|location| location == site)),
+        )
     };
     let mut order: Vec<usize> = (0..candidates.len()).collect();
     order.sort_by_key(|&index| rank(&candidates[index]));
@@ -309,7 +302,7 @@ impl NetworkProbe for SystemNetwork {
             .map(|interfaces| {
                 interfaces
                     .into_iter()
-                    .filter(|interface| !interface.is_loopback())
+                    .filter(|interface| interface.is_oper_up() && !interface.is_loopback())
                     .map(|interface| interface.ip())
                     .collect()
             })
@@ -553,14 +546,16 @@ mod tests {
     }
 
     #[test]
-    fn matching_sites_first_then_anywhere_then_other_sites() {
+    fn matching_sites_first_then_configured_order() {
         let campus = vec!["campus".to_owned()];
-        assert_eq!(location_order(&fleet(), Some(&campus)), vec![1, 2, 0]);
+        assert_eq!(location_order(&fleet(), Some(&campus)), vec![1, 0, 2]);
         let fabric = vec!["lab-fabric".to_owned()];
-        assert_eq!(location_order(&fleet(), Some(&fabric)), vec![0, 2, 1]);
-        // Nothing matched (e.g. home with no on-site path): site-less cloud
-        // first, but every declared path is still probed afterwards.
-        assert_eq!(location_order(&fleet(), Some(&[])), vec![2, 0, 1]);
+        assert_eq!(location_order(&fleet(), Some(&fabric)), vec![0, 1, 2]);
+        // Nothing matched: the configured preference is kept exactly, so an
+        // unknown or spoofed network cannot demote a reachable authority.
+        assert_eq!(location_order(&fleet(), Some(&[])), vec![0, 1, 2]);
+        let both = vec!["campus".to_owned(), "lab-fabric".to_owned()];
+        assert_eq!(location_order(&fleet(), Some(&both)), vec![0, 1, 2]);
     }
 
     #[test]

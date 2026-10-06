@@ -26,17 +26,26 @@ order. Each dead path costs a connect timeout on every CLI or hook call.
 
    Each `network_locations` rule that matches contributes its `name`.
 2. **Orders candidates.** Candidates whose `sites` include a detected location
-   come first, then candidates with no `sites`, then candidates declared for
-   other sites. Every candidate is still probed if earlier ones fail. A wrong
-   detection costs time, never reachability.
+   move to the front. Every other candidate follows in configured order, and
+   every candidate is still probed if earlier ones fail.
+
+   DNS suffixes come from DHCP, so any network can claim to be any site.
+   Detection can therefore only *promote* a route the operator declared for
+   that site. It never demotes the configured preference among the rest, and
+   with no match the configured order is kept exactly.
 3. **Keeps authority fixed.** A candidate's role never depends on location.
    Several `authoritative` candidates are accepted only when they all name the
    same `hub`, which makes them alternate routes to one claims authority.
    Claims probe every such route in location order.
-4. **Verifies identity.** A hub configured with `hub_identity` reports it in
-   `/health`. The client rejects a route whose candidate names a different
-   `hub`, such as a stale tunnel or a reused loopback port. Hubs that report
-   no identity are still accepted, so older hubs keep working.
+4. **Checks the route label.** A hub configured with `hub_identity` reports
+   it in `/health`. A candidate that names a `hub` is used only when the
+   probed hub reports exactly that identity. A missing identity counts as a
+   mismatch, so a dead tunnel whose port was reused, or an older or unrelated
+   hub, can never become a claims authority. Candidates without a `hub` keep
+   accepting any healthy hub.
+
+   This is a routing check, not authentication. The probe already carries the
+   candidate's credential, and any process can report any identity.
 5. **Caches per location.** The last-good route is cached under the candidate
    fingerprint plus the location set. A route learned at home is never tried
    first on campus.
@@ -74,6 +83,9 @@ with the `AGENT_BUS_HUB_IDENTITY` environment variable.
 
 Rules for the new fields:
 
+- **Server identity:** a `hub_identity` that clients could never match (bad
+  characters, stray spaces) is dropped rather than served.
+
 - **Rules:** each rule needs a `name` (`[A-Za-z0-9._-]{1,64}`) and at least
   one `cidrs` or `dns_suffixes` entry. Unknown keys are rejected.
 - **Suffix matching:** a DNS suffix matches on a label boundary, so
@@ -83,11 +95,16 @@ Rules for the new fields:
 - **`hub` field:** this is a route label checked against `/health`. It is not
   a credential.
 
-**Rollout order matters.** A client older than this change rejects a
-candidate object containing `sites` or `hub`, which takes it offline. It
-ignores unknown top-level keys, so `network_locations` and `hub_identity`
-are harmless to older binaries. Upgrade a machine's binaries before adding
-`sites`/`hub` to its candidates.
+**Rollout order matters.**
+
+1. Upgrade the hub and set its `hub_identity`. A candidate naming a `hub` is
+   rejected until the hub reports that identity.
+2. Upgrade each client's binaries.
+3. Then add `sites` and `hub` to that client's candidates.
+
+A client older than this change rejects a candidate object containing
+`sites` or `hub`, which takes it offline. It ignores unknown top-level keys,
+so `network_locations` and `hub_identity` are harmless to older binaries.
 
 ## SSH forward helper
 
@@ -98,6 +115,10 @@ are harmless to older binaries. Upgrade a machine's binaries before adding
 Each helper starts `ssh -N -L 127.0.0.1:<port>:<hub>` through a jump host,
 and only when nothing already answers on the loopback `/health`. It then
 waits for the forwarded hub to answer, and running it again is a no-op.
+
+A forward that never answers is stopped on timeout, error or interrupt.
+Jump destinations starting with `-` are rejected, and the destination is
+passed after `--`.
 
 The client sends its on-site token to loopback candidates, which is
 unchanged posture. Do not run a forward on a shared multi-user machine.

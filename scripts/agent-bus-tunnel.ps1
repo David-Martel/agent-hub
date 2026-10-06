@@ -35,8 +35,8 @@
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$Jump,
-    [int]$JumpPort,
+    [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9._@\[\]:/][A-Za-z0-9._@\[\]:/-]*$')][string]$Jump,
+    [ValidateRange(1, 65535)][int]$JumpPort,
     [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9.\-\[\]:]+:\d+$')][string]$Target,
     [ValidateRange(1, 65535)][int]$LocalPort = 18400,
     [ValidateRange(1, 300)][int]$TimeoutSeconds = 20
@@ -70,19 +70,25 @@ $arguments = @(
     '-L', "127.0.0.1:${LocalPort}:$Target"
 )
 if ($JumpPort) { $arguments += @('-p', "$JumpPort") }
-$arguments += $Jump
+$arguments += @('--', $Jump)
 
 $process = Start-Process -FilePath $ssh -ArgumentList $arguments -WindowStyle Hidden -PassThru
-$deadline = (Get-Date).AddSeconds($TimeoutSeconds)
-while ((Get-Date) -lt $deadline) {
-    if ($process.HasExited) {
-        throw "agent-bus tunnel: ssh exited with code $($process.ExitCode) before the forward answered"
+$ready = $false
+try {
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if ($process.HasExited) {
+            throw "agent-bus tunnel: ssh exited with code $($process.ExitCode) before the forward answered"
+        }
+        if (Test-Hub) {
+            $ready = $true
+            Write-Output "agent-bus tunnel: $health answers through ssh pid $($process.Id)"
+            exit 0
+        }
+        Start-Sleep -Milliseconds 500
     }
-    if (Test-Hub) {
-        Write-Output "agent-bus tunnel: $health answers through ssh pid $($process.Id)"
-        exit 0
-    }
-    Start-Sleep -Milliseconds 500
+    throw "agent-bus tunnel: no /health answer on $health within $TimeoutSeconds s"
+} finally {
+    # Timeout, error or Ctrl+C: never leave a half-started forward behind.
+    if (-not $ready) { Stop-Process -Id $process.Id -ErrorAction SilentlyContinue }
 }
-Stop-Process -Id $process.Id -ErrorAction SilentlyContinue
-throw "agent-bus tunnel: no /health answer on $health within $TimeoutSeconds s"

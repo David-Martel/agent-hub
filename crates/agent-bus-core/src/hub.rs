@@ -186,14 +186,20 @@ pub fn current_network_locations(settings: &Settings) -> Option<Vec<String>> {
     current_locations(&settings.network_locations, &SystemNetwork)
 }
 
-/// `false` when the candidate names a `hub` and the probe reported a
-/// different `hub_identity`: that URL reaches some other hub (for example a
-/// stale tunnel or a reused loopback port) and must not be used.
+/// A candidate that names a `hub` is usable only when the probed hub reports
+/// exactly that `hub_identity`. A missing identity is a mismatch: several
+/// authoritative routes are valid only because they share one `hub`, so an
+/// unverified route (a dead tunnel whose port was reused, an older or
+/// unrelated hub) must never become a claims authority. Candidates without a
+/// `hub` keep the historical behaviour and accept any healthy hub.
+///
+/// This is a routing label, not authentication: the probe already carries
+/// the candidate's credential, and any process can report any identity.
 fn identity_matches(candidate: &HubCandidate, info: &ProbeInfo) -> bool {
-    match (&candidate.hub, &info.hub_identity) {
-        (Some(expected), Some(reported)) => expected == reported,
-        _ => true,
-    }
+    candidate
+        .hub
+        .as_ref()
+        .is_none_or(|expected| info.hub_identity.as_ref() == Some(expected))
 }
 
 /// Cache key: the candidate fingerprint plus the location set, so a last-good
@@ -575,7 +581,10 @@ mod tests {
             &settings,
             &mut |url: &str| {
                 probed.push(url.to_owned());
-                (url == "http://127.0.0.1:18400").then(ProbeInfo::default)
+                (url == "http://127.0.0.1:18400").then(|| ProbeInfo {
+                    build_version: None,
+                    hub_identity: Some("onsite".to_owned()),
+                })
             },
             false,
             Some(&campus),
@@ -603,10 +612,11 @@ mod tests {
         assert_eq!(
             probed,
             vec![
-                "http://192.168.1.9:8400",
                 "http://10.0.0.1:8400",
-                "http://127.0.0.1:18400"
-            ]
+                "http://127.0.0.1:18400",
+                "http://192.168.1.9:8400"
+            ],
+            "with no matching site the configured order is kept"
         );
         assert!(backend.is_offline());
     }
@@ -651,18 +661,20 @@ mod tests {
             false,
             Some(&campus),
         );
-        // The impostor route is skipped; probing continues in location order
-        // (the site-less fallback comes next), never trusting the mismatch.
+        // The impostor route is skipped and probing continues in location
+        // order to the next route that proves it is the named hub.
         assert!(matches!(
             backend,
-            HubBackend::Remote { ref url, authoritative: false, .. } if url == "http://192.168.1.9:8400"
+            HubBackend::Remote { ref url, authoritative: true, .. } if url == "http://10.0.0.1:8400"
         ));
     }
 
     #[test]
-    fn a_hub_without_identity_is_accepted_for_compatibility() {
+    fn a_named_route_requires_the_hub_to_report_its_identity() {
         let settings = routed_settings();
         let fabric = vec!["lab-fabric".to_owned()];
+        // Every hub answers without an identity: neither named route may be
+        // used, so only the unnamed fallback is reachable.
         let backend = resolve_settings_hub_at(
             &settings,
             &mut |_url: &str| Some(ProbeInfo::default()),
@@ -671,7 +683,51 @@ mod tests {
         );
         assert!(matches!(
             backend,
-            HubBackend::Remote { ref url, .. } if url == "http://10.0.0.1:8400"
+            HubBackend::Remote { ref url, authoritative: false, .. } if url == "http://192.168.1.9:8400"
+        ));
+    }
+
+    #[test]
+    fn claims_never_accept_an_unverified_or_foreign_route() {
+        let settings = routed_settings();
+        let campus = vec!["campus".to_owned()];
+        for reported in [None, Some("someone-else".to_owned())] {
+            let mut probed = Vec::new();
+            let backend = resolve_settings_hub_at(
+                &settings,
+                &mut |url: &str| {
+                    probed.push(url.to_owned());
+                    Some(ProbeInfo {
+                        build_version: None,
+                        hub_identity: reported.clone(),
+                    })
+                },
+                true,
+                Some(&campus),
+            );
+            assert!(backend.is_offline(), "{reported:?} must not grant claims");
+            assert_eq!(
+                probed,
+                vec!["http://127.0.0.1:18400", "http://10.0.0.1:8400"]
+            );
+        }
+    }
+
+    #[test]
+    fn candidates_without_a_hub_name_keep_accepting_any_healthy_hub() {
+        let settings = configured_settings(&["http://10.0.0.1:8400"]);
+        let backend = resolve_settings_hub_at(
+            &settings,
+            &mut |_url: &str| Some(ProbeInfo::default()),
+            true,
+            None,
+        );
+        assert!(matches!(
+            backend,
+            HubBackend::Remote {
+                authoritative: true,
+                ..
+            }
         ));
     }
 
