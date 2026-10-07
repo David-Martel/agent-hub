@@ -4,7 +4,8 @@
 #   1. It is a semver patch or minor bump (dependabot/fetch-metadata's
 #      update-type), or a pinned grouped update whose group name does not
 #      itself signal a major bump.
-#   2. It is NOT a semver-major bump.
+#   2. It is NOT a semver-major bump. Below 1.0 a minor bump counts as major,
+#      and below 0.1 a patch bump does too (0.4 -> 0.8 broke main via #390).
 #   3. None of the touched dependency names match DENY_LIST_REGEX (CUDA,
 #      torch, ROS, TensorRT, cuDNN/cuBLAS and similar get a label plus a
 #      changelog/risk comment instead of auto-merge).
@@ -60,9 +61,12 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.actor == 'dependabot[bot]'
     runs-on: [self-hosted, Linux, X64]
     env:
-      # (?i) case-insensitive; anchors avoid over-matching unrelated crates
+      # Anchors avoid over-matching unrelated crates
       # that merely contain a substring (e.g. "roslibpy" is not ROS core).
-      DENY_LIST_REGEX: '(?i)(^|[-_])(torch|cuda|cudnn|cublas|tensorrt|nvidia|nvinfer)([-_]|$)|(^|[-_])ros[-_2]|(^|[-_])rclpy([-_]|$)'
+      # POSIX ERE, matched case-insensitively (grep -Ei) against one dependency name per
+      # line. No PCRE "(?i)": GNU grep -E reads it as "? at start of expression", and the
+      # torch/CUDA/NVIDIA alternative then never matched.
+      DENY_LIST_REGEX: '(^|[-_])(torch|cuda|cudnn|cublas|tensorrt|nvidia|nvinfer)([-_]|$)|(^|[-_])ros[-_2]|(^|[-_])rclpy([-_]|$)'
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
     steps:
@@ -105,6 +109,8 @@ jobs:
           fi
           echo "update-type=$update_type" >> "$GITHUB_OUTPUT"
           echo "dependency-names=$dep_name" >> "$GITHUB_OUTPUT"
+          echo "previous-version=$from_ver" >> "$GITHUB_OUTPUT"
+          echo "new-version=$to_ver" >> "$GITHUB_OUTPUT"
           echo "[dry-run metadata] title='$title' update_type=$update_type dep=$dep_name"
 
       - name: Decide policy
@@ -112,21 +118,48 @@ jobs:
         env:
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type || steps.meta_manual.outputs.update-type }}
           DEP_NAMES: ${{ steps.meta.outputs.dependency-names || steps.meta_manual.outputs.dependency-names }}
+          PREV_VERSION: ${{ steps.meta.outputs.previous-version || steps.meta_manual.outputs.previous-version }}
+          NEW_VERSION: ${{ steps.meta.outputs.new-version || steps.meta_manual.outputs.new-version }}
         run: |
           set -euo pipefail
           echo "update_type=$UPDATE_TYPE"
           echo "dep_names=$DEP_NAMES"
+          echo "versions=${PREV_VERSION:-?} -> ${NEW_VERSION:-?}"
           is_major=false
+          zero_major=false
           case "$UPDATE_TYPE" in
             *semver-major*) is_major=true ;;
           esac
+          # Below 1.0, semver (and Cargo) treat a minor bump as breaking, and below 0.1 a
+          # patch bump too. fetch-metadata still labels 0.4 -> 0.8 "semver-minor", which is how
+          # wl-nl80211 0.4 -> 0.8 (#390) auto-merged and broke main. Grouped updates carry
+          # no single version pair and keep the update-type rule.
+          prev="${PREV_VERSION#v}"
+          new="${NEW_VERSION#v}"
+          if [[ "$is_major" == false && -n "$prev" && -n "$new" ]]; then
+            IFS=. read -r p_major p_minor p_patch _ <<< "$prev"
+            IFS=. read -r n_major n_minor n_patch _ <<< "$new"
+            if [[ "$p_major" == 0 && "$n_major" == 0 ]]; then
+              if [[ "${p_minor:-}" != "${n_minor:-}" ]]; then
+                is_major=true
+                zero_major=true
+              elif [[ "${p_minor:-}" == 0 && "${p_patch:-}" != "${n_patch:-}" ]]; then
+                is_major=true
+                zero_major=true
+              fi
+            fi
+          fi
           denied=false
-          if [[ -n "$DEP_NAMES" ]] && echo "$DEP_NAMES" | grep -Eq "$DENY_LIST_REGEX"; then
+          # fetch-metadata joins names with ", "; split so every name meets the anchors.
+          if [[ -n "$DEP_NAMES" ]] && printf '%s\n' "$DEP_NAMES" | tr ', ' '\n\n' | grep -Eiq -- "$DENY_LIST_REGEX"; then
             denied=true
           fi
           decision=automerge
           reason=""
-          if [[ "$is_major" == true ]]; then
+          if [[ "$zero_major" == true ]]; then
+            decision=hold
+            reason="breaking 0.x bump ($prev -> $new)"
+          elif [[ "$is_major" == true ]]; then
             decision=hold
             reason="semver-major bump ($UPDATE_TYPE)"
           elif [[ "$denied" == true ]]; then
