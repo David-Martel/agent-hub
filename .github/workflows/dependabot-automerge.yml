@@ -4,7 +4,9 @@
 #   1. It is a semver patch or minor bump (dependabot/fetch-metadata's
 #      update-type), or a pinned grouped update whose group name does not
 #      itself signal a major bump.
-#   2. It is NOT a semver-major bump.
+#   2. It is NOT a semver-major bump. Below 1.0 a minor bump counts as major,
+#      and below 0.1 a patch bump does too (0.4 -> 0.8 broke main via #390).
+#      A grouped update is checked dependency by dependency.
 #   3. None of the touched dependency names match DENY_LIST_REGEX (CUDA,
 #      torch, ROS, TensorRT, cuDNN/cuBLAS and similar get a label plus a
 #      changelog/risk comment instead of auto-merge).
@@ -60,9 +62,12 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.actor == 'dependabot[bot]'
     runs-on: [self-hosted, Linux, X64]
     env:
-      # (?i) case-insensitive; anchors avoid over-matching unrelated crates
+      # Anchors avoid over-matching unrelated crates
       # that merely contain a substring (e.g. "roslibpy" is not ROS core).
-      DENY_LIST_REGEX: '(?i)(^|[-_])(torch|cuda|cudnn|cublas|tensorrt|nvidia|nvinfer)([-_]|$)|(^|[-_])ros[-_2]|(^|[-_])rclpy([-_]|$)'
+      # POSIX ERE, matched case-insensitively (grep -Ei) against one dependency name per
+      # line. No PCRE "(?i)": GNU grep -E reads it as "? at start of expression", and the
+      # torch/CUDA/NVIDIA alternative then never matched.
+      DENY_LIST_REGEX: '(^|[-_])(torch|cuda|cudnn|cublas|tensorrt|nvidia|nvinfer)([-_]|$)|(^|[-_])ros[-_2]|(^|[-_])rclpy([-_]|$)'
       PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
     steps:
@@ -75,9 +80,10 @@ jobs:
 
       # workflow_dispatch has no pull_request event payload for
       # fetch-metadata to read, so the manual/dry-run path derives the same
-      # two fields (update-type, dependency-names) from the PR's own title,
-      # which Dependabot writes in a fixed, parseable format
+      # fields (update-type, dependency-names, dependency-group, versions) from
+      # the PR's own title, which Dependabot writes in a fixed, parseable format
       # ("build(deps): bump <dep> from X.Y.Z to A.B.C" / "bump the <group> group").
+      # A group title carries no per-dependency versions, so Decide policy holds it.
       - name: Derive metadata from PR title (manual dispatch only)
         id: meta_manual
         if: github.event_name == 'workflow_dispatch'
@@ -86,25 +92,33 @@ jobs:
         run: |
           set -euo pipefail
           title=$(gh pr view "$PR_NUMBER" --json title --jq '.title')
-          echo "pr_title=$title" >> "$GITHUB_OUTPUT"
-          # Best-effort semver classification from "from X to Y" in the title.
-          from_ver=$(echo "$title" | grep -oP 'from \K[0-9][0-9A-Za-z.+-]*' || true)
-          to_ver=$(echo "$title" | grep -oP 'to \K[0-9][0-9A-Za-z.+-]*' || true)
-          dep_name=$(echo "$title" | grep -oP 'bump \K[^ ]+(?= from)' || echo "$title" | grep -oP 'bump the \K[^ ]+(?= group)' || true)
+          # Best-effort semver classification from "from X to Y" in the title. Dependabot
+          # (and fetch-metadata's own parser) accept a "v" prefix, so "from v0.4.3 to
+          # v0.5.0" must parse too; an empty pair would otherwise default to a patch.
+          from_ver=$(echo "$title" | grep -oP 'from \Kv?[0-9][0-9A-Za-z.+-]*' || true)
+          to_ver=$(echo "$title" | grep -oP ' to \Kv?[0-9][0-9A-Za-z.+-]*' || true)
+          group=$(echo "$title" | grep -oP 'bump the \K[^ ]+(?= group)' || true)
+          dep_name=$(echo "$title" | grep -oP 'bump \K[^ ]+(?= from)' || echo "$group")
           update_type="version-update:semver-patch"
           if [[ -n "$from_ver" && -n "$to_ver" ]]; then
-            from_major=$(echo "$from_ver" | cut -d. -f1)
-            to_major=$(echo "$to_ver" | cut -d. -f1)
-            from_minor=$(echo "$from_ver" | cut -d. -f2)
-            to_minor=$(echo "$to_ver" | cut -d. -f2)
+            from_major=$(echo "${from_ver#v}" | cut -d. -f1)
+            to_major=$(echo "${to_ver#v}" | cut -d. -f1)
+            from_minor=$(echo "${from_ver#v}" | cut -d. -f2)
+            to_minor=$(echo "${to_ver#v}" | cut -d. -f2)
             if [[ "$from_major" != "$to_major" ]]; then
               update_type="version-update:semver-major"
             elif [[ "$from_minor" != "$to_minor" ]]; then
               update_type="version-update:semver-minor"
             fi
           fi
-          echo "update-type=$update_type" >> "$GITHUB_OUTPUT"
-          echo "dependency-names=$dep_name" >> "$GITHUB_OUTPUT"
+          {
+            echo "pr_title=$title"
+            echo "update-type=$update_type"
+            echo "dependency-names=$dep_name"
+            echo "dependency-group=$group"
+            echo "previous-version=$from_ver"
+            echo "new-version=$to_ver"
+          } >> "$GITHUB_OUTPUT"
           echo "[dry-run metadata] title='$title' update_type=$update_type dep=$dep_name"
 
       - name: Decide policy
@@ -112,23 +126,81 @@ jobs:
         env:
           UPDATE_TYPE: ${{ steps.meta.outputs.update-type || steps.meta_manual.outputs.update-type }}
           DEP_NAMES: ${{ steps.meta.outputs.dependency-names || steps.meta_manual.outputs.dependency-names }}
+          DEP_GROUP: ${{ steps.meta.outputs.dependency-group || steps.meta_manual.outputs.dependency-group }}
+          PREV_VERSION: ${{ steps.meta.outputs.previous-version || steps.meta_manual.outputs.previous-version }}
+          NEW_VERSION: ${{ steps.meta.outputs.new-version || steps.meta_manual.outputs.new-version }}
+          # One entry per updated dependency. previous-version/new-version above describe
+          # only the FIRST entry (fetch-metadata output.ts), while update-type is the
+          # maximum over the group, so a group must be checked entry by entry.
+          UPDATED_DEPS_JSON: ${{ steps.meta.outputs.updated-dependencies-json }}
         run: |
           set -euo pipefail
           echo "update_type=$UPDATE_TYPE"
           echo "dep_names=$DEP_NAMES"
+          echo "dep_group=${DEP_GROUP:-}"
           is_major=false
+          zero_major=false
+          zero_major_detail=""
           case "$UPDATE_TYPE" in
             *semver-major*) is_major=true ;;
           esac
+          # Below 1.0, semver (and Cargo) treat a minor bump as breaking, and below 0.1 a
+          # patch bump too. fetch-metadata still labels 0.4 -> 0.8 "semver-minor", which is how
+          # wl-nl80211 0.4 -> 0.8 (#390) auto-merged and broke main.
+          breaking_zero_major() {
+            local p_major p_minor p_patch n_major n_minor n_patch rest
+            [[ -n "$1" && -n "$2" ]] || return 1
+            IFS=. read -r p_major p_minor p_patch rest <<< "${1#v}"
+            IFS=. read -r n_major n_minor n_patch rest <<< "${2#v}"
+            [[ "$p_major" == 0 && "$n_major" == 0 ]] || return 1
+            [[ "${p_minor:-}" != "${n_minor:-}" ]] && return 0
+            [[ "${p_minor:-}" == 0 && "${p_patch:-}" != "${n_patch:-}" ]]
+          }
+          # One "name<TAB>prev<TAB>new" line per updated dependency. With per-dependency
+          # metadata every entry is checked, so a breaking 0.x bump anywhere in a group
+          # holds it regardless of ordering. Without jq that check cannot run: fail the
+          # job (nothing is merged) rather than fall back to the first entry.
+          pairs=""
+          if [[ -n "${UPDATED_DEPS_JSON:-}" ]]; then
+            if ! command -v jq >/dev/null 2>&1; then
+              echo "::error::jq is required to check every entry of updated-dependencies-json; refusing to decide"
+              exit 1
+            fi
+            pairs=$(jq -r '.[] | [.dependencyName, (.prevVersion // ""), (.newVersion // "")] | @tsv' <<< "$UPDATED_DEPS_JSON")
+          elif [[ -z "${DEP_GROUP:-}" ]]; then
+            pairs=$(printf '%s\t%s\t%s' "$DEP_NAMES" "$PREV_VERSION" "$NEW_VERSION")
+          fi
+          printf 'versions: %s\n' "${pairs:-<none>}"
+          while IFS=$'\t' read -r name prev new; do
+            if breaking_zero_major "$prev" "$new"; then
+              is_major=true
+              zero_major=true
+              zero_major_detail="$name $prev -> $new"
+              break
+            fi
+          done <<< "$pairs"
+          # A group seen without per-dependency versions (the manual-dispatch title path)
+          # cannot be checked for 0.x bumps, so it is held rather than assumed compatible.
+          group_unverified=false
+          if [[ -n "${DEP_GROUP:-}" && -z "${UPDATED_DEPS_JSON:-}" ]]; then
+            group_unverified=true
+          fi
           denied=false
-          if [[ -n "$DEP_NAMES" ]] && echo "$DEP_NAMES" | grep -Eq "$DENY_LIST_REGEX"; then
+          # fetch-metadata joins names with ", "; split so every name meets the anchors.
+          if [[ -n "$DEP_NAMES" ]] && printf '%s\n' "$DEP_NAMES" | tr ',' '\n' | tr -d ' ' | grep -Eiq -- "$DENY_LIST_REGEX"; then
             denied=true
           fi
           decision=automerge
           reason=""
-          if [[ "$is_major" == true ]]; then
+          if [[ "$zero_major" == true ]]; then
+            decision=hold
+            reason="breaking 0.x bump ($zero_major_detail)"
+          elif [[ "$is_major" == true ]]; then
             decision=hold
             reason="semver-major bump ($UPDATE_TYPE)"
+          elif [[ "$group_unverified" == true ]]; then
+            decision=hold
+            reason="grouped update ($DEP_GROUP) without per-dependency versions"
           elif [[ "$denied" == true ]]; then
             decision=hold
             reason="deny-listed dependency ($DEP_NAMES matched $DENY_LIST_REGEX)"
