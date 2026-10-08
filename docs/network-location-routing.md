@@ -130,8 +130,9 @@ the NSSM `AgentHub` local maintenance hub, which must never be a candidate.
 
 A forward started by hand dies with its session, and the bus then drops for every
 agent on that machine. Each helper is idempotent: it exits 0 when the loopback
-`/health` already answers. That makes a periodic re-run a cheap self-heal. Keep
-the jump host in `~/.ssh/config` and pass only the alias.
+`/health` already answers, so re-running it on a timer restarts a dead forward and does
+nothing otherwise. On a timeout it stops only the ssh process it started. Keep the jump
+host in `~/.ssh/config` and pass only the alias.
 
 Windows: a logon task that re-runs every 5 minutes for the logged-on user.
 
@@ -148,7 +149,7 @@ Register-ScheduledTask -TaskName 'AgentBusTunnel' -User $env:USERNAME `
   -Action $action -Trigger $trigger -Settings $settings
 ```
 
-The battery and time-limit settings matter on laptops. By default Task Scheduler does not
+By default Task Scheduler does not
 start the task on battery, kills it when AC is unplugged, and stops it after 72 hours. While
 ssh is alive the task stays Running, so the 5-minute repetition is skipped. When ssh dies,
 the next tick restarts it. Check once with `Get-ScheduledTask AgentBusTunnel` that the task
@@ -156,7 +157,7 @@ shows Running while the forward is up.
 
 Linux (systemd user unit). systemd supervises the forward itself, so the helper is
 not needed. Do not wrap the helper in a `Type=oneshot` unit: systemd kills the
-forked `ssh -f` when the oneshot exits.
+backgrounded ssh when the oneshot exits.
 
 ```ini
 # ~/.config/systemd/user/agent-bus-tunnel.service

@@ -5,8 +5,9 @@
 #   jump    ssh destination (ssh_config alias, user@host or ssh://user@host:port)
 #   target  hub host:port as seen from the jump host
 #
-# Starts `ssh -f -N -L` only when nothing answers on 127.0.0.1:<local-port>/health,
-# then waits until the forward answers; on timeout the new forward is killed.
+# Starts `ssh -N -L` in its own session only when nothing answers on
+# 127.0.0.1:<local-port>/health, then waits until the forward answers. On timeout it
+# kills the ssh process it started, by PID, and nothing else.
 # See agent-bus-tunnel.ps1 (Windows; Windows OpenSSH cannot detach with -f) for
 # the matching hub candidate and the loopback-token caveat.
 set -euo pipefail
@@ -34,26 +35,33 @@ if hub_up; then
   exit 0
 fi
 
-# Detach ssh from the caller's stdio so a backgrounded forward never holds a
-# pipe open; its diagnostics go to a private log instead.
+# Run ssh in the background in a new session, detached from the caller's stdio, so
+# that closing the caller's terminal does not hang it up and a backgrounded forward
+# never holds a pipe open. Its diagnostics go to a private log. `ssh -f` is not
+# used because it forks after authenticating, which hides the PID this helper must
+# own. setsid execs ssh in place here (a script's background job is never a
+# process-group leader), so $! is the ssh PID.
 log=$(mktemp "${TMPDIR:-/tmp}/agent-bus-tunnel.XXXXXX")
-if ! ssh -f -N \
+detach=()
+command -v setsid >/dev/null 2>&1 && detach=(setsid)
+${detach[@]+"${detach[@]}"} ssh -N \
   -o BatchMode=yes -o ExitOnForwardFailure=yes \
   -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-  -L "$forward" -- "$jump" </dev/null >/dev/null 2>"$log"; then
-  echo "agent-bus tunnel: ssh failed; see $log" >&2
-  exit 1
-fi
+  -L "$forward" -- "$jump" </dev/null >/dev/null 2>"$log" &
+ssh_pid=$!
 
 for _ in $(seq 1 $((timeout * 2))); do
   if hub_up; then
-    echo "agent-bus tunnel: $health answers"
+    echo "agent-bus tunnel: $health answers (ssh pid $ssh_pid)"
     rm -f "$log"
     exit 0
   fi
+  if ! kill -0 "$ssh_pid" 2>/dev/null; then
+    echo "agent-bus tunnel: ssh exited before $health answered; see $log" >&2
+    exit 1
+  fi
   sleep 0.5
 done
-# pkill matches a regex; escape the forward spec so IPv6 brackets match literally.
-pkill -f -- "-L $(printf '%s' "$forward" | sed 's/[][\\.*^$]/\\&/g')" 2>/dev/null || true
-echo "agent-bus tunnel: no /health answer on $health within ${timeout}s; forward stopped (log: $log)" >&2
+kill "$ssh_pid" 2>/dev/null || true
+echo "agent-bus tunnel: no /health answer on $health within ${timeout}s; stopped ssh pid $ssh_pid (log: $log)" >&2
 exit 1
