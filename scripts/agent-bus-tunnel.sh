@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Keep an SSH local forward open to an on-site agent-bus hub (Linux/macOS).
 #
-# Usage: agent-bus-tunnel.sh <jump> <target-host:port> [local-port] [timeout-seconds]
+# Usage: agent-bus-tunnel.sh <jump> <target-host:port> [local-port (default 18480)] [timeout-seconds]
 #   jump    ssh destination (ssh_config alias, user@host or ssh://user@host:port)
 #   target  hub host:port as seen from the jump host
 #
@@ -14,7 +14,7 @@ set -euo pipefail
 usage="usage: agent-bus-tunnel.sh <jump> <target-host:port> [local-port] [timeout-seconds]"
 jump=${1:?$usage}
 target=${2:?$usage}
-port=${3:-18400}
+port=${3:-18480}
 timeout=${4:-20}
 
 [[ "$jump" != -* ]] || { echo "agent-bus tunnel: jump must not start with '-'" >&2; exit 2; }
