@@ -71,6 +71,11 @@ fn message_full_fixture() {
         reply_to: Some("018f4c2e-0000-7000-8000-000000000000".to_owned()),
         metadata: serde_json::json!({"origin": "fixture", "n": 1}),
         stream_id: Some("1690000000000-0".to_owned()),
+        client_msg_id: None,
+        origin_hub: None,
+        origin_seq: None,
+        hlc: None,
+        sensitivity: None,
     };
     assert_fixture("message_full", &serde_json::to_value(&msg).unwrap());
 }

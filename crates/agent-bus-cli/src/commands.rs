@@ -2442,6 +2442,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Null,
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         }
     }
 

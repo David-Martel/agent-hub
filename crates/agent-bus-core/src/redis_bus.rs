@@ -16,7 +16,8 @@ const COMPRESS_THRESHOLD: usize = 512;
 
 use crate::channels::{check_redis_ownership, extract_claimed_files, global_ownership_tracker};
 use crate::models::{
-    Health, Message, PROTOCOL_VERSION, Presence, XREVRANGE_MIN_FETCH, XREVRANGE_OVERFETCH_FACTOR,
+    Health, Message, PROTOCOL_VERSION, Presence, Sensitivity, XREVRANGE_MIN_FETCH,
+    XREVRANGE_OVERFETCH_FACTOR,
 };
 use crate::postgres_store::{
     PgWriter, count_both_postgres, is_pg_circuit_open, list_messages_postgres,
@@ -471,6 +472,11 @@ fn decode_notification_entry(
                     reply_to: None,
                     metadata: serde_json::Value::Object(serde_json::Map::new()),
                     stream_id: None,
+                    client_msg_id: None,
+                    origin_hub: None,
+                    origin_seq: None,
+                    hlc: None,
+                    sensitivity: None,
                 }),
             Some(redis::Value::SimpleString(s)) => serde_json::from_str::<Message>(s)
                 .unwrap_or_else(|_| Message {
@@ -488,6 +494,11 @@ fn decode_notification_entry(
                     reply_to: None,
                     metadata: serde_json::Value::Object(serde_json::Map::new()),
                     stream_id: None,
+                    client_msg_id: None,
+                    origin_hub: None,
+                    origin_seq: None,
+                    hlc: None,
+                    sensitivity: None,
                 }),
             _ => Message {
                 id: String::new(),
@@ -504,6 +515,11 @@ fn decode_notification_entry(
                 reply_to: None,
                 metadata: serde_json::Value::Object(serde_json::Map::new()),
                 stream_id: None,
+                client_msg_id: None,
+                origin_hub: None,
+                origin_seq: None,
+                hlc: None,
+                sensitivity: None,
             },
         };
 
@@ -691,6 +707,10 @@ pub fn set_notification_cursor(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one flat field-by-field decode of the stream entry"
+)]
 pub fn decode_stream_entry<S: std::hash::BuildHasher>(
     fields: &HashMap<String, redis::Value, S>,
 ) -> Message {
@@ -798,7 +818,19 @@ pub fn decode_stream_entry<S: std::hash::BuildHasher>(
         },
         metadata: get_json_value("metadata"),
         stream_id: None,
+        // agent-hub#79 cloud-sync fields: absent on every locally written
+        // entry, so a hub with sync disabled decodes exactly as before.
+        client_msg_id: non_empty(get("client_msg_id")),
+        origin_hub: non_empty(get("origin_hub")),
+        origin_seq: get("origin_seq").parse::<u64>().ok(),
+        hlc: non_empty(get("hlc")),
+        sensitivity: Sensitivity::parse(&get("sensitivity")),
     }
+}
+
+/// `Some(value)` unless it is empty.
+fn non_empty(value: String) -> Option<String> {
+    if value.is_empty() { None } else { Some(value) }
 }
 
 #[must_use]
@@ -1067,6 +1099,11 @@ fn prepare_message(
         reply_to: Some(reply),
         metadata: final_metadata,
         stream_id: None,
+        client_msg_id: None,
+        origin_hub: None,
+        origin_seq: None,
+        hlc: None,
+        sensitivity: None,
     };
 
     PreparedMessage {
@@ -1669,6 +1706,11 @@ pub fn bus_post_message_with_schema(
         reply_to: Some(reply.to_owned()),
         metadata: effective_metadata.clone(),
         stream_id: Some(stream_id.clone()),
+        client_msg_id: None,
+        origin_hub: None,
+        origin_seq: None,
+        hlc: None,
+        sensitivity: None,
     };
 
     // Publish when legacy `/events` subscribers are connected or when a direct
@@ -2648,6 +2690,7 @@ pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
         redis_persistence,
         backup_age_seconds: latest_backup_age_seconds(),
         postgres_replication_lag_seconds: None,
+        cloud: None,
     }
 }
 
@@ -2729,6 +2772,7 @@ pub fn health_error_fallback() -> Health {
         redis_persistence: None,
         backup_age_seconds: latest_backup_age_seconds(),
         postgres_replication_lag_seconds: None,
+        cloud: None,
     }
 }
 
@@ -3005,8 +3049,8 @@ const RESOURCE_EVENT_MAXLEN: u64 = 1000;
 /// Build the Redis stream key for a resource's event log.
 #[must_use]
 pub fn resource_event_stream_key(resource: &str) -> String {
-    // Normalise path separators for Windows compatibility.
-    let normalised = resource.replace('\\', "/");
+    // Same fold as the claim key and the cloud Worker (agent-hub#79).
+    let normalised = crate::channels::normalize_resource_name(resource);
     format!("{RESOURCE_EVENT_PREFIX}{normalised}")
 }
 
@@ -3449,6 +3493,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         }
     }
 

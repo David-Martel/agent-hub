@@ -26,7 +26,7 @@ use postgres::{Client as PgClient, NoTls};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use crate::models::{Message, Presence};
+use crate::models::{Message, Presence, Sensitivity};
 use crate::settings::{
     Settings, loopback_url_candidates, redact_url, refuse_live_bus_in_unit_tests,
 };
@@ -353,6 +353,19 @@ pub fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings) -> Re
             on {message_table} (stream_id) where stream_id is not null;
         create index if not exists agent_bus_messages_tags_idx
             on {message_table} using gin (tags);
+        -- agent-hub#79 cloud-sync columns. All nullable and additive: rows and
+        -- writers that predate them keep working, and a NULL origin_hub means
+        -- this hub.
+        alter table {message_table} add column if not exists client_msg_id text null;
+        alter table {message_table} add column if not exists origin_hub text null;
+        alter table {message_table} add column if not exists origin_seq bigint null;
+        alter table {message_table} add column if not exists hlc text null;
+        alter table {message_table} add column if not exists sensitivity text null;
+        -- Partial, so legacy rows (NULL origin_hub / client_msg_id) never enter
+        -- the index. Mirrors the Worker's idempotency on (origin_hub, client_msg_id).
+        create unique index if not exists agent_bus_messages_origin_client_msg_idx
+            on {message_table} (origin_hub, client_msg_id)
+            where origin_hub is not null and client_msg_id is not null;
         -- Timestamp-only index: enables index-only scans for count(*) and range
         -- queries that do not filter by recipient/sender/topic.  Added 2026-03-20
         -- after EXPLAIN ANALYZE showed 993 seq scans on the health count path.
@@ -386,6 +399,13 @@ pub fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings) -> Re
         guard.insert(cache_key);
     }
     Ok(())
+}
+
+/// Convert an optional `origin_seq` to the `bigint` the column stores.
+fn origin_seq_sql(seq: Option<u64>) -> Result<Option<i64>> {
+    seq.map(i64::try_from)
+        .transpose()
+        .map_err(|e| crate::error::AgentBusError::Internal(format!("origin_seq exceeds i64: {e}")))
 }
 
 /// # Errors
@@ -430,9 +450,11 @@ pub fn persist_message_postgres(settings: &Settings, message: &Message) -> Resul
             client.execute(
                 &format!(
                     "insert into {} \
-                     (id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, priority, tags, request_ack, reply_to, metadata, stream_id) \
-                     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
-                     on conflict (id) do nothing",
+                     (id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, priority, tags, request_ack, reply_to, metadata, stream_id, \
+                      client_msg_id, origin_hub, origin_seq, hlc, sensitivity) \
+                     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
+                      $15, $16, $17, $18, $19) \
+                     on conflict do nothing",
                     settings.message_table
                 ),
                 &[
@@ -450,6 +472,11 @@ pub fn persist_message_postgres(settings: &Settings, message: &Message) -> Resul
                     &reply_to,
                     &message.metadata,
                     &message.stream_id,
+                    &message.client_msg_id,
+                    &message.origin_hub,
+                    &origin_seq_sql(message.origin_seq)?,
+                    &message.hlc,
+                    &message.sensitivity.map(Sensitivity::as_str),
                 ],
             )?;
             // Return the healthy connection to the pool.
@@ -549,9 +576,11 @@ pub fn sync_redis_to_postgres(settings: &Settings, messages: &[Message]) -> Resu
                 &format!(
                     "INSERT INTO {} \
                      (id, timestamp_utc, protocol_version, sender, recipient, topic, body, \
-                      thread_id, priority, tags, request_ack, reply_to, metadata, stream_id) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
-                     ON CONFLICT (id) DO NOTHING",
+                      thread_id, priority, tags, request_ack, reply_to, metadata, stream_id, \
+                      client_msg_id, origin_hub, origin_seq, hlc, sensitivity) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, \
+                      $15, $16, $17, $18, $19) \
+                     ON CONFLICT DO NOTHING",
                     settings.message_table
                 ),
                 &[
@@ -569,6 +598,11 @@ pub fn sync_redis_to_postgres(settings: &Settings, messages: &[Message]) -> Resu
                     &reply_to,
                     &msg.metadata,
                     &msg.stream_id,
+                    &msg.client_msg_id,
+                    &msg.origin_hub,
+                    &origin_seq_sql(msg.origin_seq)?,
+                    &msg.hlc,
+                    &msg.sensitivity.map(Sensitivity::as_str),
                 ],
             )?;
             if rows > 0 {
@@ -672,6 +706,16 @@ pub fn row_to_message(row: &postgres::Row) -> Message {
         },
         metadata: row.get("metadata"),
         stream_id: row.get("stream_id"),
+        client_msg_id: row.get("client_msg_id"),
+        origin_hub: row.get("origin_hub"),
+        origin_seq: row
+            .get::<_, Option<i64>>("origin_seq")
+            .and_then(|v| u64::try_from(v).ok()),
+        hlc: row.get("hlc"),
+        sensitivity: row
+            .get::<_, Option<String>>("sensitivity")
+            .as_deref()
+            .and_then(Sensitivity::parse),
     }
 }
 
@@ -748,7 +792,8 @@ pub fn list_messages_postgres_with_filters(
 
         let rows = client.query(
             &format!(
-                "select id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, tags, priority, request_ack, reply_to, metadata, stream_id \
+                "select id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, tags, priority, request_ack, reply_to, metadata, stream_id, \
+                 client_msg_id, origin_hub, origin_seq, hlc, sensitivity \
                  from {} \
                  where timestamp_utc >= now() - ($1::bigint * interval '1 minute') \
                    and ($2::text is null or sender = $2) \
@@ -1502,6 +1547,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
         writer.send_message(&msg);
         // Give the background task a moment to process then verify no panic.
@@ -1531,6 +1581,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
         writer.send_message(&msg);
         writer2.send_message(&msg);
@@ -1643,6 +1698,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
         writer.send_message(&msg);
         let after = pg_metrics().messages_queued.load(Ordering::Relaxed);
@@ -1836,6 +1896,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
 
         // Spawn two OS threads, each sending one message through its own writer clone.
@@ -2246,6 +2311,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         }
     }
 
