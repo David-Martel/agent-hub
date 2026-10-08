@@ -1116,6 +1116,68 @@ pub fn list_presence_history_postgres(
     })
 }
 
+/// Highest presence event id, or `0` when the table is empty or no database
+/// is configured. Used to start the cloud sync cursor at "now".
+///
+/// # Errors
+/// Returns an error if the database query fails.
+pub fn presence_event_max_id(settings: &Settings) -> Result<i64> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = get_pg_client(settings)? else {
+            return Ok(0);
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+        let row = client.query_one(
+            &format!(
+                "select coalesce(max(id), 0) as max_id from {}",
+                settings.presence_event_table
+            ),
+            &[],
+        )?;
+        let max_id: i64 = row.get("max_id");
+        return_pg_client(client);
+        Ok(max_id)
+    })
+}
+
+/// Presence events with `id > after_id`, oldest first, paired with their
+/// `PostgreSQL` row id. The id is the stable per-origin `origin_id` the cloud
+/// tier deduplicates presence on (agent-hub#79).
+///
+/// Returns an empty list when no database is configured.
+///
+/// # Errors
+/// Returns an error if the database query fails.
+pub fn list_presence_events_after(
+    settings: &Settings,
+    after_id: i64,
+    limit: usize,
+) -> Result<Vec<(i64, Presence)>> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = get_pg_client(settings)? else {
+            return Ok(Vec::new());
+        };
+        ensure_postgres_storage(&mut client, settings)?;
+        let limit = i64::try_from(limit).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("limit exceeds i64: {e}"))
+        })?;
+        let rows = client.query(
+            &format!(
+                "select id, timestamp_utc, protocol_version, agent, status, session_id, capabilities, metadata, ttl_seconds \
+                 from {} where id > $1 order by id asc limit $2",
+                settings.presence_event_table
+            ),
+            &[&after_id, &limit],
+        )?;
+        let results = rows
+            .iter()
+            .map(|row| (row.get::<_, i64>("id"), row_to_presence(row)))
+            .collect();
+        return_pg_client(client);
+        Ok(results)
+    })
+}
+
 #[must_use]
 pub fn probe_postgres(settings: &Settings) -> (Option<bool>, Option<String>, bool) {
     if settings.database_url.is_none() {

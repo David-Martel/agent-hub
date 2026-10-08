@@ -22,6 +22,7 @@ pub mod postgres_store;
 pub mod redis_bus;
 pub mod remote_dispatch;
 pub mod settings;
+pub mod sync_store;
 pub mod token;
 pub mod validation;
 

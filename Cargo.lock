@@ -71,14 +71,18 @@ dependencies = [
  "agent-bus-core",
  "anyhow",
  "axum",
+ "chrono",
  "redis",
+ "reqwest",
  "rmcp",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tower-http 0.7.1",
  "tracing",
+ "url",
  "uuid",
 ]
 

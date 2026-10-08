@@ -534,7 +534,7 @@ fn decode_notification_entry(
     }
 }
 
-fn append_notifications_for_message(
+pub(crate) fn append_notifications_for_message(
     conn: &mut redis::Connection,
     msg: &Message,
 ) -> Result<Vec<Notification>> {
