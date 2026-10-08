@@ -70,7 +70,7 @@ They belong in each machine's `~/.config/agent-bus/config.json`.
   "server_urls": [
     {"url": "http://hub-fabric-name:8400", "role": "authoritative",
      "hub": "onsite-hub", "sites": ["lab-fabric"]},
-    {"url": "http://127.0.0.1:18400", "role": "authoritative",
+    {"url": "http://127.0.0.1:18480", "role": "authoritative",
      "hub": "onsite-hub", "sites": ["campus"]},
     {"url": "https://cloud.example.com", "role": "cloud",
      "token_file": "~/.config/agent-bus/cloud-token"}
@@ -122,6 +122,51 @@ passed after `--`.
 
 The client sends its on-site token to loopback candidates, which is
 unchanged posture. Do not run a forward on a shared multi-user machine.
+
+The default local port is 18480. Port 18400 is taken on Windows hosts that run
+the NSSM `AgentHub` local maintenance hub, which must never be a candidate.
+
+### Keeping the forward up
+
+A forward started by hand dies with its session, and the bus then drops for every
+agent on that machine. Each helper is idempotent: it exits 0 when the loopback
+`/health` already answers. That makes a periodic re-run a cheap self-heal. Keep
+the jump host in `~/.ssh/config` and pass only the alias.
+
+Windows: a logon task that re-runs every 5 minutes for the logged-on user.
+
+```powershell
+$action  = New-ScheduledTaskAction -Execute 'pwsh.exe' -Argument (
+  '-NoLogo -NoProfile -WindowStyle Hidden -File "<repo>\scripts\agent-bus-tunnel.ps1" ' +
+  '-Jump <ssh-alias> -Target <hub-host>:8400')
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+$trigger.Repetition = (New-ScheduledTaskTrigger -Once -At (Get-Date) `
+  -RepetitionInterval (New-TimeSpan -Minutes 5)).Repetition
+Register-ScheduledTask -TaskName 'AgentBusTunnel' -Action $action -Trigger $trigger `
+  -Settings (New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable)
+```
+
+Linux (systemd user unit). systemd supervises the forward itself, so the helper is
+not needed. Do not wrap the helper in a `Type=oneshot` unit: systemd kills the
+forked `ssh -f` when the oneshot exits.
+
+```ini
+# ~/.config/systemd/user/agent-bus-tunnel.service
+[Unit]
+Description=agent-bus SSH forward to the on-site hub
+
+[Service]
+ExecStart=/usr/bin/ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -L 127.0.0.1:18480:<hub-host>:8400 <ssh-alias>
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+```
+
+Enable it with `systemctl --user enable --now agent-bus-tunnel.service`. List the
+loopback candidate after any direct LAN or fabric candidate, and give it its own
+`sites`. Location matching then tries the direct route first wherever one exists.
 
 ## Validation matrix
 

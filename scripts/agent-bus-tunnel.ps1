@@ -10,7 +10,7 @@
     waits until the forwarded hub answers.
 
     Pair it with a hub candidate such as:
-        {"url": "http://127.0.0.1:18400", "role": "authoritative",
+        {"url": "http://127.0.0.1:18480", "role": "authoritative",
          "hub": "<hub_identity>", "sites": ["<campus-site>"]}
     Set the same `hub` on the direct route; the client rejects a forward that
     reaches a hub reporting a different `hub_identity`.
@@ -26,7 +26,7 @@
 .PARAMETER Target
     host:port of the hub as seen from the jump host.
 .PARAMETER LocalPort
-    Loopback port to listen on (default 18400).
+    Loopback port to listen on (default 18480; 18400 is the Windows NSSM local hub).
 .PARAMETER TimeoutSeconds
     How long to wait for the forwarded /health (default 20).
 
@@ -38,7 +38,7 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9._@\[\]:/][A-Za-z0-9._@\[\]:/-]*$')][string]$Jump,
     [ValidateRange(1, 65535)][int]$JumpPort,
     [Parameter(Mandatory)][ValidatePattern('^[A-Za-z0-9.\-\[\]:]+:\d+$')][string]$Target,
-    [ValidateRange(1, 65535)][int]$LocalPort = 18400,
+    [ValidateRange(1, 65535)][int]$LocalPort = 18480,
     [ValidateRange(1, 300)][int]$TimeoutSeconds = 20
 )
 Set-StrictMode -Version Latest
