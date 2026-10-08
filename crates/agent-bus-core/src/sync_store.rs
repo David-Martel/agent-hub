@@ -125,7 +125,20 @@ pub fn ingest_synced_message(
             let mut stored = msg.clone();
             stored.stream_id = Some(stream_id);
             if let Some(writer) = pg_writer {
-                writer.send_message(&stored);
+                if postgres_can_store(&stored) {
+                    writer.send_message(&stored);
+                } else {
+                    // A row `PostgreSQL` would reject must not reach the
+                    // writer: every rejected write is retried three times and
+                    // then opens the 60 s circuit breaker, which would stall
+                    // durable persistence of LOCAL messages. It stays
+                    // Redis-only.
+                    tracing::warn!(
+                        "synced message {} has an id or timestamp PostgreSQL cannot store; \
+                         keeping it in Redis only",
+                        stored.id
+                    );
+                }
             }
             if let Err(error) = append_notifications_for_message(conn, &stored) {
                 tracing::warn!(
@@ -140,6 +153,14 @@ pub fn ingest_synced_message(
             Err(error)
         }
     }
+}
+
+/// Whether the `PostgreSQL` row for `msg` would be accepted: the `id` column is
+/// a `uuid` and `timestamp_utc` must parse. Historical or foreign ids need not
+/// be UUIDs on the cloud side, so pulled messages are checked first.
+#[must_use]
+pub fn postgres_can_store(msg: &Message) -> bool {
+    uuid::Uuid::parse_str(&msg.id).is_ok() && parse_timestamp_utc(&msg.timestamp_utc).is_ok()
 }
 
 fn xadd_synced(
@@ -338,6 +359,25 @@ mod tests {
         let mut bad = presence(now(), 300, Some("cloud"));
         bad.timestamp_utc = "not a time".to_owned();
         assert!(synced_presence_ttl(&bad, None, "hub-a", now()).is_err());
+    }
+
+    #[test]
+    fn only_rows_postgres_can_store_reach_the_writer() {
+        let mut msg: Message = serde_json::from_value(serde_json::json!({
+            "id": "0190a000-0000-7000-8000-000000000001",
+            "timestamp_utc": "2026-01-01T00:00:00.000Z",
+            "protocol_version": "1.0", "from": "a", "to": "b", "topic": "t", "body": "x"
+        }))
+        .unwrap();
+        assert!(postgres_can_store(&msg));
+        msg.id = "cloud-msg-1".to_owned();
+        assert!(
+            !postgres_can_store(&msg),
+            "a non-UUID id would trip the PG breaker"
+        );
+        msg.id = "0190a000-0000-7000-8000-000000000001".to_owned();
+        msg.timestamp_utc = "yesterday".to_owned();
+        assert!(!postgres_can_store(&msg));
     }
 
     #[test]

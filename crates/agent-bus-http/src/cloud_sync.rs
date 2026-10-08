@@ -1515,7 +1515,7 @@ mod tests {
         assert!(enabled("http://127.0.0.1:8787"));
         assert!(enabled("http://localhost:8787"));
         assert!(!enabled("http://cloud.example"));
-        assert!(!enabled("http://10.0.0.5:8787"));
+        assert!(!enabled("http://192.0.2.5:8787"));
         assert!(!enabled("https://user:pw@cloud.example"));
         assert!(!enabled("https://cloud.example/?x=1"));
         assert!(!enabled("not a url"));

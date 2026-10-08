@@ -73,8 +73,7 @@ on-site resource.
 ## Failure behaviour
 
 - **Local writes never wait on the cloud.** Nothing on the request path touches
-  the sync task. Measured on a real `agent-bus-http` with the cloud killed: 20
-  `POST /messages` took 0.029 s with the cloud up and 0.025 s with it down.
+  the sync task, and the task holds no lock across a cloud call.
 - **Bounded outbox.** At most 5000 messages are queued. If a chunk would
   overflow it, the queue is dropped, `cloud_dropped_batches_total` is incremented
   and the task re-reads from the last acknowledged stream id. Nothing is lost
@@ -126,8 +125,13 @@ SYNC-CONTRACT.md section 7.
   `client_msg_id`, `sensitivity`, `origin_seq` or `hlc`, and the hub does not
   mint them. The push relies on `(origin_hub, id)` for idempotency, which the
   Worker already enforces.
-- Pulled messages whose `id` is not a UUID are stored in Redis but not in
-  PostgreSQL (its `id` column is `uuid`).
+- Pulled messages whose `id` is not a UUID (or whose timestamp does not parse)
+  are stored in Redis but not in PostgreSQL, whose `id` column is `uuid`. They
+  are kept away from the Postgres writer on purpose: a rejected write is retried
+  three times and then opens the 60 s circuit breaker, which would stall durable
+  persistence of local messages.
+- If reading the persisted cursors or the stream tail fails at startup, sync
+  stays off until the hub restarts; it does not retry.
 - The cloud's own `/channels/arbitrate/*` routes still grant claims. Making them
   read-only or answering `409` is a Worker change in a later step.
 - MCP clients cannot use the cloud as a candidate hub (`/mcp` answers 501).

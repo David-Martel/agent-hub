@@ -11,7 +11,7 @@ been removed.
 Current crate layout:
 
 - `crates/agent-bus-core` — shared library: storage adapters (redis_bus,
-  postgres_store), channels, settings, models, token helpers, validation,
+  postgres_store), sync_store (Redis half of cloud sync), channels, settings, models, token helpers, validation,
   output, journal, codex_bridge, agent_profile, bootstrap, mcp_dispatch
   (shared `McpToolDispatch`), error, and ops subtree.
 - `crates/agent-bus-cli` — package name `agent-bus`, produces the `agent-bus`
@@ -19,8 +19,9 @@ Current crate layout:
   mcp_discovery.rs. Still links axum/rmcp/reqwest because `serve` starts
   HTTP/MCP inline. Depends on `agent-bus-core`.
 - `crates/agent-bus-http` — package name `agent-bus-http`, produces the
-  `agent-bus-http` binary. Owns http.rs. Depends only on `agent-bus-core`
-  plus Axum/rmcp/Redis.
+  `agent-bus-http` binary. Owns http.rs and cloud_sync.rs (the opt-in hub to
+  cloud sync task, see `docs/cloud-sync.md`). Depends only on `agent-bus-core`
+  plus Axum/rmcp/Redis/reqwest.
 - `crates/agent-bus-mcp` — package name `agent-bus-mcp`, produces the
   `agent-bus-mcp` binary. Owns mcp.rs. Lightest dependency footprint.
 
