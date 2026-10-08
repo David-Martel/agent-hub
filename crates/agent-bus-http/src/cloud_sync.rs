@@ -1150,6 +1150,12 @@ pub(crate) fn snapshot_now() -> i64 {
     now_ms()
 }
 
+/// Disposable-backend addressing shared with the core crate's backend tests:
+/// URLs come only from `AGENT_BUS_TEST_*`, and the live bus ports are refused.
+#[cfg(test)]
+#[path = "../../agent-bus-core/tests/support/backend_env.rs"]
+mod backend_env;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2179,5 +2185,107 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("401"));
+    }
+
+    // ----- backend: the real Redis store end to end ------------------------
+
+    /// The whole loop on a real Redis: local writes are pushed, a pulled
+    /// message lands in the stream with its origin and is never pushed back,
+    /// and replaying the pull writes nothing twice. Needs a DISPOSABLE Redis
+    /// in `AGENT_BUS_TEST_REDIS_URL`; fails, never skips, when unset.
+    #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL (see tests/support/backend_env.rs)"]
+    #[tokio::test]
+    async fn redis_backed_round_trip_has_no_echo_and_no_duplicates() {
+        let tag = uuid::Uuid::new_v4().simple().to_string();
+        let mut settings = Settings::from_env();
+        settings.redis_url = backend_env::backend_url(backend_env::REDIS_URL_VAR);
+        settings.database_url = None;
+        settings.stream_key = format!("agent_bus_test:cloudsync:{tag}:messages");
+        settings.presence_prefix = format!("agent_bus_test:cloudsync:{tag}:presence:");
+        let settings = Arc::new(settings);
+        let pool = RedisPool::new(&settings).expect("disposable Redis unreachable");
+        {
+            let mut conn = pool.get_connection().unwrap();
+            for (n, metadata) in [
+                serde_json::json!({}),
+                serde_json::json!({"sensitivity": "no-offsite"}),
+                serde_json::json!({}),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                agent_bus_core::redis_bus::bus_post_message(
+                    &mut conn,
+                    &settings,
+                    "alice",
+                    "all",
+                    "status",
+                    &format!("local message {n}"),
+                    None,
+                    &[],
+                    "normal",
+                    false,
+                    None,
+                    &metadata,
+                    None,
+                    false,
+                )
+                .unwrap();
+            }
+        }
+
+        let (base, seen) = mock_worker().await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut cfg = config(dir.path(), 500, 5000);
+        cfg.base_url = base;
+        let local = RedisLocal::new(Arc::clone(&settings), pool.clone(), "hub-a".to_owned());
+        let status = Arc::new(CloudSyncStatus::default());
+        let mut e = Engine::new(
+            local,
+            HttpCloud::new(&cfg).unwrap(),
+            &cfg,
+            status,
+            SyncCursors::default(),
+        );
+        e.tick().await.unwrap();
+
+        let pushed: Vec<String> = {
+            let s = seen.lock().unwrap();
+            s.push_bodies
+                .iter()
+                .flat_map(|b| b["messages"].as_array().unwrap().iter())
+                .map(|m| m["body"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(
+            pushed,
+            ["local message 0", "local message 2"],
+            "no-offsite stays home"
+        );
+
+        let mut conn = pool.get_connection().unwrap();
+        let stream = sync_store::read_messages_after(&mut conn, &settings, "0-0", 100).unwrap();
+        let pulled: Vec<_> = stream.iter().filter(|m| m.id == "r1").collect();
+        assert_eq!(pulled.len(), 1, "the pulled message was ingested once");
+        assert_eq!(pulled[0].origin_hub.as_deref(), Some("cloud"));
+
+        // More ticks and a replayed pull: nothing is pushed again, nothing duplicated.
+        e.cursors.pull_cursor = 0;
+        e.tick().await.unwrap();
+        e.tick().await.unwrap();
+        let after = sync_store::read_messages_after(&mut conn, &settings, "0-0", 100).unwrap();
+        assert_eq!(
+            after.len(),
+            stream.len(),
+            "a replayed pull wrote nothing new"
+        );
+        let pushed_again = seen.lock().unwrap().push_bodies.len();
+        assert_eq!(pushed_again, 1, "r1 was not echoed back to the cloud");
+
+        let _: () = redis::cmd("DEL")
+            .arg(&settings.stream_key)
+            .arg(sync_store::ingest_seen_key("cloud", "r1"))
+            .query(&mut *conn)
+            .unwrap();
     }
 }
