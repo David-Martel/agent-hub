@@ -55,7 +55,7 @@ chmod +x "$work/bin/ssh" "$work/bin/curl"
 port=18999
 forward="127.0.0.1:${port}:127.0.0.1:9"
 run_helper() {
-  PATH="$work/bin:$PATH" FAKE_STATE="$work" bash "$helper" jump-alias 127.0.0.1:9 "$port" 1
+  TMPDIR="$work" PATH="$work/bin:$PATH" FAKE_STATE="$work" bash "$helper" jump-alias 127.0.0.1:9 "$port" 1
 }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 alive() { kill -0 "$1" 2>/dev/null; }

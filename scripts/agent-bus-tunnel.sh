@@ -5,7 +5,7 @@
 #   jump    ssh destination (ssh_config alias, user@host or ssh://user@host:port)
 #   target  hub host:port as seen from the jump host
 #
-# Starts `ssh -N -L` in its own session only when nothing answers on
+# Starts `ssh -N -L` (in its own session where setsid exists) only when nothing answers on
 # 127.0.0.1:<local-port>/health, then waits until the forward answers. On timeout it
 # kills the ssh process it started, by PID, and nothing else.
 # See agent-bus-tunnel.ps1 (Windows; Windows OpenSSH cannot detach with -f) for
@@ -40,10 +40,11 @@ fi
 # never holds a pipe open. Its diagnostics go to a private log. `ssh -f` is not
 # used because it forks after authenticating, which hides the PID this helper must
 # own. setsid execs ssh in place here (a script's background job is never a
-# process-group leader), so $! is the ssh PID.
+# process-group leader), so $! is the ssh PID. Without setsid (macOS, Git Bash),
+# nohup keeps the forward alive when the caller's terminal closes.
 log=$(mktemp "${TMPDIR:-/tmp}/agent-bus-tunnel.XXXXXX")
 detach=()
-command -v setsid >/dev/null 2>&1 && detach=(setsid)
+if command -v setsid >/dev/null 2>&1; then detach=(setsid); else detach=(nohup); fi
 ${detach[@]+"${detach[@]}"} ssh -N \
   -o BatchMode=yes -o ExitOnForwardFailure=yes \
   -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \

@@ -149,7 +149,7 @@ Register-ScheduledTask -TaskName 'AgentBusTunnel' -User $env:USERNAME `
   -Action $action -Trigger $trigger -Settings $settings
 ```
 
-By default Task Scheduler does not
+The battery and time-limit settings matter on laptops. By default Task Scheduler does not
 start the task on battery, kills it when AC is unplugged, and stops it after 72 hours. While
 ssh is alive the task stays Running, so the 5-minute repetition is skipped. When ssh dies,
 the next tick restarts it. Check once with `Get-ScheduledTask AgentBusTunnel` that the task
