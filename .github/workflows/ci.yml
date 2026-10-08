@@ -95,6 +95,8 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/lefthook"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: bash scripts/ci/check-lefthook-gates.sh
+      - name: Tunnel helper stops only its own ssh
+        run: bash scripts/ci/check-agent-bus-tunnel.sh
 
   clippy:
     name: Clippy Lint
