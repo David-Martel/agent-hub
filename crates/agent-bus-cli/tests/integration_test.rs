@@ -6,44 +6,18 @@
 //! unreachable backend FAILS the test; nothing here skips or defaults to the
 //! live bus.
 
-use std::process::Command;
+mod support;
 
 #[path = "../../agent-bus-core/tests/support/backend_env.rs"]
 mod backend_env;
 
-use backend_env::{DATABASE_URL_VAR, REDIS_URL_VAR, SERVER_URL_VAR, backend_url};
-
-fn agent_bus_binary() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
-    cmd.env_remove("AGENT_BUS_SERVER_URL");
-    // Keep the developer's ~/.config/agent-bus/config.json (which may name a
-    // server_url or token for the real hub) out of the child's settings.
-    cmd.env("AGENT_BUS_CONFIG", isolated_config_path());
-    cmd.env("AGENT_BUS_REDIS_URL", backend_url(REDIS_URL_VAR));
-    cmd.env("AGENT_BUS_DATABASE_URL", backend_url(DATABASE_URL_VAR));
-    cmd.env("AGENT_BUS_STREAM_KEY", "agent_bus:test:messages");
-    cmd.env("AGENT_BUS_CHANNEL", "agent_bus:test:events");
-    cmd.env("AGENT_BUS_PRESENCE_PREFIX", "agent_bus:test:presence:");
-    cmd
-}
-
-fn isolated_config_path() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("agent-bus-test-config-{}.json", std::process::id()))
+fn agent_bus_binary() -> std::process::Command {
+    support::agent_bus_binary()
 }
 
 /// Fail (not skip) when the configured backend cannot serve `health`.
 fn require_backend() {
-    let output = agent_bus_binary()
-        .args(["health", "--encoding", "compact"])
-        .output()
-        .expect("failed to run agent-bus health");
-    assert!(
-        output.status.success(),
-        "backend unreachable via {REDIS_URL_VAR}: agent-bus health exited {} -- stdout: {} stderr: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    support::require_http_blocking(&support::blocking_http_client());
 }
 
 #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
@@ -133,8 +107,18 @@ fn presence_set_and_list() {
 
 #[test]
 fn invalid_settings_rejected() {
-    let output = Command::new(env!("CARGO_BIN_EXE_agent-bus"))
-        .env("AGENT_BUS_CONFIG", isolated_config_path())
+    let config = tempfile::NamedTempFile::new().expect("isolated invalid-settings config");
+    std::fs::write(config.path(), b"{}").expect("empty test config");
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_agent-bus"));
+    for (key, _) in std::env::vars_os() {
+        if support::is_agent_setting(&key) {
+            command.env_remove(key);
+        }
+    }
+    let output = command
+        .env("AGENT_BUS_CONFIG", config.path())
+        .env("AGENT_BUS_ALLOW_REMOTE", "false")
+        .env("AGENT_BUS_STARTUP_ENABLED", "false")
         .env("AGENT_BUS_REDIS_URL", "redis://remote-host:16380/0")
         .args(["health", "--encoding", "compact"])
         .output()
@@ -156,7 +140,7 @@ fn cli_server_mode_send_and_read_round_trip() {
         .as_millis();
 
     let send = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", backend_url(SERVER_URL_VAR))
+        .env("AGENT_BUS_SERVER_URL", support::base_url())
         .args([
             "send",
             "--from-agent",
@@ -180,7 +164,7 @@ fn cli_server_mode_send_and_read_round_trip() {
     );
 
     let read = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", backend_url(SERVER_URL_VAR))
+        .env("AGENT_BUS_SERVER_URL", support::base_url())
         .args([
             "read",
             "--agent",
@@ -220,7 +204,7 @@ fn cli_server_mode_batch_send_round_trip() {
 
     let batch_path = batch_file.to_string_lossy().into_owned();
     let send = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", backend_url(SERVER_URL_VAR))
+        .env("AGENT_BUS_SERVER_URL", support::base_url())
         .args(["batch-send", "--file", &batch_path, "--encoding", "compact"])
         .output()
         .expect("batch-send failed");
@@ -235,7 +219,7 @@ fn cli_server_mode_batch_send_round_trip() {
     assert!(stdout.contains(r#""sent":2"#));
 
     let read = agent_bus_binary()
-        .env("AGENT_BUS_SERVER_URL", backend_url(SERVER_URL_VAR))
+        .env("AGENT_BUS_SERVER_URL", support::base_url())
         .args([
             "read",
             "--agent",
