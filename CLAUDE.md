@@ -236,6 +236,19 @@ Lefthook (install with `lefthook install`):
 
 ## Rust Conventions
 
+### Owned disposable integration fixtures
+
+Use `python3 -B scripts/ci/isolated-services.py integration` for the entire
+workspace backend suite and `python3 -B scripts/ci/isolated-services.py history`
+for the history migration contract. Both require a local Docker daemon;
+containerized CI explicitly selects its runner container with
+`--network-container <container-id>`. The history contract creates a fresh
+container and never creates or drops a database on the fleet PostgreSQL port.
+The harness clears inherited agent-bus settings, requires service/backend
+identity plus authenticated administration before mutations, and cleans only
+captured fixture IDs and its owned HTTP child. Run its pure regressions with
+`python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'`.
+
 - **Allocator**: mimalloc per M-MIMALLOC-APPS
 - **Error handling**: `anyhow::Result` with `.context()` — no unwrap in business logic
 - **Lints**: Clippy pedantic + restriction subset in workspace root `Cargo.toml [workspace.lints]`

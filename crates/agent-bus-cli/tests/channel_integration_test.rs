@@ -17,50 +17,24 @@
 //! cargo test --test channel_integration_test -- --ignored
 //! ```
 
-use std::process::Command;
+mod support;
 
 #[path = "../../agent-bus-core/tests/support/backend_env.rs"]
 mod backend_env;
 
-use backend_env::{DATABASE_URL_VAR, REDIS_URL_VAR, SERVER_URL_VAR, backend_url};
-
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
+use backend_env::{SERVER_URL_VAR, backend_url};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn agent_bus_binary() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
-    // Use the test-isolated stream/presence keys so we don't pollute production data.
-    cmd.env_remove("AGENT_BUS_SERVER_URL");
-    // Keep the developer's ~/.config/agent-bus/config.json (which may name a
-    // server_url or token for the real hub) out of the child's settings.
-    cmd.env(
-        "AGENT_BUS_CONFIG",
-        std::env::temp_dir().join(format!("agent-bus-test-config-{}.json", std::process::id())),
-    );
-    cmd.env("AGENT_BUS_REDIS_URL", backend_url(REDIS_URL_VAR));
-    cmd.env("AGENT_BUS_DATABASE_URL", backend_url(DATABASE_URL_VAR));
-    cmd.env("AGENT_BUS_STREAM_KEY", "agent_bus:test:messages");
-    cmd.env("AGENT_BUS_CHANNEL", "agent_bus:test:events");
-    cmd.env("AGENT_BUS_PRESENCE_PREFIX", "agent_bus:test:presence:");
-    cmd
+fn agent_bus_binary() -> std::process::Command {
+    support::agent_bus_binary()
 }
 
 /// Fail (not skip) when the configured backend cannot serve `health`.
 fn require_backend() {
-    let output = agent_bus_binary()
-        .args(["health", "--encoding", "compact"])
-        .output()
-        .expect("failed to run agent-bus health");
-    assert!(
-        output.status.success(),
-        "backend unreachable via {REDIS_URL_VAR}: agent-bus health exited {} -- stdout: {} stderr: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
+    support::require_http_blocking(&support::blocking_http_client());
 }
 
 /// Generate a UUID-based unique suffix suitable for resource/group names.
@@ -72,19 +46,7 @@ fn unique_id() -> String {
 }
 
 fn http_client() -> reqwest::blocking::Client {
-    let mut headers = HeaderMap::new();
-    if let Ok(token) = std::env::var("AGENT_BUS_AUTH_TOKEN")
-        && !token.is_empty()
-    {
-        let value = HeaderValue::from_str(&format!("Bearer {token}"))
-            .expect("AGENT_BUS_AUTH_TOKEN should be a valid HTTP header value");
-        headers.insert(AUTHORIZATION, value);
-    }
-
-    reqwest::blocking::Client::builder()
-        .default_headers(headers)
-        .build()
-        .expect("failed to build HTTP test client")
+    support::blocking_http_client()
 }
 
 // ---------------------------------------------------------------------------

@@ -1,14 +1,17 @@
 # Fleet build runners
 
-The build fleet has three distinct target classes. Workflows must select all
-default runner labels rather than using the ambiguous `self-hosted` label.
+Linux build jobs and native Windows smoke use the fleet. Workflows selecting
+fleet runners must use all default labels rather than the ambiguous
+`self-hosted` label. The Windows build and unit job uses an ephemeral
+GitHub-hosted Windows 2025 runner.
 
 | Target | Runner labels | Intended host | Work |
 | --- | --- | --- | --- |
 | Linux x86-64 | `self-hosted`, `Linux`, `X64` | ASUSPRO13 | format, lint, unit, integration, and native builds |
 | Linux x86-64 Docker | `self-hosted`, `Linux`, `X64`, `docker` | ASUSPRO13 | Linux-container build on the ASUS Docker engine |
 | Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | Spark fleet | native and Docker builds |
-| Windows x86-64 | `self-hosted`, `Windows`, `X64`, `local-build` | dtm-p1gen7 | Windows compile and release artifacts |
+| Windows x86-64 build | `windows-2025` | GitHub-hosted ephemeral VM | Windows compile, native unit tests, and release artifacts |
+| Windows x86-64 smoke | `self-hosted`, `Windows`, `X64`, `local-build` | dtm-p1gen7 | native Windows CLI/HTTP artifact smoke with disposable Linux containers |
 
 Never put a Windows path such as `T:\RustCache` in workflow-level environment
 variables. Windows-only paths belong in a Windows job. Linux jobs use a private
@@ -18,7 +21,8 @@ target directory under `runner.temp`.
 
 Each runner must have `sccache` installed and reachable from `PATH`.
 `scripts/ci/setup-rust.sh` verifies it before setting `RUSTC_WRAPPER`. An
-unhealthy cache falls back to ordinary Cargo instead of blocking CI.
+unhealthy cache falls back to ordinary Cargo in Linux setup. Windows setup
+instead requires its strict cache proof and fails without an uncached fallback.
 The same bootstrap adds `$HOME/.local/bin` and `$HOME/.cargo/bin` to `PATH` and
 bootstraps rustup without a default toolchain when a runner cache volume contains
 no usable Cargo shim. It then installs the compiler pinned by
@@ -42,11 +46,40 @@ changes; retire the previous prefix after active builds finish. Do not flush
 the entire Redis instance because other fleet repositories may have their own
 prefixes.
 
-The dtm-p1gen7 Windows runner uses `scripts/ci/setup-rust.ps1` with persistent
-Cargo and sccache directories under `%LOCALAPPDATA%\agent-hub-ci`. Its single
-dedicated listener serializes Windows jobs, so those target outputs are never
-written concurrently. Windows cache data remains local and is not mixed with
-Linux or ARM64 objects.
+The Windows build job uses `windows-2025` and
+`scripts/ci/install-hosted-windows-sccache.ps1` to install the official sccache
+0.18.0 Windows release after checking the pinned ZIP SHA-256. The download has
+a 30-second total cancellation deadline; extraction and installation happen
+only after verification, and the executable must report the exact version.
+The bootstrap replaces any inherited Rust toolchain override with the version
+from `rust-toolchain.toml`. Existing `scripts/ci/setup-rust.ps1` then resolves
+that compiler and qualifies cache port 4228: two real Rust compilations,
+matching artifact hashes, a real cache hit and no new error counters, with
+each preflight client limited to 30 seconds. It never restarts a daemon or
+falls back to uncached setup. Strict Windows Clippy still explicitly disables
+its wrapper after this required proof; later test/build steps use the
+qualified cache. The Windows job's 60-minute budget and mandatory coverage
+are unchanged.
+
+Cargo and sccache directories under `%LOCALAPPDATA%\agent-hub-ci` are private
+to that fresh VM and discarded when its job ends. No cross-run cache restore
+or fleet Redis credentials are supplied. The standard hosted label selects
+an OS family, not an immutable image: provenance records ImageOS/ImageVersion,
+archive and executable hashes alongside compiler/cache identity. Monitor cold
+job duration and free disk; do not hide capacity failures by skipping tests
+or weakening cache gates.
+
+The required `CLI And HTTP Smoke` job stays on dtm-p1gen7 and downloads the
+Windows artifacts from the successful build in the same workflow run. Its
+owned Redis/PostgreSQL fixtures require a local Linux Docker engine. The
+hosted Windows image's Windows Docker installation is insufficient, and
+GitHub does not support nested virtualization as a reliable replacement.
+The smoke gate continues to fail on unavailable fixtures or a runtime revision
+mismatch. Moving compilation does not remove this remaining fleet dependency.
+
+Runner capabilities: [official Windows image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md),
+[hosted runner limitations](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners).
+Pinned cache software: [official sccache 0.18.0 release](https://github.com/mozilla/sccache/releases/tag/v0.18.0).
 
 Every CI release artifact includes the immutable workflow commit, runner, target
 directory, toolchain, exact cache executable/version, cache statistics, and
@@ -65,7 +98,9 @@ feature-branch pushes do not trigger a second matrix. Superseded PR runs may be
 cancelled, while a running main validation is allowed to finish.
 
 These triggers select validation events, not a complete authorization boundary.
-The workflow routes PR jobs to self-hosted runners; it does not contain a
+The Windows compile/unit job runs on a fresh hosted VM without developer,
+live-bus, cloud-token or signing credentials. Other PR jobs, including native
+Windows smoke, still route to self-hosted runners; the workflow does not contain a
 repository-ownership filter for fork PRs. Do not claim that fork execution is
 prevented by the YAML. Runner access and any GitHub approval controls must be
 verified before permitting untrusted code to execute on fleet infrastructure.

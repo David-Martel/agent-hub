@@ -77,6 +77,30 @@ $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) "agent-bus-validator-
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 
 try {
+    # Run the real installer unchanged, with its adjacent validator forwarding
+    # explicitly to the real config/parser/stdio checks for this fixture only.
+    # Full machine-install auditing belongs to deployment validation, not this test.
+    $fixtureInstallerRoot = Join-Path $fixtureRoot "installer"
+    New-Item -ItemType Directory -Path $fixtureInstallerRoot | Out-Null
+    $fixtureInstaller = Join-Path $fixtureInstallerRoot "install-mcp-clients.ps1"
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install-mcp-clients.ps1") -Destination $fixtureInstaller
+    if ((Get-FileHash -LiteralPath $fixtureInstaller).Hash -cne
+        (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot "install-mcp-clients.ps1")).Hash) {
+        throw "Fixture installer copy differs from the real installer."
+    }
+    Write-Output "Fixture installer byte-copy verified."
+    $validatorSource = (Join-Path $PSScriptRoot "validate-agent-client-configs.ps1").Replace("'", "''")
+    @"
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = `$true)][string]`$CodexConfigPath,
+    [Parameter(Mandatory = `$true)][string]`$ExpectedServerUrl,
+    [Parameter(Mandatory = `$true)][string]`$ExpectedRedisUrl,
+    [Parameter(Mandatory = `$true)][string]`$ExpectedDatabaseUrl
+)
+& '$validatorSource' -CodexOnly -CodexConfigPath `$CodexConfigPath -ExpectedServerUrl `$ExpectedServerUrl -ExpectedRedisUrl `$ExpectedRedisUrl -ExpectedDatabaseUrl `$ExpectedDatabaseUrl
+"@ | Set-Content -LiteralPath (Join-Path $fixtureInstallerRoot "validate-agent-client-configs.ps1") -Encoding utf8
+
     $multilinePath = Join-Path $fixtureRoot "multiline-args.toml"
     @"
 [mcp_servers.agent_bus]
@@ -232,12 +256,15 @@ AGENT_BUS_STARTUP_ENABLED = "false"
     $customPathRejected = $false
     try {
         $null = (
-            & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+            & $fixtureInstaller `
                 -Claude:$false `
                 -Codex:$true `
                 -Gemini:$false `
                 -CodexConfigPath $duplicateEnvironmentPath `
                 -CommandPath $McpBinaryPath `
+                -RedisUrl "redis://localhost:1/0" `
+                -DatabaseUrl "postgresql://postgres@localhost:1/validator_fixture" `
+                -ServerUrl "http://localhost:1" `
                 -ValidateOnly |
                 Out-String
         )
@@ -254,12 +281,15 @@ AGENT_BUS_STARTUP_ENABLED = "false"
     $preflightMarker | Set-Content -LiteralPath $preflightPath -Encoding utf8
     $unsafeHostRejected = $false
     try {
-        & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+        & $fixtureInstaller `
             -Claude:$false `
             -Codex:$true `
             -Gemini:$false `
             -CodexConfigPath $preflightPath `
             -CommandPath $McpBinaryPath `
+            -RedisUrl "redis://localhost:1/0" `
+            -DatabaseUrl "postgresql://postgres@localhost:1/validator_fixture" `
+            -ServerUrl "http://localhost:1" `
             -ServerHost "0.0.0.0"
     }
     catch {
@@ -295,12 +325,15 @@ sandbox = "elevated"
 status_line = ["model"]
 "@ | Set-Content -LiteralPath $managedSuffixPath -Encoding utf8
 
-    & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+    & $fixtureInstaller `
         -Claude:$false `
         -Codex:$true `
         -Gemini:$false `
         -CodexConfigPath $managedSuffixPath `
         -CommandPath $McpBinaryPath `
+        -RedisUrl "redis://localhost:1/0" `
+        -DatabaseUrl "postgresql://postgres@localhost:1/validator_fixture" `
+        -ServerUrl "http://localhost:1" `
         -NoBackup
 
     $managedSuffixContent = Get-Content -LiteralPath $managedSuffixPath -Raw
@@ -333,12 +366,15 @@ sandbox = "elevated"
 status_line = ["model"]
 "@ | Set-Content -LiteralPath $legacyIndentedSuffixPath -Encoding utf8
 
-    & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+    & $fixtureInstaller `
         -Claude:$false `
         -Codex:$true `
         -Gemini:$false `
         -CodexConfigPath $legacyIndentedSuffixPath `
         -CommandPath $McpBinaryPath `
+        -RedisUrl "redis://localhost:1/0" `
+        -DatabaseUrl "postgresql://postgres@localhost:1/validator_fixture" `
+        -ServerUrl "http://localhost:1" `
         -NoBackup
 
     $legacyIndentedSuffixContent = Get-Content -LiteralPath $legacyIndentedSuffixPath -Raw

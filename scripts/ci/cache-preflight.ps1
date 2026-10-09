@@ -2,7 +2,14 @@
 Set-StrictMode -Version Latest
 
 function Invoke-AgentBusCacheCommand {
-    param([string]$Executable, [string[]]$Arguments, [int]$TimeoutSeconds)
+    param(
+        [string]$Executable,
+        [string[]]$Arguments,
+        [int]$TimeoutSeconds,
+        [Parameter(Mandatory)]
+        [ValidateSet('stats-before', 'compile-first', 'compile-second', 'stats-after')]
+        [string]$Operation
+    )
 
     $process = [System.Diagnostics.Process]::new()
     $process.StartInfo.UseShellExecute = $false
@@ -20,23 +27,38 @@ function Invoke-AgentBusCacheCommand {
         $process.StartInfo.FileName = $Executable
     }
     foreach ($argument in $Arguments) { $process.StartInfo.ArgumentList.Add($argument) }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
     try {
         if (-not $process.Start()) { throw 'Could not start cache preflight client' }
+        Write-Host "Cache preflight operation=$Operation state=started client_pid=$($process.Id) timeout_seconds=$TimeoutSeconds"
         $stdout = $process.StandardOutput.ReadToEndAsync()
         $stderr = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             # Kill only our exact client. Never stop a shared/daemon descendant.
             $process.Kill()
             $process.WaitForExit()
-            throw 'Cache preflight client timed out; daemon left untouched'
+            $clock.Stop()
+            # A daemon descendant may retain a pipe: diagnostics must remain bounded.
+            $output = if ($stdout.Wait(1000)) { $stdout.GetAwaiter().GetResult() } else { '<stdout pipe remains open>' }
+            $errorOutput = if ($stderr.Wait(1000)) { $stderr.GetAwaiter().GetResult() } else { '<stderr pipe remains open>' }
+            Write-Host "Cache preflight operation=$Operation state=timeout client_pid=$($process.Id) elapsed_ms=$($clock.ElapsedMilliseconds)"
+            throw "Cache preflight client timed out; daemon left untouched (operation=$Operation client_pid=$($process.Id) elapsed_ms=$($clock.ElapsedMilliseconds))`nstdout: $output`nstderr: $errorOutput"
         }
+        $stdoutComplete = $stdout.Wait(1000)
+        $stderrComplete = $stderr.Wait(1000)
         $result = [pscustomobject]@{
             ExitCode = $process.ExitCode
-            Output = $stdout.GetAwaiter().GetResult()
-            Error = $stderr.GetAwaiter().GetResult()
+            Output = if ($stdoutComplete) { $stdout.GetAwaiter().GetResult() } else { '<stdout pipe remains open>' }
+            Error = if ($stderrComplete) { $stderr.GetAwaiter().GetResult() } else { '<stderr pipe remains open>' }
         }
+        $clock.Stop()
+        if (-not $stdoutComplete -or -not $stderrComplete) {
+            Write-Host "Cache preflight operation=$Operation state=pipe-timeout client_pid=$($process.Id) elapsed_ms=$($clock.ElapsedMilliseconds) exit_code=$($result.ExitCode)"
+            throw "Cache preflight client exited with open output pipes; daemon left untouched (operation=$Operation client_pid=$($process.Id) elapsed_ms=$($clock.ElapsedMilliseconds))`nstdout: $($result.Output)`nstderr: $($result.Error)"
+        }
+        Write-Host "Cache preflight operation=$Operation state=completed client_pid=$($process.Id) elapsed_ms=$($clock.ElapsedMilliseconds) exit_code=$($result.ExitCode)"
         if ($result.ExitCode -ne 0) {
-            throw "Cache preflight client failed ($($result.ExitCode)): $($result.Error)"
+            throw "Cache preflight client failed ($($result.ExitCode), operation=$Operation client_pid=$($process.Id) elapsed_ms=$($clock.ElapsedMilliseconds))`nstdout: $($result.Output)`nstderr: $($result.Error)"
         }
         return $result
     } finally {
@@ -71,21 +93,21 @@ function Invoke-AgentBusCachePreflight {
     }
     $timeout = [int]$Policy.command_timeout_seconds
     $before = (Invoke-AgentBusCacheCommand -Executable $SccachePath `
-        -Arguments @('--show-stats', '--stats-format=json') -TimeoutSeconds $timeout).Output | ConvertFrom-Json
+        -Arguments @('--show-stats', '--stats-format=json') -TimeoutSeconds $timeout -Operation stats-before).Output | ConvertFrom-Json
     # --show-stats can return successful synthetic zero stats with NO daemon.
     # A serial actual compiler request starts an absent dedicated daemon before
     # Cargo fans out. Existing daemons are never restarted or reset here.
     $arguments = @($RustcPath, '--crate-name', 'agent_hub_cache_preflight', '--edition=2024',
         $source, '--crate-type=rlib', '--emit=link', '--out-dir', $directory, '-Dwarnings')
-    $null = Invoke-AgentBusCacheCommand -Executable $SccachePath -Arguments $arguments -TimeoutSeconds $timeout
+    $null = Invoke-AgentBusCacheCommand -Executable $SccachePath -Arguments $arguments -TimeoutSeconds $timeout -Operation compile-first
     $artifact = Join-Path $directory 'libagent_hub_cache_preflight.rlib'
     if (-not (Test-Path -LiteralPath $artifact -PathType Leaf) -or
         (Get-Item -LiteralPath $artifact).Length -eq 0) { throw 'Cache preflight produced no artifact' }
     $firstHash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash
-    $null = Invoke-AgentBusCacheCommand -Executable $SccachePath -Arguments $arguments -TimeoutSeconds $timeout
+    $null = Invoke-AgentBusCacheCommand -Executable $SccachePath -Arguments $arguments -TimeoutSeconds $timeout -Operation compile-second
     $secondHash = (Get-FileHash -LiteralPath $artifact -Algorithm SHA256).Hash
     $after = (Invoke-AgentBusCacheCommand -Executable $SccachePath `
-        -Arguments @('--show-stats', '--stats-format=json') -TimeoutSeconds $timeout).Output | ConvertFrom-Json
+        -Arguments @('--show-stats', '--stats-format=json') -TimeoutSeconds $timeout -Operation stats-after).Output | ConvertFrom-Json
     $beforeHits = if ($before.stats.cache_hits.counts.PSObject.Properties['Rust']) {
         [long]$before.stats.cache_hits.counts.Rust
     } else { 0 }
