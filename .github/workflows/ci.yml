@@ -142,7 +142,9 @@ jobs:
     needs: [test-unit]
     timeout-minutes: 30
     env:
-      MIN_BACKEND_TESTS: "73"
+      # Backend tests counted in this checkout; a lower count means tests were
+      # silently lost (renamed out of #[ignore], filtered, not compiled).
+      MIN_BACKEND_TESTS: "85"
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh

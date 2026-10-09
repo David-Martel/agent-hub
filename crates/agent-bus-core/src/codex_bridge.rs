@@ -291,6 +291,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
         let formatted = format_for_codex(&msg);
         assert!(formatted.contains("## Finding from claude"));
@@ -317,6 +322,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
         let formatted = format_for_codex(&msg);
         assert!(formatted.contains("**Thread:** thread-abc"));
@@ -346,6 +356,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         }
     }
 

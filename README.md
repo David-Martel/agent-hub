@@ -9,7 +9,8 @@ sources and explicit authority roles. See
 [candidate authentication and rollout](docs/per-candidate-hub-auth-20261004.md).
 Public Cloudflare health success does not prove MCP or fleet synchronization
 support; keep the cloud tier out of fleet configuration until its separate
-route, credential and replication gates pass.
+route, credential and replication gates pass. The hub-side sync task is off by
+default; see [cloud sync](docs/cloud-sync.md).
 
 ## Crate Map
 

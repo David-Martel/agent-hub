@@ -76,6 +76,16 @@ pub struct ConfigFile {
     /// Opt-in to bind the HTTP server to a non-localhost interface for
     /// cross-machine access. Requires `auth_token` to also be set.
     pub allow_remote: Option<bool>,
+    /// Base URL of the cloud sync tier (agent-hub#79), e.g.
+    /// `https://agentbus.example.com`. Cloud sync runs only when this AND
+    /// `cloud_token_file` are both set.
+    pub cloud_url: Option<String>,
+    /// Path to a file (mode 0600) holding the hub-role bearer token for the
+    /// cloud tier. A SEPARATE credential from `auth_token`.
+    pub cloud_token_file: Option<String>,
+    /// Where the sync task persists its cursors. Defaults to
+    /// `cloud-sync-state.json` beside the config file.
+    pub cloud_sync_state_file: Option<String>,
 }
 
 /// Resolve the path for the config file.
@@ -539,6 +549,23 @@ pub struct Settings {
     /// Resolution order: `AGENT_BUS_ALLOW_REMOTE` env var → `allow_remote` in
     /// config.json → `false`.
     pub allow_remote: bool,
+    /// Cloud sync tier base URL (agent-hub#79). Sync is enabled only when this
+    /// and [`Settings::cloud_token_file`] are both set.
+    ///
+    /// Resolution order: `AGENT_BUS_CLOUD_URL` env var → `cloud_url` in
+    /// config.json → `None` (sync disabled).
+    pub cloud_url: Option<String>,
+    /// Path to the 0600 file holding the cloud hub-role token. Never the
+    /// token itself, so `Settings` stays free of secrets here.
+    ///
+    /// Resolution order: `AGENT_BUS_CLOUD_TOKEN_FILE` env var →
+    /// `cloud_token_file` in config.json → `None`.
+    pub cloud_token_file: Option<String>,
+    /// Cursor/state file for the sync task.
+    ///
+    /// Resolution order: `AGENT_BUS_CLOUD_SYNC_STATE` env var →
+    /// `cloud_sync_state_file` in config.json → `None` (default location).
+    pub cloud_sync_state_file: Option<String>,
 }
 
 impl Settings {
@@ -574,12 +601,19 @@ impl Settings {
             machine_safe: false,
             auth_token: None,
             allow_remote: false,
+            cloud_url: None,
+            cloud_token_file: None,
+            cloud_sync_state_file: None,
         }
     }
 
     /// Build [`Settings`] using the three-tier resolution order:
     /// env vars > config file > hardcoded defaults.
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one flat field-by-field resolution of every setting"
+    )]
     pub fn from_env() -> Self {
         // Write a starter config if the file is absent (best-effort, silent on
         // failure so we never prevent the process from starting).
@@ -691,6 +725,12 @@ impl Settings {
             // empty string treated as absent (no auth required).
             auth_token: resolve_nonempty("AGENT_BUS_AUTH_TOKEN", cfg.auth_token),
             allow_remote: resolve_parse("AGENT_BUS_ALLOW_REMOTE", cfg.allow_remote, false),
+            cloud_url: resolve_nonempty("AGENT_BUS_CLOUD_URL", cfg.cloud_url),
+            cloud_token_file: resolve_nonempty("AGENT_BUS_CLOUD_TOKEN_FILE", cfg.cloud_token_file),
+            cloud_sync_state_file: resolve_nonempty(
+                "AGENT_BUS_CLOUD_SYNC_STATE",
+                cfg.cloud_sync_state_file,
+            ),
         }
     }
 

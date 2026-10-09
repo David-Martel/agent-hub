@@ -424,6 +424,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         }
     }
 
@@ -514,6 +519,7 @@ mod tests {
             redis_persistence: None,
             backup_age_seconds: None,
             postgres_replication_lag_seconds: None,
+            cloud: None,
         };
         let toon = format_health_toon(&h);
         assert_eq!(toon, "ok=true r=561 p=492 v=1.0");
@@ -544,6 +550,7 @@ mod tests {
             redis_persistence: None,
             backup_age_seconds: None,
             postgres_replication_lag_seconds: None,
+            cloud: None,
         };
         let toon = format_health_toon(&h);
         assert_eq!(toon, "ok=false r=? p=? v=1.0");

@@ -97,6 +97,11 @@ fn make_corpus() -> Vec<Message> {
                 serde_json::json!({})
             },
             stream_id: Some(format!("1711929600{i:03}-0")),
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
         corpus.push(msg);
     }
