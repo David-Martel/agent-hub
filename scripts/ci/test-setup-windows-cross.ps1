@@ -19,6 +19,40 @@ function Reject-SetupFixture([scriptblock]$Action, [string]$Name) {
     try { & $Action | Out-Null } catch { $rejected = $true }
     Assert-SetupFixture $rejected $Name
 }
+# Exercise the production linker lookup with two actual PATH candidates. Linux
+# images can expose the same compiler through both /usr/bin and /bin.
+$lookupRoot = Join-Path ([IO.Path]::GetTempPath()) ('cross-path-fixture-' + [guid]::NewGuid().ToString('N'))
+$priorPath = $env:PATH
+try {
+    $directories = @((Join-Path $lookupRoot 'first'), (Join-Path $lookupRoot 'second'))
+    $nativeName = 'x86_64-w64-mingw32-gcc-posix' + $(if ($IsWindows) { '.exe' } else { '' })
+    foreach ($directory in $directories) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        $candidatePath = Join-Path $directory $nativeName
+        [IO.File]::WriteAllText($candidatePath, "#!/bin/sh`nexit 0`n")
+        if (-not $IsWindows) {
+            [IO.File]::SetUnixFileMode($candidatePath, [IO.UnixFileMode]::UserRead -bor
+                [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute)
+        }
+    }
+    $env:PATH = $directories -join [IO.Path]::PathSeparator
+    $candidates = @(Get-Command x86_64-w64-mingw32-gcc-posix -CommandType Application -ErrorAction Stop)
+    Assert-SetupFixture ($candidates.Count -eq 2) 'duplicate PATH exposes two native compiler candidates'
+    $lookup = $ast.Find({ param($node)
+        $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left.Extent.Text -ceq '$linker'
+    }, $false)
+    if (-not $lookup) { throw 'Production linker lookup missing' }
+    . ([scriptblock]::Create($lookup.Extent.Text))
+    Assert-SetupFixture ($linker -is [string] -and $linker -ceq $candidates[0].Source) 'production linker lookup selects the first native path'
+} finally {
+    $env:PATH = $priorPath
+    foreach ($directory in $directories) {
+        Remove-Item -LiteralPath (Join-Path $directory $nativeName) -ErrorAction Stop
+        Remove-Item -LiteralPath $directory -ErrorAction Stop
+    }
+    Remove-Item -LiteralPath $lookupRoot -ErrorAction Stop
+}
 $image = 'sha256:' + ('b' * 64); $revision = 'c' * 40; $dockerfile = 'd' * 64
 $container = [pscustomobject]@{ id = ('a' * 64); running = $true; image = $image }
 $labels = [pscustomobject]@{ revision = $revision; dockerfile = $dockerfile }

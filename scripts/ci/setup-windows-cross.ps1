@@ -171,7 +171,7 @@ function Assert-CrossCachePathOwnership {
     param([string]$Path, [string]$Mode)
     Assert-CrossPlainPath $Path
     $uid = [regex]::Match([IO.File]::ReadAllText('/proc/self/status'), '(?m)^Uid:\s+(\d+)').Groups[1].Value
-    $stat = (Get-Command stat -CommandType Application -ErrorAction Stop).Source
+    $stat = (Get-Command stat -CommandType Application -TotalCount 1 -ErrorAction Stop).Source
     if ((Invoke-CrossSetupTool $stat @('-c', '%u:%a', '--', $Path)) -cne "${uid}:$Mode") {
         throw 'Dedicated cache path owner/mode is not private'
     }
@@ -194,7 +194,7 @@ if ($candidate -cnotmatch '^[a-f0-9]{12,64}$' -or $imageId -cnotmatch '^sha256:[
     $imageRevision -cnotmatch '^[a-f0-9]{40}$' -or $dockerfileHash -cnotmatch '^[a-f0-9]{64}$') {
     throw 'Invalid qualified runner binding'
 }
-$docker = (Get-Command docker -CommandType Application -ErrorAction Stop).Source
+$docker = (Get-Command docker -CommandType Application -TotalCount 1 -ErrorAction Stop).Source
 $container = Invoke-CrossSetupTool $docker @('inspect', '--format', '{"id":{{json .Id}},"running":{{json .State.Running}},"image":{{json .Image}}}', $candidate) | ConvertFrom-Json
 $containerId = $container.id
 if ($containerId -cnotmatch '^[a-f0-9]{64}$') { throw 'Docker did not resolve a full runner ID' }
@@ -215,7 +215,7 @@ $env:AGENT_BUS_CI_RUNNER_CONTAINER_ID = $containerId
 
 $target = 'x86_64-pc-windows-gnu'
 $policy = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'windows-cache-policy.json') -Raw | ConvertFrom-Json
-$rustup = (Get-Command rustup -CommandType Application -ErrorAction Stop).Source
+$rustup = (Get-Command rustup -CommandType Application -TotalCount 1 -ErrorAction Stop).Source
 $rustc = Invoke-CrossSetupTool $rustup @('which', 'rustc')
 $cargo = Invoke-CrossSetupTool $rustup @('which', 'cargo')
 $compilerVersion = Invoke-CrossSetupTool $rustc @('--version')
@@ -226,7 +226,7 @@ if (-not $pin -or -not $compilerVersion.StartsWith("rustc $pin ", [StringCompari
 }
 $installedTargets = Invoke-CrossSetupTool $rustup @('target', 'list', '--installed')
 if ($target -cnotin ($installedTargets -split '\r?\n')) { throw 'Qualified image lacks Windows GNU standard library' }
-$linker = (Get-Command x86_64-w64-mingw32-gcc-posix -CommandType Application -ErrorAction Stop).Source
+$linker = (Get-Command x86_64-w64-mingw32-gcc-posix -CommandType Application -TotalCount 1 -ErrorAction Stop).Source
 $linkerVersion = Invoke-CrossSetupTool $linker @('--version')
 
 if (-not $env:RUNNER_TEMP -or -not $env:GITHUB_JOB) { throw 'Private runner job paths are required' }
@@ -236,12 +236,12 @@ New-Item -ItemType Directory -Path $jobRoot | Out-Null
 [IO.File]::SetUnixFileMode($jobRoot, [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute)
 $archive = Join-Path $jobRoot 'sccache.tar.gz'
 $archiveHash = '45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89'
-$curl = (Get-Command curl -CommandType Application -ErrorAction Stop).Source
+$curl = (Get-Command curl -CommandType Application -TotalCount 1 -ErrorAction Stop).Source
 $null = Invoke-CrossSetupTool $curl @('--fail', '--location', '--proto', '=https', '--tlsv1.2',
     '--connect-timeout', '10', '--max-time', '60', '--output', $archive,
     'https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz') 65
 if ((Get-FileHash -LiteralPath $archive).Hash.ToLowerInvariant() -cne $archiveHash) { throw 'Pinned sccache archive digest differs' }
-$tar = (Get-Command tar -CommandType Application -ErrorAction Stop).Source
+$tar = (Get-Command tar -CommandType Application -TotalCount 1 -ErrorAction Stop).Source
 $null = Invoke-CrossSetupTool $tar @('-xzf', $archive, '-C', $jobRoot, '--', 'sccache-v0.18.0-x86_64-unknown-linux-musl/sccache')
 $sccache = Join-Path $jobRoot 'sccache-v0.18.0-x86_64-unknown-linux-musl/sccache'
 if ((Invoke-CrossSetupTool $sccache @('--version')) -cne "sccache $($policy.version)") { throw 'Cross cache version differs from policy' }
