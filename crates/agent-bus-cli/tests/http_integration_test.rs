@@ -19,10 +19,11 @@
 //! cargo test --test http_integration_test -- --ignored --test-threads=1
 //! ```
 
+mod support;
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::StatusCode;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
@@ -32,7 +33,7 @@ use serde_json::{Value, json};
 #[path = "../../agent-bus-core/tests/support/backend_env.rs"]
 mod backend_env;
 
-use backend_env::{SERVER_URL_VAR, TestServerUrl};
+use backend_env::TestServerUrl;
 
 const BASE_URL: TestServerUrl = TestServerUrl;
 
@@ -49,59 +50,23 @@ fn unique_suffix() -> u64 {
     ms
 }
 
-fn auth_headers() -> HeaderMap {
-    let mut headers = HeaderMap::new();
-    if let Ok(token) = std::env::var("AGENT_BUS_AUTH_TOKEN")
-        && !token.is_empty()
-    {
-        let value = HeaderValue::from_str(&format!("Bearer {token}"))
-            .expect("AGENT_BUS_AUTH_TOKEN should be a valid HTTP header value");
-        headers.insert(AUTHORIZATION, value);
-    }
-    headers
-}
-
 fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .default_headers(auth_headers())
-        .build()
-        .expect("failed to build HTTP test client")
+    support::http_client()
 }
 
 fn blocking_http_client() -> reqwest::blocking::Client {
-    reqwest::blocking::Client::builder()
-        .default_headers(auth_headers())
-        .build()
-        .expect("failed to build blocking HTTP test client")
+    support::blocking_http_client()
 }
 
 /// Fail (not skip) when the HTTP server does not answer `/health`.
 async fn require_service(client: &reqwest::Client) {
-    let resp = client
-        .get(format!("{BASE_URL}/health"))
-        .send()
-        .await
-        .unwrap_or_else(|e| panic!("agent-bus HTTP unreachable via {SERVER_URL_VAR}: {e}"));
-    assert!(
-        resp.status().is_success(),
-        "agent-bus HTTP /health returned {}",
-        resp.status()
-    );
+    support::require_http(client).await;
 }
 
 /// Fail (not skip) when the server under test lacks `/admin/service`: the
 /// server is built from this checkout, so a missing route is a regression.
 async fn require_admin_control(client: &reqwest::Client) {
-    let resp = client
-        .get(format!("{BASE_URL}/admin/service"))
-        .send()
-        .await
-        .expect("GET /admin/service failed");
-    assert_ne!(
-        resp.status(),
-        StatusCode::NOT_FOUND,
-        "server under test does not expose /admin/service"
-    );
+    support::require_http(client).await;
 }
 
 struct MaintenanceResumeGuard {
@@ -127,13 +92,18 @@ impl Drop for MaintenanceResumeGuard {
         if !self.active {
             return;
         }
-        let _ = blocking_http_client()
-            .post(format!("{BASE_URL}/admin/service/control"))
-            .json(&json!({
-                "action": "resume",
-                "requested_by": "http-integration-test-cleanup",
-            }))
-            .send();
+        // reqwest::blocking cannot create/drop its runtime on an async Tokio thread.
+        let _ = std::thread::spawn(|| {
+            let client = blocking_http_client();
+            let _ = client
+                .post(format!("{BASE_URL}/admin/service/control"))
+                .json(&json!({
+                    "action": "resume",
+                    "requested_by": "http-integration-test-cleanup",
+                }))
+                .send();
+        })
+        .join();
     }
 }
 

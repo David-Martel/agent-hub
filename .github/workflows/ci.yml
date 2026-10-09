@@ -115,6 +115,7 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
       - run: env -u AGENT_BUS_SERVER_CANDIDATES cargo test --workspace --lib --bins -- --test-threads=4
+      - run: python3 -B -m unittest discover -s scripts/ci -p "test_*.py"
       - name: Non-ignored integration tests (no live backend of any kind)
         shell: bash
         # `--tests` here is deliberately NOT `--workspace --tests -- --ignored`
@@ -137,124 +138,38 @@ jobs:
 
   test-integration:
     name: Integration Tests
-    # `docker`: this job starts Redis and PostgreSQL with `docker run --network container:<self>`,
-    # so it needs a runner with a Docker daemon. vigil1's rootless-podman runners have the docker
-    # CLI but no daemon; without this label they would pick the job up and fail it.
     runs-on: [self-hosted, Linux, X64, docker]
     needs: [test-unit]
     timeout-minutes: 30
-    # Backend tests are #[ignore]d and run only here, against disposable Redis,
-    # PostgreSQL and agent-bus-http started by this job. They FAIL when a
-    # backend is unreachable or its variable is unset; the old job probed
-    # localhost:6380 inside the runner container, found nothing, and reported
-    # 60 early-returning tests as passes. The live bus ports (6380/5300/8400)
-    # are refused by tests/support/backend_env.rs even if named explicitly.
-    #
-    # The runner is itself a container using the host's Docker socket, so
-    # `services:` would publish on the HOST's network namespace, not this
-    # job's loopback. Instead the backends join the runner container's own
-    # network namespace (--network container:<self>), which makes them
-    # 127.0.0.1 here -- as Settings::validate requires -- and invisible to the
-    # host's live bus on 6380/5300.
     env:
-      AGENT_BUS_TEST_REDIS_URL: redis://127.0.0.1:16380/0
-      AGENT_BUS_TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:15300/agent_bus_ci
-      AGENT_BUS_TEST_SERVER_URL: http://127.0.0.1:18400
-      # Backend tests counted in this checkout; a lower count means tests were
-      # silently lost (renamed out of #[ignore], filtered, not compiled).
       MIN_BACKEND_TESTS: "73"
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
-      - name: Start disposable Redis and PostgreSQL
+      - name: All workspace backend tests with owned disposable fixtures
         shell: bash
         run: |
           set -euo pipefail
-          self="$(cat /etc/hostname)"
-          docker inspect --format '{{.Name}}' "$self"
-          suffix="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
-          redis_ctr="ci-redis-$suffix"
-          pg_ctr="ci-pg-$suffix"
-          printf 'CI_REDIS_CTR=%s\nCI_PG_CTR=%s\n' "$redis_ctr" "$pg_ctr" >> "$GITHUB_ENV"
-          docker run -d --name "$redis_ctr" --network "container:$self" \
-            redis:7-alpine redis-server --port 16380 --bind 127.0.0.1 --save "" --appendonly no
-          docker run -d --name "$pg_ctr" --network "container:$self" \
-            -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=agent_bus_ci -e PGPORT=15300 \
-            postgres:16 -c listen_addresses=127.0.0.1
-          for _ in $(seq 1 60); do
-            if docker exec "$redis_ctr" redis-cli -p 16380 ping 2>/dev/null | grep -qx PONG &&
-               docker exec "$pg_ctr" pg_isready -h 127.0.0.1 -p 15300 -q; then
-              echo "Redis :16380 and PostgreSQL :15300 ready"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::disposable Redis/PostgreSQL did not become ready in 60s"
-          docker logs "$redis_ctr" || true
-          docker logs "$pg_ctr" || true
-          exit 1
-      - name: Start disposable agent-bus-http
+          # Share the runner's loopback namespace, rather than publishing
+          # on the Docker host outside a containerized runner.
+          python3 -B scripts/ci/isolated-services.py integration \
+            --network-container "$(cat /etc/hostname)" \
+            --minimum-backend-tests "$MIN_BACKEND_TESTS"
+
+  test-history:
+    name: History Catalog Migration
+    runs-on: [self-hosted, Linux, X64, docker]
+    needs: [test-unit]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/ci/setup-rust.sh
+      - name: History contract in a fresh owned PostgreSQL container
         shell: bash
         run: |
           set -euo pipefail
-          cargo build -p agent-bus-http
-          # Default server_host ("localhost") on purpose: this container
-          # resolves localhost to ::1 first, which is the case the server's
-          # explicit IPv4 loopback bind exists for (run 36083746826 failed
-          # here before it).
-          env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_SERVER_URLS -u AGENT_BUS_SERVER_CANDIDATES -u AGENT_BUS_AUTH_TOKEN -u AGENT_BUS_SERVER_HOST \
-            AGENT_BUS_CONFIG="$RUNNER_TEMP/agent-bus-ci-config.json" \
-            AGENT_BUS_REDIS_URL="$AGENT_BUS_TEST_REDIS_URL" \
-            AGENT_BUS_DATABASE_URL="$AGENT_BUS_TEST_DATABASE_URL" \
-            nohup "$CARGO_TARGET_DIR/debug/agent-bus-http" --port 18400 \
-            > "$RUNNER_TEMP/agent-bus-http.log" 2>&1 &
-          echo "CI_HTTP_PID=$!" >> "$GITHUB_ENV"
-          for _ in $(seq 1 60); do
-            if curl -fsS "$AGENT_BUS_TEST_SERVER_URL/health" >/dev/null 2>&1; then
-              curl -fsS "$AGENT_BUS_TEST_SERVER_URL/health"
-              echo
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "::error::agent-bus-http did not answer /health in 60s"
-          cat "$RUNNER_TEMP/agent-bus-http.log"
-          exit 1
-      - name: Show listeners in this job's network namespace
-        shell: bash
-        run: |
-          set -euo pipefail
-          listeners="$(docker exec "$CI_REDIS_CTR" netstat -ltn)"
-          printf '%s\n' "$listeners"
-          if printf '%s\n' "$listeners" | grep -Eq '[:.](6380|5300|8400)[[:space:]]'; then
-            echo "::error::a live-bus port is listening in the test namespace"
-            exit 1
-          fi
-      - name: Backend tests (ignored tests only)
-        shell: bash
-        run: |
-          set -euo pipefail
-          env -u AGENT_BUS_SERVER_CANDIDATES cargo test --workspace --tests --no-fail-fast -- --ignored --test-threads=1 \
-            2>&1 | tee "$RUNNER_TEMP/backend-tests.log"
-          passed="$(grep -E '^test result:' "$RUNNER_TEMP/backend-tests.log" |
-            awk '{s += $4} END {print s + 0}')"
-          printf '### Backend tests\n- passed: %s (floor %s)\n' "$passed" "$MIN_BACKEND_TESTS" \
-            >> "$GITHUB_STEP_SUMMARY"
-          if (( passed < MIN_BACKEND_TESTS )); then
-            echo "::error::only $passed backend tests passed; expected at least $MIN_BACKEND_TESTS"
-            exit 1
-          fi
-      - name: Stop disposable backends
-        if: always()
-        shell: bash
-        run: |
-          if [[ -n "${CI_HTTP_PID:-}" ]]; then
-            kill "$CI_HTTP_PID" 2>/dev/null || true
-            tail -n 50 "$RUNNER_TEMP/agent-bus-http.log" 2>/dev/null || true
-          fi
-          for ctr in "${CI_REDIS_CTR:-}" "${CI_PG_CTR:-}"; do
-            [[ -n "$ctr" ]] && docker rm -f "$ctr" >/dev/null 2>&1 || true
-          done
+          python3 -B scripts/ci/isolated-services.py history \
+            --network-container "$(cat /etc/hostname)"
 
   build-release:
     name: Release Build (${{ matrix.name }})
@@ -330,56 +245,10 @@ jobs:
       - name: Run functional smoke harness
         shell: pwsh
         run: |
-          $smokeToken = [guid]::NewGuid().ToString("N")
-          $suffix = "$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-smoke"
-          if ($suffix -notmatch '^[0-9]+-[0-9]+-smoke$') { throw 'Unsafe smoke fixture identity' }
-          $owned = [Collections.Generic.List[string]]::new()
-          try {
-            $redisId = (& docker create --name "agenthub-redis-$suffix" `
-              --memory 128m --cpus 0.5 --publish 127.0.0.1:16382:6379 `
-              redis:7-alpine redis-server --save "" --appendonly no | Out-String).Trim()
-            if ($LASTEXITCODE -ne 0 -or $redisId -notmatch '^[a-f0-9]{64}$') { throw 'Redis fixture startup failed' }
-            $owned.Add($redisId)
-            & docker start $redisId
-            if ($LASTEXITCODE -ne 0) { throw 'Redis fixture startup failed' }
-            $pgId = (& docker create --name "agenthub-pg-$suffix" `
-              --memory 512m --cpus 1 --publish 127.0.0.1:15302:5432 `
-              --env POSTGRES_DB=agent_bus_smoke --env "POSTGRES_PASSWORD=$smokeToken" `
-              postgres:17-alpine | Out-String).Trim()
-            if ($LASTEXITCODE -ne 0 -or $pgId -notmatch '^[a-f0-9]{64}$') { throw 'PostgreSQL fixture startup failed' }
-            $owned.Add($pgId)
-            & docker start $pgId
-            if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL fixture startup failed' }
-            $ready = $false
-            for ($attempt = 0; $attempt -lt 30; $attempt++) {
-              # The entrypoint's temporary initialization server accepts Unix
-              # socket connections before the final TCP server is available.
-              & docker exec $pgId pg_isready -h 127.0.0.1 -U postgres -d agent_bus_smoke
-              if ($LASTEXITCODE -eq 0) { $ready = $true; break }
-              Start-Sleep -Seconds 1
-            }
-            if (-not $ready) { throw 'PostgreSQL fixture did not become ready' }
-            $env:AGENT_BUS_REDIS_URL = 'redis://127.0.0.1:16382/0'
-            $env:AGENT_BUS_DATABASE_URL = "postgresql://postgres:$smokeToken@127.0.0.1:15302/agent_bus_smoke"
-            # Probe the same published Windows-host path used by the native CLI;
-            # container-local readiness cannot establish Docker port forwarding.
-            ./scripts/Wait-DisposableRedisReady.ps1 -RedisUrl $env:AGENT_BUS_REDIS_URL -TimeoutSeconds 30
-            Remove-Item Env:AGENT_BUS_SERVER_CANDIDATES -ErrorAction SilentlyContinue
-            ./scripts/test-agent-bus-functional.ps1 `
-              -CliPath "$PWD/ci-artifacts/windows-x64/agent-bus.exe" `
-              -HttpBinaryPath "$PWD/ci-artifacts/windows-x64/agent-bus-http.exe" `
-              -HttpPort 8412 `
-              -HttpAuthToken $smokeToken `
-              -RequirePostgres `
-              -SkipForcedDegraded
-          } finally {
-            $cleanupFailures = [Collections.Generic.List[string]]::new()
-            foreach ($id in $owned) {
-              & docker rm --force $id
-              if ($LASTEXITCODE -ne 0) { $cleanupFailures.Add($id) }
-            }
-            if ($cleanupFailures.Count) { throw "Failed to clean owned smoke containers: $($cleanupFailures -join ', ')" }
-          }
+          python -B scripts/ci/isolated-services.py smoke `
+            --cli "$PWD/ci-artifacts/windows-x64/agent-bus.exe" `
+            --http "$PWD/ci-artifacts/windows-x64/agent-bus-http.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Owned disposable functional smoke failed" }
 
   audit:
     name: Security Audit
@@ -393,13 +262,21 @@ jobs:
 
   windows:
     name: Windows Build And Unit Tests
-    runs-on: [self-hosted, Windows, X64, local-build]
+    runs-on: windows-2025
     # Cold test compilation consumed 26 minutes before release and fixture checks.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
+      - name: Install verified pinned Windows sccache
+        shell: pwsh
+        run: ./scripts/ci/install-hosted-windows-sccache.ps1
       - shell: pwsh
-        run: ./scripts/ci/setup-rust.ps1
+        run: |
+          ./scripts/ci/setup-rust.ps1
+          $compilerVersion = (& rustc --version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $compilerVersion.StartsWith("rustc $env:RUSTUP_TOOLCHAIN ")) {
+            throw 'Resolved Rust compiler differs from the repository toolchain pin'
+          }
       - run: cargo fmt --all --check
       # Same strictness as the Linux clippy job: cfg(windows) code is only
       # linted here, so a warning in it must fail this job.
@@ -414,39 +291,10 @@ jobs:
           Remove-Item Env:AGENT_BUS_SERVER_CANDIDATES -ErrorAction SilentlyContinue
           cargo test --workspace --lib --bins -- --test-threads=4
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test -p agent-bus --test integration_isolation_test
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: cargo build --release --workspace --bins
-      - name: History catalog migration contract
-        shell: pwsh
-        run: |
-          $historyDb = "agent_bus_history_ci_$($env:GITHUB_RUN_ID)_$($env:GITHUB_RUN_ATTEMPT)"
-          if ($historyDb -notmatch '^agent_bus_history_ci_[0-9]+_[0-9]+$') {
-            throw "Refusing unsafe disposable database name: $historyDb"
-          }
-          $createdb = Get-Command createdb.exe -ErrorAction Stop
-          $dropdb = Get-Command dropdb.exe -ErrorAction Stop
-          & $dropdb.Source -h 127.0.0.1 -p 5300 -U postgres --if-exists $historyDb
-          if ($LASTEXITCODE -ne 0) {
-            throw "Failed to remove stale disposable database $historyDb"
-          }
-          try {
-            & $createdb.Source -h 127.0.0.1 -p 5300 -U postgres $historyDb
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to create disposable database $historyDb"
-            }
-            $env:AGENT_BUS_TEST_DATABASE_URL =
-              "postgresql://postgres@127.0.0.1:5300/$historyDb"
-            Remove-Item Env:AGENT_BUS_SERVER_CANDIDATES -ErrorAction SilentlyContinue
-            cargo test -p agent-bus-core --test history_catalog_postgres -- --nocapture
-            if ($LASTEXITCODE -ne 0) {
-              throw "History catalog migration contract failed"
-            }
-          } finally {
-            Remove-Item Env:AGENT_BUS_TEST_DATABASE_URL -ErrorAction SilentlyContinue
-            & $dropdb.Source -h 127.0.0.1 -p 5300 -U postgres --if-exists $historyDb
-            if ($LASTEXITCODE -ne 0) {
-              throw "Failed to remove disposable database $historyDb"
-            }
-          }
+      - run: python -B -m unittest discover -s scripts/ci -p "test_*.py"
       - name: Validate concurrent build helper behavior
         shell: pwsh
         run: ./scripts/test-rust-build-common.ps1
@@ -473,6 +321,10 @@ jobs:
             "runner=$env:RUNNER_NAME"
             "os=$env:RUNNER_OS"
             "arch=$env:RUNNER_ARCH"
+            "image_os=$env:ImageOS"
+            "image_version=$env:ImageVersion"
+            "sccache_archive_sha256=$env:AGENT_HUB_SCCACHE_ARCHIVE_SHA256"
+            "sccache_executable_sha256=$env:AGENT_HUB_SCCACHE_EXECUTABLE_SHA256"
             "cargo_target_dir=$env:CARGO_TARGET_DIR"
             "rustc_wrapper=$env:RUSTC_WRAPPER"
             (& cargo --version)
