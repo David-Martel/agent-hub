@@ -101,3 +101,10 @@ Jules (Google's async coding agent) reads this file. It runs in a Google-hosted 
 ## Learned Backend Lifecycle Rules (append-only)
 
 - **[2026-10-05] HTTP shutdown is not managed-process termination.** A successful HTTP stop/flush response and a closed listener prove those operations only. Before declaring a managed hub stopped, verify its supervisor/service state and process exit independently; use the owning service manager to complete termination when the process remains active. Preserve flush/readback evidence and the first failure. Do not attribute a lingering process to SSE without connection or lifecycle evidence. A failed server-admin status request must fail visibly rather than return success with `admin: null`; Windows SCM-only and builds without server-mode must identify their narrower evidence tier.
+
+## Quality Gates And Fleet DNS
+
+- Repo quality contract: [docs/QUALITY_GATES.md](./docs/QUALITY_GATES.md)
+- git-guard overlay: [.qa-gate.conf](./.qa-gate.conf) (account-wide git-guard + this file)
+- Fleet DNS / Cloudflare status: [docs/fleet-dns-and-cloud-status-2026-10-08.md](./docs/fleet-dns-and-cloud-status-2026-10-08.md)
+- Network-location routing: [docs/network-location-routing.md](./docs/network-location-routing.md)
