@@ -116,6 +116,11 @@ fn message_metadata_jsonb_survives_pg_round_trip() {
         reply_to: Some(format!("reply-target-{suffix}")),
         metadata: metadata.clone(),
         stream_id: Some(format!("{suffix}-0")),
+        client_msg_id: None,
+        origin_hub: None,
+        origin_seq: None,
+        hlc: None,
+        sensitivity: None,
     };
 
     persist_message_postgres(&settings, &message)
@@ -201,6 +206,11 @@ fn empty_metadata_object_round_trips_as_object() {
         reply_to: None,
         metadata: serde_json::Value::Object(serde_json::Map::new()),
         stream_id: None,
+        client_msg_id: None,
+        origin_hub: None,
+        origin_seq: None,
+        hlc: None,
+        sensitivity: None,
     };
 
     persist_message_postgres(&settings, &message)

@@ -252,13 +252,11 @@ Beyond the identity/role model above:
   resource's Durable Object storage.
 - **Resource-name normalization.** Claim resource names are folded
   (backslash -> forward slash, lowercased, leading `./` stripped, capped at
-  256 chars) via `normalizeResourceName` in `src/claims-logic.ts` — PARITY
-  with the Rust hub's own backslash folding (`crates/agent-bus-core/src/
-  channels.rs:372`), PLUS an additional case-fold this cloud tier needs that
-  the Rust side does not yet have. **This divergence must be kept in mind**
-  when the Rust-side proxy (SYNC-CONTRACT.md §6) is built: a resource claimed
-  as `Foo.rs` on-site and `foo.rs` here would otherwise silently split across
-  two independent authorities.
+  256 chars) via `normalizeResourceName` in `src/claims-logic.ts`. The Rust hub
+  retains its separator-only normalization for on-site claim and event keys,
+  preserving case, leading `./`, existing leases and history. The two tiers
+  keep separate claim state: the hub does not proxy claims to the cloud
+  (see `docs/cloud-sync.md`).
 - **Generic 500s.** The error handler (`guarded()` in `src/index.ts`) never
   echoes a raw SQLite error, a `Date` parsing failure, or any other internal
   exception message to the caller — every non-`ValidationError`/
@@ -414,11 +412,13 @@ Object namespaces, and (for the custom domain) zone DNS/Routes permission.
    candidate list until the required routes, on-site synchronization and
    role-scoped credentials have been validated. Public `/health` success
    verifies reachability only; unauthenticated `/mcp` must return `401`.
-7. **What the Rust side still needs** (separate, later PR — see
-   `SYNC-CONTRACT.md`): the on-site hub's async sync client, and the
-   `/channels/arbitrate/*` proxy-to-cloud switch with lab-scoped fallback.
-   This Worker is fully usable standalone before that PR lands — it just
-   won't yet receive traffic from asuspro13.
+7. **The Rust side.** The on-site hub's sync task (push, pull, presence,
+   `cloud_*` health) is in `crates/agent-bus-http/src/cloud_sync.rs`; see
+   `docs/cloud-sync.md` for configuration. It is off until a cloud URL, a
+   0600 token file and `hub_identity` are set. The
+   `/channels/arbitrate/*` proxy-to-cloud switch described in SYNC-CONTRACT.md
+   §6 is NOT built, and the plan is to keep claims on-site instead; that needs
+   an owner decision recorded against §6.
 8. **Historical import** — the one-time backfill importer at
    `~/.local/share/jules-fleet/handoff-2026-09-26/agentbus-import/import_pg_export.py`
    targets `/sync/push` and `/sync/push-presence` exactly as implemented

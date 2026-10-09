@@ -263,10 +263,19 @@ historical rows are not mutated on replay: `autoFitSchema` prepends
 `POST /messages` but would corrupt an already-accepted on-site row being
 imported verbatim years later.
 
-## What this PR does NOT implement
+## Implementation status
 
-This PR is the cloud tier only. The Rust-side sync client described above —
-the async task, the outbox, the claims-proxy switch in `agent-bus-http`'s
-`/channels/arbitrate/*` handlers, and the `Health` field additions — is a
-**separate, later PR** against `agent-bus-http` / `agent-bus-core`, written
-against this contract.
+The cloud tier is in this directory. The Rust-side sync task (sections 1 to 5,
+7 and the wire contract above, minus claims) is implemented in
+`crates/agent-bus-http/src/cloud_sync.rs`; see
+[`docs/cloud-sync.md`](../../docs/cloud-sync.md) for configuration and
+behaviour. Two deviations from the text above, both pending owner sign-off:
+
+- **Section 6 (claims proxy) is not implemented.** The hub neither proxies nor
+  syncs claims, and the task has no claim code. The proposal on agent-hub#79 is
+  to keep claims on-site and supersede section 6; until that decision is
+  recorded, treat section 6 as the superseded design and not as behaviour.
+- **Section 7 health fields.** `cloud_reachable` means the last push or pull
+  pass succeeded (there is no separate probe), `cloud_queue_depth` counts
+  messages loaded but unacknowledged, and the block also carries
+  `cloud_last_pull_at_utc`, `cloud_last_pull_age_seconds` and `cloud_last_error`.

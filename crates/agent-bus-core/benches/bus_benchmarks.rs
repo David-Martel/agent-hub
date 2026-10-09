@@ -171,6 +171,7 @@ fn make_health() -> Health {
         redis_persistence: None,
         backup_age_seconds: None,
         postgres_replication_lag_seconds: None,
+        cloud: None,
     }
 }
 

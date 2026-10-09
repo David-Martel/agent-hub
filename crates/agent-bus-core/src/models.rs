@@ -41,6 +41,105 @@ pub struct Message {
     pub metadata: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_id: Option<String>,
+    /// Sender-generated idempotency key for outbox replay and cloud sync.
+    /// Matches the cloud Worker's `client_msg_id` (agent-hub#79).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_msg_id: Option<String>,
+    /// Hub that first accepted the message. `None` means "this hub" (every
+    /// row written before cloud sync existed, and every local write while sync
+    /// is disabled). Messages pulled from the cloud keep their original value
+    /// so the sync task can tell them apart and never push them back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_hub: Option<String>,
+    /// Per-origin monotonic sequence number, paired with `hlc`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_seq: Option<u64>,
+    /// Hybrid logical clock string, for stable cross-hub ordering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hlc: Option<String>,
+    /// Replication sensitivity. `None` is equivalent to
+    /// [`Sensitivity::Internal`]; [`Sensitivity::NoOffsite`] is never pushed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sensitivity: Option<Sensitivity>,
+}
+
+/// Message replication sensitivity (agent-hub#79), wire-compatible with the
+/// cloud Worker's `"internal" | "no-offsite"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Sensitivity {
+    /// May be replicated to the cloud tier (the default).
+    #[serde(rename = "internal")]
+    Internal,
+    /// Must stay on the on-site hub.
+    #[serde(rename = "no-offsite")]
+    NoOffsite,
+}
+
+impl Sensitivity {
+    /// Wire string, as stored in Redis stream fields and `PostgreSQL`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Internal => "internal",
+            Self::NoOffsite => "no-offsite",
+        }
+    }
+
+    /// Parse the wire string; `None` for anything else (callers fail closed).
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw {
+            "internal" => Some(Self::Internal),
+            "no-offsite" => Some(Self::NoOffsite),
+            _ => None,
+        }
+    }
+}
+
+/// Tag that opts a message out of cloud replication, for senders that cannot
+/// set the first-class `sensitivity` field.
+pub const NO_OFFSITE_TAG: &str = "sensitivity:no-offsite";
+
+impl Message {
+    /// The sensitivity that governs replication, failing closed.
+    ///
+    /// Precedence: the explicit `sensitivity` field, then
+    /// `metadata.sensitivity`, then the [`NO_OFFSITE_TAG`] tag. Any
+    /// `metadata.sensitivity` string other than `internal` or `no-offsite` is
+    /// treated as [`Sensitivity::NoOffsite`], matching the Worker, which also
+    /// rejects unknown values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use agent_bus_core::models::{Message, Sensitivity};
+    /// let mut msg: Message = serde_json::from_value(serde_json::json!({
+    ///     "id": "1", "timestamp_utc": "2026-01-01T00:00:00Z",
+    ///     "protocol_version": "1.0", "from": "a", "to": "b",
+    ///     "topic": "t", "body": "x",
+    ///     "metadata": {"sensitivity": "no-offsite"}
+    /// })).unwrap();
+    /// assert_eq!(msg.effective_sensitivity(), Sensitivity::NoOffsite);
+    /// msg.metadata = serde_json::json!({});
+    /// assert_eq!(msg.effective_sensitivity(), Sensitivity::Internal);
+    /// ```
+    #[must_use]
+    pub fn effective_sensitivity(&self) -> Sensitivity {
+        if let Some(explicit) = self.sensitivity {
+            return explicit;
+        }
+        match self.metadata.get("sensitivity") {
+            None | Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::String(raw)) => {
+                return Sensitivity::parse(raw).unwrap_or(Sensitivity::NoOffsite);
+            }
+            Some(_) => return Sensitivity::NoOffsite,
+        }
+        if self.tags.iter().any(|tag| tag == NO_OFFSITE_TAG) {
+            return Sensitivity::NoOffsite;
+        }
+        Sensitivity::Internal
+    }
 }
 
 #[must_use]
@@ -236,6 +335,40 @@ pub struct Health {
     /// `PostgreSQL` replication lag placeholder for HA deployments.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub postgres_replication_lag_seconds: Option<i64>,
+    /// Cloud sync status (agent-hub#79). Every `cloud_*` field is `None`, and
+    /// therefore absent from the JSON, unless cloud sync is enabled, so a hub
+    /// without sync reports byte-identical health to one built before it.
+    #[serde(flatten)]
+    pub cloud: Option<CloudHealth>,
+}
+
+/// The `cloud_*` block of [`Health`], present only when cloud sync is enabled.
+/// See `cloud/agentbus/SYNC-CONTRACT.md` section 7 for the shared fields.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct CloudHealth {
+    /// Always `true` when this block is present.
+    pub cloud_configured: bool,
+    /// Whether the most recent push or pull attempt succeeded.
+    pub cloud_reachable: bool,
+    /// Local messages not yet acknowledged by the cloud (outbox depth).
+    pub cloud_queue_depth: u64,
+    /// ISO-8601 time of the last successful push.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_last_push_at_utc: Option<String>,
+    /// Seconds since the last successful push.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_last_push_age_seconds: Option<u64>,
+    /// ISO-8601 time of the last successful pull.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_last_pull_at_utc: Option<String>,
+    /// Seconds since the last successful pull.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_last_pull_age_seconds: Option<u64>,
+    /// Times the outbox overflowed and fell back to cursor catch-up.
+    pub cloud_dropped_batches_total: u64,
+    /// Short description of the last failure; never contains the token.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cloud_last_error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -455,6 +588,11 @@ mod tests {
             reply_to: Some("msg-000".to_owned()),
             metadata: serde_json::json!({"key": "value"}),
             stream_id: Some("1234567890000-0".to_owned()),
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         }
     }
 
@@ -498,6 +636,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Null,
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
 
         let v: serde_json::Value = serde_json::to_value(&msg).expect("to_value failed");
@@ -552,6 +695,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Null,
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -579,6 +727,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Null,
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
         assert!(!msg.tags.spilled(), "single tag must stay inline");
         let json = serde_json::to_string(&msg).unwrap();
@@ -610,6 +763,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Null,
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -642,6 +800,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Null,
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
@@ -677,7 +840,44 @@ mod tests {
             redis_persistence: None,
             backup_age_seconds: None,
             postgres_replication_lag_seconds: None,
+            cloud: None,
         }
+    }
+
+    /// With cloud sync disabled the serialized health must be byte-identical
+    /// to what a build without the `cloud_*` fields emitted. This golden
+    /// string is that output; do not edit it to make a change pass.
+    #[test]
+    fn health_json_is_byte_identical_when_cloud_sync_is_disabled() {
+        let mut h = make_health_no_pg();
+        h.build_version = "test".to_owned();
+        assert_eq!(
+            serde_json::to_string(&h).unwrap(),
+            concat!(
+                r#"{"ok":true,"protocol_version":"1.0","build_version":"test","#,
+                r#""redis_url":"redis://localhost:6380/0","database_url":null,"#,
+                r#""database_ok":null,"database_error":null,"storage_ready":false,"#,
+                r#""runtime":"rust-native","codec":"serde_json+lz4"}"#
+            )
+        );
+    }
+
+    #[test]
+    fn health_json_gains_cloud_fields_only_when_enabled() {
+        let mut h = make_health_no_pg();
+        h.cloud = Some(CloudHealth {
+            cloud_configured: true,
+            cloud_reachable: false,
+            cloud_queue_depth: 3,
+            cloud_last_error: Some("push failed: timeout".to_owned()),
+            ..CloudHealth::default()
+        });
+        let v = serde_json::to_value(&h).unwrap();
+        assert_eq!(v["cloud_configured"], true);
+        assert_eq!(v["cloud_queue_depth"], 3);
+        assert_eq!(v["cloud_last_error"], "push failed: timeout");
+        assert!(v.get("cloud_last_push_at_utc").is_none());
+        assert!(v.get("cloud").is_none(), "the block is flattened");
     }
 
     #[test]
@@ -900,6 +1100,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Null,
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         }
     }
 
@@ -1289,5 +1494,89 @@ mod tests {
         assert_eq!(ack_deadline_seconds("normal"), 300);
         assert_eq!(ack_deadline_seconds("low"), 300);
         assert_eq!(ack_deadline_seconds("unknown"), 300);
+    }
+
+    // -- agent-hub#79 cloud-sync fields -------------------------------------
+
+    fn legacy_message_json() -> serde_json::Value {
+        serde_json::json!({
+            "id": "0190a000-0000-7000-8000-000000000001",
+            "timestamp_utc": "2026-01-01T00:00:00Z",
+            "protocol_version": "1.0",
+            "from": "a", "to": "b", "topic": "t", "body": "x"
+        })
+    }
+
+    #[test]
+    fn legacy_message_json_deserializes_with_all_sync_fields_none() {
+        let msg: Message = serde_json::from_value(legacy_message_json()).unwrap();
+        assert!(msg.client_msg_id.is_none() && msg.origin_hub.is_none());
+        assert!(msg.origin_seq.is_none() && msg.hlc.is_none() && msg.sensitivity.is_none());
+    }
+
+    #[test]
+    fn sync_fields_are_omitted_from_json_when_none() {
+        let msg: Message = serde_json::from_value(legacy_message_json()).unwrap();
+        let out = serde_json::to_value(&msg).unwrap();
+        for key in [
+            "client_msg_id",
+            "origin_hub",
+            "origin_seq",
+            "hlc",
+            "sensitivity",
+        ] {
+            assert!(!out.as_object().unwrap().contains_key(key), "{key} leaked");
+        }
+    }
+
+    #[test]
+    fn sync_fields_round_trip_in_the_workers_wire_format() {
+        let mut v = legacy_message_json();
+        v["client_msg_id"] = "c-1".into();
+        v["origin_hub"] = "hub-a".into();
+        v["origin_seq"] = 7.into();
+        v["hlc"] = "1700000000000-0-hub-a".into();
+        v["sensitivity"] = "no-offsite".into();
+        let msg: Message = serde_json::from_value(v.clone()).unwrap();
+        assert_eq!(msg.sensitivity, Some(Sensitivity::NoOffsite));
+        assert_eq!(msg.origin_seq, Some(7));
+        assert_eq!(serde_json::to_value(&msg).unwrap(), {
+            let mut expected = v;
+            expected["tags"] = serde_json::json!([]);
+            expected["priority"] = "normal".into();
+            expected["request_ack"] = false.into();
+            expected["metadata"] = serde_json::Value::Null;
+            expected
+        });
+    }
+
+    #[test]
+    fn unknown_sensitivity_value_is_rejected_on_the_wire() {
+        let mut v = legacy_message_json();
+        v["sensitivity"] = "secret".into();
+        assert!(serde_json::from_value::<Message>(v).is_err());
+    }
+
+    #[test]
+    fn effective_sensitivity_fails_closed() {
+        let mut msg: Message = serde_json::from_value(legacy_message_json()).unwrap();
+        assert_eq!(msg.effective_sensitivity(), Sensitivity::Internal);
+        msg.metadata = serde_json::json!({"sensitivity": "internal"});
+        assert_eq!(msg.effective_sensitivity(), Sensitivity::Internal);
+        msg.metadata = serde_json::json!({"sensitivity": "weird"});
+        assert_eq!(msg.effective_sensitivity(), Sensitivity::NoOffsite);
+        msg.metadata = serde_json::json!({"sensitivity": 3});
+        assert_eq!(msg.effective_sensitivity(), Sensitivity::NoOffsite);
+        msg.metadata = serde_json::json!({});
+        msg.tags.push(NO_OFFSITE_TAG.to_owned());
+        assert_eq!(msg.effective_sensitivity(), Sensitivity::NoOffsite);
+        msg.tags.clear();
+        msg.sensitivity = Some(Sensitivity::Internal);
+        msg.metadata = serde_json::json!({"sensitivity": "no-offsite"});
+        assert_eq!(
+            msg.effective_sensitivity(),
+            Sensitivity::Internal,
+            "explicit field wins"
+        );
     }
 }

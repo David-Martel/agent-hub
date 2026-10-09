@@ -146,6 +146,9 @@ pub(crate) struct AppState {
     pub(crate) control_status: ControlStatusState,
     /// Cooperative graceful-shutdown trigger for HTTP service maintenance.
     pub(crate) shutdown_signal: Arc<Notify>,
+    /// Cloud sync status (agent-hub#79); `None` unless sync is configured, in
+    /// which case `/health` is exactly what it was before sync existed.
+    pub(crate) cloud_sync: crate::cloud_sync::SharedStatus,
 }
 
 async fn ensure_writes_allowed(
@@ -263,10 +266,15 @@ pub(crate) async fn http_health_handler(
     let exposed_bind =
         !(bind_host == "localhost" || bind_host == "127.0.0.1" || bind_host == "::1");
     let control = state.control_status.read().await.clone();
-    let result =
+    let cloud_sync = state.cloud_sync.clone();
+    let mut result =
         tokio::task::spawn_blocking(move || ops_health(&state.settings, Some(&pool_for_health)))
             .await
             .expect("spawn_blocking panicked");
+    // Present only when cloud sync is configured; otherwise untouched.
+    result.cloud = cloud_sync
+        .as_ref()
+        .map(|status| status.snapshot(crate::cloud_sync::snapshot_now()));
 
     // Attach r2d2 pool metrics so operators can see connection reuse stats.
     let (acquired, errors) = pool.metrics();
@@ -3652,13 +3660,22 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         &settings.service_name,
     )));
     let shutdown_signal = Arc::new(Notify::new());
+    let settings = Arc::new(settings);
+    let cloud_sync = crate::cloud_sync::start(
+        &settings,
+        &redis,
+        &shutdown_signal,
+        &agent_bus_core::hub_candidates::SystemEnv,
+    )
+    .await;
     let state = AppState {
-        settings: Arc::new(settings),
+        settings,
         redis,
         agent_connections: Arc::new(RwLock::new(HashMap::new())),
         sse_subscriber_count: Arc::new(SseSubscriberCount::default()),
         control_status,
         shutdown_signal: Arc::clone(&shutdown_signal),
+        cloud_sync,
     };
     spawn_agent_notification_bridge(&state);
     // F1: auto-backfill PostgreSQL after a PG reconnect. Wired here because the
@@ -3888,6 +3905,7 @@ mod tests {
             redis_persistence: None,
             backup_age_seconds: None,
             postgres_replication_lag_seconds: None,
+            cloud: None,
         }
     }
 
@@ -3910,6 +3928,7 @@ mod tests {
                 "AgentHub",
             ))),
             shutdown_signal: Arc::new(Notify::new()),
+            cloud_sync: None,
         }
     }
 

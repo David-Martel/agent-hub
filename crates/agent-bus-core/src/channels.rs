@@ -367,8 +367,57 @@ fn group_meta_key(name: &str) -> String {
     format!("{GROUP_PREFIX}{name}{META_SUFFIX}")
 }
 
+/// Maximum length of a normalized resource name, in UTF-16 code units so it
+/// agrees with the Worker's JavaScript `String.length`.
+pub const MAX_RESOURCE_NAME_LEN: usize = 256;
+
+/// Fold a resource name the way the cloud Worker's `normalizeResourceName`
+/// does: backslash to forward slash, Unicode lowercase, then one leading `./`
+/// stripped. This is a cloud wire-format helper, not an on-site claim key:
+/// on-site claims retain their existing case-sensitive identity.
+///
+/// This fold is total. Call [`validate_resource_name`] before using a cloud
+/// resource name; local claims do not adopt the cloud's validation limits.
+///
+/// # Examples
+///
+/// ```
+/// use agent_bus_core::channels::normalize_resource_name;
+/// assert_eq!(normalize_resource_name(".\\Src\\Main.RS"), "src/main.rs");
+/// assert_eq!(normalize_resource_name("src/lib.rs"), "src/lib.rs");
+/// ```
+#[must_use]
+pub fn normalize_resource_name(resource: &str) -> String {
+    let folded = resource.replace('\\', "/").to_lowercase();
+    match folded.strip_prefix("./") {
+        Some(rest) => rest.to_owned(),
+        None => folded,
+    }
+}
+
+/// Reject names the Worker would reject: empty or longer than
+/// [`MAX_RESOURCE_NAME_LEN`] after normalization.
+///
+/// # Errors
+/// Returns [`crate::error::AgentBusError::InvalidParams`] for an empty or
+/// over-long resource.
+pub fn validate_resource_name(resource: &str) -> Result<()> {
+    let normalized = normalize_resource_name(resource);
+    if normalized.is_empty() {
+        return Err(crate::error::AgentBusError::InvalidParams(
+            "resource must not be empty".to_string(),
+        ));
+    }
+    if normalized.encode_utf16().count() > MAX_RESOURCE_NAME_LEN {
+        return Err(crate::error::AgentBusError::InvalidParams(format!(
+            "resource exceeds maximum length of {MAX_RESOURCE_NAME_LEN}"
+        )));
+    }
+    Ok(())
+}
+
 fn claims_key(resource: &str) -> String {
-    // Normalise path separators to avoid Redis key confusion on Windows.
+    // Preserve pre-sync keys and live leases: claims are not cloud-synced.
     let normalised = resource.replace('\\', "/");
     format!("{CLAIMS_PREFIX}{normalised}")
 }
@@ -653,6 +702,11 @@ fn decode_channel_entry(
         },
         metadata: get_json_value("metadata"),
         stream_id: Some(stream_id.to_owned()),
+        client_msg_id: None,
+        origin_hub: None,
+        origin_seq: None,
+        hlc: None,
+        sensitivity: None,
     }
 }
 
@@ -797,6 +851,11 @@ fn xadd_to_stream(
         reply_to: Some(from.to_owned()),
         metadata: metadata.clone(),
         stream_id: Some(stream_id),
+        client_msg_id: None,
+        origin_hub: None,
+        origin_seq: None,
+        hlc: None,
+        sensitivity: None,
     })
 }
 
@@ -2304,6 +2363,34 @@ mod tests {
         let key = claims_key("a\\b\\c\\d.rs");
         assert!(!key.contains('\\'));
         assert!(key.contains("a/b/c/d.rs"));
+    }
+
+    #[test]
+    fn claims_key_preserves_legacy_identity() {
+        assert_ne!(claims_key("Src/Main.RS"), claims_key("src/main.rs"));
+        assert_eq!(claims_key(".\\Src\\Lib.rs"), claims_key("./Src/Lib.rs"));
+    }
+
+    #[test]
+    fn cloud_resource_name_casefolds_like_the_worker() {
+        assert_eq!(normalize_resource_name("Src/Main.RS"), "src/main.rs");
+        assert_eq!(normalize_resource_name(".\\Src\\Lib.rs"), "src/lib.rs");
+        // Only ONE leading "./" is stripped, as in the Worker.
+        assert_eq!(normalize_resource_name("././a"), "./a");
+        // Unicode lowercase, like JavaScript toLowerCase.
+        assert_eq!(normalize_resource_name("\u{c9}COLE"), "\u{e9}cole");
+    }
+
+    #[test]
+    fn validate_resource_name_matches_worker_limits() {
+        assert!(validate_resource_name("a").is_ok());
+        assert!(validate_resource_name("./").is_err());
+        assert!(validate_resource_name(&"x".repeat(MAX_RESOURCE_NAME_LEN)).is_ok());
+        assert!(validate_resource_name(&"x".repeat(MAX_RESOURCE_NAME_LEN + 1)).is_err());
+        // Length is measured after normalization.
+        assert!(
+            validate_resource_name(&format!("./{}", "x".repeat(MAX_RESOURCE_NAME_LEN))).is_ok()
+        );
     }
 
     #[test]
