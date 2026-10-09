@@ -236,21 +236,38 @@ jobs:
 
   smoke-functional:
     name: CLI And HTTP Smoke
-    runs-on: [self-hosted, Windows, X64, local-build]
+    # Wine run of the GNU-target Windows artifacts on the Linux windows-cross lane. It proves
+    # the .exe starts and talks to owned Redis/PostgreSQL fixtures under Wine, not native
+    # Windows behaviour; the native check is the manual windows-native job below.
+    runs-on: [self-hosted, Linux, X64, windows-cross]
     needs: [windows]
+    timeout-minutes: 30
+    env:
+      WINEDEBUG: "-all"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: agent-bus-windows-x64
           path: ci-artifacts/windows-x64
-      - name: Run functional smoke harness
-        shell: pwsh
+      - name: Wrap the Windows executables so the Linux smoke driver runs them under Wine
         run: |
-          python -B scripts/ci/isolated-services.py smoke `
-            --cli "$PWD/ci-artifacts/windows-x64/agent-bus.exe" `
-            --http "$PWD/ci-artifacts/windows-x64/agent-bus-http.exe"
-          if ($LASTEXITCODE -ne 0) { throw "Owned disposable functional smoke failed" }
+          set -euo pipefail
+          export WINEPREFIX="$RUNNER_TEMP/wine-smoke"
+          echo "WINEPREFIX=$WINEPREFIX" >> "$GITHUB_ENV"
+          timeout 120 wineboot --init
+          mkdir -p "$RUNNER_TEMP/wine-bin"
+          for binary in agent-bus agent-bus-http; do
+            exe="$PWD/ci-artifacts/windows-x64/$binary.exe"
+            test -f "$exe"
+            printf '#!/bin/sh\nexec wine "%s" "$@"\n' "$exe" > "$RUNNER_TEMP/wine-bin/$binary"
+            chmod +x "$RUNNER_TEMP/wine-bin/$binary"
+          done
+      - name: Run functional smoke harness under Wine
+        run: |
+          python3 -B scripts/ci/isolated-services.py smoke \
+            --cli "$RUNNER_TEMP/wine-bin/agent-bus" \
+            --http "$RUNNER_TEMP/wine-bin/agent-bus-http"
 
   audit:
     name: Security Audit
@@ -264,102 +281,138 @@ jobs:
 
   windows:
     name: Windows Build And Unit Tests
-    runs-on: windows-2025
-    # Cold test compilation consumed 26 minutes before release and fixture checks.
+    # Cross-compiled on Linux for x86_64-pc-windows-gnu (mingw-w64) and tested under Wine on
+    # the windows-cross lane. This is GNU-ABI cross-target evidence, not native Windows
+    # acceptance; native validation is the manual windows-native job.
+    runs-on: [self-hosted, Linux, X64, windows-cross]
     timeout-minutes: 60
+    env:
+      WINDOWS_TARGET: x86_64-pc-windows-gnu
+      CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER: wine
+      WINEDEBUG: "-all"
     steps:
       - uses: actions/checkout@v7
-      - name: Install verified pinned Windows sccache
-        shell: pwsh
-        run: ./scripts/ci/install-hosted-windows-sccache.ps1
-      - shell: pwsh
+      - name: Set up the pinned toolchain and the Windows GNU target
         run: |
-          ./scripts/ci/setup-rust.ps1
-          $compilerVersion = (& rustc --version | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $compilerVersion.StartsWith("rustc $env:RUSTUP_TOOLCHAIN ")) {
-            throw 'Resolved Rust compiler differs from the repository toolchain pin'
-          }
+          set -euo pipefail
+          bash scripts/ci/setup-rust.sh
+          rustup target add "$WINDOWS_TARGET"
+          expected="$(sed -nE 's/^channel[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' rust-toolchain.toml)"
+          compiler="$(rustc --version)"
+          case "$compiler" in
+            "rustc $expected "*) ;;
+            *) echo "Resolved Rust compiler differs from the repository toolchain pin: $compiler" >&2; exit 1 ;;
+          esac
+      - name: Create the Wine prefix
+        run: |
+          WINEPREFIX="$RUNNER_TEMP/wine-prefix"
+          echo "WINEPREFIX=$WINEPREFIX" >> "$GITHUB_ENV"
+          WINEPREFIX="$WINEPREFIX" timeout 120 wineboot --init
       - run: cargo fmt --all --check
       # Same strictness as the Linux clippy job: cfg(windows) code is only
       # linted here, so a warning in it must fail this job.
       - name: Strict Windows Clippy without shared cache
-        shell: pwsh
+        timeout-minutes: 25
+        env:
+          RUSTC_WRAPPER: ""
+        run: cargo clippy --target "$WINDOWS_TARGET" --workspace --all-targets -- -D warnings
+      # The per-step limits bound a Wine hang (an unexplained one was seen once on a
+      # paused-time tokio test); a stuck step fails instead of consuming the job budget.
+      - name: Unit tests under Wine
+        timeout-minutes: 15
         run: |
-          . ./scripts/rust-build-common.ps1
-          Disable-AgentBusSccacheForCargoSteps
-          Invoke-AgentBusCargo -Label "Windows Clippy" -Command clippy -AdditionalArgs @("--workspace", "--all-targets", "--", "-D", "warnings")
-      - shell: pwsh
+          unset AGENT_BUS_SERVER_CANDIDATES
+          cargo test --target "$WINDOWS_TARGET" --workspace --lib --bins -- --test-threads=4
+          cargo test --target "$WINDOWS_TARGET" -p agent-bus --test integration_isolation_test
+      - name: Release build
+        timeout-minutes: 25
+        run: cargo build --target "$WINDOWS_TARGET" --release --workspace --bins
+      - name: Executables run under Wine at the expected revision
+        timeout-minutes: 5
         run: |
-          Remove-Item Env:AGENT_BUS_SERVER_CANDIDATES -ErrorAction SilentlyContinue
-          cargo test --workspace --lib --bins -- --test-threads=4
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test -p agent-bus --test integration_isolation_test
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - run: cargo build --release --workspace --bins
-      - run: python -B -m unittest discover -s scripts/ci -p "test_*.py"
+          set -euo pipefail
+          release="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release"
+          expected_prefix="${AGENT_BUS_BUILD_REVISION:0:12}"
+          for binary in agent-bus agent-bus-http; do
+            version="$(wine "$release/$binary.exe" --version)"
+            grep -Fqi "$expected_prefix" <<<"$version" || {
+              echo "$binary build provenance mismatch: expected $expected_prefix, got $version" >&2
+              exit 1
+            }
+          done
+      - run: python3 -B -m unittest discover -s scripts/ci -p "test_*.py"
       - name: Validate concurrent build helper behavior
+        timeout-minutes: 10
         shell: pwsh
         run: ./scripts/test-rust-build-common.ps1
       - name: Validate fleet manifest and doctor fixtures
+        timeout-minutes: 10
         shell: pwsh
         run: ./scripts/test-agent-bus-fleet-fixtures.ps1
-      - name: Validate Codex MCP config parsing and launch environment
-        shell: pwsh
-        run: ./scripts/test-agent-client-config-validator.ps1
       - name: Validate functional smoke isolation and cleanup
+        timeout-minutes: 10
         shell: pwsh
         run: ./scripts/test-agent-bus-functional-isolation.ps1
       - name: Validate published Redis readiness behavior
+        timeout-minutes: 10
         shell: pwsh
         run: ./scripts/test-disposable-redis-ready.ps1
-      - name: Record and upload Windows release provenance
-        shell: pwsh
+      - name: Record Wine-validated release provenance
         run: |
-          $releaseDir = Join-Path $env:CARGO_TARGET_DIR "release"
-          $binaries = @("agent-bus.exe", "agent-bus-http.exe", "agent-bus-mcp.exe")
-          $provenancePath = Join-Path $releaseDir "build-provenance.txt"
-          $provenance = @(
-            "commit=$env:GITHUB_SHA"
-            "runner=$env:RUNNER_NAME"
-            "os=$env:RUNNER_OS"
-            "arch=$env:RUNNER_ARCH"
-            "image_os=$env:ImageOS"
-            "image_version=$env:ImageVersion"
-            "sccache_archive_sha256=$env:AGENT_HUB_SCCACHE_ARCHIVE_SHA256"
-            "sccache_executable_sha256=$env:AGENT_HUB_SCCACHE_EXECUTABLE_SHA256"
-            "cargo_target_dir=$env:CARGO_TARGET_DIR"
-            "rustc_wrapper=$env:RUSTC_WRAPPER"
-            (& cargo --version)
-            (& rustc --version)
-          )
-          if ($env:RUSTC_WRAPPER -and
-              (Test-Path -LiteralPath $env:RUSTC_WRAPPER -PathType Leaf)) {
-            $provenance += $env:RUSTC_WRAPPER
-            $provenance += (& $env:RUSTC_WRAPPER --version)
-            $provenance += (& $env:RUSTC_WRAPPER --show-stats)
-          } else {
-            $provenance += "sccache=disabled"
-          }
-          $provenance | Set-Content -LiteralPath $provenancePath -Encoding utf8
-          $hashPath = Join-Path $releaseDir "artifact-sha256.txt"
-          $binaries | ForEach-Object {
-            $path = Join-Path $releaseDir $_
-            $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path).Hash.ToLowerInvariant()
-            "$hash  $_"
-          } | Set-Content -LiteralPath $hashPath -Encoding utf8
-          Get-Content -LiteralPath $provenancePath, $hashPath |
-            Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          set -euo pipefail
+          release="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release"
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "runner=$RUNNER_NAME"
+            echo "host_os=$RUNNER_OS"
+            echo "host_arch=$RUNNER_ARCH"
+            echo "target=$WINDOWS_TARGET"
+            echo "abi=gnu"
+            echo "validation=wine ($(wine --version))"
+            echo "native_windows_validated=false"
+            echo "cargo_target_dir=$CARGO_TARGET_DIR"
+            echo "rustc_wrapper=${RUSTC_WRAPPER:-}"
+            cargo --version
+            rustc --version
+            x86_64-w64-mingw32-gcc --version | head -1
+          } > "$release/build-provenance.txt"
+          (cd "$release" && sha256sum agent-bus.exe agent-bus-http.exe agent-bus-mcp.exe) > "$release/artifact-sha256.txt"
+          cat "$release/build-provenance.txt" "$release/artifact-sha256.txt" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: agent-bus-windows-x64
           if-no-files-found: error
           retention-days: 7
           path: |
-            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus.exe
-            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http.exe
-            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-mcp.exe
-            ${{ env.CARGO_TARGET_DIR }}/release/build-provenance.txt
-            ${{ env.CARGO_TARGET_DIR }}/release/artifact-sha256.txt
+            ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-gnu/release/agent-bus.exe
+            ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-gnu/release/agent-bus-http.exe
+            ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-gnu/release/agent-bus-mcp.exe
+            ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-gnu/release/build-provenance.txt
+            ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-gnu/release/artifact-sha256.txt
+
+  windows-native:
+    name: Windows Native Validation (manual)
+    # Native-only validation that Wine cannot give: the MSVC-ABI build, real Windows
+    # PowerShell behaviour, and the native executables against owned fixtures. It runs only
+    # on a manual dispatch and is not part of the required PR contexts.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, Windows, X64, local-build]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - shell: pwsh
+        run: ./scripts/ci/setup-rust.ps1
+      - run: cargo build --release --workspace --bins
+      - name: Validate Codex MCP config parsing and launch environment
+        shell: pwsh
+        run: ./scripts/test-agent-client-config-validator.ps1
+      - name: Native CLI and HTTP smoke against owned fixtures
+        shell: pwsh
+        run: |
+          python -B scripts/ci/isolated-services.py smoke `
+            --cli "$env:CARGO_TARGET_DIR/release/agent-bus.exe" `
+            --http "$env:CARGO_TARGET_DIR/release/agent-bus-http.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Owned disposable functional smoke failed" }
 
   bench:
     name: Benchmark Compile

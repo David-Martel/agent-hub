@@ -1,17 +1,18 @@
 # Fleet build runners
 
-Linux build jobs and native Windows smoke use the fleet. Workflows selecting
+Linux build jobs and the Windows cross-build use the fleet. Workflows selecting
 fleet runners must use all default labels rather than the ambiguous
-`self-hosted` label. The Windows build and unit job uses an ephemeral
-GitHub-hosted Windows 2025 runner.
+`self-hosted` label. The Windows build, unit and smoke jobs run on the Linux
+`windows-cross` lane (mingw-w64 cross-compile to `x86_64-pc-windows-gnu`, tests
+under Wine). Native Windows validation is a manual dispatch.
 
 | Target | Runner labels | Intended host | Work |
 | --- | --- | --- | --- |
 | Linux x86-64 | `self-hosted`, `Linux`, `X64` | ASUSPRO13 | format, lint, unit, integration, and native builds |
 | Linux x86-64 Docker | `self-hosted`, `Linux`, `X64`, `docker` | ASUSPRO13 | Linux-container build on the ASUS Docker engine |
 | Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | Spark fleet | native and Docker builds |
-| Windows x86-64 build | `windows-2025` | GitHub-hosted ephemeral VM | Windows compile, native unit tests, and release artifacts |
-| Windows x86-64 smoke | `self-hosted`, `Windows`, `X64`, `local-build` | dtm-p1gen7 | native Windows CLI/HTTP artifact smoke with disposable Linux containers |
+| Windows x86-64 build and smoke (cross) | `self-hosted`, `Linux`, `X64`, `windows-cross` | vigil1 first, asuspro13 fallback | GNU-target compile, strict clippy, unit tests and CLI/HTTP smoke under Wine, release artifacts |
+| Windows x86-64 native (manual) | `self-hosted`, `Windows`, `X64`, `local-build` | dtm-p1gen7 | `workflow_dispatch` only: MSVC-ABI build, Codex config validator and native smoke |
 
 Never put a Windows path such as `T:\RustCache` in workflow-level environment
 variables. Windows-only paths belong in a Windows job. Linux jobs use a private
@@ -46,40 +47,33 @@ changes; retire the previous prefix after active builds finish. Do not flush
 the entire Redis instance because other fleet repositories may have their own
 prefixes.
 
-The Windows build job uses `windows-2025` and
-`scripts/ci/install-hosted-windows-sccache.ps1` to install the official sccache
-0.18.0 Windows release after checking the pinned ZIP SHA-256. The download has
-a 30-second total cancellation deadline; extraction and installation happen
-only after verification, and the executable must report the exact version.
-The bootstrap replaces any inherited Rust toolchain override with the version
-from `rust-toolchain.toml`. Existing `scripts/ci/setup-rust.ps1` then resolves
-that compiler and qualifies cache port 4228: two real Rust compilations,
-matching artifact hashes, a real cache hit and no new error counters, with
-each preflight client limited to 30 seconds. It never restarts a daemon or
-falls back to uncached setup. Strict Windows Clippy still explicitly disables
-its wrapper after this required proof; later test/build steps use the
-qualified cache. The Windows job's 60-minute budget and mandatory coverage
-are unchanged.
+The `windows-cross` image provides `gcc-mingw-w64-x86-64` (posix threads), Wine,
+PowerShell 7, and the `x86_64-pc-windows-gnu` Rust target for the pinned
+toolchain. The jobs set `CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER=wine` and give
+each step its own `timeout-minutes`, because one paused-time tokio test hung once
+under Wine in a measurement run (see the vigil-utils evidence for the windows-cross
+lane). Strict Windows Clippy disables the compiler wrapper, as before.
 
-Cargo and sccache directories under `%LOCALAPPDATA%\agent-hub-ci` are private
-to that fresh VM and discarded when its job ends. No cross-run cache restore
-or fleet Redis credentials are supplied. The standard hosted label selects
-an OS family, not an immutable image: provenance records ImageOS/ImageVersion,
-archive and executable hashes alongside compiler/cache identity. Monitor cold
-job duration and free disk; do not hide capacity failures by skipping tests
-or weakening cache gates.
+What the lane proves and does not prove. It gives cross-target compile, lint and
+unit-test evidence plus an `.exe` smoke under Wine. It is not native Windows
+acceptance: Wine's `sc.exe`, the Service Control Manager, registry semantics,
+ACLs and the Windows TLS trust store are not real Windows. Provenance therefore
+records `validation=wine` and `native_windows_validated=false`. The
+`Windows Native Validation (manual)` job on dtm-p1gen7 runs the MSVC-ABI build, the
+Codex config validator and the native smoke when a person dispatches the workflow.
 
-The required `CLI And HTTP Smoke` job stays on dtm-p1gen7 and downloads the
-Windows artifacts from the successful build in the same workflow run. Its
-owned Redis/PostgreSQL fixtures require a local Linux Docker engine. The
-hosted Windows image's Windows Docker installation is insufficient, and
-GitHub does not support nested virtualization as a reliable replacement.
-The smoke gate continues to fail on unavailable fixtures or a runtime revision
-mismatch. Moving compilation does not remove this remaining fleet dependency.
+Release artifacts change ABI. Tagged releases previously shipped MSVC-ABI
+executables from a native Windows runner. They now ship `x86_64-pc-windows-gnu`
+executables cross-built on the lane, listed in `BUILD-windows-x64.txt` beside the
+checksums. The owner chose the GNU target; an MSVC cross build with cargo-xwin
+remains available for a job that needs it.
 
-Runner capabilities: [official Windows image inventory](https://github.com/actions/runner-images/blob/main/images/windows/Windows2025-Readme.md),
-[hosted runner limitations](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners).
-Pinned cache software: [official sccache 0.18.0 release](https://github.com/mozilla/sccache/releases/tag/v0.18.0).
+The required `CLI And HTTP Smoke` job runs on the same lane and downloads the
+artifacts from the successful `Windows Build And Unit Tests` job. Its owned
+Redis/PostgreSQL fixtures require a local Linux Docker engine on the runner. The
+smoke gate continues to fail on unavailable fixtures or a runtime revision
+mismatch.
+
 
 Every CI release artifact includes the immutable workflow commit, runner, target
 directory, toolchain, exact cache executable/version, cache statistics, and
@@ -98,9 +92,9 @@ feature-branch pushes do not trigger a second matrix. Superseded PR runs may be
 cancelled, while a running main validation is allowed to finish.
 
 These triggers select validation events, not a complete authorization boundary.
-The Windows compile/unit job runs on a fresh hosted VM without developer,
-live-bus, cloud-token or signing credentials. Other PR jobs, including native
-Windows smoke, still route to self-hosted runners; the workflow does not contain a
+The Windows cross-build job runs on a self-hosted Linux runner without developer,
+live-bus, cloud-token or signing credentials. Other PR jobs, including the
+Windows smoke, route to self-hosted runners; the workflow does not contain a
 repository-ownership filter for fork PRs. Do not claim that fork execution is
 prevented by the YAML. Runner access and any GitHub approval controls must be
 verified before permitting untrusted code to execute on fleet infrastructure.

@@ -15,49 +15,68 @@ env:
 jobs:
   windows-x64:
     name: Windows x64 release
-    runs-on: [self-hosted, Windows, X64, local-build]
+    # Cross-compiled on Linux for x86_64-pc-windows-gnu (mingw-w64) on the windows-cross lane
+    # and checked under Wine. Earlier releases were MSVC-ABI builds from a native Windows runner.
+    runs-on: [self-hosted, Linux, X64, windows-cross]
+    timeout-minutes: 60
+    env:
+      WINDOWS_TARGET: x86_64-pc-windows-gnu
+      WINEDEBUG: "-all"
     steps:
       - uses: actions/checkout@v7
-      - shell: pwsh
-        run: ./scripts/ci/setup-rust.ps1
+      - run: bash scripts/ci/setup-rust.sh
+      - run: rustup target add "$WINDOWS_TARGET"
 
       - name: Verify Cargo version matches tag
-        shell: pwsh
+        shell: bash
         run: |
-          $cargoVersion = (Select-String -Path crates/agent-bus-cli/Cargo.toml -Pattern '^version\s*=\s*"(.+)"').Matches[0].Groups[1].Value
-          $tagVersion = "${{ github.ref_name }}".TrimStart('v')
-          if ($cargoVersion -ne $tagVersion) {
-            throw "Cargo version $cargoVersion does not match tag $tagVersion"
+          cargo_version="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' crates/agent-bus-cli/Cargo.toml | head -1)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          test "$cargo_version" = "$tag_version" || {
+            echo "Cargo version $cargo_version does not match tag $tag_version" >&2
+            exit 1
           }
 
-      - run: cargo build --locked --release --workspace --bins
+      - name: Release build
+        timeout-minutes: 25
+        run: cargo build --locked --release --target "$WINDOWS_TARGET" --workspace --bins
 
-      - name: Verify embedded runtime revision
-        shell: pwsh
+      - name: Verify embedded runtime revision under Wine
+        shell: bash
+        timeout-minutes: 5
         run: |
-          $expectedPrefix = $env:AGENT_BUS_BUILD_REVISION.Substring(0, 12)
-          $releaseDir = Join-Path $env:CARGO_TARGET_DIR "release"
-          $cliVersion = & (Join-Path $releaseDir "agent-bus.exe") --version
-          if (-not $cliVersion.Contains($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "CLI build provenance mismatch: expected $expectedPrefix, got $cliVersion"
-          }
-          $httpVersion = & (Join-Path $releaseDir "agent-bus-http.exe") --version
-          if (-not $httpVersion.Contains($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "HTTP build provenance mismatch: expected $expectedPrefix, got $httpVersion"
-          }
+          export WINEPREFIX="$RUNNER_TEMP/wine-prefix"
+          timeout 120 wineboot --init
+          release="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release"
+          expected_prefix="${AGENT_BUS_BUILD_REVISION:0:12}"
+          for binary in agent-bus agent-bus-http; do
+            version="$(wine "$release/$binary.exe" --version)"
+            grep -Fqi "$expected_prefix" <<<"$version" || {
+              echo "$binary build provenance mismatch: expected $expected_prefix, got $version" >&2
+              exit 1
+            }
+          done
+          echo "wine_version=$(wine --version)" > "$RUNNER_TEMP/wine-version.txt"
 
       - name: Stage artifacts and checksums
-        shell: pwsh
+        shell: bash
         run: |
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          $releaseDir = Join-Path $env:CARGO_TARGET_DIR "release"
-          $binaries = @('agent-bus', 'agent-bus-http', 'agent-bus-mcp')
-          foreach ($binary in $binaries) {
-            $name = "$binary-windows-x64.exe"
-            Copy-Item (Join-Path $releaseDir "${binary}.exe") "dist/$name"
-            $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $name" | Add-Content -Path dist/SHA256SUMS-windows-x64 -Encoding ascii
-          }
+          release="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release"
+          mkdir -p dist
+          for binary in agent-bus agent-bus-http agent-bus-mcp; do
+            cp "$release/$binary.exe" "dist/$binary-windows-x64.exe"
+          done
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "target=$WINDOWS_TARGET"
+            echo "abi=gnu"
+            echo "validation=wine"
+            echo "native_windows_validated=false"
+            cat "$RUNNER_TEMP/wine-version.txt"
+            rustc --version
+          } > dist/BUILD-windows-x64.txt
+          cd dist
+          sha256sum ./*.exe > SHA256SUMS-windows-x64
 
       - uses: actions/upload-artifact@v7
         with:
