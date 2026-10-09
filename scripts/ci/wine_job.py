@@ -80,6 +80,8 @@ def tool_bindings(source, proof, cargo):
         source["SCCACHE_DIR"] != owner["directory"]
         or source["SCCACHE_CONF"] != owner["config"]
         or source["SCCACHE_SERVER_PORT"] != "4228"
+        or owner.get("idle_timeout") != "1800"
+        or source.get("SCCACHE_IDLE_TIMEOUT") != "1800"
         or source["CARGO_BUILD_RUSTC"] != rustc
         or linker != proof["linker"]
         or cargo != proof["cargo"]
@@ -108,6 +110,7 @@ def tool_bindings(source, proof, cargo):
         SCCACHE_DIR=owner["directory"],
         SCCACHE_CONF=owner["config"],
         SCCACHE_SERVER_PORT="4228",
+        SCCACHE_IDLE_TIMEOUT="1800",
         CARGO_INCREMENTAL="0",
         CARGO_BUILD_JOBS="2",
         CARGO_TARGET_DIR=str(Path(source["CARGO_TARGET_DIR"]).resolve(strict=True)),

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 import wine_job as job
@@ -184,6 +185,7 @@ class ProofControls(unittest.TestCase):
                 "directory": "admitted-cache-data",
                 "config": "admitted-cache-config",
                 "executable_sha256": self.digest,
+                "idle_timeout": "1800",
             },
         }
         self.source = {
@@ -194,6 +196,7 @@ class ProofControls(unittest.TestCase):
             "SCCACHE_DIR": "admitted-cache-data",
             "SCCACHE_CONF": "admitted-cache-config",
             "SCCACHE_SERVER_PORT": "4228",
+            "SCCACHE_IDLE_TIMEOUT": "1800",
             "CARGO_TARGET_DIR": str(self.target),
             "RUSTC_WORKSPACE_WRAPPER": "",
             "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER": "",
@@ -216,6 +219,60 @@ class ProofControls(unittest.TestCase):
         self.source["CARGO_HOME"] = str(self.root)
         with self.assertRaisesRegex(RuntimeError, "tool home differs"):
             self.bindings()
+
+    def test_missing_or_changed_idle_timeout_is_rejected(self):
+        owner = self.proof["dedicated_cache_owner"]
+        for mapping, key in (
+            (owner, "idle_timeout"),
+            (self.source, "SCCACHE_IDLE_TIMEOUT"),
+        ):
+            for value in (None, "wrong", "0", "1500", "600", 1800):
+                with self.subTest(key=key, value=value):
+                    original = mapping.pop(key)
+                    if value is not None:
+                        mapping[key] = value
+                    try:
+                        with self.assertRaisesRegex(RuntimeError, "bindings changed"):
+                            self.bindings()
+                    finally:
+                        mapping[key] = original
+
+    def test_qualified_idle_timeout_reaches_guest_group_commands(self):
+        (self.root / "agent-bus-config.json").write_text("{}", encoding="utf-8")
+        env = job.closed_environment(self.root, self.source)
+        self.assertNotIn("SCCACHE_IDLE_TIMEOUT", env)
+        mappings = {}
+
+        def fake_guest_command(args, **_kwargs):
+            if args[:2] == ["winepath", "-w"]:
+                converted = "Z:\\owned\\" + Path(args[2]).name
+                mappings[converted] = args[2]
+                return converted
+            if args[:2] == ["winepath", "-u"]:
+                return mappings[args[2]]
+            self.assertEqual(args[:4], ["wine", "cmd", "/c", "type"])
+            self.assertEqual(mappings[args[4]], env["AGENT_BUS_CONFIG"])
+            return "{}"
+
+        guest = SimpleNamespace(
+            directory=self.root,
+            private_environment=lambda value: dict(value),
+            command=fake_guest_command,
+        )
+        env = job.NativeWineProvider.guest_environment(guest, env)
+        env.update(self.bindings())
+        provider = FakeProvider()
+        commands = [[str(self.tool), *command] for command in job.UNIT_COMMANDS]
+        job.group(provider, commands, 900, env)
+        captured = [event for event in provider.events if event[0] == "command"]
+        self.assertEqual(len(captured), len(job.UNIT_COMMANDS))
+        for event in captured:
+            self.assertEqual(event[3]["SCCACHE_IDLE_TIMEOUT"], "1800")
+            self.assertEqual(
+                event[3]["AGENT_BUS_CONFIG"],
+                "Z:\\owned\\agent-bus-config.json",
+            )
+        self.assertTrue(provider.retired)
 
     def test_changed_tool_bytes_rejected(self):
         self.tool.write_bytes(b"changed compiler")
