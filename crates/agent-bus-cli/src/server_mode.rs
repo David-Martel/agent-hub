@@ -29,7 +29,7 @@ use crate::settings::Settings;
 #[cfg(feature = "server-mode")]
 type ClientResult = std::result::Result<Arc<reqwest::Client>, String>;
 #[cfg(feature = "server-mode")]
-static SERVER_CLIENTS: OnceLock<Mutex<HashMap<u64, ClientResult>>> = OnceLock::new();
+static SERVER_CLIENTS: OnceLock<Mutex<HashMap<(u64, bool), ClientResult>>> = OnceLock::new();
 
 #[cfg(feature = "server-mode")]
 const SERVER_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -57,22 +57,35 @@ fn server_settings() -> Settings {
 
 #[cfg(feature = "server-mode")]
 fn client_for_settings(settings: &Settings) -> Result<Arc<reqwest::Client>> {
+    client_with_retry_policy(settings, true)
+}
+
+#[cfg(feature = "server-mode")]
+fn client_with_retry_policy(
+    settings: &Settings,
+    allow_protocol_retries: bool,
+) -> Result<Arc<reqwest::Client>> {
     let mut clients = SERVER_CLIENTS
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .map_err(|_error| anyhow::anyhow!("guarded HTTP client cache lock poisoned"))?;
     clients
-        .entry(settings.probe_connect_timeout_ms)
+        .entry((settings.probe_connect_timeout_ms, allow_protocol_retries))
         .or_insert_with(|| {
-            reqwest::Client::builder()
+            let builder = reqwest::Client::builder()
                 .connect_timeout(Duration::from_millis(settings.probe_connect_timeout_ms))
                 .timeout(SERVER_REQUEST_TIMEOUT)
-                .redirect(reqwest::redirect::Policy::none())
-                .build()
-                .map(Arc::new)
-                .map_err(|error| {
-                    format!("failed to build guarded server-mode HTTP client: {error}")
-                })
+                .redirect(reqwest::redirect::Policy::none());
+            // A consuming Task DELETE must disable even reqwest's default
+            // protocol-NACK retries. Other existing calls keep their policy.
+            let builder = if allow_protocol_retries {
+                builder
+            } else {
+                builder.retry(reqwest::retry::never())
+            };
+            builder.build().map(Arc::new).map_err(|error| {
+                format!("failed to build guarded server-mode HTTP client: {error}")
+            })
         })
         .clone()
         .map_err(|error| anyhow::anyhow!("{error}"))
@@ -451,6 +464,24 @@ pub(crate) fn http_put(url: &str, body: &serde_json::Value) -> Result<serde_json
         reqwest::Method::PUT,
         url,
         Some(body),
+        None,
+    ))
+}
+
+/// Send one consuming DELETE and decode its response without retrying.
+///
+/// # Errors
+/// Returns an error on network failure, non-2xx response, or JSON error.
+#[cfg(feature = "server-mode")]
+pub(crate) fn http_delete(url: &str) -> Result<serde_json::Value> {
+    let settings = server_settings();
+    let client = client_with_retry_policy(&settings, false)?;
+    run_server_future(send_json(
+        &settings,
+        &client,
+        reqwest::Method::DELETE,
+        url,
+        None,
         None,
     ))
 }
