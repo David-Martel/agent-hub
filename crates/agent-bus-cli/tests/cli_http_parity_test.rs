@@ -33,17 +33,17 @@
 //! cargo test -p agent-bus --test cli_http_parity_test -- --ignored --test-threads=1
 //! ```
 
-use std::process::Command;
+mod support;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde_json::{Value, json};
 
 #[path = "../../agent-bus-core/tests/support/backend_env.rs"]
 mod backend_env;
 
-use backend_env::{DATABASE_URL_VAR, REDIS_URL_VAR, SERVER_URL_VAR, TestServerUrl, backend_url};
+use backend_env::TestServerUrl;
 
 const BASE_URL: TestServerUrl = TestServerUrl;
 
@@ -64,46 +64,18 @@ fn unique_suffix() -> String {
 
 /// Fail (not skip) when the HTTP server does not answer `/health`.
 fn require_http(client: &reqwest::blocking::Client) {
-    let resp = client
-        .get(format!("{BASE_URL}/health"))
-        .send()
-        .unwrap_or_else(|e| panic!("agent-bus HTTP unreachable via {SERVER_URL_VAR}: {e}"));
-    assert!(
-        resp.status().is_success(),
-        "agent-bus HTTP /health returned {}",
-        resp.status()
-    );
+    support::require_http_blocking(client);
 }
 
 fn http_client() -> reqwest::blocking::Client {
-    let mut headers = HeaderMap::new();
-    if let Ok(token) = std::env::var("AGENT_BUS_AUTH_TOKEN")
-        && !token.is_empty()
-    {
-        let value = HeaderValue::from_str(&format!("Bearer {token}"))
-            .expect("AGENT_BUS_AUTH_TOKEN should be a valid HTTP header value");
-        headers.insert(AUTHORIZATION, value);
-    }
-
-    reqwest::blocking::Client::builder()
-        .default_headers(headers)
-        .build()
-        .expect("failed to build HTTP test client")
+    support::blocking_http_client()
 }
 
 /// The CLI binary, pointed at the test backends with **default** stream keys
 /// so its Redis keys match the HTTP server under test. The developer's
 /// config.json is kept out so it cannot redirect the child to the real hub.
-fn agent_bus_binary() -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
-    cmd.env_remove("AGENT_BUS_SERVER_URL");
-    cmd.env(
-        "AGENT_BUS_CONFIG",
-        std::env::temp_dir().join(format!("agent-bus-test-config-{}.json", std::process::id())),
-    );
-    cmd.env("AGENT_BUS_REDIS_URL", backend_url(REDIS_URL_VAR));
-    cmd.env("AGENT_BUS_DATABASE_URL", backend_url(DATABASE_URL_VAR));
-    cmd
+fn agent_bus_binary() -> std::process::Command {
+    support::agent_bus_binary()
 }
 
 // ---------------------------------------------------------------------------
