@@ -84,19 +84,15 @@ if (-not $clippyStep.Success) { throw "Expected strict Windows Clippy step was n
 $clippyCommands = $clippyStep.Groups["commands"].Value -replace '(?m)^          ', ''
 $clippyScript = [scriptblock]::Create($clippyCommands)
 
+# Resolve the repository's native compiler before any fixture changes USERPROFILE
+# or RUSTUP_HOME. Windows rustup otherwise discovers the synthetic empty home.
+$nativeFixtureCargo = Resolve-AgentBusNativeCargo
+$nativeFixtureCompiler = Join-Path (Split-Path -Parent $nativeFixtureCargo.Path) $(if ($IsWindows) { 'rustc.exe' } else { 'rustc' })
+if (-not (Test-Path -LiteralPath $nativeFixtureCompiler -PathType Leaf)) { throw 'Fixture native compiler unavailable beside pinned Cargo' }
+
 function New-AgentBusNativeCargoFixture {
-    param([Parameter(Mandatory)][string]$Directory)
-    $rustup = @(Microsoft.PowerShell.Core\Get-Command rustup -CommandType Application -ErrorAction Stop)[0].Source
-    # Read installed tools outside the pinned checkout, without early pipeline
-    # termination (which can prevent LASTEXITCODE from being set).
-    Push-Location -LiteralPath $Directory
-    try {
-        $installedLines = @(& $rustup toolchain list)
-        if ($LASTEXITCODE -ne 0 -or $installedLines.Count -eq 0) { throw 'Native fixture requires an installed compiler' }
-        $installed = ($installedLines[0] -split '\s+')[0]
-    } finally { Pop-Location }
-    $rustc = (& $rustup which --toolchain $installed rustc | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $rustc)) { throw 'Fixture native compiler resolution failed' }
+    param([Parameter(Mandatory)][string]$Directory, [Parameter(Mandatory)][string]$CompilerPath)
+    $rustc = @(Microsoft.PowerShell.Core\Get-Command $CompilerPath -CommandType Application -ErrorAction Stop)[0].Source
     $hostLine = @(& $rustc -vV | Where-Object { $_ -like 'host: *' })
     if ($LASTEXITCODE -ne 0 -or $hostLine.Count -ne 1) { throw 'Fixture compiler host unavailable' }
     $hostTriple = $hostLine[0].Substring(6)
@@ -147,7 +143,7 @@ function Test-AgentBusExplicitUncachedFixture {
     $savedFlag = $script:AgentBusDisableSccacheForCargoSteps
     try {
         New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
-        $fixture = New-AgentBusNativeCargoFixture -Directory $fixtureRoot
+        $fixture = New-AgentBusNativeCargoFixture -Directory $fixtureRoot -CompilerPath $nativeFixtureCompiler
         $env:RUSTUP_HOME = $fixture.RustupHome
         $env:RUSTUP_TOOLCHAIN = 'contrary-image-override'
         $env:USERPROFILE = $fixtureRoot
@@ -437,7 +433,7 @@ exit $global:LASTEXITCODE
         if ($Mode -eq "healthy") {
             # Execute the actual YAML step: it must bypass both inherited env and
             # Cargo config wrappers, preserve -D warnings, and leave GITHUB_ENV alone.
-            $nativeFixture = New-AgentBusNativeCargoFixture -Directory $fixtureRoot
+            $nativeFixture = New-AgentBusNativeCargoFixture -Directory $fixtureRoot -CompilerPath $nativeFixtureCompiler
             $env:RUSTUP_HOME = $nativeFixture.RustupHome
             $env:RUSTUP_TOOLCHAIN = 'contrary-image-override'
             $env:AGENT_BUS_FIXTURE_CALLS = Join-Path $fixtureRoot 'calls.jsonl'
