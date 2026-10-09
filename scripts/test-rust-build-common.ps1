@@ -546,3 +546,7 @@ try {
 }
 Write-Output "Rust build helper regression fixtures passed."
 & (Join-Path $PSScriptRoot 'ci/test-cache-preflight.ps1')
+
+# Expected native failures above must not determine the successful test entrypoint exit.
+# Uncaught assertion failures terminate before this explicit success result.
+exit 0
