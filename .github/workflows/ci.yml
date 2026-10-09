@@ -239,7 +239,7 @@ jobs:
     # Wine run of the GNU-target Windows artifacts on the Linux windows-cross lane. It proves
     # the .exe starts and talks to owned Redis/PostgreSQL fixtures under Wine, not native
     # Windows behaviour; the native check is the manual windows-native job below.
-    runs-on: [self-hosted, Linux, X64, windows-cross]
+    runs-on: [self-hosted, Linux, X64, docker, windows-cross]
     needs: [windows]
     timeout-minutes: 30
     env:
@@ -250,24 +250,18 @@ jobs:
         with:
           name: agent-bus-windows-x64
           path: ci-artifacts/windows-x64
-      - name: Wrap the Windows executables so the Linux smoke driver runs them under Wine
-        run: |
-          set -euo pipefail
-          export WINEPREFIX="$RUNNER_TEMP/wine-smoke"
-          echo "WINEPREFIX=$WINEPREFIX" >> "$GITHUB_ENV"
-          timeout 120 wineboot --init
-          mkdir -p "$RUNNER_TEMP/wine-bin"
-          for binary in agent-bus agent-bus-http; do
-            exe="$PWD/ci-artifacts/windows-x64/$binary.exe"
-            test -f "$exe"
-            printf '#!/bin/sh\nexec wine "%s" "$@"\n' "$exe" > "$RUNNER_TEMP/wine-bin/$binary"
-            chmod +x "$RUNNER_TEMP/wine-bin/$binary"
-          done
+      - name: Verify qualified cross runner and strict cache
+        shell: pwsh
+        run: ./scripts/ci/setup-windows-cross.ps1
       - name: Run functional smoke harness under Wine
         run: |
-          python3 -B scripts/ci/isolated-services.py smoke \
-            --cli "$RUNNER_TEMP/wine-bin/agent-bus" \
-            --http "$RUNNER_TEMP/wine-bin/agent-bus-http"
+          set -euo pipefail
+          : "${AGENT_BUS_CI_RUNNER_CONTAINER_ID:?qualified full runner container ID required}"
+          python3 -B scripts/ci/isolated-services.py smoke --wine \
+            --fixture-network runner-container \
+            --network-container "$AGENT_BUS_CI_RUNNER_CONTAINER_ID" \
+            --cli "$PWD/ci-artifacts/windows-x64/agent-bus.exe" \
+            --http "$PWD/ci-artifacts/windows-x64/agent-bus-http.exe"
 
   audit:
     name: Security Audit
@@ -284,7 +278,7 @@ jobs:
     # Cross-compiled on Linux for x86_64-pc-windows-gnu (mingw-w64) and tested under Wine on
     # the windows-cross lane. This is GNU-ABI cross-target evidence, not native Windows
     # acceptance; native validation is the manual windows-native job.
-    runs-on: [self-hosted, Linux, X64, windows-cross]
+    runs-on: [self-hosted, Linux, X64, docker, windows-cross]
     timeout-minutes: 60
     env:
       WINDOWS_TARGET: x86_64-pc-windows-gnu
@@ -292,22 +286,13 @@ jobs:
       WINEDEBUG: "-all"
     steps:
       - uses: actions/checkout@v7
-      - name: Set up the pinned toolchain and the Windows GNU target
-        run: |
-          set -euo pipefail
-          bash scripts/ci/setup-rust.sh
-          rustup target add "$WINDOWS_TARGET"
-          expected="$(sed -nE 's/^channel[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' rust-toolchain.toml)"
-          compiler="$(rustc --version)"
-          case "$compiler" in
-            "rustc $expected "*) ;;
-            *) echo "Resolved Rust compiler differs from the repository toolchain pin: $compiler" >&2; exit 1 ;;
-          esac
-      - name: Create the Wine prefix
-        run: |
-          WINEPREFIX="$RUNNER_TEMP/wine-prefix"
-          echo "WINEPREFIX=$WINEPREFIX" >> "$GITHUB_ENV"
-          WINEPREFIX="$WINEPREFIX" timeout 120 wineboot --init
+      - name: Validate cross setup refusal and client deadlines
+        timeout-minutes: 4
+        shell: pwsh
+        run: ./scripts/ci/test-setup-windows-cross.ps1
+      - name: Verify qualified cross runner, pinned compiler and strict cache
+        shell: pwsh
+        run: ./scripts/ci/setup-windows-cross.ps1
       - run: cargo fmt --all --check
       # Same strictness as the Linux clippy job: cfg(windows) code is only
       # linted here, so a warning in it must fail this job.
@@ -320,26 +305,25 @@ jobs:
       # paused-time tokio test); a stuck step fails instead of consuming the job budget.
       - name: Unit tests under Wine
         timeout-minutes: 15
-        run: |
-          unset AGENT_BUS_SERVER_CANDIDATES
-          cargo test --target "$WINDOWS_TARGET" --workspace --lib --bins -- --test-threads=4
-          cargo test --target "$WINDOWS_TARGET" -p agent-bus --test integration_isolation_test
+        run: python3 scripts/ci/wine_job.py units
       - name: Release build
         timeout-minutes: 25
         run: cargo build --target "$WINDOWS_TARGET" --release --workspace --bins
       - name: Executables run under Wine at the expected revision
         timeout-minutes: 5
         run: |
-          set -euo pipefail
-          release="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release"
-          expected_prefix="${AGENT_BUS_BUILD_REVISION:0:12}"
-          for binary in agent-bus agent-bus-http; do
-            version="$(wine "$release/$binary.exe" --version)"
-            grep -Fqi "$expected_prefix" <<<"$version" || {
-              echo "$binary build provenance mismatch: expected $expected_prefix, got $version" >&2
-              exit 1
-            }
-          done
+          python3 scripts/ci/wine_job.py versions \
+            --binary "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus.exe" \
+            --binary "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus-http.exe" \
+            --wine-version-file "$RUNNER_TEMP/wine-version.txt"
+      - name: Validate configured shipping GNU MCP executable
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $release = Join-Path $env:CARGO_TARGET_DIR "$env:WINDOWS_TARGET/release"
+          ./scripts/test-agent-client-config-validator.ps1 -WineTestLauncher `
+            -CliPath (Join-Path $release 'agent-bus.exe') `
+            -McpBinaryPath (Join-Path $release 'agent-bus-mcp.exe')
       - run: python3 -B -m unittest discover -s scripts/ci -p "test_*.py"
       - name: Validate concurrent build helper behavior
         timeout-minutes: 10
@@ -368,13 +352,28 @@ jobs:
             echo "host_arch=$RUNNER_ARCH"
             echo "target=$WINDOWS_TARGET"
             echo "abi=gnu"
-            echo "validation=wine ($(wine --version))"
+            echo "validation=wine"
+            cat "$RUNNER_TEMP/wine-version.txt"
             echo "native_windows_validated=false"
             echo "cargo_target_dir=$CARGO_TARGET_DIR"
             echo "rustc_wrapper=${RUSTC_WRAPPER:-}"
+            echo "runner_container_id=$AGENT_BUS_CI_RUNNER_CONTAINER_ID"
+            echo "runner_image_id=$AGENT_HUB_WINDOWS_CROSS_IMAGE_ID"
+            echo "runner_image_source_revision=$AGENT_HUB_WINDOWS_CROSS_IMAGE_SOURCE_REVISION"
+            echo "runner_dockerfile_sha256=$AGENT_HUB_WINDOWS_CROSS_IMAGE_DOCKERFILE_SHA256"
+            echo "configured_shipping_mcp_validation=wine-17-tools"
+            echo "native_windows_dll_validation=not-tested"
             cargo --version
             rustc --version
             x86_64-w64-mingw32-gcc --version | head -1
+            echo "cross_toolchain_and_cache_proof:"
+            cat "$CARGO_TARGET_DIR/cross-toolchain-proof.json"
+            echo "post_build_cache_stats:"
+            "$RUSTC_WRAPPER" --show-stats --stats-format=json
+            for binary in agent-bus agent-bus-http agent-bus-mcp; do
+              echo "pe_imports_binary=$binary.exe"
+              x86_64-w64-mingw32-objdump -p "$release/$binary.exe" | sed -n 's/^[[:space:]]*DLL Name: /dll=/p'
+            done
           } > "$release/build-provenance.txt"
           (cd "$release" && sha256sum agent-bus.exe agent-bus-http.exe agent-bus-mcp.exe) > "$release/artifact-sha256.txt"
           cat "$release/build-provenance.txt" "$release/artifact-sha256.txt" >> "$GITHUB_STEP_SUMMARY"
