@@ -1,267 +1,443 @@
-# Dependabot merge intelligence (ci-accel-20260924, workstream A).
-#
-# Auto-merges a Dependabot PR ONLY when ALL of these hold:
-#   1. It is a semver patch or minor bump (dependabot/fetch-metadata's
-#      update-type), or a pinned grouped update whose group name does not
-#      itself signal a major bump.
-#   2. It is NOT a semver-major bump. Below 1.0 a minor bump counts as major,
-#      and below 0.1 a patch bump does too (0.4 -> 0.8 broke main via #390).
-#      A grouped update is checked dependency by dependency.
-#   3. None of the touched dependency names match DENY_LIST_REGEX (CUDA,
-#      torch, ROS, TensorRT, cuDNN/cuBLAS and similar get a label plus a
-#      changelog/risk comment instead of auto-merge).
-#   4. Every required check passes -- enforced by GitHub itself, not by this
-#      workflow: `gh pr merge --auto` only *arms* native auto-merge, which
-#      GitHub completes once required checks are green and branch protection
-#      is satisfied. This workflow never polls check status itself and never
-#      force-merges a red or pending PR.
-#
-# Runs on self-hosted runners only (the $0 posture). DRY_RUN prints the
-# decision and exits without calling `gh pr merge` or `gh pr edit` -- used to
-# validate the policy logic against a real, already-open Dependabot PR before
-# trusting it to actually merge anything.
-#
-# This is deployed as an identical small per-repo workflow (not a
-# cross-repo `workflow_call`) because this account's Actions "access" level
-# for reusable workflows is `none` on the producer repo (vigil-utils) as of
-# 2026-09-25 -- verified via `gh api repos/David-Martel/vigil-utils/actions/permissions/access`.
-# Changing that is a separate, deliberate follow-up; until then a shared
-# reusable workflow would silently fail to resolve for every caller. The
-# canonical copy of this file lives in vigil-utils at
-# docs/ci/dependabot-automerge.yml for reference; keep per-repo copies
-# byte-identical except for the `runs-on` labels if a repo's runner labels
-# differ.
-
+# Public agent-hub vendors the four reviewed vigil-utils Dependabot core steps.
+# Keep these steps byte/semantic aligned; repository admission below is local policy.
+# CI is the unconditional pull_request producer. Exact-head, latest-attempt evidence
+# must pass before direct merge; unknown versions, groups or workflow evidence hold.
 name: Dependabot auto-merge
-
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       pr_number:
-        description: "PR number to evaluate (manual test/dry-run trigger)"
+        description: PR number to evaluate
         required: true
         type: number
       dry_run:
-        description: "Print the decision without merging or labeling"
+        description: Print the decision without merging or labeling
         required: false
         type: boolean
         default: true
-
 permissions:
   pull-requests: write
   contents: write
-
+  actions: read
 concurrency:
-  group: dependabot-automerge-${{ github.event.pull_request.number || inputs.pr_number }}
+  group: dependabot-automerge-${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || github.run_id }}
   cancel-in-progress: false
-
 jobs:
   decide:
-    if: github.event_name == 'workflow_dispatch' || github.actor == 'dependabot[bot]'
-    runs-on: [self-hosted, Linux, X64]
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'workflow_run' && github.event.workflow_run.event ==
+      'pull_request' && github.event.workflow_run.actor.login == 'dependabot[bot]')
+    runs-on:
+    - self-hosted
+    - Linux
+    - X64
     env:
-      # Anchors avoid over-matching unrelated crates
-      # that merely contain a substring (e.g. "roslibpy" is not ROS core).
-      # POSIX ERE, matched case-insensitively (grep -Ei) against one dependency name per
-      # line. No PCRE "(?i)": GNU grep -E reads it as "? at start of expression", and the
-      # torch/CUDA/NVIDIA alternative then never matched.
-      DENY_LIST_REGEX: '(^|[-_])(torch|cuda|cudnn|cublas|tensorrt|nvidia|nvinfer)([-_]|$)|(^|[-_])ros[-_2]|(^|[-_])rclpy([-_]|$)'
-      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+      DENY_LIST_REGEX: (^|[-_])(torch|cuda|cudnn|cublas|tensorrt|nvidia|nvinfer)([-_]|$)|(^|[-_])ros[-_2]|(^|[-_])rclpy([-_]|$)
+      PR_NUMBER: ${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || 0 }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+      EXPECTED_WORKFLOWS_JSON: '["CI"]'
+      CONDITIONAL_WORKFLOWS_JSON: '{}'
     steps:
-      - name: Dependabot metadata
-        id: meta
-        if: github.event_name != 'workflow_dispatch'
-        uses: dependabot/fetch-metadata@v3
-        with:
-          github-token: ${{ github.token }}
-
-      # workflow_dispatch has no pull_request event payload for
-      # fetch-metadata to read, so the manual/dry-run path derives the same
-      # fields (update-type, dependency-names, dependency-group, versions) from
-      # the PR's own title, which Dependabot writes in a fixed, parseable format
-      # ("build(deps): bump <dep> from X.Y.Z to A.B.C" / "bump the <group> group").
-      # A group title carries no per-dependency versions, so Decide policy holds it.
-      - name: Derive metadata from PR title (manual dispatch only)
-        id: meta_manual
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          title=$(gh pr view "$PR_NUMBER" --json title --jq '.title')
-          # Best-effort semver classification from "from X to Y" in the title. Dependabot
-          # (and fetch-metadata's own parser) accept a "v" prefix, so "from v0.4.3 to
-          # v0.5.0" must parse too; an empty pair would otherwise default to a patch.
-          from_ver=$(echo "$title" | grep -oP 'from \Kv?[0-9][0-9A-Za-z.+-]*' || true)
-          to_ver=$(echo "$title" | grep -oP ' to \Kv?[0-9][0-9A-Za-z.+-]*' || true)
-          group=$(echo "$title" | grep -oP 'bump the \K[^ ]+(?= group)' || true)
-          dep_name=$(echo "$title" | grep -oP 'bump \K[^ ]+(?= from)' || echo "$group")
-          update_type="version-update:semver-patch"
-          if [[ -n "$from_ver" && -n "$to_ver" ]]; then
-            from_major=$(echo "${from_ver#v}" | cut -d. -f1)
-            to_major=$(echo "${to_ver#v}" | cut -d. -f1)
-            from_minor=$(echo "${from_ver#v}" | cut -d. -f2)
-            to_minor=$(echo "${to_ver#v}" | cut -d. -f2)
-            if [[ "$from_major" != "$to_major" ]]; then
-              update_type="version-update:semver-major"
-            elif [[ "$from_minor" != "$to_minor" ]]; then
-              update_type="version-update:semver-minor"
-            fi
+    - name: Resolve the PR, its exact head SHA and Dependabot metadata
+      id: meta
+      env:
+        GH_TOKEN: ${{ github.token }}
+        TRIGGER_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      run: |
+        set -euo pipefail
+        python3 - <<'PYMETA'
+        import json, os, re, subprocess
+        repo = os.environ["GITHUB_REPOSITORY"]
+        pr = os.environ["PR_NUMBER"]
+        if not re.fullmatch(r"[1-9][0-9]*", pr):
+            raise SystemExit("invalid or missing PR number")
+        def api(path):
+            return json.loads(subprocess.check_output(["gh", "api", f"repos/{repo}/{path}"], text=True))
+        def emit(key, value):
+            value = str(value)
+            if "\n" in value or "\r" in value:
+                raise SystemExit("multiline metadata is not admissible")
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+                stream.write(f"{key}={value}\n")
+        p = api(f"pulls/{pr}")
+        head = p.get("head", {}).get("sha", "")
+        author = p.get("user", {}).get("login", "")
+        valid = (p.get("number") == int(pr) and p.get("state") == "open" and not p.get("draft")
+                 and author == "dependabot[bot]" and re.fullmatch(r"[0-9a-f]{40}", head)
+                 and p.get("head", {}).get("repo", {}).get("full_name") == repo
+                 and p.get("base", {}).get("repo", {}).get("full_name") == repo)
+        if not valid:
+            raise SystemExit("PR identity, state, author or source repository is not admissible")
+        trigger = os.environ.get("TRIGGER_HEAD_SHA", "")
+        emit("head-sha", head); emit("author", author)
+        emit("merge-sha", p.get("merge_commit_sha") or "")
+        emit("stale", "true" if trigger and trigger != head else "false")
+        if trigger and trigger != head:
+            raise SystemExit(0)
+        commits=[]
+        for page in range(1, 101):
+            batch=api(f"pulls/{pr}/commits?per_page=100&page={page}")
+            if not isinstance(batch,list): raise SystemExit("invalid commit page")
+            commits.extend(batch)
+            if len(batch)<100: break
+        else: raise SystemExit("commit pagination bound exceeded")
+        if (not commits or len(commits)!=p.get("commits") or commits[-1].get("sha")!=head
+                or len({c.get("sha") for c in commits})!=len(commits)):
+            raise SystemExit("commit snapshot is incomplete or raced the PR head")
+        files=[]; renamed=[]
+        count=p.get("changed_files")
+        if not isinstance(count,int) or isinstance(count,bool) or count<1 or count>3000:
+            raise SystemExit("unverified changed-file count")
+        for page in range(1,32):
+            batch=api(f"pulls/{pr}/files?per_page=100&page={page}")
+            if not isinstance(batch,list): raise SystemExit("invalid changed-file page")
+            files.extend(row.get("filename") for row in batch)
+            for row in batch:
+                if row.get("status")=="renamed":
+                    previous=row.get("previous_filename")
+                    if not isinstance(previous,str) or not previous: raise SystemExit("rename lacks prior path identity")
+                    renamed.append(previous)
+            if len(batch)<100: break
+        else: raise SystemExit("changed-file pagination bound exceeded")
+        if (len(files)!=count or any(not isinstance(path,str) or not path or path.startswith("/")
+                or "\\" in path or any(ord(char)<32 or ord(char)==127 for char in path) or any(part in {".",".."} for part in path.split("/")) for path in files)
+                or len(set(files))!=len(files)):
+            raise SystemExit("changed-file snapshot is incomplete or ambiguous")
+        if any(path.startswith("/") or "\\" in path or any(ord(char)<32 or ord(char)==127 for char in path) or any(part in {".",".."} for part in path.split("/")) for path in renamed):
+            raise SystemExit("unverified previous rename path")
+        files=sorted(set(files+renamed))
+        again=api(f"pulls/{pr}")
+        if (again.get("head",{}).get("sha")!=head or again.get("commits")!=p.get("commits")
+                or again.get("changed_files")!=count or again.get("title")!=p.get("title")):
+            raise SystemExit("PR metadata snapshot changed during inspection")
+        emit("changed-files-json",json.dumps(files,separators=(",",":")))
+        entries={}
+        subjects=[]
+        for commit in commits:
+            if commit.get("author",{}).get("login") != "dependabot[bot]":
+                raise SystemExit("non-Dependabot commit cannot supply merge metadata")
+            message=commit.get("commit",{}).get("message","")
+            subjects.append(message.splitlines()[0] if message else "")
+            block=re.search(r"(?m)^updated-dependencies:\n(.*?)(?:^\.\.\.$|\Z)",message,re.S)
+            if block is None: raise SystemExit("commit lacks Dependabot dependency metadata")
+            names=re.findall(r"(?m)^- dependency-name: ([A-Za-z0-9_./@:+-]+)$",block[1])
+            types=re.findall(r"(?m)^  update-type: (version-update:semver-(?:patch|minor|major))$",block[1])
+            if not names or len(names)!=len(types): raise SystemExit("unrecognized dependency metadata")
+            for name,kind in zip(names,types):
+                if name in entries and entries[name]!=kind: raise SystemExit("ambiguous dependency metadata")
+                entries[name]=kind
+        rank={"version-update:semver-patch":0,"version-update:semver-minor":1,"version-update:semver-major":2}
+        title=p.get("title","")
+        # Versions only come from the verified single-dependency Dependabot title. Group titles
+        # lack previous versions, so the existing policy holds them rather than guessing.
+        match=re.fullmatch(r"(?:[A-Za-z0-9_(): /-]+: )?[Bb]ump ([A-Za-z0-9_./@:+-]+) from (v?[0-9][0-9A-Za-z.+-]*) to (v?[0-9][0-9A-Za-z.+-]*)",title)
+        if len(entries)==1 and (match is None or match[1] not in entries):
+            raise SystemExit("single dependency title does not match commit metadata")
+        group=re.search(r"\bbump(?:s)? (?:the )?(\S+) group\b",title,re.I)
+        if len(entries)>1 and not group:
+            raise SystemExit("group title does not match grouped metadata")
+        if match and len(entries)==1:
+            for subject in subjects:
+                witness=re.fullmatch(r"(?:[A-Za-z0-9_(): /-]+: )?[Bb]ump ([A-Za-z0-9_./@:+-]+) from (v?[0-9][0-9A-Za-z.+-]*) to (v?[0-9][0-9A-Za-z.+-]*)",subject)
+                if witness is None or witness.groups()!=match.groups():
+                    raise SystemExit("PR title versions do not match bot-authored commit subject")
+        emit("dependency-group",group[1] if len(entries)>1 else "")
+        verified=[]
+        if match and len(entries)==1:
+            verified=[{"dependencyName":match[1],"prevVersion":match[2],"newVersion":match[3]}]
+        title_kind="version-update:semver-patch"
+        if match:
+            prev=match[2].lstrip("v").split("."); new=match[3].lstrip("v").split(".")
+            if prev[0]!=new[0]: title_kind="version-update:semver-major"
+            elif len(prev)<2 or len(new)<2: raise SystemExit("unverified semver title")
+            elif prev[1]!=new[1]: title_kind="version-update:semver-minor"
+        emit("title",title); emit("dependency-names",", ".join(sorted(entries)))
+        emit("update-type",max([*entries.values(),title_kind],key=rank.get))
+        emit("updated-dependencies-json",json.dumps(verified,separators=(",",":")) if verified else "")
+        PYMETA
+    - name: Derive verified title versions
+      if: steps.meta.outputs.stale == 'false'
+      id: meta_manual
+      env:
+        PR_TITLE: ${{ steps.meta.outputs.title }}
+      run: |
+        set -euo pipefail
+        title="$PR_TITLE"
+        # Best-effort semver classification from "from X to Y" in the title. Dependabot
+        # (and fetch-metadata's own parser) accept a "v" prefix, so "from v0.4.3 to
+        # v0.5.0" must parse too; an empty pair would otherwise default to a patch.
+        from_ver=$(echo "$title" | grep -oP 'from \Kv?[0-9][0-9A-Za-z.+-]*' || true)
+        to_ver=$(echo "$title" | grep -oP ' to \Kv?[0-9][0-9A-Za-z.+-]*' || true)
+        group=$(echo "$title" | grep -oP 'bump the \K[^ ]+(?= group)' || true)
+        dep_name=$(echo "$title" | grep -oP 'bump \K[^ ]+(?= from)' || echo "$group")
+        update_type="version-update:semver-patch"
+        if [[ -n "$from_ver" && -n "$to_ver" ]]; then
+          from_major=$(echo "${from_ver#v}" | cut -d. -f1)
+          to_major=$(echo "${to_ver#v}" | cut -d. -f1)
+          from_minor=$(echo "${from_ver#v}" | cut -d. -f2)
+          to_minor=$(echo "${to_ver#v}" | cut -d. -f2)
+          if [[ "$from_major" != "$to_major" ]]; then
+            update_type="version-update:semver-major"
+          elif [[ "$from_minor" != "$to_minor" ]]; then
+            update_type="version-update:semver-minor"
           fi
-          {
-            echo "pr_title=$title"
-            echo "update-type=$update_type"
-            echo "dependency-names=$dep_name"
-            echo "dependency-group=$group"
-            echo "previous-version=$from_ver"
-            echo "new-version=$to_ver"
-          } >> "$GITHUB_OUTPUT"
-          echo "[dry-run metadata] title='$title' update_type=$update_type dep=$dep_name"
-
-      - name: Decide policy
-        id: policy
-        env:
-          UPDATE_TYPE: ${{ steps.meta.outputs.update-type || steps.meta_manual.outputs.update-type }}
-          DEP_NAMES: ${{ steps.meta.outputs.dependency-names || steps.meta_manual.outputs.dependency-names }}
-          DEP_GROUP: ${{ steps.meta.outputs.dependency-group || steps.meta_manual.outputs.dependency-group }}
-          PREV_VERSION: ${{ steps.meta.outputs.previous-version || steps.meta_manual.outputs.previous-version }}
-          NEW_VERSION: ${{ steps.meta.outputs.new-version || steps.meta_manual.outputs.new-version }}
-          # One entry per updated dependency. previous-version/new-version above describe
-          # only the FIRST entry (fetch-metadata output.ts), while update-type is the
-          # maximum over the group, so a group must be checked entry by entry.
-          UPDATED_DEPS_JSON: ${{ steps.meta.outputs.updated-dependencies-json }}
-        run: |
-          set -euo pipefail
-          echo "update_type=$UPDATE_TYPE"
-          echo "dep_names=$DEP_NAMES"
-          echo "dep_group=${DEP_GROUP:-}"
-          is_major=false
-          zero_major=false
-          zero_major_detail=""
-          case "$UPDATE_TYPE" in
-            *semver-major*) is_major=true ;;
-          esac
-          # Below 1.0, semver (and Cargo) treat a minor bump as breaking, and below 0.1 a
-          # patch bump too. fetch-metadata still labels 0.4 -> 0.8 "semver-minor", which is how
-          # wl-nl80211 0.4 -> 0.8 (#390) auto-merged and broke main.
-          breaking_zero_major() {
-            local p_major p_minor p_patch n_major n_minor n_patch rest
-            [[ -n "$1" && -n "$2" ]] || return 1
-            IFS=. read -r p_major p_minor p_patch rest <<< "${1#v}"
-            IFS=. read -r n_major n_minor n_patch rest <<< "${2#v}"
-            [[ "$p_major" == 0 && "$n_major" == 0 ]] || return 1
-            [[ "${p_minor:-}" != "${n_minor:-}" ]] && return 0
-            [[ "${p_minor:-}" == 0 && "${p_patch:-}" != "${n_patch:-}" ]]
-          }
-          # One "name<TAB>prev<TAB>new" line per updated dependency. With per-dependency
-          # metadata every entry is checked, so a breaking 0.x bump anywhere in a group
-          # holds it regardless of ordering. Without jq that check cannot run: fail the
-          # job (nothing is merged) rather than fall back to the first entry.
-          pairs=""
-          if [[ -n "${UPDATED_DEPS_JSON:-}" ]]; then
-            if ! command -v jq >/dev/null 2>&1; then
-              echo "::error::jq is required to check every entry of updated-dependencies-json; refusing to decide"
-              exit 1
-            fi
-            pairs=$(jq -r '.[] | [.dependencyName, (.prevVersion // ""), (.newVersion // "")] | @tsv' <<< "$UPDATED_DEPS_JSON")
-          elif [[ -z "${DEP_GROUP:-}" ]]; then
-            pairs=$(printf '%s\t%s\t%s' "$DEP_NAMES" "$PREV_VERSION" "$NEW_VERSION")
+        fi
+        {
+          echo "pr_title=$title"
+          echo "update-type=$update_type"
+          echo "dependency-names=$dep_name"
+          echo "dependency-group=$group"
+          echo "previous-version=$from_ver"
+          echo "new-version=$to_ver"
+        } >> "$GITHUB_OUTPUT"
+        echo "[dry-run metadata] title='$title' update_type=$update_type dep=$dep_name"
+    - name: Decide policy
+      id: policy
+      env:
+        UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+        DEP_NAMES: ${{ steps.meta.outputs.dependency-names }}
+        DEP_GROUP: ${{ steps.meta.outputs.dependency-group }}
+        PREV_VERSION: ${{ steps.meta_manual.outputs.previous-version }}
+        NEW_VERSION: ${{ steps.meta_manual.outputs.new-version }}
+        UPDATED_DEPS_JSON: ${{ steps.meta.outputs.updated-dependencies-json }}
+        AUTHOR: ${{ steps.meta.outputs.author }}
+      run: |
+        set -euo pipefail
+        echo "update_type=$UPDATE_TYPE"
+        echo "dep_names=$DEP_NAMES"
+        echo "dep_group=${DEP_GROUP:-}"
+        is_major=false
+        zero_major=false
+        zero_major_detail=""
+        case "$UPDATE_TYPE" in
+          *semver-major*) is_major=true ;;
+        esac
+        # Below 1.0, semver (and Cargo) treat a minor bump as breaking, and below 0.1 a
+        # patch bump too. fetch-metadata still labels 0.4 -> 0.8 "semver-minor", which is how
+        # wl-nl80211 0.4 -> 0.8 (#390) auto-merged and broke main.
+        breaking_zero_major() {
+          local p_major p_minor p_patch n_major n_minor n_patch rest
+          [[ -n "$1" && -n "$2" ]] || return 1
+          IFS=. read -r p_major p_minor p_patch rest <<< "${1#v}"
+          IFS=. read -r n_major n_minor n_patch rest <<< "${2#v}"
+          [[ "$p_major" == 0 && "$n_major" == 0 ]] || return 1
+          [[ "${p_minor:-}" != "${n_minor:-}" ]] && return 0
+          [[ "${p_minor:-}" == 0 && "${p_patch:-}" != "${n_patch:-}" ]]
+        }
+        # One "name<TAB>prev<TAB>new" line per updated dependency. With per-dependency
+        # metadata every entry is checked, so a breaking 0.x bump anywhere in a group
+        # holds it regardless of ordering. Without jq that check cannot run: fail the
+        # job (nothing is merged) rather than fall back to the first entry.
+        pairs=""
+        if [[ -n "${UPDATED_DEPS_JSON:-}" ]]; then
+          if ! command -v jq >/dev/null 2>&1; then
+            echo "::error::jq is required to check every entry of updated-dependencies-json; refusing to decide"
+            exit 1
           fi
-          printf 'versions: %s\n' "${pairs:-<none>}"
-          while IFS=$'\t' read -r name prev new; do
-            if breaking_zero_major "$prev" "$new"; then
-              is_major=true
-              zero_major=true
-              zero_major_detail="$name $prev -> $new"
-              break
-            fi
-          done <<< "$pairs"
-          # A group seen without per-dependency versions (the manual-dispatch title path)
-          # cannot be checked for 0.x bumps, so it is held rather than assumed compatible.
-          group_unverified=false
-          if [[ -n "${DEP_GROUP:-}" && -z "${UPDATED_DEPS_JSON:-}" ]]; then
-            group_unverified=true
+          pairs=$(jq -r '.[] | [.dependencyName, (.prevVersion // ""), (.newVersion // "")] | @tsv' <<< "$UPDATED_DEPS_JSON")
+        elif [[ -z "${DEP_GROUP:-}" ]]; then
+          pairs=$(printf '%s\t%s\t%s' "$DEP_NAMES" "$PREV_VERSION" "$NEW_VERSION")
+        fi
+        printf 'versions: %s\n' "${pairs:-<none>}"
+        while IFS=$'\t' read -r name prev new; do
+          if breaking_zero_major "$prev" "$new"; then
+            is_major=true
+            zero_major=true
+            zero_major_detail="$name $prev -> $new"
+            break
           fi
-          denied=false
-          # fetch-metadata joins names with ", "; split so every name meets the anchors.
-          if [[ -n "$DEP_NAMES" ]] && printf '%s\n' "$DEP_NAMES" | tr ',' '\n' | tr -d ' ' | grep -Eiq -- "$DENY_LIST_REGEX"; then
-            denied=true
-          fi
-          decision=automerge
-          reason=""
-          if [[ "$zero_major" == true ]]; then
-            decision=hold
-            reason="breaking 0.x bump ($zero_major_detail)"
-          elif [[ "$is_major" == true ]]; then
-            decision=hold
-            reason="semver-major bump ($UPDATE_TYPE)"
-          elif [[ "$group_unverified" == true ]]; then
-            decision=hold
-            reason="grouped update ($DEP_GROUP) without per-dependency versions"
-          elif [[ "$denied" == true ]]; then
-            decision=hold
-            reason="deny-listed dependency ($DEP_NAMES matched $DENY_LIST_REGEX)"
-          fi
-          {
-            echo "is_major=$is_major"
-            echo "denied=$denied"
-            echo "decision=$decision"
-            echo "reason=$reason"
-          } >> "$GITHUB_OUTPUT"
-          echo "DECISION: $decision ${reason:+($reason)}"
-
-      - name: Hold -- label and comment (real runs only)
-        if: steps.policy.outputs.decision == 'hold' && env.DRY_RUN != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh pr edit "$PR_NUMBER" --add-label "dependabot-hold" || \
-            gh label create "dependabot-hold" --color "B60205" \
-              --description "Held from auto-merge: major bump or deny-listed dependency" \
-              --repo "${{ github.repository }}" && \
-            gh pr edit "$PR_NUMBER" --add-label "dependabot-hold"
-          BODY_FILE=$(mktemp)
-          {
-            echo "Auto-merge withheld: ${{ steps.policy.outputs.reason }}."
-            echo ""
-            echo "Update type: \`${{ steps.meta.outputs.update-type || steps.meta_manual.outputs.update-type }}\`"
-            echo "Dependency: \`${{ steps.meta.outputs.dependency-names || steps.meta_manual.outputs.dependency-names }}\`"
-            echo ""
-            echo "Please review the changelog/release notes and merge manually."
-          } > "$BODY_FILE"
-          gh pr comment "$PR_NUMBER" --body-file "$BODY_FILE"
-
-      - name: Automerge -- enable native GitHub auto-merge (real runs only)
-        if: steps.policy.outputs.decision == 'automerge' && env.DRY_RUN != 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh pr merge "$PR_NUMBER" --auto --squash
-
-      - name: Dry-run report (no mutation)
-        if: env.DRY_RUN == 'true'
-        env:
-          DECISION: ${{ steps.policy.outputs.decision }}
-          UPDATE_TYPE_OUT: ${{ steps.meta.outputs.update-type || steps.meta_manual.outputs.update-type }}
-          DEP_NAMES_OUT: ${{ steps.meta.outputs.dependency-names || steps.meta_manual.outputs.dependency-names }}
-          REASON: ${{ steps.policy.outputs.reason }}
-        run: |
-          set -euo pipefail
-          would_run="gh pr edit + gh pr comment (hold)"
-          if [[ "$DECISION" == "automerge" ]]; then
-            would_run="gh pr merge $PR_NUMBER --auto --squash"
-          fi
-          {
-            echo "### Dependabot auto-merge dry-run"
-            echo "PR: #$PR_NUMBER"
-            echo "update_type: $UPDATE_TYPE_OUT"
-            echo "dependency_names: $DEP_NAMES_OUT"
-            echo "decision: $DECISION"
-            echo "reason: $REASON"
-            echo "Would have run: $would_run"
-          } >> "$GITHUB_STEP_SUMMARY"
+        done <<< "$pairs"
+        # A group seen without per-dependency versions (the manual-dispatch title path)
+        # cannot be checked for 0.x bumps, so it is held rather than assumed compatible.
+        group_unverified=false
+        if [[ -n "${DEP_GROUP:-}" && -z "${UPDATED_DEPS_JSON:-}" ]]; then
+          group_unverified=true
+        fi
+        denied=false
+        # fetch-metadata joins names with ", "; split so every name meets the anchors.
+        if [[ -n "$DEP_NAMES" ]] && printf '%s\n' "$DEP_NAMES" | tr ',' '\n' | tr -d ' ' | grep -Eiq -- "$DENY_LIST_REGEX"; then
+          denied=true
+        fi
+        decision=automerge
+        reason=""
+        if [[ "${AUTHOR:-}" != "dependabot[bot]" ]]; then
+          decision=hold
+          reason="PR author is not Dependabot"
+        elif [[ -z "$DEP_NAMES" || ! "$UPDATE_TYPE" =~ ^version-update:semver-(patch|minor|major)$ ]]; then
+          decision=hold
+          reason="missing or unrecognized dependency metadata"
+        elif [[ "$zero_major" == true ]]; then
+          decision=hold
+          reason="breaking 0.x bump ($zero_major_detail)"
+        elif [[ "$is_major" == true ]]; then
+          decision=hold
+          reason="semver-major bump ($UPDATE_TYPE)"
+        elif [[ "$group_unverified" == true ]]; then
+          decision=hold
+          reason="grouped update ($DEP_GROUP) without per-dependency versions"
+        elif [[ "$denied" == true ]]; then
+          decision=hold
+          reason="deny-listed dependency ($DEP_NAMES matched $DENY_LIST_REGEX)"
+        fi
+        {
+          echo "is_major=$is_major"
+          echo "denied=$denied"
+          echo "decision=$decision"
+          echo "reason=$reason"
+        } >> "$GITHUB_OUTPUT"
+        echo "DECISION: $decision ${reason:+($reason)}"
+      if: steps.meta.outputs.stale == 'false'
+    - name: Require every CI job on the exact head SHA
+      id: checks
+      if: steps.meta.outputs.stale == 'false' && steps.policy.outputs.decision == 'automerge'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        HEAD_SHA: ${{ steps.meta.outputs.head-sha }}
+        MERGE_SHA: ${{ steps.meta.outputs.merge-sha }}
+        EXPECTED_WORKFLOWS_JSON: ${{ env.EXPECTED_WORKFLOWS_JSON }}
+        CONDITIONAL_WORKFLOWS_JSON: ${{ env.CONDITIONAL_WORKFLOWS_JSON }}
+        CHANGED_FILES_JSON: ${{ steps.meta.outputs.changed-files-json }}
+      run: |
+        set -euo pipefail
+        python3 - <<'PYGATE'
+        import json, os, re, subprocess
+        repo=os.environ["GITHUB_REPOSITORY"]; head=os.environ["HEAD_SHA"]
+        details=[]; state="pass"
+        def api(path):
+            return json.loads(subprocess.check_output(["gh","api",f"repos/{repo}/{path}"],text=True))
+        def refuse(reason, pending=False):
+            global state
+            details.append(reason)
+            if not pending or state=="fail": state="fail"
+            elif state=="pass": state="pending"
+        def pages(path,key):
+            result=[]; total=None
+            separator="&" if "?" in path else "?"
+            for page in range(1,12):
+                value=api(f"{path}{separator}per_page=100&page={page}")
+                batch=value.get(key); count=value.get("total_count")
+                if (not isinstance(batch,list) or not isinstance(count,int) or isinstance(count,bool)
+                        or count<0 or count>1000 or (total is not None and total!=count)):
+                    raise ValueError("invalid or changing paginated response")
+                total=count; result.extend(batch)
+                if len(batch)<100: break
+            else: raise ValueError("pagination bound exceeded")
+            ids=[row.get("id") for row in result]
+            if len(result)!=total or any(not isinstance(i,int) or isinstance(i,bool) or i<=0 for i in ids) or len(set(ids))!=len(ids):
+                raise ValueError("incomplete or duplicate paginated response")
+            return result
+        def identity(run):
+            return tuple(run.get(k) for k in ("id","workflow_id","head_sha","event","run_number","run_attempt","status","conclusion","path","name"))
+        try:
+            if not re.fullmatch(r"[0-9a-f]{40}",head): raise ValueError("invalid admitted head")
+            expected=json.loads(os.environ["EXPECTED_WORKFLOWS_JSON"])
+            if (not isinstance(expected,list) or not expected or any(not isinstance(n,str) or not n or "\n" in n for n in expected)
+                    or len(set(expected))!=len(expected)):
+                raise ValueError("explicit nonempty unique expected workflow names are required")
+            conditional=json.loads(os.environ.get("CONDITIONAL_WORKFLOWS_JSON","{}"))
+            changed=json.loads(os.environ.get("CHANGED_FILES_JSON","[]"))
+            if (not isinstance(conditional,dict) or not isinstance(changed,list)
+                    or any(not isinstance(path,str) or not path or path.startswith("/") or "\\" in path or any(ord(char)<32 or ord(char)==127 for char in path)
+                           or any(part in {".",".."} for part in path.split("/")) for path in changed)):
+                raise ValueError("unverified conditional workflow admission inputs")
+            def pattern_regex(pattern):
+                if not isinstance(pattern,str) or not pattern or pattern.startswith("/") or any(part in {".","..",""} for part in pattern.split("/")):
+                    raise ValueError("invalid path filter")
+                literal=r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*"
+                if re.fullmatch(literal,pattern): return re.compile(re.escape(pattern))
+                if re.fullmatch(literal+r"/\*\*",pattern):
+                    return re.compile(re.escape(pattern[:-3])+r"/.*")
+                # The only admitted recursive-leaf pattern is the reviewed Canary filter.
+                if pattern=="rust/**/rust-toolchain.toml":
+                    return re.compile(r"rust/(?:[^/]+/)*rust-toolchain\.toml")
+                raise ValueError("unsupported wildcard or negated path filter")
+            for name,patterns in conditional.items():
+                if not isinstance(name,str) or not name or name in expected or not isinstance(patterns,list) or not patterns:
+                    raise ValueError("invalid conditional workflow declaration")
+                matchers=[pattern_regex(pattern) for pattern in patterns]
+                if any(matcher.fullmatch(path) for matcher in matchers for path in changed): expected.append(name)
+            self_path=os.environ["GITHUB_WORKFLOW_REF"].split("/",2)[2].split("@",1)[0]
+            runs=pages(f"actions/runs?head_sha={head}&event=pull_request","workflow_runs")
+            latest={}
+            for run in runs:
+                path=run.get("path","").split("@",1)[0]
+                if path==self_path: continue
+                if (run.get("head_sha")!=head or run.get("event")!="pull_request"
+                        or not isinstance(run.get("workflow_id"),int)
+                        or not isinstance(run.get("run_number"),int) or not isinstance(run.get("run_attempt"),int)
+                        or run["run_attempt"]<1 or not run.get("name")):
+                    raise ValueError("workflow run identity is not verified")
+                key=run["workflow_id"]
+                old=latest.get(key)
+                if old is None or (run["run_number"],run["run_attempt"])>(old["run_number"],old["run_attempt"]): latest[key]=run
+            names=[r["name"] for r in latest.values()]
+            if len(set(names))!=len(names): raise ValueError("ambiguous workflow names")
+            missing=sorted(set(expected)-set(names))
+            if missing: refuse("missing expected workflows: "+json.dumps(missing))
+            if not latest: refuse("no pull_request workflow run exists for the admitted head")
+            for run in latest.values():
+                label=run["name"]; rid=run["id"]
+                if identity(api(f"actions/runs/{rid}"))!=identity(run):
+                    refuse("workflow attempt changed before job inspection"); continue
+                if run.get("status")!="completed":
+                    refuse(f"{label} run is incomplete",pending=True); continue
+                jobs=pages(f"actions/runs/{rid}/attempts/{run['run_attempt']}/jobs","jobs")
+                if not jobs: refuse(f"{label} run has no jobs")
+                allowed={head}
+                merge=os.environ.get("MERGE_SHA","")
+                if re.fullmatch(r"[0-9a-f]{40}",merge): allowed.add(merge)
+                for job in jobs:
+                    if job.get("head_sha") not in allowed or job.get("run_id")!=rid or job.get("run_attempt")!=run["run_attempt"]:
+                        refuse("job head/run/attempt identity is not verified"); continue
+                    conclusion=job.get("conclusion")
+                    if job.get("status")!="completed": refuse(f"{label} job is incomplete",pending=True)
+                    elif conclusion=="success": pass
+                    elif conclusion=="skipped" and run.get("conclusion")=="success":
+                        print("observed skipped job in successful run; conditional provenance is not established")
+                    else: refuse(f"{label} / {job.get('name','<unnamed>')}: {conclusion}")
+                if run.get("conclusion")!="success": refuse(f"{label} run {rid} concluded {run.get('conclusion')}")
+                if identity(api(f"actions/runs/{rid}"))!=identity(run): refuse("workflow attempt changed during job inspection")
+            # A new run/attempt on the same head invalidates the just-inspected latest selection.
+            again=pages(f"actions/runs?head_sha={head}&event=pull_request","workflow_runs")
+            if sorted(map(identity,runs),key=str)!=sorted(map(identity,again),key=str): refuse("workflow snapshot changed before admission")
+        except (ValueError,KeyError,TypeError,subprocess.CalledProcessError) as exc:
+            refuse("CI evidence is unverified: "+type(exc).__name__)
+        with open(os.environ["GITHUB_OUTPUT"],"a",encoding="utf-8") as stream:
+            stream.write(f"verdict={state}\ndetails={json.dumps(details,separators=(',',':'))}\n")
+        print("CI admission:",state,json.dumps(details))
+        PYGATE
+    - name: Hold -- label and comment (real runs only)
+      if: steps.meta.outputs.stale == 'false' && steps.policy.outputs.decision == 'hold' && env.DRY_RUN != 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REASON: ${{ steps.policy.outputs.reason }}
+      run: |
+        set -euo pipefail
+        gh label create dependabot-hold --color B60205 --description 'Held for dependency review' --repo "$GITHUB_REPOSITORY" --force
+        gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label dependabot-hold
+        body=$(mktemp)
+        printf 'Auto-merge withheld: %s
+        Review the changelog and dependency compatibility.
+        ' "$REASON" > "$body"
+        gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$body"
+    - name: Merge the admitted head (real runs only)
+      if: steps.checks.outputs.verdict == 'pass' && env.DRY_RUN != 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        HEAD_SHA: ${{ steps.meta.outputs.head-sha }}
+      run: |
+        set -euo pipefail
+        gh pr merge "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --squash --match-head-commit "$HEAD_SHA"
+    - name: Dry-run report (no mutation)
+      if: env.DRY_RUN == 'true'
+      env:
+        DECISION: ${{ steps.policy.outputs.decision }}
+        VERDICT: ${{ steps.checks.outputs.verdict }}
+      run: |
+        set -euo pipefail
+        printf 'Dependency policy: %s
+        Exact-head CI admission: %s
+        No mutation requested.
+        ' "$DECISION" "$VERDICT" >> "$GITHUB_STEP_SUMMARY"
