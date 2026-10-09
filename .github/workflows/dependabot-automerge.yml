@@ -39,6 +39,8 @@ jobs:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
       EXPECTED_WORKFLOWS_JSON: '["CI"]'
       CONDITIONAL_WORKFLOWS_JSON: '{}'
+      REVIEWED_JOB_INVENTORY_JSON: '{"CI":{"path":".github/workflows/ci.yml","source_sha256":"f250f3a67ba8052efefa700cc9b6839434985547b9e156017bd63f101d7a00ba","required_jobs":["Format Check","Cloud Agentbus (TypeScript)","Lefthook Gates Run","Clippy Lint","Unit Tests","Integration Tests","Release Build (linux-x64)","Release Build (linux-arm64-1)","Release Build (linux-arm64-2)","CLI And HTTP Smoke","Security Audit","Windows Build And Unit Tests","Benchmark Compile","Docker Build (linux-x64)","Docker Build (linux-arm64)"],"auxiliary_sources":{}}}'
+      REVIEWED_SKIP_JOBS_JSON: '{}'
     steps:
     - name: Resolve the PR, its exact head SHA and Dependabot metadata
       id: meta
@@ -298,11 +300,13 @@ jobs:
         MERGE_SHA: ${{ steps.meta.outputs.merge-sha }}
         EXPECTED_WORKFLOWS_JSON: ${{ env.EXPECTED_WORKFLOWS_JSON }}
         CONDITIONAL_WORKFLOWS_JSON: ${{ env.CONDITIONAL_WORKFLOWS_JSON }}
+        REVIEWED_JOB_INVENTORY_JSON: ${{ env.REVIEWED_JOB_INVENTORY_JSON }}
+        REVIEWED_SKIP_JOBS_JSON: ${{ env.REVIEWED_SKIP_JOBS_JSON }}
         CHANGED_FILES_JSON: ${{ steps.meta.outputs.changed-files-json }}
       run: |
         set -euo pipefail
         python3 - <<'PYGATE'
-        import json, os, re, subprocess
+        import base64, hashlib, json, os, re, subprocess
         repo=os.environ["GITHUB_REPOSITORY"]; head=os.environ["HEAD_SHA"]
         details=[]; state="pass"
         def api(path):
@@ -342,6 +346,69 @@ jobs:
                     or any(not isinstance(path,str) or not path or path.startswith("/") or "\\" in path or any(ord(char)<32 or ord(char)==127 for char in path)
                            or any(part in {".",".."} for part in path.split("/")) for path in changed)):
                 raise ValueError("unverified conditional workflow admission inputs")
+            reviewed_skips=json.loads(os.environ.get("REVIEWED_SKIP_JOBS_JSON","{}"))
+            skip_keys={"path","source_sha256","job_name","if_expression","event"}
+            if not isinstance(reviewed_skips,dict) or len(reviewed_skips)>20:
+                raise ValueError("invalid reviewed skip policy")
+            for name,rule in reviewed_skips.items():
+                if (not isinstance(name,str) or not name or not isinstance(rule,dict) or set(rule)!=skip_keys
+                        or any(not isinstance(value,str) or not value for value in rule.values())
+                        or not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml",rule["path"])
+                        or not re.fullmatch(r"[0-9a-f]{64}",rule["source_sha256"])
+                        or rule["event"]!="pull_request"
+                        or rule["if_expression"]!="github.event_name == 'workflow_dispatch'"
+                        or any(ord(char)<32 or ord(char)==127 for char in rule["job_name"])):
+                    raise ValueError("unsupported or malformed reviewed skip declaration")
+            inventory=json.loads(os.environ["REVIEWED_JOB_INVENTORY_JSON"])
+            inventory_keys={"path","source_sha256","required_jobs","auxiliary_sources"}
+            workflow_path=r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml"
+            def valid_job_name(value):
+                return isinstance(value,str) and bool(value) and len(value)<=256 and not any(ord(c)<32 or ord(c)==127 for c in value)
+            if not isinstance(inventory,dict) or not inventory or len(inventory)>20:
+                raise ValueError("nonempty reviewed mandatory job inventory is required")
+            for name,rule in inventory.items():
+                if (not valid_job_name(name) or not isinstance(rule,dict) or set(rule)!=inventory_keys
+                        or not isinstance(rule["path"],str) or not re.fullmatch(workflow_path,rule["path"])
+                        or not isinstance(rule["source_sha256"],str) or not re.fullmatch(r"[0-9a-f]{64}",rule["source_sha256"])
+                        or not isinstance(rule["required_jobs"],list) or not rule["required_jobs"] or len(rule["required_jobs"])>100
+                        or any(not valid_job_name(job) for job in rule["required_jobs"])
+                        or len(set(rule["required_jobs"]))!=len(rule["required_jobs"])
+                        or not isinstance(rule["auxiliary_sources"],dict) or len(rule["auxiliary_sources"])>20
+                        or any(not isinstance(path,str) or not re.fullmatch(workflow_path,path)
+                               or not isinstance(digest,str) or not re.fullmatch(r"[0-9a-f]{64}",digest)
+                               for path,digest in rule["auxiliary_sources"].items())):
+                    raise ValueError("invalid reviewed mandatory job inventory declaration")
+            if not (set(expected)|set(conditional)) <= set(inventory):
+                raise ValueError("every expected or conditional workflow requires a mandatory job inventory")
+            checked_sources={}
+            refs=[head]
+            execution=os.environ.get("MERGE_SHA","")
+            if execution:
+                if not re.fullmatch(r"[0-9a-f]{40}",execution):
+                    raise ValueError("invalid verified merge execution ref")
+                if execution!=head: refs.append(execution)
+            def source_matches(path,digest):
+                for ref in refs:
+                    key=(path,ref)
+                    if key not in checked_sources:
+                        value=api(f"contents/{path}?ref={ref}")
+                        size=value.get("size"); encoded=value.get("content"); blob=value.get("sha")
+                        if (value.get("type")!="file" or value.get("path")!=path or value.get("encoding")!="base64"
+                                or not isinstance(size,int) or isinstance(size,bool) or not 0<size<=1048576
+                                or not isinstance(encoded,str) or not isinstance(blob,str)
+                                or not re.fullmatch(r"[0-9a-f]{40}",blob)):
+                            raise ValueError("unverified workflow source response")
+                        raw=base64.b64decode(encoded.replace("\n","").replace("\r",""),validate=True)
+                        if len(raw)!=size or hashlib.sha1(b"blob "+str(size).encode()+b"\0"+raw).hexdigest()!=blob:
+                            raise ValueError("workflow source Git blob or size mismatch")
+                        checked_sources[key]=hashlib.sha256(raw).hexdigest()
+                    if checked_sources[key]!=digest: return False
+                return True
+            def proven_false_event_skip(run,job):
+                rule=reviewed_skips.get(run["name"])
+                path=run.get("path","").split("@",1)[0]
+                return (rule and run.get("event")==rule["event"] and path==rule["path"]
+                        and job.get("name")==rule["job_name"] and source_matches(path,rule["source_sha256"]))
             def pattern_regex(pattern):
                 if not isinstance(pattern,str) or not pattern or pattern.startswith("/") or any(part in {".","..",""} for part in pattern.split("/")):
                     raise ValueError("invalid path filter")
@@ -379,12 +446,22 @@ jobs:
             if not latest: refuse("no pull_request workflow run exists for the admitted head")
             for run in latest.values():
                 label=run["name"]; rid=run["id"]
+                rule=inventory.get(label)
+                path=run.get("path","").split("@",1)[0]
+                if (not rule or path!=rule["path"] or not source_matches(path,rule["source_sha256"])
+                        or any(not source_matches(aux,digest) for aux,digest in rule["auxiliary_sources"].items())):
+                    refuse(f"{label} workflow/job inventory source is unknown or changed"); continue
                 if identity(api(f"actions/runs/{rid}"))!=identity(run):
                     refuse("workflow attempt changed before job inspection"); continue
                 if run.get("status")!="completed":
                     refuse(f"{label} run is incomplete",pending=True); continue
                 jobs=pages(f"actions/runs/{rid}/attempts/{run['run_attempt']}/jobs","jobs")
                 if not jobs: refuse(f"{label} run has no jobs")
+                job_names=[job.get("name") for job in jobs]
+                if any(not valid_job_name(name) for name in job_names) or len(set(job_names))!=len(job_names):
+                    refuse(f"{label} job names are unverified or duplicated")
+                missing_jobs=sorted(set(rule["required_jobs"])-set(name for name in job_names if isinstance(name,str)))
+                if missing_jobs: refuse(f"{label} missing mandatory jobs: "+json.dumps(missing_jobs))
                 allowed={head}
                 merge=os.environ.get("MERGE_SHA","")
                 if re.fullmatch(r"[0-9a-f]{40}",merge): allowed.add(merge)
@@ -392,10 +469,12 @@ jobs:
                     if job.get("head_sha") not in allowed or job.get("run_id")!=rid or job.get("run_attempt")!=run["run_attempt"]:
                         refuse("job head/run/attempt identity is not verified"); continue
                     conclusion=job.get("conclusion")
+                    if job.get("name") not in rule["required_jobs"] and not (conclusion=="skipped" and proven_false_event_skip(run,job)):
+                        refuse(f"{label} unknown or nonmandatory job: {job.get('name','<unnamed>')} ({conclusion})"); continue
                     if job.get("status")!="completed": refuse(f"{label} job is incomplete",pending=True)
                     elif conclusion=="success": pass
-                    elif conclusion=="skipped" and run.get("conclusion")=="success":
-                        print("observed skipped job in successful run; conditional provenance is not established")
+                    elif conclusion=="skipped" and run.get("conclusion")=="success" and proven_false_event_skip(run,job):
+                        print("accepted exact reviewed event-excluded job with verified workflow source")
                     else: refuse(f"{label} / {job.get('name','<unnamed>')}: {conclusion}")
                 if run.get("conclusion")!="success": refuse(f"{label} run {rid} concluded {run.get('conclusion')}")
                 if identity(api(f"actions/runs/{rid}"))!=identity(run): refuse("workflow attempt changed during job inspection")
