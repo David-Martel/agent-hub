@@ -43,6 +43,7 @@ struct MockHub {
     hit_count: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
     milestones: Arc<Mutex<Vec<String>>>,
+    requests: Arc<Mutex<Vec<serde_json::Value>>>,
     started_at: Instant,
 }
 
@@ -59,6 +60,8 @@ impl MockHub {
         let stop_flag = Arc::clone(&stop);
         let milestones = Arc::new(Mutex::new(Vec::new()));
         let thread_milestones = Arc::clone(&milestones);
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let thread_requests = Arc::clone(&requests);
         let started_at = Instant::now();
         let handle = std::thread::spawn(move || {
             while !stop_flag.load(Ordering::SeqCst) {
@@ -66,9 +69,13 @@ impl MockHub {
                     Ok((stream, _)) => {
                         counter.fetch_add(1, Ordering::SeqCst);
                         record_milestone(&thread_milestones, started_at, "accept");
-                        if let Err(error) =
-                            serve_one(stream, &routes, &thread_milestones, started_at)
-                        {
+                        if let Err(error) = serve_one(
+                            stream,
+                            &routes,
+                            &thread_milestones,
+                            &thread_requests,
+                            started_at,
+                        ) {
                             record_milestone(
                                 &thread_milestones,
                                 started_at,
@@ -96,6 +103,7 @@ impl MockHub {
             hit_count,
             stop,
             milestones,
+            requests,
             started_at,
         }
     }
@@ -113,6 +121,10 @@ impl MockHub {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+    }
+
+    fn requests(&self) -> Vec<serde_json::Value> {
+        self.requests.lock().expect("fixture request lock").clone()
     }
 }
 
@@ -177,12 +189,13 @@ fn consume_fixture_body(
     reader: &mut BufReader<TcpStream>,
     deadline: Instant,
     content_length: usize,
-) -> std::io::Result<()> {
+) -> std::io::Result<Vec<u8>> {
     if content_length > 65_536 {
         return Err(std::io::ErrorKind::InvalidData.into());
     }
     let mut buffer = [0_u8; 1024];
     let mut remaining = content_length;
+    let mut body = Vec::with_capacity(content_length);
     while remaining > 0 {
         reader
             .get_ref()
@@ -193,8 +206,9 @@ fn consume_fixture_body(
             return Err(std::io::ErrorKind::UnexpectedEof.into());
         }
         remaining -= read;
+        body.extend_from_slice(&buffer[..read]);
     }
-    Ok(())
+    Ok(body)
 }
 
 fn write_fixture_response(
@@ -219,6 +233,7 @@ fn serve_one(
     mut stream: TcpStream,
     routes: &[MockRoute],
     milestones: &Mutex<Vec<String>>,
+    requests: &Mutex<Vec<serde_json::Value>>,
     started_at: Instant,
 ) -> std::io::Result<()> {
     stream.set_nonblocking(false)?;
@@ -240,6 +255,7 @@ fn serve_one(
 
     let mut content_length: usize = 0;
     let mut header_count = 0;
+    let mut authorization = String::new();
     loop {
         let header_line = read_fixture_line(&mut reader, deadline)?;
         let trimmed = header_line.trim_end();
@@ -258,8 +274,22 @@ fn serve_one(
                 .parse()
                 .map_err(|_error| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
         }
+        if let Some((name, value)) = trimmed.split_once(':')
+            && name.eq_ignore_ascii_case("authorization")
+        {
+            value.trim().clone_into(&mut authorization);
+        }
     }
-    consume_fixture_body(&mut reader, deadline, content_length)?;
+    let body = consume_fixture_body(&mut reader, deadline, content_length)?;
+    requests
+        .lock()
+        .expect("fixture request lock")
+        .push(serde_json::json!({
+            "method": method,
+            "target": full_path,
+            "authorization": authorization,
+            "body": String::from_utf8_lossy(&body),
+        }));
 
     let response = if let Some(r) = route {
         format!(
@@ -356,6 +386,266 @@ fn stderr_of(output: &std::process::Output) -> String {
 }
 
 #[cfg(feature = "server-mode")]
+fn direct_message_fixture(body: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": "direct-fixture",
+        "timestamp_utc": "2026-10-08T21:00:00Z",
+        "protocol_version": "1.0",
+        "from": "codex-p1",
+        "to": "carbon/room ?#",
+        "topic": "review",
+        "body": body,
+        "thread_id": "fleet-room-wall",
+        "tags": ["repo:vigil-utils", "transport:thunderbolt"],
+    })
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn read_direct_routes_encoded_agents_and_limit_with_bearer_auth() {
+    let message = direct_message_fixture("verified direct read");
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/channels/direct/carbon%2Froom%20%3F%23",
+            status: 200,
+            body: serde_json::json!([message.clone()]).to_string(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "read-direct-encoded")
+        .env("AGENT_BUS_AUTH_TOKEN", "disposable-direct-token")
+        .args([
+            "read-direct",
+            "--agent-a",
+            "p1 &limit=1?+#",
+            "--agent-b",
+            "carbon/room ?#",
+            "--limit",
+            "37",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run direct read");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let messages: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).expect("direct messages");
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0]["body"], message["body"]);
+    let requests = hub.requests();
+    assert_eq!(requests.len(), 2);
+    let request = &requests[1];
+    assert_eq!(request["method"], "GET");
+    assert_eq!(request["authorization"], "Bearer disposable-direct-token");
+    let url = reqwest::Url::parse(&format!(
+        "{}{}",
+        hub.url(),
+        request["target"].as_str().expect("target")
+    ))
+    .expect("request URL");
+    let query: std::collections::HashMap<_, _> = url.query_pairs().collect();
+    assert_eq!(query.len(), 2);
+    assert_eq!(
+        query.get("agent").map(AsRef::as_ref),
+        Some("p1 &limit=1?+#")
+    );
+    assert_eq!(query.get("limit").map(AsRef::as_ref), Some("37"));
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn post_direct_routes_encoded_recipient_and_preserves_payload_with_bearer_auth() {
+    let message = direct_message_fixture("review café\nsecond line");
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "POST",
+            path: "/channels/direct/carbon%2Froom%20%3F%23",
+            status: 200,
+            body: message.to_string(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "post-direct-payload")
+        .env("AGENT_BUS_AUTH_TOKEN", "disposable-direct-token")
+        .args([
+            "post-direct",
+            "--from-agent",
+            "codex-p1",
+            "--to-agent",
+            "carbon/room ?#",
+            "--topic",
+            "review",
+            "--body",
+            "review café\nsecond line",
+            "--thread-id",
+            "fleet-room-wall",
+            "--tag",
+            "repo:vigil-utils",
+            "--tag",
+            "transport:thunderbolt",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run direct post");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let returned: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("direct message");
+    assert_eq!(returned["body"], message["body"]);
+    let requests = hub.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1]["method"], "POST");
+    assert_eq!(
+        requests[1]["authorization"],
+        "Bearer disposable-direct-token"
+    );
+    let payload: serde_json::Value =
+        serde_json::from_str(requests[1]["body"].as_str().expect("body")).expect("JSON payload");
+    assert_eq!(
+        payload,
+        serde_json::json!({"sender": "codex-p1", "topic": "review", "body": "review café\nsecond line", "thread_id": "fleet-room-wall", "tags": ["repo:vigil-utils", "transport:thunderbolt"]})
+    );
+}
+
+#[cfg(feature = "server-mode")]
+fn direct_command_args(post: bool) -> Vec<&'static str> {
+    if post {
+        vec![
+            "post-direct",
+            "--from-agent",
+            "codex-p1",
+            "--to-agent",
+            "carbon",
+            "--body",
+            "review",
+            "--encoding",
+            "json",
+        ]
+    } else {
+        vec![
+            "read-direct",
+            "--agent-a",
+            "codex-p1",
+            "--agent-b",
+            "carbon",
+            "--encoding",
+            "json",
+        ]
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn direct_commands_refuse_offline_hubs_without_local_store_fallback() {
+    for post in [false, true] {
+        let output =
+            agent_bus_with_hub_candidates(&["http://127.0.0.1:1".to_owned()], "direct-offline")
+                .args(direct_command_args(post))
+                .output()
+                .expect("run offline direct command");
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let diagnostic = stderr_of(&output);
+        assert!(
+            diagnostic.contains("offline: no authoritative hub reachable"),
+            "{diagnostic}"
+        );
+        assert!(
+            diagnostic.contains("refusing to silently read or write a local store"),
+            "{diagnostic}"
+        );
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn direct_commands_surface_http_failures_without_success_output_or_local_fallback() {
+    for post in [false, true] {
+        for status in [401, 500] {
+            let hub = MockHub::spawn(vec![
+                health_route(),
+                MockRoute {
+                    method: if post { "POST" } else { "GET" },
+                    path: "/channels/direct/carbon",
+                    status,
+                    body: r#"{"error":"disposable-direct-token"}"#.to_owned(),
+                },
+            ]);
+            let output = agent_bus_with_hub_candidates(&[hub.url()], "direct-http-failure")
+                .env("AGENT_BUS_AUTH_TOKEN", "disposable-direct-token")
+                .args(direct_command_args(post))
+                .output()
+                .expect("run rejected direct command");
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            let diagnostic = stderr_of(&output);
+            assert!(
+                diagnostic.contains(&format!("HTTP {status}")),
+                "{diagnostic}"
+            );
+            assert!(
+                !diagnostic.contains("disposable-direct-token"),
+                "credential must remain redacted"
+            );
+            assert_eq!(hub.hits(), 2);
+        }
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn direct_commands_reject_incorrect_response_types() {
+    for post in [false, true] {
+        let hub = MockHub::spawn(vec![
+            health_route(),
+            MockRoute {
+                method: if post { "POST" } else { "GET" },
+                path: "/channels/direct/carbon",
+                status: 200,
+                body: if post { "[]" } else { "{}" }.to_owned(),
+            },
+        ]);
+        let output = agent_bus_with_hub_candidates(&[hub.url()], "direct-wrong-response")
+            .args(direct_command_args(post))
+            .output()
+            .expect("run invalid direct response");
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(stderr_of(&output).contains(if post {
+            "post-direct response is not a message"
+        } else {
+            "read-direct response is not a message list"
+        }));
+        assert_eq!(hub.hits(), 2);
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn direct_read_uses_reachable_configured_fallback_hub() {
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/channels/direct/carbon",
+            status: 200,
+            body: serde_json::json!([direct_message_fixture("fallback receipt")]).to_string(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(
+        &["http://127.0.0.1:1".to_owned(), hub.url()],
+        "direct-candidate-fallback",
+    )
+    .args(direct_command_args(false))
+    .output()
+    .expect("run fallback direct read");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert!(stdout_of(&output).contains("fallback receipt"));
+    assert_eq!(hub.hits(), 2);
+}
+
+#[cfg(feature = "server-mode")]
 #[test]
 fn service_status_reports_verified_admin_tier() {
     let hub = MockHub::spawn(vec![MockRoute {
@@ -413,6 +703,7 @@ fn service_status_without_server_mode_reports_metadata_without_http_probe() {
     assert_eq!(report["tier"], "server_mode_unavailable");
     assert!(report["admin"].is_null());
     assert_eq!(hub.hits(), 0);
+    assert!(hub.requests().is_empty());
 }
 
 #[cfg(feature = "server-mode")]
