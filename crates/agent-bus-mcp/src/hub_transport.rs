@@ -436,7 +436,10 @@ mod tests {
         settings.hub_config_error = None;
         settings.auth_token = None;
         settings.hub_cache_ttl_seconds = 0;
-        settings.probe_connect_timeout_ms = 750;
+        // Generous on purpose: these tests exercise loopback mocks, not timeouts.
+        // 750 ms is below a Windows SYN retransmit (~1 s), so one dropped
+        // loopback SYN on a loaded CI host failed with "error sending request".
+        settings.probe_connect_timeout_ms = 10_000;
         settings
     }
 

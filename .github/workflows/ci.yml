@@ -95,6 +95,8 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/lefthook"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: bash scripts/ci/check-lefthook-gates.sh
+      - name: Tunnel helper stops only its own ssh
+        run: bash scripts/ci/check-agent-bus-tunnel.sh
 
   clippy:
     name: Clippy Lint
@@ -135,7 +137,10 @@ jobs:
 
   test-integration:
     name: Integration Tests
-    runs-on: [self-hosted, Linux, X64]
+    # `docker`: this job starts Redis and PostgreSQL with `docker run --network container:<self>`,
+    # so it needs a runner with a Docker daemon. vigil1's rootless-podman runners have the docker
+    # CLI but no daemon; without this label they would pick the job up and fail it.
+    runs-on: [self-hosted, Linux, X64, docker]
     needs: [test-unit]
     timeout-minutes: 30
     # Backend tests are #[ignore]d and run only here, against disposable Redis,
