@@ -49,7 +49,7 @@ function Invoke-RemoteFleetCommand {
     if (-not (Test-SafeFleetIdentifier -Value $HostName)) {
         throw "Unsafe SSH host in fleet manifest: $HostName"
     }
-    $output = & ssh $HostName $CommandText 2>&1
+    $output = & ssh -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 $HostName $CommandText 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "SSH command failed on ${HostName}: $($output -join ' ')"
     }
@@ -58,27 +58,41 @@ function Invoke-RemoteFleetCommand {
 
 function Test-BuildRevisionMatch {
     param(
-        [Parameter(Mandatory = $true)][string]$VersionText,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$VersionText,
         [Parameter(Mandatory = $true)][string]$Revision
     )
 
-    return $VersionText -notmatch '(?i)-dirty(?:[ )]|$)' -and
-        $VersionText -match "(?i)-g$([regex]::Escape($Revision))(?:[ )]|$)"
+    if ($Revision -notmatch '^[0-9a-fA-F]{7,40}$' -or $VersionText -match '(?i)dirty') {
+        return $false
+    }
+    # Parse the entire provenance token before comparing. A longer hexadecimal
+    # token must never pass merely because it starts with the expected revision.
+    if ($VersionText -notmatch '^(?:agent-bus(?:-http|-mcp)?\s+)?\d+\.\d+\.\d+ \((?<source>[^\s()]+)(?: \d{4}-\d{2}-\d{2})?\)$') {
+        return $false
+    }
+    $source = $Matches.source
+    if ($source -match '^[0-9a-fA-F]{7,40}$') {
+        return $source -ieq $Revision
+    }
+    if ($source -match '^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?-\d+-g(?<revision>[0-9a-fA-F]{7,40})$') {
+        return $Matches.revision -ieq $Revision
+    }
+    return $false
 }
 
 function Test-BuildRevision {
     param(
         [Parameter(Mandatory = $true)][string]$Machine,
-        [Parameter(Mandatory = $true)][string]$VersionText,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$VersionText,
         [Parameter(Mandatory = $true)][string]$Revision,
         [string]$CheckName = "build-revision"
     )
 
     if (Test-BuildRevisionMatch -VersionText $VersionText -Revision $Revision) {
-        Add-FleetCheck -Machine $Machine -Check $CheckName -Status "ok" -Detail "Reports clean g$Revision"
+        Add-FleetCheck -Machine $Machine -Check $CheckName -Status "ok" -Detail "Reports exact clean revision $Revision"
     }
     else {
-        Add-FleetCheck -Machine $Machine -Check $CheckName -Status "fail" -Detail "Expected clean g$Revision; observed '$VersionText'"
+        Add-FleetCheck -Machine $Machine -Check $CheckName -Status "fail" -Detail "Expected exact clean revision $Revision; observed '$VersionText'"
     }
 }
 
@@ -102,9 +116,14 @@ function Test-HealthDocument {
     else {
         Add-FleetCheck -Machine $Machine -Check "protocol" -Status "fail" -Detail "Expected $ProtocolVersion; observed '$($Health.protocol_version)'"
     }
+    $serviceBuild = if ($Health.backend.mode -eq "remote") {
+        [string]$Health.backend.hub_build
+    } else {
+        [string]$Health.build_version
+    }
     Test-BuildRevision `
         -Machine $Machine `
-        -VersionText ([string]$Health.build_version) `
+        -VersionText $serviceBuild `
         -Revision $Revision `
         -CheckName "service-build-revision"
     if ($Health.pg_dropped_writes -eq 0 -and $Health.pg_write_errors -eq 0) {
@@ -113,6 +132,66 @@ function Test-HealthDocument {
     else {
         Add-FleetCheck -Machine $Machine -Check "write-integrity" -Status "fail" -Detail "Dropped writes=$($Health.pg_dropped_writes), write errors=$($Health.pg_write_errors)"
     }
+}
+
+function Test-FleetHealthRoute {
+    param(
+        [Parameter(Mandatory = $true)]$Machine,
+        [Parameter(Mandatory = $true)]$Health,
+        [Parameter(Mandatory = $true)][string]$AuthorityMachine
+    )
+
+    $mode = [string]$Health.backend.mode
+    $url = [string]$Health.backend.url
+    $expectedUrl = [string]$Machine.client_server_url
+    $localAuthority = $Machine.role -eq "authority" -and $mode -eq "local" -and
+        $Machine.allow_default_server_url -eq $true -and $expectedUrl -eq "http://localhost:8400"
+    if (($mode -eq "remote" -and $url -ceq $expectedUrl) -or $localAuthority) {
+        $detail = if ($localAuthority) { "Authority uses its local backend; HTTP listener still needs a separate probe" } else { $url }
+        Add-FleetCheck -Machine $Machine.id -Check "route" -Status "ok" -Detail $detail
+    } else {
+        Add-FleetCheck -Machine $Machine.id -Check "route" -Status "fail" -Detail "Expected $expectedUrl; selected mode='$mode', url='$url'"
+    }
+    if (($mode -eq "remote" -and $Health.backend.authoritative -eq $true) -or $localAuthority) {
+        Add-FleetCheck -Machine $Machine.id -Check "authority" -Status "ok" -Detail "Uses the claims authority"
+    } else {
+        Add-FleetCheck -Machine $Machine.id -Check "authority" -Status "fail" -Detail "Health did not establish an authoritative backend"
+    }
+    if ([string]$Health.hub_identity -ceq $AuthorityMachine) {
+        Add-FleetCheck -Machine $Machine.id -Check "hub-identity" -Status "ok" -Detail $AuthorityMachine
+    } else {
+        Add-FleetCheck -Machine $Machine.id -Check "hub-identity" -Status "fail" -Detail "Expected $AuthorityMachine; reported '$($Health.hub_identity)'"
+    }
+}
+
+function Test-FleetConfigAuthSource {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$RouteUrl,
+        [scriptblock]$TokenFilePresent = {
+            param($Path)
+            if ($Path.StartsWith('~/')) { $Path = Join-Path ([Environment]::GetFolderPath('UserProfile')) $Path.Substring(2) }
+            return (Test-Path -LiteralPath $Path -PathType Leaf) -and (Get-Item -LiteralPath $Path).Length -gt 0
+        }
+    )
+
+    $candidate = @($Config.server_urls | Where-Object { $_ -isnot [string] -and $_.url -ceq $RouteUrl })
+    if ($candidate.Count -gt 1) { return $false }
+    if ($candidate.Count -eq 1) {
+        # Explicit sources replace the global credential, including an absent file.
+        if (-not [string]::IsNullOrWhiteSpace([string]$candidate[0].token_file)) {
+            return [bool](& $TokenFilePresent ([string]$candidate[0].token_file))
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$candidate[0].token_env)) {
+            # Environment-source qualification requires a separate host-specific
+            # check; never substitute the global token for an explicit source.
+            return $false
+        }
+    }
+    if ($Config.PSObject.Properties['auth_token_present']) {
+        return $Config.auth_token_present -eq $true
+    }
+    return -not [string]::IsNullOrWhiteSpace([string]$Config.auth_token)
 }
 
 if (-not (Test-Path -LiteralPath $ManifestPath)) {
@@ -195,39 +274,23 @@ else {
         try {
             if ($machine.connection -eq "local-windows") {
                 $versionText = (& $machine.cli_path --version 2>&1 | Out-String).Trim()
+                if ($LASTEXITCODE -ne 0) { throw "CLI version command failed ($LASTEXITCODE)" }
                 Test-BuildRevision -Machine $machineId -VersionText $versionText -Revision $revision
 
                 $config = Get-Content -LiteralPath $machine.config_path -Raw | ConvertFrom-Json
-                $effectiveServerUrl = [string]$config.server_url
-                if ([string]::IsNullOrWhiteSpace($effectiveServerUrl) -and $machine.allow_default_server_url -eq $true) {
-                    $effectiveServerUrl = "http://localhost:8400"
-                }
-                if ($effectiveServerUrl -eq [string]$machine.client_server_url) {
-                    Add-FleetCheck -Machine $machineId -Check "route" -Status "ok" -Detail $effectiveServerUrl
-                }
-                else {
-                    Add-FleetCheck -Machine $machineId -Check "route" -Status "fail" -Detail "Expected $($machine.client_server_url); observed '$($config.server_url)'"
-                }
-                if ([string]::IsNullOrWhiteSpace([string]$config.auth_token)) {
+                # Observe the host's real configuration and inherited overrides.
+                # Forcing the manifest URL would conceal actual routing drift.
+                $healthText = (& $machine.cli_path health --encoding json | Out-String)
+                if ($LASTEXITCODE -ne 0) { throw "CLI health command failed ($LASTEXITCODE)" }
+                $health = $healthText | ConvertFrom-Json
+                Test-FleetHealthRoute -Machine $machine -Health $health -AuthorityMachine $manifest.authority_machine
+                if (-not (Test-FleetConfigAuthSource -Config $config -RouteUrl ([string]$machine.client_server_url))) {
                     Add-FleetCheck -Machine $machineId -Check "auth-source" -Status "fail" -Detail "Client config has no bearer token source"
                 }
                 else {
                     Add-FleetCheck -Machine $machineId -Check "auth-source" -Status "ok" -Detail "Bearer token source present (redacted)"
                 }
 
-                $priorServerUrl = $env:AGENT_BUS_SERVER_URL
-                try {
-                    $env:AGENT_BUS_SERVER_URL = [string]$machine.client_server_url
-                    $health = (& $machine.cli_path health --encoding json | Out-String) | ConvertFrom-Json
-                }
-                finally {
-                    if ([string]::IsNullOrEmpty($priorServerUrl)) {
-                        Remove-Item Env:AGENT_BUS_SERVER_URL -ErrorAction SilentlyContinue
-                    }
-                    else {
-                        $env:AGENT_BUS_SERVER_URL = $priorServerUrl
-                    }
-                }
                 Test-HealthDocument -Machine $machineId -Health $health -ProtocolVersion $manifest.expected_protocol_version -Revision $revision
 
                 foreach ($serviceName in @($machine.required_active_services)) {
@@ -261,19 +324,19 @@ else {
                 $versionText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "$cliShell --version"
                 Test-BuildRevision -Machine $machineId -VersionText $versionText -Revision $revision
 
-                $configSummaryText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "jq -c '{server_url,auth_token_present:((.auth_token|type)==`"string`" and (.auth_token|length)>0)}' $configShell"
+                $configSummaryText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "jq -c '{server_url,auth_token_present:((.auth_token|type)==`"string`" and (.auth_token|length)>0),server_urls:[.server_urls[]? | if type==`"string`" then {url:.} else {url,role,hub,token_file,token_env} end]}' $configShell"
                 $configSummary = $configSummaryText | ConvertFrom-Json
-                $effectiveServerUrl = [string]$configSummary.server_url
-                if ([string]::IsNullOrWhiteSpace($effectiveServerUrl) -and $machine.allow_default_server_url -eq $true) {
-                    $effectiveServerUrl = "http://localhost:8400"
+                $tokenFilePresent = {
+                    param($Path)
+                    if ($Path -match '^~/[0-9A-Za-z._/+-]+$') {
+                        $tokenShell = '"$HOME"/' + "'$($Path.Substring(2))'"
+                    } else {
+                        $tokenShell = ConvertTo-PosixShellLiteral -Path $Path
+                    }
+                    $present = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "if test -f $tokenShell && test -s $tokenShell; then echo true; else echo false; fi"
+                    return $present -eq "true"
                 }
-                if ($effectiveServerUrl -eq [string]$machine.client_server_url) {
-                    Add-FleetCheck -Machine $machineId -Check "route" -Status "ok" -Detail $effectiveServerUrl
-                }
-                else {
-                    Add-FleetCheck -Machine $machineId -Check "route" -Status "fail" -Detail "Expected $($machine.client_server_url); observed '$($configSummary.server_url)'"
-                }
-                $authSourcePresent = $configSummary.auth_token_present -eq $true
+                $authSourcePresent = Test-FleetConfigAuthSource -Config $configSummary -RouteUrl ([string]$machine.client_server_url) -TokenFilePresent $tokenFilePresent
                 if ($machine.auth_source -eq "hub-env") {
                     $hubEnvAuth = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "if grep -Eq '^AGENT_BUS_AUTH_TOKEN=.+$' $hubEnvShell; then echo true; else echo false; fi"
                     $authSourcePresent = $hubEnvAuth -eq "true"
@@ -297,6 +360,7 @@ else {
 
                 $healthText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "$cliShell health --encoding json"
                 $health = $healthText | ConvertFrom-Json
+                Test-FleetHealthRoute -Machine $machine -Health $health -AuthorityMachine $manifest.authority_machine
                 Test-HealthDocument -Machine $machineId -Health $health -ProtocolVersion $manifest.expected_protocol_version -Revision $revision
 
                 foreach ($serviceName in @($machine.required_active_services)) {
