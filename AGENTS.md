@@ -106,5 +106,5 @@ Jules (Google's async coding agent) reads this file. It runs in a Google-hosted 
 
 - Repo quality contract: [docs/QUALITY_GATES.md](./docs/QUALITY_GATES.md)
 - git-guard overlay: [.qa-gate.conf](./.qa-gate.conf) (account-wide git-guard + this file)
-- Fleet DNS / Cloudflare status: [docs/fleet-dns-and-cloud-status-2026-10-08.md](./docs/fleet-dns-and-cloud-status-2026-10-08.md)
+- Fleet DNS / Cloudflare status: [docs/fleet-dns-and-cloud-status.md](./docs/fleet-dns-and-cloud-status.md)
 - Network-location routing: [docs/network-location-routing.md](./docs/network-location-routing.md)

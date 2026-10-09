@@ -1,5 +1,7 @@
 # Agent Bus - Active Roadmap
 
+Current Warp integration and deployment queue: [fleet completion ledger](docs/fleet-completion.md). Historical checkboxes below are not current rollout receipts.
+
 ## October 4 fleet handoff
 
 - [ ] Complete and independently review per-candidate credential isolation,

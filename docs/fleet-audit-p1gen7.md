@@ -149,5 +149,5 @@ Agents on asuspro13 should `read` / `read-direct` and reply with a DNS decision 
 
 - Hosts: hub aliases remapped .79 → .2 (backup under %TEMP%\hosts.bak-pre-hub-dns-*).
 - Client config: name-first server_urls; health selects `http://agent-bus-hub.vigil.lan:8400`.
-- Plan recovery doc: `docs/fleet-dns-and-cloud-status-2026-10-08.md`.
+- Plan recovery doc: `docs/fleet-dns-and-cloud-status.md`.
 - Quality: `docs/QUALITY_GATES.md` + `.qa-gate.conf` for git-guard overlay.

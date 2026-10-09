@@ -68,7 +68,7 @@ Do **not** hard-code a single static LAN IP as the only route. Use:
 4. Cloudflare `https://agentbus.dtmventures.com` as **cloud** role only until
    hub↔cloud sync + tokens are proven (agent-hub#79/#110)
 
-See `docs/fleet-dns-and-cloud-status-2026-10-08.md` for current fleet status.
+See `docs/fleet-dns-and-cloud-status.md` for current fleet status.
 
 ## Consistency across David-Martel / dtmventures repos
 
@@ -78,7 +78,7 @@ See `docs/fleet-dns-and-cloud-status-2026-10-08.md` for current fleet status.
 | Conventional commits | preferred; agent trailer when agent-authored |
 | Python | ruff E,F block via git-guard; project ruff/mypy when configured |
 | Rust | fmt+clippy+isolated tests; no live bus |
-| Docs drift | prefer dated status docs over rewriting history |
+| Docs drift | use stable paths; retain observation dates and revisions in content |
 
 Improvements welcome: extend isolated test refusals, add hub_identity
 assertions to smoke scripts, keep cloud fixtures separate from on-site tokens.

@@ -24,7 +24,7 @@ Canonical pieces already in-tree:
 |---|---|---|
 | lab-lan (`192.168.50.0/24`) | `http://agent-bus-hub.vigil.lan:8400` (name) → IP fallback | asuspro13 |
 | lab-fabric (`10.60.0.0/16`) | `http://asuspro13-p2p-<client>:8400` | asuspro13 |
-| umich / home-lan (suffix) | `http://127.0.0.1:18480` via SSH forward | asuspro13 |
+| umich / home-lan (suffix) | `http://localhost:18480` via SSH forward | asuspro13 |
 | elsewhere | `https://agentbus.dtmventures.com` **cloud role only** until sync | cloud store |
 
 Claims stay on the **on-site** hub until federation is proven. Cloud is a
@@ -55,10 +55,10 @@ split name) for other fleet hosts.
 
 ## Cloudflare next steps (priority)
 
-1. Owner deploy Worker from current `main` / #113+#110 once green.
-2. Mint **fresh** cloud `AGENT_BUS_TOKENS` (hub + per-agent + operator); store
+1. Review federation reliability and authorization separately; #110 remains draft until crash-safe ingestion, legacy claims and concurrent presence are validated. Deploy a reviewed, green main revision only.
+2. Preserve the complete existing write-only token map and verified recovery copy before additive token minting or rotation. Validate private permissions before storing
    0600; install `~/.config/agent-bus/cloud-token` for client cloud candidate.
-3. Enable hub→cloud sync on ASUS only after token + route smoke.
+3. Enable hub→cloud sync on ASUS only after token, route, replay, restart, cursor, no-echo and off-site filtering gates pass.
 4. Keep cloud candidate `role: cloud` — never authoritative for claims.
 5. Re-test off-LAN: health + authenticated send/read with cloud token; expect
    store isolation until sync catches up.
