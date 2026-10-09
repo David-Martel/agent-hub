@@ -253,10 +253,9 @@ Beyond the identity/role model above:
 - **Resource-name normalization.** Claim resource names are folded
   (backslash -> forward slash, lowercased, leading `./` stripped, capped at
   256 chars) via `normalizeResourceName` in `src/claims-logic.ts`. The Rust hub
-  now folds identically (`normalize_resource_name` in `crates/agent-bus-core/
-  src/channels.rs`, agent-hub#79 step 0), so a resource named `Foo.rs` on-site
-  and `foo.rs` here is the same resource name on both sides. The two tiers
-  still keep separate claim state: the hub does not proxy claims to the cloud
+  retains its separator-only normalization for on-site claim and event keys,
+  preserving case, leading `./`, existing leases and history. The two tiers
+  keep separate claim state: the hub does not proxy claims to the cloud
   (see `docs/cloud-sync.md`).
 - **Generic 500s.** The error handler (`guarded()` in `src/index.ts`) never
   echoes a raw SQLite error, a `Date` parsing failure, or any other internal

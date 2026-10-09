@@ -55,7 +55,8 @@ A message may leave only if both hold:
 from a persisted cursor and follows `has_more`. Each message is written to the
 local stream with its original `id`, `origin_hub`, `client_msg_id`, `origin_seq`,
 `hlc` and `sensitivity`. Ingest is idempotent on `(origin_hub, id)` through a
-Redis `SET NX` marker with a 30 day lifetime, and PostgreSQL rows go through
+Redis marker with a 30 day lifetime. The marker and stream append are written
+in one server-atomic script; append errors leave no marker. PostgreSQL rows go through
 `ON CONFLICT DO NOTHING` plus the new unique index. Per-recipient notifications
 are appended so `check_inbox` sees the message; pending-ack tracking, ownership
 tracking and pub/sub are skipped, because the event happened elsewhere. Items
@@ -63,7 +64,8 @@ that cannot be parsed are skipped and logged, never fatal.
 
 Pulled presence comes from `GET /presence` every ~15 s and goes to Redis only.
 A row is dropped if its `origin_hub` is this hub, if it has expired, or if the
-local row for the same agent is as new or newer. It is never added to the
+local row for the same agent is as new or newer. An atomic compare-and-set
+rechecks concurrent local announcements before writing. It is never added to the
 PostgreSQL presence history, so it cannot be pushed back.
 
 **Claims are not synced or proxied.** They are not in the message stream and
@@ -113,11 +115,10 @@ SYNC-CONTRACT.md section 7.
   no-op, not an error. Index names are schema-scoped: custom `message_table`
   names that share a schema with another message table share this index name,
   as they already did for the existing indexes.
-- Claim and resource-event keys fold the resource name like the Worker's
-  `normalizeResourceName`: backslash to `/`, Unicode lowercase, one leading
-  `./` removed; empty and over-256-code-unit names are rejected. Claim keys for
-  paths containing uppercase letters therefore change, and a live claim made
-  before the upgrade is not found under the new key until its lease expires.
+- On-site claim and resource-event keys keep their existing separator-only
+  normalization (backslash to `/`), preserving case, leading `./`, live leases
+  and event history. Claims are not synced; the Worker's lowercase resource
+  normalization applies only to cloud resource names.
 
 ## Not done yet
 

@@ -14,6 +14,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use agent_bus_core::channels::{ClaimStatus, get_arbitration_state, release_claim, renew_claim};
 use agent_bus_core::models::{Message, PROTOCOL_VERSION, Presence, Sensitivity};
 use agent_bus_core::postgres_store::{
     connect_postgres, list_messages_postgres_with_filters, list_presence_events_after,
@@ -211,6 +212,235 @@ fn ingest_refuses_a_message_without_an_origin() {
             .is_empty(),
         "nothing may be written for an unattributed message"
     );
+}
+
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL (disposable Redis)"]
+#[test]
+fn ingest_append_errors_leave_no_marker_and_retries_succeed() {
+    let tag = unique();
+    let settings = redis_settings(&tag);
+    let mut conn = connect(&settings).expect("disposable Redis unreachable");
+    let msg = message(&unique(), Some(&tag));
+    let seen = ingest_seen_key(&tag, &msg.id);
+    // Wrong-type errors are rejected before reserving the marker.
+    let _: () = redis::cmd("SET")
+        .arg(&settings.stream_key)
+        .arg("not a stream")
+        .query(&mut conn)
+        .unwrap();
+    assert!(ingest_synced_message(&mut conn, &settings, &msg, None).is_err());
+    assert!(
+        !redis::cmd("EXISTS")
+            .arg(&seen)
+            .query::<bool>(&mut conn)
+            .unwrap()
+    );
+    let _: () = redis::cmd("DEL")
+        .arg(&settings.stream_key)
+        .query(&mut conn)
+        .unwrap();
+    // A valid stream at its maximum ID passes TYPE but makes XADD '*' fail.
+    let _: String = redis::cmd("XADD")
+        .arg(&settings.stream_key)
+        .arg("18446744073709551615-18446744073709551615")
+        .arg("id")
+        .arg("exhausted")
+        .query(&mut conn)
+        .unwrap();
+    assert!(ingest_synced_message(&mut conn, &settings, &msg, None).is_err());
+    assert!(
+        !redis::cmd("EXISTS")
+            .arg(&seen)
+            .query::<bool>(&mut conn)
+            .unwrap()
+    );
+    let _: () = redis::cmd("DEL")
+        .arg(&settings.stream_key)
+        .query(&mut conn)
+        .unwrap();
+    assert_eq!(
+        ingest_synced_message(&mut conn, &settings, &msg, None).unwrap(),
+        IngestOutcome::Ingested
+    );
+    assert_eq!(
+        ingest_synced_message(&mut conn, &settings, &msg, None).unwrap(),
+        IngestOutcome::Duplicate
+    );
+    assert_eq!(
+        read_messages_after(&mut conn, &settings, "0-0", 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    let _: () = redis::cmd("DEL")
+        .arg(&settings.stream_key)
+        .arg(&seen)
+        .query(&mut conn)
+        .unwrap();
+}
+
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL (disposable Redis)"]
+#[test]
+fn concurrent_duplicate_ingestions_append_exactly_once() {
+    let tag = unique();
+    let settings = redis_settings(&tag);
+    let msg = message(&unique(), Some(&tag));
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let outcomes: Vec<_> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let barrier = std::sync::Arc::clone(&barrier);
+                let settings = &settings;
+                let msg = &msg;
+                scope.spawn(move || {
+                    let mut conn = connect(settings).expect("disposable Redis unreachable");
+                    barrier.wait();
+                    ingest_synced_message(&mut conn, settings, msg, None).unwrap()
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .collect()
+    });
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|&&outcome| outcome == IngestOutcome::Ingested)
+            .count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|&&outcome| outcome == IngestOutcome::Duplicate)
+            .count(),
+        7
+    );
+    let mut conn = connect(&settings).unwrap();
+    assert_eq!(
+        read_messages_after(&mut conn, &settings, "0-0", 10)
+            .unwrap()
+            .len(),
+        1
+    );
+    let _: () = redis::cmd("DEL")
+        .arg(&settings.stream_key)
+        .arg(ingest_seen_key(&tag, &msg.id))
+        .query(&mut conn)
+        .unwrap();
+}
+
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL (disposable Redis with ACL admin)"]
+#[test]
+fn ingest_denied_commands_do_not_poison_replay() {
+    let tag = unique();
+    let settings = redis_settings(&tag);
+    let mut admin = connect(&settings).expect("disposable Redis unreachable");
+    let msg = message(&unique(), Some(&tag));
+    let seen = ingest_seen_key(&tag, &msg.id);
+    let user = format!("cloudsync-test-{tag}");
+    let _: () = redis::cmd("ACL")
+        .arg("SETUSER")
+        .arg(&user)
+        .arg("on")
+        .arg("nopass")
+        .arg("~*")
+        .arg("+@all")
+        .arg("-xadd")
+        .query(&mut admin)
+        .expect("disposable Redis must permit ACL test users");
+    let mut restricted = connect(&settings).unwrap();
+    let _: () = redis::cmd("AUTH")
+        .arg(&user)
+        .arg("")
+        .query(&mut restricted)
+        .unwrap();
+    assert!(ingest_synced_message(&mut restricted, &settings, &msg, None).is_err());
+    assert!(
+        !redis::cmd("EXISTS")
+            .arg(&seen)
+            .query::<bool>(&mut admin)
+            .unwrap()
+    );
+    // Cleanup permission must be checked before SET, even on Redis 6.2.
+    let _: () = redis::cmd("ACL")
+        .arg("SETUSER")
+        .arg(&user)
+        .arg("+xadd")
+        .arg("-del")
+        .query(&mut admin)
+        .unwrap();
+    assert!(ingest_synced_message(&mut restricted, &settings, &msg, None).is_err());
+    assert!(
+        !redis::cmd("EXISTS")
+            .arg(&seen)
+            .query::<bool>(&mut admin)
+            .unwrap()
+    );
+    assert_eq!(
+        ingest_synced_message(&mut admin, &settings, &msg, None).unwrap(),
+        IngestOutcome::Ingested
+    );
+    let _: () = redis::cmd("DEL")
+        .arg(&settings.stream_key)
+        .arg(&seen)
+        .query(&mut admin)
+        .unwrap();
+    let _: u64 = redis::cmd("ACL")
+        .arg("DELUSER")
+        .arg(&user)
+        .query(&mut admin)
+        .unwrap();
+}
+
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL (disposable Redis)"]
+#[test]
+fn legacy_uppercase_claim_can_be_read_renewed_and_released() {
+    let settings = redis_settings(&unique());
+    let resource = format!("./Legacy/{}/Main.RS", unique());
+    let key = format!("bus:claims:{resource}");
+    let mut conn = connect(&settings).expect("disposable Redis unreachable");
+    let old_claim = serde_json::json!({
+        "resource": resource, "agent": "legacy-owner", "priority_argument": "existing lease",
+        "timestamp": now_ts(), "status": "granted", "lease_ttl_seconds": 300,
+        "expires_at": (Utc::now() + chrono::Duration::seconds(300)).to_rfc3339()
+    });
+    let _: () = redis::cmd("HSET")
+        .arg(&key)
+        .arg("legacy-owner")
+        .arg(old_claim.to_string())
+        .query(&mut conn)
+        .unwrap();
+    let _: () = redis::cmd("EXPIRE")
+        .arg(&key)
+        .arg(300)
+        .query(&mut conn)
+        .unwrap();
+    let state = get_arbitration_state(&settings, &resource).unwrap();
+    assert_eq!(state.claims.len(), 1);
+    assert_eq!(state.claims[0].agent, "legacy-owner");
+    assert_eq!(state.claims[0].status, ClaimStatus::Granted);
+    assert_eq!(
+        renew_claim(&settings, &resource, "legacy-owner", Some(600))
+            .unwrap()
+            .agent,
+        "legacy-owner"
+    );
+    let history_key = agent_bus_core::redis_bus::resource_event_stream_key(&resource);
+    assert_eq!(history_key, format!("agent_bus:resource_events:{resource}"));
+    release_claim(&settings, &resource, "legacy-owner").unwrap();
+    assert!(
+        !redis::cmd("EXISTS")
+            .arg(&key)
+            .query::<bool>(&mut conn)
+            .unwrap()
+    );
+    let _: () = redis::cmd("DEL")
+        .arg(&history_key)
+        .query(&mut conn)
+        .unwrap();
 }
 
 #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL (see tests/support/backend_env.rs)"]

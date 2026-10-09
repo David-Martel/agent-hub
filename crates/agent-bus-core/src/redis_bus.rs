@@ -3049,8 +3049,8 @@ const RESOURCE_EVENT_MAXLEN: u64 = 1000;
 /// Build the Redis stream key for a resource's event log.
 #[must_use]
 pub fn resource_event_stream_key(resource: &str) -> String {
-    // Same fold as the claim key and the cloud Worker (agent-hub#79).
-    let normalised = crate::channels::normalize_resource_name(resource);
+    // Preserve the existing event history and case-sensitive on-site claims.
+    let normalised = resource.replace('\\', "/");
     format!("{RESOURCE_EVENT_PREFIX}{normalised}")
 }
 

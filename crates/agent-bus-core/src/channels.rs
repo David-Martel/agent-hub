@@ -373,11 +373,11 @@ pub const MAX_RESOURCE_NAME_LEN: usize = 256;
 
 /// Fold a resource name the way the cloud Worker's `normalizeResourceName`
 /// does: backslash to forward slash, Unicode lowercase, then one leading `./`
-/// stripped. A resource claimed as `Foo.rs` on-site and `foo.rs` in the cloud
-/// must name the same claim, so every on-site key is built from this.
+/// stripped. This is a cloud wire-format helper, not an on-site claim key:
+/// on-site claims retain their existing case-sensitive identity.
 ///
-/// This fold is total. Empty and over-long names are rejected by
-/// [`validate_resource_name`] where claims are created.
+/// This fold is total. Call [`validate_resource_name`] before using a cloud
+/// resource name; local claims do not adopt the cloud's validation limits.
 ///
 /// # Examples
 ///
@@ -417,7 +417,9 @@ pub fn validate_resource_name(resource: &str) -> Result<()> {
 }
 
 fn claims_key(resource: &str) -> String {
-    format!("{CLAIMS_PREFIX}{}", normalize_resource_name(resource))
+    // Preserve pre-sync keys and live leases: claims are not cloud-synced.
+    let normalised = resource.replace('\\', "/");
+    format!("{CLAIMS_PREFIX}{normalised}")
 }
 
 fn claim_resolution_key(resource_key: &str) -> String {
@@ -1397,7 +1399,6 @@ pub fn claim_resource_with_options(
             "resource must not be empty".to_string(),
         ));
     }
-    validate_resource_name(resource)?;
     if agent.is_empty() {
         return Err(crate::error::AgentBusError::InvalidParams(
             "agent must not be empty".to_string(),
@@ -2365,9 +2366,15 @@ mod tests {
     }
 
     #[test]
-    fn claims_key_casefolds_like_the_worker() {
-        assert_eq!(claims_key("Src/Main.RS"), claims_key("src/main.rs"));
-        assert_eq!(claims_key(".\\Src\\Lib.rs"), claims_key("src/lib.rs"));
+    fn claims_key_preserves_legacy_identity() {
+        assert_ne!(claims_key("Src/Main.RS"), claims_key("src/main.rs"));
+        assert_eq!(claims_key(".\\Src\\Lib.rs"), claims_key("./Src/Lib.rs"));
+    }
+
+    #[test]
+    fn cloud_resource_name_casefolds_like_the_worker() {
+        assert_eq!(normalize_resource_name("Src/Main.RS"), "src/main.rs");
+        assert_eq!(normalize_resource_name(".\\Src\\Lib.rs"), "src/lib.rs");
         // Only ONE leading "./" is stripped, as in the Worker.
         assert_eq!(normalize_resource_name("././a"), "./a");
         // Unicode lowercase, like JavaScript toLowerCase.
