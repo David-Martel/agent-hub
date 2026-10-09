@@ -64,7 +64,7 @@ Do **not** hard-code a single static LAN IP as the only route. Use:
 
 1. Network-location-aware `server_urls` + `sites` (`docs/network-location-routing.md`)
 2. Stable names (`agent-bus-hub.vigil.lan`, Headscale/VPN names) with IP fallback
-3. SSH loopback forward for campus (`127.0.0.1:18480`)
+3. SSH loopback forward for campus (`localhost:18480`)
 4. Cloudflare `https://agentbus.dtmventures.com` as **cloud** role only until
    hub↔cloud sync + tokens are proven (agent-hub#79/#110)
 

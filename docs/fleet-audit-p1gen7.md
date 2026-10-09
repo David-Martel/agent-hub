@@ -1,7 +1,7 @@
 # Fleet audit — dtm-p1gen7 + asuspro13 (2026-10-08)
 
-**Author:** warp-oz on dtm-p1gen7  
-**Repo:** `David-Martel/agent-hub` checkout `C:\codedev\agent-bus`  
+**Author:** warp-oz on dtm-p1gen7
+**Repo:** `David-Martel/agent-hub` checkout `C:\codedev\agent-bus`
 **Purpose:** Durable handoff for other agents. Prefer falsifiable checks over green-but-empty tests.
 
 ## Live authority (verified)
