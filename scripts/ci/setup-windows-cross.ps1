@@ -75,7 +75,7 @@ function Assert-CrossRunnerBinding {
 function Assert-CrossCacheMarker {
     param($Actual, $Expected)
     foreach ($field in @('schema_version', 'owner', 'uid', 'version', 'image', 'revision', 'dockerfile',
-            'target', 'directory', 'config', 'config_sha256', 'executable_sha256')) {
+            'target', 'directory', 'config', 'config_sha256', 'executable_sha256', 'idle_timeout')) {
         if ($Actual.$field -cne $Expected.$field) { throw 'Refuse foreign or changed dedicated cache ownership' }
     }
 }
@@ -85,9 +85,20 @@ function Assert-CrossCacheDaemon {
     if ($Binding.pid -le 0 -or $Binding.start_ticks -cnotmatch '^[0-9]+$' -or $Binding.uid -cne $Expected.uid -or
         $Binding.executable_sha256 -cne $Expected.executable_sha256 -or
         $Binding.directory -cne $Expected.directory -or $Binding.config -cne $Expected.config -or
-        $Binding.port -cne '4228') {
+        $Binding.port -cne '4228' -or $Binding.idle_timeout -cne $Expected.idle_timeout) {
         throw 'Dedicated cache daemon disk/config/executable identity is not established'
     }
+}
+
+function Convert-CrossCacheEnvironment {
+    param([string]$EnvironmentBlock)
+    $values = @{}
+    foreach ($value in ($EnvironmentBlock -split [char]0)) {
+        $parts = $value -split '=', 2
+        if ($parts.Count -eq 2 -and $parts[0] -cin @('SCCACHE_DIR', 'SCCACHE_CONF',
+                'SCCACHE_SERVER_PORT', 'SCCACHE_IDLE_TIMEOUT')) { $values[$parts[0]] = $parts[1] }
+    }
+    return $values
 }
 
 function Get-CrossCacheDaemon {
@@ -125,16 +136,14 @@ function Get-CrossCacheDaemon {
             $statPath = Join-Path $entry.FullName 'stat'
             $before = [IO.File]::ReadAllText($statPath)
             $birth = ($before.Substring($before.LastIndexOf(')') + 2) -split '\s+')[19]
-            $values = @{}
-            foreach ($value in ([Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes((Join-Path $entry.FullName 'environ'))) -split "`0")) {
-                $parts = $value -split '=', 2
-                if ($parts.Count -eq 2 -and $parts[0] -cin @('SCCACHE_DIR', 'SCCACHE_CONF', 'SCCACHE_SERVER_PORT')) { $values[$parts[0]] = $parts[1] }
-            }
+            $values = Convert-CrossCacheEnvironment ([Text.Encoding]::UTF8.GetString(
+                [IO.File]::ReadAllBytes((Join-Path $entry.FullName 'environ'))))
             $hash = (Get-FileHash -LiteralPath (Join-Path $entry.FullName 'exe')).Hash.ToLowerInvariant()
             $after = [IO.File]::ReadAllText($statPath)
             if (($after.Substring($after.LastIndexOf(')') + 2) -split '\s+')[19] -cne $birth) { throw 'Cache daemon birth identity changed' }
             return [pscustomobject]@{ pid = [int]$entry.Name; start_ticks = $birth; uid = $uid
-                executable_sha256 = $hash; directory = $values['SCCACHE_DIR']; config = $values['SCCACHE_CONF']; port = $values['SCCACHE_SERVER_PORT'] }
+                executable_sha256 = $hash; directory = $values['SCCACHE_DIR']; config = $values['SCCACHE_CONF']; port = $values['SCCACHE_SERVER_PORT']
+                idle_timeout = $values['SCCACHE_IDLE_TIMEOUT'] }
         } catch [IO.FileNotFoundException] { continue } catch [IO.DirectoryNotFoundException] { continue }
     }
     throw 'Dedicated cache port is open without an attributable daemon'
@@ -265,6 +274,8 @@ $owner = [ordered]@{
     uid = [regex]::Match([IO.File]::ReadAllText('/proc/self/status'), '(?m)^Uid:\s+(\d+)').Groups[1].Value
     image = $imageId; revision = $imageRevision; dockerfile = $dockerfileHash; target = $target
     directory = $cacheData; config = $cacheConfig
+    # Bound idle lifetime exceeds the 1500-second uncached qualification stage.
+    idle_timeout = '1800'
     config_sha256 = 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
     executable_sha256 = (Get-FileHash -LiteralPath $sccache).Hash.ToLowerInvariant()
 }
@@ -299,6 +310,7 @@ $env:CARGO_INCREMENTAL = '0'
 $env:SCCACHE_DIR = $cacheData
 $env:SCCACHE_SERVER_PORT = [string]$policy.server_port
 $env:SCCACHE_CONF = $cacheConfig
+$env:SCCACHE_IDLE_TIMEOUT = [string]$owner.idle_timeout
 $env:CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER = $linker
 # Bind Cargo to the compiler proven above. Explicit empty wrapper values also
 # override image/user Cargo config; removing them would restore those defaults.
@@ -331,7 +343,7 @@ $receipt = [ordered]@{
 [IO.File]::WriteAllText((Join-Path $env:CARGO_TARGET_DIR 'cross-toolchain-proof.json'), ($receipt | ConvertTo-Json -Depth 20))
 if ($env:GITHUB_ENV) {
     foreach ($name in @('CARGO_TARGET_DIR', 'CARGO_INCREMENTAL', 'SCCACHE_DIR', 'SCCACHE_SERVER_PORT',
-            'SCCACHE_CONF', 'RUSTC_WRAPPER', 'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER',
+            'SCCACHE_CONF', 'SCCACHE_IDLE_TIMEOUT', 'RUSTC_WRAPPER', 'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER',
             'RUSTC', 'CARGO_BUILD_RUSTC', 'RUSTC_WORKSPACE_WRAPPER',
             'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_RUSTC_WRAPPER',
             'AGENT_HUB_WINDOWS_CROSS_RUNNER_CONTAINER_ID', 'AGENT_BUS_CI_RUNNER_CONTAINER_ID')) {

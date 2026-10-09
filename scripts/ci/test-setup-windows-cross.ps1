@@ -88,32 +88,62 @@ $imageId = 'sha256:' + ('e' * 64)
 . ([scriptblock]::Create($assignment.Extent.Text)); $second = $cacheRoot
 Assert-SetupFixture ($first -cne $second -and (Split-Path $first -Leaf) -ceq ('b' * 64) -and
     (Split-Path $second -Leaf) -ceq ('e' * 64)) 'immutable images preserve distinct cache children'
-$owner = [pscustomobject]@{ schema_version = 1; owner = 'agent-hub-windows-gnu-cache-v1'; uid = '1000'; version = '0.18.0'; image = $image; revision = $revision; dockerfile = $dockerfile; target = 'x86_64-pc-windows-gnu'; directory = (Join-Path $first 'data'); config = (Join-Path $first 'config'); config_sha256 = ('e' * 64); executable_sha256 = ('f' * 64) }
+$owner = [pscustomobject]@{ schema_version = 1; owner = 'agent-hub-windows-gnu-cache-v1'; uid = '1000'; version = '0.18.0'; image = $image; revision = $revision; dockerfile = $dockerfile; target = 'x86_64-pc-windows-gnu'; directory = (Join-Path $first 'data'); config = (Join-Path $first 'config'); config_sha256 = ('e' * 64); executable_sha256 = ('f' * 64); idle_timeout = '1800' }
 Assert-CrossCacheMarker $owner $owner
 Assert-SetupFixture $true 'dedicated owner/config admitted'
-foreach ($field in @('uid', 'directory', 'config', 'executable_sha256', 'version', 'image', 'config_sha256')) {
+foreach ($field in @('uid', 'directory', 'config', 'executable_sha256', 'version', 'image', 'config_sha256', 'idle_timeout')) {
     $bad = $owner | ConvertTo-Json | ConvertFrom-Json
     $bad.$field = if ($field -eq 'directory') { Join-Path $second 'data' } else { 'different' }
     Reject-SetupFixture { Assert-CrossCacheMarker $bad $owner } "foreign cache marker $field refused"
 }
-$daemon = [pscustomobject]@{ pid = 123; start_ticks = '123456'; uid = '1000'; executable_sha256 = ('f' * 64); directory = $owner.directory; config = $owner.config; port = '4228' }
+$daemon = [pscustomobject]@{ pid = 123; start_ticks = '123456'; uid = '1000'; executable_sha256 = ('f' * 64); directory = $owner.directory; config = $owner.config; port = '4228'; idle_timeout = '1800' }
 Assert-CrossCacheDaemon $daemon $owner
 Assert-SetupFixture $true 'dedicated daemon identity admitted'
-foreach ($field in @('pid', 'start_ticks', 'uid', 'directory', 'config', 'port', 'executable_sha256')) {
+foreach ($field in @('pid', 'start_ticks', 'uid', 'directory', 'config', 'port', 'executable_sha256', 'idle_timeout')) {
     $bad = $daemon | ConvertTo-Json | ConvertFrom-Json
     $bad.$field = if ($field -eq 'pid') { 0 } elseif ($field -eq 'directory') { Join-Path $second 'data' } else { 'different' }
     Reject-SetupFixture { Assert-CrossCacheDaemon $bad $owner } "wrong daemon $field refused"
 }
+$ownerAssignment = $ast.Find({ param($node)
+    $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+    $node.Left.Extent.Text -ceq '$owner'
+}, $false)
+$ownerTable = $ownerAssignment.Find({ param($node)
+    $node -is [Management.Automation.Language.HashtableAst]
+}, $false)
+$timeoutEntries = @($ownerTable.KeyValuePairs | Where-Object { $_.Item1.SafeGetValue() -ceq 'idle_timeout' })
+Assert-SetupFixture ($timeoutEntries.Count -eq 1) 'production owner records one explicit cache idle timeout'
+$ownedTimeout = . ([scriptblock]::Create($timeoutEntries[0].Item2.Extent.Text))
+Assert-SetupFixture ($ownedTimeout -ceq '1800' -and [int]$ownedTimeout -gt 1500) 'owned bounded idle timeout exceeds uncached stage budget'
+foreach ($timeout in @('600', '0', '1500', 'different')) {
+    $bad = $daemon | ConvertTo-Json | ConvertFrom-Json; $bad.idle_timeout = $timeout
+    Reject-SetupFixture { Assert-CrossCacheDaemon $bad $owner } "wrong daemon idle timeout $timeout refused"
+}
+$missing = $daemon | ConvertTo-Json | ConvertFrom-Json
+$missing.PSObject.Properties.Remove('idle_timeout')
+Reject-SetupFixture { Assert-CrossCacheDaemon $missing $owner } 'default-only daemon without explicit idle timeout refused'
+$missing = $owner | ConvertTo-Json | ConvertFrom-Json
+$missing.PSObject.Properties.Remove('idle_timeout')
+Reject-SetupFixture { Assert-CrossCacheMarker $missing $owner } 'old owner without idle timeout refused'
+$environment = @('SCCACHE_DIR=/owned/data', 'SCCACHE_CONF=/owned/config', 'SCCACHE_SERVER_PORT=4228',
+    'SCCACHE_IDLE_TIMEOUT=1800', 'AWS_SECRET_ACCESS_KEY=synthetic-unrelated', 'SCCACHE_UNKNOWN=synthetic-unrelated') -join [char]0
+$selected = Convert-CrossCacheEnvironment $environment
+Assert-SetupFixture ($selected.Count -eq 4 -and $selected['SCCACHE_IDLE_TIMEOUT'] -ceq '1800' -and
+    $selected['SCCACHE_DIR'] -ceq '/owned/data' -and $selected['SCCACHE_CONF'] -ceq '/owned/config' -and
+    $selected['SCCACHE_SERVER_PORT'] -ceq '4228') 'actual safe environment parser retains only four daemon identity fields'
+Assert-SetupFixture (-not $selected.ContainsKey('AWS_SECRET_ACCESS_KEY') -and
+    -not $selected.ContainsKey('SCCACHE_UNKNOWN')) 'safe daemon readback excludes unrelated credential and cache keys'
 foreach ($path in @('C:/foreign/cache', 'relative/cache', "/owned`ncache")) {
     Reject-SetupFixture { Assert-CrossPlainPath $path } 'non-plain Linux cache path refused'
 }
 $compilerKeys = @('RUSTC', 'CARGO_BUILD_RUSTC', 'RUSTC_WORKSPACE_WRAPPER',
     'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER', 'CARGO_BUILD_RUSTC_WRAPPER')
+$bindingKeys = @($compilerKeys) + @('SCCACHE_IDLE_TIMEOUT')
 $previous = @{}
 $previousGitHubEnv = [Environment]::GetEnvironmentVariable('GITHUB_ENV')
 $exportFile = [IO.Path]::GetTempFileName()
 try {
-    foreach ($key in $compilerKeys) {
+    foreach ($key in $bindingKeys) {
         $previous[$key] = [Environment]::GetEnvironmentVariable($key)
         Set-Item -LiteralPath "Env:$key" -Value 'synthetic-hostile-compiler-or-wrapper'
     }
@@ -122,9 +152,9 @@ try {
         $node -is [Management.Automation.Language.AssignmentStatementAst] -and
         $node.Left.Extent.Text -cin @('$env:RUSTC', '$env:CARGO_BUILD_RUSTC',
             '$env:RUSTC_WORKSPACE_WRAPPER', '$env:CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER',
-            '$env:CARGO_BUILD_RUSTC_WRAPPER')
+            '$env:CARGO_BUILD_RUSTC_WRAPPER', '$env:SCCACHE_IDLE_TIMEOUT')
     }, $false))
-    Assert-SetupFixture ($bindings.Count -eq 5) 'all compiler override bindings exist'
+    Assert-SetupFixture ($bindings.Count -eq 6) 'all compiler and cache lifetime override bindings exist'
     foreach ($binding in $bindings) { . ([scriptblock]::Create($binding.Extent.Text)) }
     foreach ($key in @('RUSTC', 'CARGO_BUILD_RUSTC')) {
         Assert-SetupFixture ([Environment]::GetEnvironmentVariable($key) -ceq $rustc) "verified compiler replaces $key override"
@@ -133,6 +163,14 @@ try {
         Assert-SetupFixture ((Test-Path -LiteralPath "Env:$key") -and
             [Environment]::GetEnvironmentVariable($key) -ceq '') "explicit empty $key disables inherited config"
     }
+    Assert-SetupFixture ([Environment]::GetEnvironmentVariable('SCCACHE_IDLE_TIMEOUT') -ceq '1800') 'owned idle timeout replaces hostile inherited setting'
+    $idleBinding = @($bindings | Where-Object { $_.Left.Extent.Text -ceq '$env:SCCACHE_IDLE_TIMEOUT' })
+    $scrub = $ast.Find({ param($node)
+        $node -is [Management.Automation.Language.ForEachStatementAst] -and
+        $node.Extent.Text.StartsWith('foreach ($name in @([Environment]::GetEnvironmentVariables().Keys))', [StringComparison]::Ordinal)
+    }, $false)
+    Assert-SetupFixture ($scrub -and $idleBinding.Count -eq 1 -and
+        $idleBinding[0].Extent.StartOffset -gt $scrub.Extent.EndOffset) 'owned idle timeout assignment follows inherited environment scrub'
     $export = $ast.Find({ param($node)
         $node -is [Management.Automation.Language.IfStatementAst] -and
         $node.Extent.Text.StartsWith('if ($env:GITHUB_ENV)', [StringComparison]::Ordinal)
@@ -141,8 +179,9 @@ try {
     $env:GITHUB_ENV = $exportFile
     . ([scriptblock]::Create($export.Extent.Text))
     $lines = @(Get-Content -LiteralPath $exportFile)
-    foreach ($key in $compilerKeys) {
-        $expected = if ($key -cin @('RUSTC', 'CARGO_BUILD_RUSTC')) { "$key=$rustc" } else { "$key=" }
+    foreach ($key in $bindingKeys) {
+        $expected = if ($key -cin @('RUSTC', 'CARGO_BUILD_RUSTC')) { "$key=$rustc" }
+            elseif ($key -ceq 'SCCACHE_IDLE_TIMEOUT') { "$key=1800" } else { "$key=" }
         $matchesForKey = @($lines | Where-Object { $_.StartsWith("$key=", [StringComparison]::Ordinal) })
         Assert-SetupFixture ($matchesForKey.Count -eq 1 -and $matchesForKey[0] -ceq $expected) "exact compiler binding export for $key"
     }
