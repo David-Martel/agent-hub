@@ -125,10 +125,14 @@ function Use-AgentBusRustBuildEnv {
         Snapshot = @{
             CARGO_TARGET_DIR = $env:CARGO_TARGET_DIR
             RUSTC_WRAPPER = $env:RUSTC_WRAPPER
+            RUSTC_WORKSPACE_WRAPPER = $env:RUSTC_WORKSPACE_WRAPPER
+            CARGO_BUILD_RUSTC_WRAPPER = $env:CARGO_BUILD_RUSTC_WRAPPER
+            CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER = $env:CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER
             CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER = $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER
             RUSTFLAGS = $env:RUSTFLAGS
             CARGO_INCREMENTAL = $env:CARGO_INCREMENTAL
         }
+        DisableSccacheForCargoSteps = $script:AgentBusDisableSccacheForCargoSteps
         Summary = [ordered]@{
             TargetDir = $TargetDir
             Sccache = $null
@@ -141,6 +145,12 @@ function Use-AgentBusRustBuildEnv {
     $env:CARGO_TARGET_DIR = $TargetDir
     New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null
 
+    # An explicitly false preference is the caller's uncached build request.
+    # Omitting it preserves unrelated custom wrappers and existing scope state.
+    if ($PSBoundParameters.ContainsKey('PreferSccache')) {
+        if ($PreferSccache) { $script:AgentBusDisableSccacheForCargoSteps = $false }
+        else { Disable-AgentBusSccacheForCargoSteps }
+    }
     $incrementalRequested = $EnableIncremental.IsPresent
     if ($PreferSccache) {
         $sccache = Get-AgentBusCommandPath -Name "sccache" -Candidates @(
@@ -213,18 +223,22 @@ function Restore-AgentBusRustBuildEnv {
     foreach ($name in @(
         "CARGO_TARGET_DIR",
         "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "CARGO_BUILD_RUSTC_WRAPPER",
+        "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
         "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER",
         "RUSTFLAGS",
         "CARGO_INCREMENTAL"
     )) {
-        $value = $State.Snapshot[$name]
-        if ($null -eq $value -or $value -eq "") {
+        # Empty wrapper values intentionally suppress Cargo configuration;
+        # restore them distinctly from an absent variable.
+        if ($null -eq $State.Snapshot[$name]) {
             Remove-Item "Env:$name" -ErrorAction SilentlyContinue
-        }
-        else {
-            Set-Item "Env:$name" $value
+        } else {
+            Set-Item "Env:$name" $State.Snapshot[$name]
         }
     }
+    $script:AgentBusDisableSccacheForCargoSteps = $State.DisableSccacheForCargoSteps
 }
 
 function Write-AgentBusSccacheStats {
@@ -289,7 +303,12 @@ function Test-AgentBusWritableHealth {
 }
 
 function Disable-AgentBusSccacheForCargoSteps {
-    Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
+    # Explicit uncached semantics suppress both compiler wrapper layers and
+    # their Cargo config environment aliases until this build scope is restored.
+    foreach ($name in @('RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER',
+            'CARGO_BUILD_RUSTC_WRAPPER', 'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER')) {
+        Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+    }
     $script:AgentBusDisableSccacheForCargoSteps = $true
 }
 
@@ -302,6 +321,24 @@ function Restart-AgentBusBuildWithoutSccache {
     Write-Warning "sccache failed during compilation; leaving the shared daemon untouched and retrying this cargo step once with Cargo rustc-wrapper disabled."
 }
 
+function Resolve-AgentBusNativeCargo {
+    # Resolve the repository pin through the native rustup application. A
+    # PowerShell alias/function must never reinitialize an explicitly uncached step.
+    $repoRoot = Split-Path -Parent $PSScriptRoot
+    $pin = @(Select-String -LiteralPath (Join-Path $repoRoot 'rust-toolchain.toml') `
+        -Pattern '^\s*channel\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$')
+    if ($pin.Count -ne 1) { throw 'Repository Rust toolchain must contain exactly one stable version pin' }
+    $toolchain = $pin[0].Matches[0].Groups[1].Value
+    $rustup = @(Microsoft.PowerShell.Core\Get-Command -Name rustup -CommandType Application -ErrorAction Stop)[0]
+    $cargoPath = (& $rustup.Source which --toolchain $toolchain cargo 2>&1 | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($cargoPath) -or
+        -not (Test-Path -LiteralPath $cargoPath -PathType Leaf)) {
+        throw 'Could not resolve installed native Cargo for the repository toolchain'
+    }
+    $cargo = @(Microsoft.PowerShell.Core\Get-Command -Name $cargoPath -CommandType Application -ErrorAction Stop)[0]
+    return [pscustomobject]@{ Path = $cargo.Source; Toolchain = $toolchain }
+}
+
 function Invoke-AgentBusRawCargo {
     param(
         [Parameter(Mandatory = $true)]
@@ -311,27 +348,46 @@ function Invoke-AgentBusRawCargo {
     )
 
     $cargoArgs = @()
+    $snapshot = @{}
     if ($DisableSccache) {
-        $cargoArgs += @("--config", 'build.rustc-wrapper=""')
+        $nativeCargo = Resolve-AgentBusNativeCargo
+        foreach ($name in @('RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER',
+                'CARGO_BUILD_RUSTC_WRAPPER', 'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER', 'RUSTUP_TOOLCHAIN')) {
+            $snapshot[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+        }
+        $cargoArgs += @('--config', 'build.rustc-wrapper=""', '--config', 'build.rustc-workspace-wrapper=""')
     }
     $cargoArgs += $Command
     $cargoArgs += $AdditionalArgs
 
-    $capturedCargoOutput = @()
-    $output = & cargo @cargoArgs 2>&1 | Tee-Object -Variable capturedCargoOutput
-    $exitCode = $LASTEXITCODE
-    if (-not $output -and $capturedCargoOutput) {
-        $output = $capturedCargoOutput
+    try {
+        $capturedCargoOutput = @()
+        if ($DisableSccache) {
+            foreach ($name in @('RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER',
+                    'CARGO_BUILD_RUSTC_WRAPPER', 'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER')) {
+                Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+            }
+            $env:RUSTUP_TOOLCHAIN = $nativeCargo.Toolchain
+            $output = & $nativeCargo.Path @cargoArgs 2>&1 | Tee-Object -Variable capturedCargoOutput
+        } else {
+            $output = & cargo @cargoArgs 2>&1 | Tee-Object -Variable capturedCargoOutput
+        }
+        $exitCode = $LASTEXITCODE
+        if (-not $output -and $capturedCargoOutput) { $output = $capturedCargoOutput }
+        if ($output) { $output | ForEach-Object { Write-Host $_ } }
+        return [pscustomobject]@{ ExitCode = $exitCode; Output = @($output) }
     }
-    if ($output) {
-        $output | ForEach-Object { Write-Host $_ }
-    }
-
-    return [pscustomobject]@{
-        ExitCode = $exitCode
-        Output = @($output)
+    finally {
+        foreach ($name in $snapshot.Keys) {
+            if ($null -eq $snapshot[$name]) {
+                Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+            } else {
+                Set-Item "Env:$name" $snapshot[$name]
+            }
+        }
     }
 }
+
 
 function Invoke-AgentBusCargo {
     param(
