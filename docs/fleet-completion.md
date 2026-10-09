@@ -39,6 +39,17 @@ receipt. Add Carbon to the fleet validator when its configuration and target
 paths are reviewed. Keep the local Windows maintenance island out of client
 candidate lists.
 
+The fleet doctor accepts both hexadecimal/date and Git-describe provenance,
+comparing the complete reported revision token with ExpectedBuildRevision;
+abbreviations are not treated as evidence of a full revision. It observes the
+CLI's selected route without overriding routing variables and checks the hub
+identity and authority. Candidate token-file checks inspect file metadata only.
+An explicit token_env source still needs separate host-specific qualification.
+For a local authority backend, the doctor identifies that narrower evidence;
+the HTTP listener and fresh MCP process need the separate probes above.
+Carbon remains a manual target until SSH-to-Windows transport is implemented
+and independently qualified. The desired-state manifest is unchanged.
+
 Cloud public health is insufficient for fleet fallback. Claims remain on-site;
 cloud production acceptance requires token-map recovery, role-specific auth,
 federation replay/no-echo/no-offsite, source/deployment parity and the network
