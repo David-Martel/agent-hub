@@ -850,22 +850,28 @@ export class BusLog extends DurableObject<Env> {
   /** `GET /sync/pull?since=&exclude_origin=`, paged. */
   syncPull(sinceSeq: number, excludeOrigin: string | undefined, limit: number): { messages: Message[]; next_cursor: number; has_more: boolean } {
     this.ensureSchema();
+    // Bound this page to a stable tail so advancing across excluded rows cannot
+    // skip an append after the snapshot. All SQL in this method is synchronous.
+    const highWater = this.currentCursor();
     const rows = excludeOrigin
       ? this.sql
           .exec<MessageRow>(
-            "SELECT * FROM messages WHERE seq > ? AND origin_hub != ? ORDER BY seq ASC LIMIT ?",
+            "SELECT * FROM messages WHERE seq > ? AND seq <= ? AND origin_hub != ? ORDER BY seq ASC LIMIT ?",
             sinceSeq,
+            highWater,
             excludeOrigin,
             limit + 1,
           )
           .toArray()
       : this.sql
-          .exec<MessageRow>("SELECT * FROM messages WHERE seq > ? ORDER BY seq ASC LIMIT ?", sinceSeq, limit + 1)
+          .exec<MessageRow>("SELECT * FROM messages WHERE seq > ? AND seq <= ? ORDER BY seq ASC LIMIT ?", sinceSeq, highWater, limit + 1)
           .toArray();
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
     const lastRow = page.length > 0 ? page[page.length - 1] : undefined;
-    const nextCursor = lastRow ? lastRow.seq : sinceSeq;
+    // A lookahead row is still undelivered; otherwise the whole snapshot has
+    // been examined, including an empty or trailing own-origin-only suffix.
+    const nextCursor = hasMore && lastRow ? lastRow.seq : Math.max(sinceSeq, highWater);
     return { messages: page.map(rowToMessage), next_cursor: nextCursor, has_more: hasMore };
   }
 

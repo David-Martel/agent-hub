@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
+import { describe, expect, it, vi } from "vitest";
+import { BusLog } from "../src/do-buslog";
 import { apiJson, CLAUDE_TOKEN, HUB_A, HUB_A_TOKEN, HUB_B, HUB_B_TOKEN, OPERATOR_TOKEN, postJson } from "./helpers";
 
 // agent-hub#82 security review: /sync/* now requires a hub-role token
@@ -556,5 +559,99 @@ describe("GET /sync/stats (operator role)", () => {
   it("REJECTS a hub-role token (operator only)", async () => {
     const { status } = await apiJson("/sync/stats", undefined, HUB_A_TOKEN);
     expect(status).toBe(403);
+  });
+});
+
+describe("syncPull snapshot cursor regression", () => {
+  async function withBus(test: (bus: BusLog) => void): Promise<void> {
+    const stub = env.BUS_LOG.get(env.BUS_LOG.idFromName(`cursor-regression-${crypto.randomUUID()}`));
+    await runInDurableObject(stub, async (instance) => test(instance));
+  }
+
+  function insert(bus: BusLog, origin: string): string {
+    const id = crypto.randomUUID();
+    expect(bus.insertMessage({
+      id,
+      origin_hub: origin,
+      timestamp_utc: new Date().toISOString(),
+      protocol_version: "1.0",
+      from: "cursor-sender",
+      to: "cursor-recipient",
+      topic: "status",
+      body: "isolated cursor regression",
+      tags: [],
+      priority: "normal",
+      request_ack: false,
+      metadata: {},
+    }).inserted).toBe(true);
+    return id;
+  }
+
+  it("advances over an excluded-only tail and stays at the tail on an idle poll", async () => {
+    await withBus((bus) => {
+      insert(bus, HUB_A);
+      insert(bus, HUB_A);
+      insert(bus, HUB_A);
+      const tail = bus.currentCursor();
+      const first = bus.syncPull(0, HUB_A, 2);
+      expect(first).toEqual({ messages: [], next_cursor: tail, has_more: false });
+      expect(bus.syncPull(first.next_cursor, HUB_A, 2)).toEqual(first);
+    });
+  });
+
+  it("never skips lookahead matches and advances through the final excluded suffix", async () => {
+    await withBus((bus) => {
+      insert(bus, HUB_A);
+      const firstId = insert(bus, HUB_B);
+      insert(bus, HUB_A);
+      const secondId = insert(bus, HUB_B);
+      const pageBoundary = bus.currentCursor();
+      const thirdId = insert(bus, HUB_B);
+      insert(bus, HUB_A);
+      const tail = bus.currentCursor();
+      const first = bus.syncPull(0, HUB_A, 2);
+      expect(first.messages.map((message) => message.id)).toEqual([firstId, secondId]);
+      expect(first.next_cursor).toBe(pageBoundary);
+      expect(first.has_more).toBe(true);
+      const second = bus.syncPull(first.next_cursor, HUB_A, 2);
+      expect(second.messages.map((message) => message.id)).toEqual([thirdId]);
+      expect(second.next_cursor).toBe(tail);
+      expect(second.has_more).toBe(false);
+    });
+  });
+
+  it.each([HUB_A, undefined])("delivers an append after the captured snapshot on the next poll (exclude=%s)", async (exclude) => {
+    await withBus((bus) => {
+      const firstId = insert(bus, HUB_A);
+      const highWater = bus.currentCursor();
+      let appendedId = "";
+      // Model an append immediately after snapshot capture, using real SQLite
+      // and the production query. Actual synchronous DO calls cannot interleave.
+      const snapshot = vi.spyOn(bus, "currentCursor").mockImplementationOnce(() => {
+        appendedId = insert(bus, HUB_B);
+        return highWater;
+      });
+      let first: ReturnType<BusLog["syncPull"]>;
+      try {
+        first = bus.syncPull(0, exclude, 2);
+      } finally {
+        snapshot.mockRestore();
+      }
+      expect(first.messages.map((message) => message.id)).toEqual(exclude ? [] : [firstId]);
+      expect(first.next_cursor).toBe(highWater);
+      expect(first.has_more).toBe(false);
+      const second = bus.syncPull(first.next_cursor, exclude, 2);
+      expect(second.messages.map((message) => message.id)).toEqual([appendedId]);
+      expect(second.next_cursor).toBe(bus.currentCursor());
+      expect(second.has_more).toBe(false);
+    });
+  });
+
+  it("preserves a future cursor in populated and empty storage", async () => {
+    await withBus((bus) => {
+      expect(bus.syncPull(999, HUB_A, 2)).toEqual({ messages: [], next_cursor: 999, has_more: false });
+      insert(bus, HUB_B);
+      expect(bus.syncPull(999, HUB_A, 2)).toEqual({ messages: [], next_cursor: 999, has_more: false });
+    });
   });
 });

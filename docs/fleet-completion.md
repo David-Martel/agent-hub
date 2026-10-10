@@ -120,9 +120,19 @@ authenticated manifest and stats reads also fail on the shared BusLog path.
 A bounded provider trace confirmed: "Exceeded allowed rows read in Durable
 Objects free tier."
 Billing subscription access returns HTTP 403 with the deployment token.
+A separately qualified stored account credential reads the original four
+subscriptions; no Workers plan or billing change was observed.
 Restore account capacity or wait for the daily quota reset, then reconcile
 the exact first batch before resuming. No history or Durable Object namespace
 was deleted.
+Source review reproduced a cursor defect: an excluded-only message tail
+returned an unchanged cursor, causing the hub to scan it again every two
+seconds. The correction captures a high-water sequence, bounds both pull
+queries to it, and advances over exhausted excluded tails without skipping
+lookahead messages or later appends. All 223 native disposable Worker tests
+pass, including five new cases; the original source fails the excluded-tail
+case. This source qualification does not restore exhausted provider capacity
+or establish the failed Island batch's server acceptance.
 Raw LLM session histories are excluded. Disabled
 backfill does not prove historical import completion. P1 and Carbon own installed
 Cloud profiles passed before the import; other network locations still need their own observations.
