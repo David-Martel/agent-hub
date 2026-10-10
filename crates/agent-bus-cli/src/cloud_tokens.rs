@@ -1256,6 +1256,12 @@ async fn run_external_bounded(
 
     // Count synchronous process launch inside the existing operation budget.
     let expires = tokio::time::Instant::now() + deadline;
+    #[cfg(windows)]
+    let program = if program == "wrangler" {
+        "wrangler.cmd"
+    } else {
+        program
+    };
     let mut command = tokio::process::Command::new(program);
     command
         .args(args)
