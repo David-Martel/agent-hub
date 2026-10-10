@@ -134,6 +134,32 @@ try {
     $processStarted = $true
     $stderrTask = $process.StandardError.ReadToEndAsync()
 
+    if ($WineTestLauncher) {
+        # Wine mapping/config readback runs before either unchanged protocol clock.
+        # This is private launcher framing, never a shipping MCP protocol request.
+        $ready = Read-McpResponse -Process $process -ExpectedId 0 `
+            -Stage 'Wine launch preflight' -TimeoutMilliseconds 30000
+        $proof = $ready.result
+        if ($ready.error -or $proof.profile -ne 'configured-mcp-wine-launch-ready-v1' -or
+            $proof.receipt -notmatch '^mcp-launch-[a-f0-9]{32}\.json$' -or
+            $proof.sha256 -notmatch '^[a-f0-9]{64}$') {
+            throw 'Wine launch readiness receipt is invalid.'
+        }
+        $launchReceiptPath = Join-Path $env:AGENT_BUS_TEST_MCP_WINE_ROOT $proof.receipt
+        if ((Get-FileHash -LiteralPath $launchReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $proof.sha256) {
+            throw 'Wine launch readiness receipt hash differs.'
+        }
+        $launchReceipt = Get-Content -LiteralPath $launchReceiptPath -Raw | ConvertFrom-Json
+        $commandHash = (Get-FileHash -LiteralPath $resolvedCommand.Source -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($launchReceipt.profile -ne $proof.profile -or
+            $launchReceipt.root -ne $env:AGENT_BUS_TEST_MCP_WINE_ROOT -or
+            $launchReceipt.command -ne $resolvedCommand.Source -or
+            $launchReceipt.command_sha256 -ne $commandHash -or
+            $proof.command_sha256 -ne $commandHash) {
+            throw 'Wine launch readiness does not bind the configured executable.'
+        }
+    }
+
     $initializeRequest = @{
         jsonrpc = "2.0"
         id      = 1

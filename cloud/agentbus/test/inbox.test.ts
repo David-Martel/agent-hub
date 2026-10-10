@@ -47,6 +47,27 @@ describe("GET /notifications/:agent_id (inbox / check_inbox)", () => {
     expect(second.body.every((n) => n.message.body !== "a")).toBe(true);
     expect(second.body.some((n) => n.message.body === "b")).toBe(true);
   });
+
+  it("cursor pages deliver every unread message in order without skipping a truncated tail", async () => {
+    const agent = `cursor-pages-${crypto.randomUUID()}`;
+    for (const body of ["a", "b", "c", "d", "e"]) {
+      const sent = await postJson("/messages", { sender: "claude", recipient: agent, topic: "status", body });
+      expect(sent.status).toBe(200);
+    }
+    let cursor = "0-0";
+    const delivered: string[] = [];
+    for (const expected of [["a", "b"], ["c", "d"], ["e"]]) {
+      const page = await apiJson<Array<{ id: string; message: { body: string } }>>(
+        `/notifications/${agent}?since_id=${cursor}&history=2`,
+      );
+      expect(page.status).toBe(200);
+      expect(page.body.map((row) => row.message.body)).toEqual(expected);
+      delivered.push(...page.body.map((row) => row.message.body));
+      cursor = page.body.at(-1)!.id;
+    }
+    expect(delivered).toEqual(["a", "b", "c", "d", "e"]);
+    expect((await apiJson<unknown[]>(`/notifications/${agent}?since_id=${cursor}&history=2`)).body).toEqual([]);
+  });
 });
 
 describe("GET /pending-acks", () => {

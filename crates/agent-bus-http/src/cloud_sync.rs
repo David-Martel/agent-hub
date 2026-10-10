@@ -782,8 +782,16 @@ pub(crate) async fn run<L: LocalStore, C: CloudApi>(
     shutdown: Arc<Notify>,
 ) {
     let mut failures: u32 = 0;
+    let stopped = shutdown.notified();
+    tokio::pin!(stopped);
+    // Keep the broadcast waiter registered while a tick is doing I/O.
+    stopped.as_mut().enable();
     loop {
-        let delay = match engine.tick().await {
+        let outcome = tokio::select! {
+            () = &mut stopped => return,
+            outcome = engine.tick() => outcome,
+        };
+        let delay = match outcome {
             Ok(()) => {
                 failures = 0;
                 poll_interval
@@ -798,7 +806,7 @@ pub(crate) async fn run<L: LocalStore, C: CloudApi>(
         };
         tokio::select! {
             () = tokio::time::sleep(delay) => {}
-            () = shutdown.notified() => return,
+            () = &mut stopped => return,
         }
     }
 }
@@ -1288,6 +1296,7 @@ mod tests {
         failing: Arc<AtomicBool>,
         hang: Arc<AtomicBool>,
         calls: Arc<AtomicUsize>,
+        hung_call_started: Arc<Notify>,
     }
 
     impl MockCloud {
@@ -1307,8 +1316,10 @@ mod tests {
                 self.hang.load(Ordering::SeqCst),
             );
             self.calls.fetch_add(1, Ordering::SeqCst);
+            let hung_call_started = Arc::clone(&self.hung_call_started);
             async move {
                 if hang {
+                    hung_call_started.notify_one();
                     std::future::pending::<()>().await;
                 }
                 if failing {
@@ -1896,6 +1907,27 @@ mod tests {
         assert!(status.snapshot(now_ms()).cloud_last_error.is_none());
         shutdown.notify_waiters();
         task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_cancels_a_cloud_call_that_never_returns() {
+        let dir = tempfile::tempdir().unwrap();
+        let (local, cloud) = (MemLocal::default(), MockCloud::default());
+        local.append(msg(1, "alice"));
+        cloud.hang.store(true, Ordering::SeqCst);
+        let (e, _) = engine(dir.path(), &local, &cloud, 500, 5000);
+        let shutdown = Arc::new(Notify::new());
+        let task = tokio::spawn(run(e, Duration::from_millis(10), Arc::clone(&shutdown)));
+        tokio::time::timeout(Duration::from_secs(5), cloud.hung_call_started.notified())
+            .await
+            .expect("the engine never entered the blocked cloud call");
+
+        // Broadcast while tick is still pending, before its backoff waiter.
+        shutdown.notify_waiters();
+        tokio::time::timeout(Duration::from_secs(1), task)
+            .await
+            .expect("shutdown was lost while a cloud call was pending")
+            .unwrap();
     }
 
     #[tokio::test]

@@ -4,13 +4,13 @@ Current Warp integration and deployment queue: [fleet completion ledger](docs/fl
 
 ## October 4 fleet handoff
 
-- [ ] Complete and independently review per-candidate credential isolation,
+- [x] Complete and independently review per-candidate credential isolation,
   role-aware claims, guarded CLI/MCP transports and last-good cache; bind
   formatting, strict Clippy, real transport tests and hosted CI to the PR head.
-  Final local gates pass: 935 unit, 12 routing and 7 cloud wire fixtures,
-  strict Clippy, minimal CLI and security audit. Routing also passes with
-  invalid inherited candidate configuration and proxy settings. Independent
-  source review is clear; required hosted checks and rollout remain pending.
+  PRs #110 and #117 are merged with their required CI checks. Routing also
+  passes with invalid inherited candidate configuration and proxy settings.
+  The reviewed token toolkit is included in the current consolidation;
+  production-map replacement and fleet rollout retain separate acceptance.
 - [ ] Merge a validated PR and install hash-verified binaries on DTM-P1GEN7,
   ASUS and the Sparks; validate each fresh CLI/MCP source path separately.
 - [x] Correct DTM-P1GEN7 SessionStart routing so it respects the candidate
@@ -19,30 +19,38 @@ Current Warp integration and deployment queue: [fleet completion ledger](docs/fl
 - [x] Make Cloudflare retention scheduling awaitable and validate both
   fresh historical ingestion and expired-ingest pruning against real
   Durable Object SQLite; local typecheck and all 171 tests pass. Production
-  deployment parity remains unverified.
+  source-only deployment of cf7397a is verified, with existing opaque secrets
+  preserved. The current MCP/import candidate still needs publication and
+  deployment parity after its source and CI checks.
 - [x] Isolate the standalone functional harness from inherited routing
   tiers and require disposable loopback backend inputs before it can publish
   probes; 40 regression cases validate rejection, isolation, forced degraded
-  execution and restoration/cleanup. Real disposable-service smoke and
-  hosted CI remain separate gates.
+  execution and restoration/cleanup. PR #121 passed all 16 required checks,
+  including real GNU/Wine CLI/HTTP/database/SSE smoke and managed guest cleanup.
 - [ ] Coordinate cloud agent-role tokens with Claude-ASUS, preserving the
   full existing write-only token map; obtain retired-credential revocation
   evidence separately from client source hardening.
 - [ ] Implement/validate on-site sync and required cloud MCP/CLI routes,
   then claims forwarding, outbox (#80) and historical import. Do not add
   the cloud fleet candidate before these gates pass.
-- [ ] Confirm current Cloudflare deployment/source parity and role-specific
-  authentication/storage behavior; public reachability alone is insufficient.
-- [ ] Resolve the remaining Cloudflare geographic/ASN policy with its owner.
+- [ ] Confirm the final consolidated Cloudflare deployment/source parity and
+  role-specific authentication/storage behavior. Baseline cf7397a source-only
+  deployment, hub pull/operator stats and public health/unauthenticated refusal
+  are verified; they do not qualify the new MCP/import source or an agent role.
+- [ ] Validate remaining network locations individually; current P1 public
+  health/auth checks pass and are not a geographic-policy approval hold.
 - [ ] Reconcile DTM-WORK/DTM-SUPER-NUC client/MCP configuration and tooling
   while preserving their active agents and dirty repos; review local bus guidance.
 - [x] Repair PC_AI GitOps publication, inspection failure visibility and
   worker overlap/environment handling. PC_AI PR #174 is merged after 15 local
   regressions, real Windows launcher checks, independent review and all 11
   hosted checks. A real pre-push monitor message was read back on the ASUS hub.
-- [ ] Reconcile the workstation's conflicting OpenPGP executable overrides
-  and signing-provider cache without interrupting shared agents. These changes
-  use the existing GitHub-verified SSH signing key with normal hooks/signing.
+- [x] Reconcile the workstation's conflicting OpenPGP executable overrides
+  without interrupting shared agents. Only the shadowed global gpg.program
+  alias was removed; the effective OpenPGP provider and shared signing key
+  remained unchanged, with good signature verification before and after.
+  Historical signing-cache failure causality remains unknown. Normal hooks
+  and signing continue to apply.
 
 Structural execution plan:
 - See [`agents.TODO.md`](./agents.TODO.md) for remaining surface-thinning work.

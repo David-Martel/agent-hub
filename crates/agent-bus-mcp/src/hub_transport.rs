@@ -256,6 +256,24 @@ fn unwrap_tool_result(
     name: &str,
     sent_token: Option<&str>,
 ) -> Result<Value> {
+    if let Some(flag) = body.get("result").and_then(|result| result.get("isError")) {
+        match flag.as_bool() {
+            Some(false) => {}
+            Some(true) => {
+                // Tool errors can contain arbitrary reflected credentials,
+                // including another JSON document encoded inside text content.
+                // Reject the error without copying that content to diagnostics.
+                return Err(AgentBusError::Internal(format!(
+                    "remote hub {url} rejected '{name}': tools/call reported isError"
+                )));
+            }
+            None => {
+                return Err(AgentBusError::Internal(format!(
+                    "remote hub {url} returned an invalid tools/call isError flag for '{name}'"
+                )));
+            }
+        }
+    }
     let text = body
         .get("result")
         .and_then(|r| r.get("content"))
@@ -652,6 +670,61 @@ mod tests {
             handle.join().expect("fixture completion")[0]
                 .contains("authorization: bearer abc/def\r\n")
         );
+    }
+
+    #[test]
+    fn mcp_tool_error_is_rejected_without_reflecting_nested_credentials() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"{\"error\":\"rejected \\u0061bc\\/def\",\"status\":403}"}]}}"#;
+        let (url, handle) = capture_mock_body(200, String::new(), 1, body);
+        let transport = transport_with_token(Some("abc/def"), &url);
+        let error = transport
+            .call_tool(&url, "bus_send", &Map::new())
+            .expect_err("HTTP 200 tool failure must not be accepted as success");
+        let message = error.to_string();
+        assert!(message.contains("tools/call reported isError"));
+        assert!(!message.contains("abc/def"));
+        assert!(!message.contains(r"\u0061bc"));
+        assert!(!message.contains("status"));
+        assert!(
+            handle.join().expect("tool-error fixture completion")[0]
+                .contains("authorization: bearer abc/def\r\n")
+        );
+    }
+
+    #[test]
+    fn malformed_mcp_error_flag_is_rejected_before_content_decode() {
+        for flag in [
+            Value::Null,
+            Value::String("false".to_owned()),
+            Value::from(0),
+        ] {
+            let body = serde_json::json!({"result": {
+                "isError": flag, "content": [{"text": "{\"ok\":true}"}]
+            }});
+            let error = unwrap_tool_result(&body, "fixture", "bus_send", None)
+                .expect_err("only a boolean MCP error flag is valid");
+            assert!(
+                error
+                    .to_string()
+                    .contains("invalid tools/call isError flag")
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_success_flag_preserves_business_result_and_shape_checks() {
+        let body = serde_json::json!({"result": {
+            "isError": false, "content": [{"text": "{\"business\":\"abc/def\"}"}]
+        }});
+        let value = unwrap_tool_result(&body, "fixture", "bus_send", Some("abc/def"))
+            .expect("explicit MCP success must remain usable");
+        assert_eq!(value["business"], "abc/def");
+        for malformed in [
+            serde_json::json!({"result": {"isError": false}}),
+            serde_json::json!({"result": {"isError": false, "content": []}}),
+        ] {
+            assert!(unwrap_tool_result(&malformed, "fixture", "bus_send", None).is_err());
+        }
     }
 
     #[test]

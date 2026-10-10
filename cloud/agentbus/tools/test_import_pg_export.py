@@ -24,6 +24,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import import_pg_export as ipe  # noqa: E402
@@ -389,3 +391,168 @@ def test_token_is_never_read_from_argv_only_env(tmp_path, monkeypatch):
     assert exit_code == 0
     for text in (report.read_text(), state.read_text(), " ".join(sys.argv)):
         assert "fake-token-for-tests" not in text
+
+
+def _resume_args(tmp_path):
+    messages = tmp_path / "messages.csv"
+    presence = tmp_path / "presence.csv"
+    _write_messages_csv(messages, n=2)
+    _write_presence_csv(presence, n=2)
+    return [
+        "--url",
+        "https://example.invalid",
+        "--origin-hub",
+        "asuspro13",
+        "--origin-host",
+        "asuspro13.local",
+        "--messages",
+        str(messages),
+        "--presence",
+        str(presence),
+        "--state",
+        str(tmp_path / "state.json"),
+    ]
+
+
+def _accepted():
+    return [
+        {"accepted": ["m0", "m1"], "duplicates": [], "conflicts": [], "rejected": []},
+        {"accepted": 2, "duplicates": 0, "rejected": []},
+    ]
+
+
+def test_dry_run_then_real_import_does_not_skip_rows(tmp_path, monkeypatch):
+    args = _resume_args(tmp_path)
+    report = tmp_path / "report.json"
+    code, calls = _run_main(
+        monkeypatch, args + ["--dry-run", "--report", str(report)], []
+    )
+    assert code == 0 and calls == []
+    assert not (tmp_path / "state.json").exists()
+    assert not (tmp_path / "state.tmp").exists()
+    assert not report.exists()
+    code, calls = _run_main(monkeypatch, args, _accepted())
+    assert code == 0
+    assert [item["id"] for item in calls[0][1]["messages"]] == ["m0", "m1"]
+    assert [item["origin_id"] for item in calls[1][1]["events"]] == [0, 1]
+
+
+def test_dry_run_preserves_existing_state_and_report_bytes(
+    tmp_path, monkeypatch, capsys
+):
+    args = _resume_args(tmp_path)
+    _run_main(monkeypatch, args, _accepted())
+    capsys.readouterr()
+    state = tmp_path / "state.json"
+    report = tmp_path / "report.json"
+    report.write_bytes(b"existing report")
+    before = state.read_bytes()
+    code, calls = _run_main(
+        monkeypatch, args + ["--dry-run", "--report", str(report)], []
+    )
+    assert code == 0 and calls == []
+    assert state.read_bytes() == before
+    assert report.read_bytes() == b"existing report"
+    # A preview ignores completed offsets and examines all rows again.
+    assert "messages 2/2" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "messages",
+        "presence",
+        "exclude_ids",
+        "origin_hub",
+        "origin_host",
+        "url",
+        "filters",
+    ],
+)
+def test_resume_rejects_changed_inputs_before_any_post(tmp_path, monkeypatch, change):
+    args = _resume_args(tmp_path)
+    excluded = tmp_path / "excluded.txt"
+    excluded.write_text("not-an-exported-id\n")
+    args += ["--exclude-ids", str(excluded)]
+    _run_main(monkeypatch, args, _accepted())
+    state = tmp_path / "state.json"
+    before = state.read_bytes()
+    if change in ("messages", "presence", "exclude_ids"):
+        path = Path(args[args.index("--" + change.replace("_", "-")) + 1])
+        path.write_bytes(path.read_bytes() + b"\n")
+    elif change == "filters":
+        monkeypatch.setattr(ipe, "SECRET_PATTERNS", ipe.SECRET_PATTERNS[:-1])
+    else:
+        index = args.index("--" + change.replace("_", "-")) + 1
+        args[index] = "changed"
+    with pytest.raises(SystemExit, match="input or import settings changed"):
+        _run_main(monkeypatch, args, [])
+    assert state.read_bytes() == before
+
+
+def test_same_bound_resume_sends_only_remaining_rows(tmp_path, monkeypatch):
+    args = _resume_args(tmp_path)
+    _run_main(monkeypatch, args, _accepted())
+    path = tmp_path / "state.json"
+    state = json.loads(path.read_text())
+    state["messages_offset"] = 1
+    state["presence_offset"] = 1
+    path.write_text(json.dumps(state))
+    code, calls = _run_main(monkeypatch, args, _accepted())
+    assert code == 0
+    assert [item["id"] for item in calls[0][1]["messages"]] == ["m1"]
+    assert [item["origin_id"] for item in calls[1][1]["events"]] == [1]
+    code, calls = _run_main(monkeypatch, args, [])
+    assert code == 0 and calls == []
+
+
+def test_interrupted_import_resumes_from_successful_batch(tmp_path, monkeypatch):
+    args = _resume_args(tmp_path)
+    monkeypatch.setattr(ipe, "BATCH", 1)
+    monkeypatch.setenv("AGENTBUS_TOKEN", "fake-token-for-tests")
+    monkeypatch.setattr(sys, "argv", ["import_pg_export.py", *args])
+    calls = []
+
+    def interrupted_post(url, token, payload, retries=5):
+        calls.append(payload)
+        if len(calls) == 2:
+            raise SystemExit("synthetic transport failure")
+        return {"accepted": ["m0"], "duplicates": [], "conflicts": [], "rejected": []}
+
+    monkeypatch.setattr(ipe, "post", interrupted_post)
+    with pytest.raises(SystemExit, match="synthetic transport failure"):
+        ipe.main()
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["messages_offset"] == 1 and state["binding"]["version"] == 1
+    code, resumed = _run_main(
+        monkeypatch,
+        args,
+        [
+            {"accepted": ["m1"], "duplicates": [], "conflicts": [], "rejected": []},
+            {"accepted": 1, "duplicates": 0, "rejected": []},
+            {"accepted": 1, "duplicates": 0, "rejected": []},
+        ],
+    )
+    assert code == 0
+    assert [item["id"] for item in resumed[0][1]["messages"]] == ["m1"]
+    assert [call[1]["events"][0]["origin_id"] for call in resumed[1:]] == [0, 1]
+
+
+@pytest.mark.parametrize("offset", [1, -1, True, "1"])
+def test_unbound_or_invalid_resume_offsets_refused(tmp_path, monkeypatch, offset):
+    args = _resume_args(tmp_path)
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"messages_offset": offset}))
+    before = path.read_bytes()
+    with pytest.raises(SystemExit, match="resume"):
+        _run_main(monkeypatch, args, [])
+    assert path.read_bytes() == before
+
+
+def test_zero_legacy_offsets_can_establish_a_new_binding(tmp_path, monkeypatch):
+    args = _resume_args(tmp_path)
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps({"messages_offset": 0, "presence_offset": 0}))
+    code, calls = _run_main(monkeypatch, args, _accepted())
+    assert code == 0 and len(calls) == 2
+    assert json.loads(path.read_text())["binding"]["version"] == 1

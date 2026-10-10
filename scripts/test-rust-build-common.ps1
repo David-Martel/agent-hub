@@ -78,11 +78,40 @@ foreach ($forbiddenDaemonMutation in @("--stop-server", "--start-server", "--zer
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $workflowText = Get-Content -LiteralPath (Join-Path $repoRoot ".github/workflows/ci.yml") -Raw
-$clippyStep = [regex]::Match($workflowText,
-    '(?m)^      - name: Strict Windows Clippy without shared cache\r?\n        shell: pwsh\r?\n        run: \|\r?\n(?<commands>(?:          [^\r\n]*\r?\n)+)')
-if (-not $clippyStep.Success) { throw "Expected strict Windows Clippy step was not found." }
-$clippyCommands = $clippyStep.Groups["commands"].Value -replace '(?m)^          ', ''
-$clippyScript = [scriptblock]::Create($clippyCommands)
+function Assert-AgentBusCrossClippyStep {
+    param([Parameter(Mandatory)][string]$Workflow)
+    $step = [regex]::Match($Workflow,
+        '(?m)^      - name: Strict Windows Clippy without shared cache\r?\n        timeout-minutes: 25\r?\n        env:\r?\n          RUSTC_WRAPPER: "(?<wrapper>[^"\r\n]*)"\r?\n        run: (?<command>[^\r\n]+)\r?\n')
+    if (-not $step.Success) { throw 'Expected strict GNU Windows Clippy step was not found.' }
+    if ($step.Groups['wrapper'].Value -cne '') { throw 'GNU Windows Clippy must disable the cache wrapper.' }
+    if ($step.Groups['command'].Value -cne 'cargo clippy --target "$WINDOWS_TARGET" --workspace --all-targets -- -D warnings') {
+        throw 'GNU Windows Clippy target or strict warning flags differ.'
+    }
+}
+Assert-AgentBusCrossClippyStep $workflowText
+Write-Output 'Current GNU Windows Clippy declaration passed: target, wrapper and strictness'
+foreach ($case in @(
+    @{ name = 'wrong target'; text = $workflowText.Replace('--target "$WINDOWS_TARGET"', '--target x86_64-pc-windows-msvc') },
+    @{ name = 'nonempty wrapper'; text = $workflowText.Replace('RUSTC_WRAPPER: ""', 'RUSTC_WRAPPER: "fixture-cache"') },
+    @{ name = 'missing strict warnings'; text = $workflowText.Replace('-- -D warnings', '--') }
+)) {
+    $refused = $false
+    try { Assert-AgentBusCrossClippyStep $case.text } catch {
+        if ($_.Exception.Message -notlike 'GNU Windows Clippy*') { throw }
+        $refused = $true
+    }
+    if (-not $refused) { throw "GNU Clippy declaration defect admitted: $($case.name)" }
+    Write-Output "GNU Windows Clippy declaration refused: $($case.name)"
+}
+
+# Retain native helper regressions independently of the GNU job's Bash command.
+# The real target-specific GNU command runs earlier in CI; these fixtures exercise
+# explicit uncached helper behaviour with native disposable Cargo applications.
+$clippyScript = [scriptblock]::Create(@'
+. ./scripts/rust-build-common.ps1
+Disable-AgentBusSccacheForCargoSteps
+Invoke-AgentBusCargo -Label "Windows Clippy" -Command clippy -AdditionalArgs @("--workspace", "--all-targets", "--", "-D", "warnings")
+'@)
 
 # Resolve the repository's native compiler before any fixture changes USERPROFILE
 # or RUSTUP_HOME. Windows rustup otherwise discovers the synthetic empty home.
@@ -431,7 +460,7 @@ exit $global:LASTEXITCODE
             }
         }
         if ($Mode -eq "healthy") {
-            # Execute the actual YAML step: it must bypass both inherited env and
+            # Execute the native helper: it must bypass both inherited env and
             # Cargo config wrappers, preserve -D warnings, and leave GITHUB_ENV alone.
             $nativeFixture = New-AgentBusNativeCargoFixture -Directory $fixtureRoot -CompilerPath $nativeFixtureCompiler
             $env:RUSTUP_HOME = $nativeFixture.RustupHome
@@ -470,7 +499,7 @@ exit $global:LASTEXITCODE
                     throw "Clippy did not preserve strictness and bypass both wrapper sources."
                 }
             }
-            Write-Output "Windows Clippy step fixtures passed: success and strict failure"
+            Write-Output "Native Windows Clippy helper fixtures passed: success and strict failure"
         }
         Write-Output "CI setup fixture passed: $Mode"
     }

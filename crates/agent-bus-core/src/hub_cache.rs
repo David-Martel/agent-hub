@@ -12,7 +12,7 @@
 //! non-fatal: the cache is an optimisation, never a dependency.
 
 use std::io::{self, Read, Write};
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -81,13 +81,54 @@ impl CacheOs {
 pub struct HubCache {
     path: PathBuf,
     ttl: Duration,
+    #[cfg(test)]
+    explicit_config: Option<ExplicitConfigPath>,
 }
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+struct ExplicitConfigPath(Option<PathBuf>);
 
 impl HubCache {
     /// A cache stored at `path`, trusting entries for `ttl`.
     #[must_use]
     pub const fn new(path: PathBuf, ttl: Duration) -> Self {
-        Self { path, ttl }
+        Self {
+            path,
+            ttl,
+            #[cfg(test)]
+            explicit_config: None,
+        }
+    }
+
+    #[cfg(test)]
+    const fn with_config_path(path: PathBuf, ttl: Duration, config: Option<PathBuf>) -> Self {
+        Self {
+            path,
+            ttl,
+            explicit_config: Some(ExplicitConfigPath(config)),
+        }
+    }
+
+    fn ensure_safe_mutation_path(&self) -> io::Result<()> {
+        // Inject only external path selection for the filesystem controls.
+        // The mutation guard and actual writer remain unchanged.
+        #[cfg(test)]
+        let config = match &self.explicit_config {
+            Some(config) => config.0.clone(),
+            None => crate::settings::config_file_path(),
+        };
+        #[cfg(not(test))]
+        let config = crate::settings::config_file_path();
+        if let Some(config) = config
+            && paths_alias(&self.path, &config)?
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "hub cache path aliases credential configuration",
+            ));
+        }
+        Ok(())
     }
 
     /// `false` when the TTL is zero.
@@ -147,6 +188,7 @@ impl HubCache {
         if !self.enabled() {
             return Ok(());
         }
+        self.ensure_safe_mutation_path()?;
         validate_hub_base_url(url)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let elapsed = now
@@ -203,11 +245,107 @@ impl HubCache {
         if !self.enabled() {
             return;
         }
+        if let Err(error) = self.ensure_safe_mutation_path() {
+            tracing::debug!(kind = ?error.kind(), "hub cache invalidation refused");
+            return;
+        }
         if let Err(error) = std::fs::remove_file(&self.path)
             && error.kind() != io::ErrorKind::NotFound
         {
             tracing::debug!(kind = ?error.kind(), "hub cache invalidation failed");
         }
+    }
+}
+
+// Canonicalize the existing ancestor before normalizing the missing suffix.
+// This preserves symlink/junction semantics instead of blindly collapsing
+// `link/..`. Unresolvable I/O errors refuse mutation rather than trusting a
+// string comparison. Cooperative ownership is still required for path swaps.
+fn mutation_path_identity(path: &Path) -> io::Result<PathBuf> {
+    let mut ancestor = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let mut suffix: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        match std::fs::canonicalize(&ancestor) {
+            Ok(mut canonical) => {
+                if !suffix.is_empty() && !std::fs::metadata(&canonical)?.is_dir() {
+                    return Err(io::Error::from(io::ErrorKind::NotADirectory));
+                }
+                for component in suffix.into_iter().rev() {
+                    if component == std::ffi::OsStr::new("..") {
+                        canonical.pop();
+                    } else if component != std::ffi::OsStr::new(".") {
+                        canonical.push(component);
+                    }
+                }
+                return Ok(canonical);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                // A dangling link exists even though its target cannot be
+                // canonicalized. Treating it as a missing ordinary suffix
+                // could permit creation of its target as a cache file.
+                match std::fs::symlink_metadata(&ancestor) {
+                    Ok(metadata) if is_reparse_path(&metadata) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "unresolved symlink or reparse cache/configuration path",
+                        ));
+                    }
+                    Ok(_) => return Err(error),
+                    Err(metadata_error) if metadata_error.kind() == io::ErrorKind::NotFound => {}
+                    Err(metadata_error) => return Err(metadata_error),
+                }
+                let Some(component) = ancestor.components().next_back() else {
+                    return Err(error);
+                };
+                if matches!(component, Component::Prefix(_) | Component::RootDir) {
+                    return Err(error);
+                }
+                suffix.push(component.as_os_str().to_os_string());
+                if !ancestor.pop() {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn is_reparse_path(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        // FILE_ATTRIBUTE_REPARSE_POINT also covers junctions and other tags,
+        // not only the symbolic-link tag recognized by FileType.
+        metadata.file_attributes() & 0x400 != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+fn paths_alias(cache: &Path, config: &Path) -> io::Result<bool> {
+    let cache = mutation_path_identity(cache)?;
+    let config = mutation_path_identity(config)?;
+    #[cfg(windows)]
+    {
+        // The supported config/cache leaves and environment routing contract
+        // use ASCII names; existing filesystem aliases are canonicalized above.
+        Ok(cache
+            .as_os_str()
+            .to_string_lossy()
+            .eq_ignore_ascii_case(&config.as_os_str().to_string_lossy()))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(cache == config)
     }
 }
 
@@ -311,7 +449,6 @@ impl Drop for TemporaryCacheFile {
 mod tests {
     use super::*;
     use std::collections::HashMap;
-    use std::path::Path;
 
     const TTL: Duration = Duration::from_secs(60);
 
@@ -405,10 +542,279 @@ mod tests {
     }
 
     fn cache_in(dir: &tempfile::TempDir, ttl: Duration) -> HubCache {
-        HubCache::new(
+        HubCache::with_config_path(
             dir.path().join("agent-bus").join("hub-resolution.json"),
             ttl,
+            None,
         )
+    }
+
+    fn assert_config_alias_is_preserved(cache_path: PathBuf, config_path: &Path) {
+        let before = std::fs::read(config_path).expect("synthetic config preimage");
+        let cache = HubCache::with_config_path(cache_path, TTL, Some(config_path.to_path_buf()));
+        let error = cache
+            .store("fp", "http://hub.lan:8400", HubRole::Fallback, t0())
+            .expect_err("config alias refused before cache publication");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            std::fs::read(config_path).expect("after rejected store"),
+            before
+        );
+        cache.invalidate();
+        assert_eq!(
+            std::fs::read(config_path).expect("after rejected invalidate"),
+            before
+        );
+    }
+
+    #[test]
+    fn cache_config_alias_store_and_invalidate_preserve_exact_bytes() {
+        let directory = tempfile::tempdir().expect("synthetic config directory");
+        let config = directory.path().join("config.json");
+        std::fs::write(&config, b"synthetic credential config bytes").expect("config fixture");
+        assert_config_alias_is_preserved(config.clone(), &config);
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("list directory")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn cache_canonical_config_alias_store_and_invalidate_preserve_exact_bytes() {
+        let directory = tempfile::tempdir().expect("synthetic config directory");
+        let config = directory.path().join("config.json");
+        std::fs::write(&config, b"synthetic canonical config bytes").expect("config fixture");
+        std::fs::create_dir(directory.path().join("subdir")).expect("existing subdir");
+        let alias = directory.path().join("subdir/../config.json");
+        assert_config_alias_is_preserved(alias, &config);
+    }
+
+    #[test]
+    fn cache_relative_config_alias_store_and_invalidate_preserve_exact_bytes() {
+        #[cfg(not(windows))]
+        let directory = tempfile::tempdir().expect("synthetic config directory");
+        #[cfg(windows)]
+        let directory = tempfile::tempdir_in(std::env::current_dir().expect("current directory"))
+            .expect("owned same-drive temporary config directory");
+        let config = directory.path().join("config.json");
+        std::fs::write(&config, b"synthetic relative config bytes").expect("config fixture");
+        let current = std::env::current_dir().expect("current directory");
+        let canonical_config = std::fs::canonicalize(&config).expect("config identity");
+        let canonical_current = std::fs::canonicalize(current).expect("current identity");
+        let current_parts: Vec<_> = canonical_current.components().collect();
+        let config_parts: Vec<_> = canonical_config.components().collect();
+        let common = current_parts
+            .iter()
+            .zip(&config_parts)
+            .take_while(|(a, b)| a == b)
+            .count();
+        assert!(
+            common > 0,
+            "fixture and worktree must share a filesystem root"
+        );
+        let mut relative = PathBuf::new();
+        for _ in common..current_parts.len() {
+            relative.push("..");
+        }
+        for component in &config_parts[common..] {
+            relative.push(component.as_os_str());
+        }
+        assert!(!relative.is_absolute());
+        assert_config_alias_is_preserved(relative, &config);
+    }
+
+    #[test]
+    fn cache_missing_config_alias_does_not_create_or_delete_configuration() {
+        let directory = tempfile::tempdir().expect("synthetic config directory");
+        let config = directory.path().join("missing/config.json");
+        let cache = HubCache::with_config_path(config.clone(), TTL, Some(config.clone()));
+        assert_eq!(
+            cache
+                .store("fp", "http://hub.lan", HubRole::Fallback, t0())
+                .expect_err("missing alias")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        cache.invalidate();
+        assert!(!config.exists());
+        assert!(!config.parent().expect("parent").exists());
+    }
+
+    #[test]
+    fn cache_missing_parent_dotdot_alias_preserves_existing_configuration() {
+        let directory = tempfile::tempdir().expect("synthetic config directory");
+        let config = directory.path().join("config.json");
+        std::fs::write(&config, b"synthetic missing parent config bytes").expect("config fixture");
+        let alias = directory.path().join("missing/../config.json");
+        assert_config_alias_is_preserved(alias, &config);
+        assert!(!directory.path().join("missing").exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    fn create_owned_file_symlink(target: &Path, link: &Path) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link)
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(target, link)
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn cache_dangling_config_symlink_store_preserves_link_and_missing_target() {
+        let directory = tempfile::tempdir().expect("synthetic dangling config directory");
+        let target = directory.path().join("cache.json");
+        let config = directory.path().join("config.json");
+        create_owned_file_symlink(&target, &config).expect("owned dangling config symlink");
+        let before = std::fs::read_link(&config).expect("original link target");
+        let cache = HubCache::with_config_path(target.clone(), TTL, Some(config.clone()));
+        let error = cache
+            .store("fp", "http://hub.lan", HubRole::Fallback, t0())
+            .expect_err("dangling config alias refused");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        cache.invalidate();
+        assert_eq!(std::fs::read_link(&config).expect("preserved link"), before);
+        assert!(!target.exists());
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("owned directory")
+                .count(),
+            1
+        );
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn cache_dangling_config_symlink_invalidation_preserves_existing_cache() {
+        let directory = tempfile::tempdir().expect("synthetic dangling config directory");
+        let missing = directory.path().join("missing.json");
+        let config = directory.path().join("config.json");
+        create_owned_file_symlink(&missing, &config).expect("owned dangling config symlink");
+        let before = std::fs::read_link(&config).expect("original link target");
+        let target = directory.path().join("existing-cache.json");
+        std::fs::write(&target, b"existing cache exact bytes").expect("cache fixture");
+        let cache = HubCache::with_config_path(target.clone(), TTL, Some(config.clone()));
+        cache.invalidate();
+        assert_eq!(
+            std::fs::read(&target).expect("cache preserved"),
+            b"existing cache exact bytes"
+        );
+        assert_eq!(
+            std::fs::read_link(&config).expect("config link preserved"),
+            before
+        );
+        assert!(!missing.exists());
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn cache_dangling_config_parent_link_refuses_target_directory_creation() {
+        let directory = tempfile::tempdir().expect("synthetic dangling parent directory");
+        let missing = directory.path().join("missing-directory");
+        let link = directory.path().join("config-parent-link");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&missing, &link).expect("owned dangling parent symlink");
+        #[cfg(windows)]
+        std::os::windows::fs::symlink_dir(&missing, &link).expect("owned dangling parent symlink");
+        let config = link.join("config.json");
+        let target = missing.join("config.json");
+        let cache = HubCache::with_config_path(target, TTL, Some(config));
+        assert_eq!(
+            cache
+                .store("fp", "http://hub.lan", HubRole::Fallback, t0())
+                .expect_err("dangling parent refused")
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        cache.invalidate();
+        assert_eq!(
+            std::fs::read_link(&link).expect("parent link preserved"),
+            missing
+        );
+        assert!(!missing.exists());
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("owned directory")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn cache_alias_resolution_error_refuses_store_and_invalidate() {
+        let directory = tempfile::tempdir().expect("synthetic config directory");
+        let parent = directory.path().join("foreign-parent-file");
+        std::fs::write(&parent, b"foreign parent exact bytes").expect("parent fixture");
+        let config = parent.join("config.json");
+        let target = directory.path().join("cache.json");
+        std::fs::write(&target, b"existing separate cache bytes").expect("cache fixture");
+        let cache = HubCache::with_config_path(target.clone(), TTL, Some(config));
+        assert!(
+            cache
+                .store("fp", "http://hub.lan", HubRole::Fallback, t0())
+                .is_err()
+        );
+        cache.invalidate();
+        assert_eq!(
+            std::fs::read(&target).expect("cache preserved"),
+            b"existing separate cache bytes"
+        );
+        assert_eq!(
+            std::fs::read(parent).expect("parent preserved"),
+            b"foreign parent exact bytes"
+        );
+    }
+
+    #[test]
+    fn cache_separate_from_configuration_still_stores_loads_and_invalidates() {
+        let directory = tempfile::tempdir().expect("synthetic config directory");
+        let config = directory.path().join("config.json");
+        std::fs::write(&config, b"synthetic separate config bytes").expect("config fixture");
+        let target = directory.path().join("cache/hub-resolution.json");
+        let cache = HubCache::with_config_path(target.clone(), TTL, Some(config.clone()));
+        cache
+            .store("fp", "http://hub.lan", HubRole::Fallback, t0())
+            .expect("separate cache store");
+        let hit = cache.load("fp", t0()).expect("separate cache load");
+        assert_eq!(hit.url, "http://hub.lan");
+        assert_eq!(hit.role, HubRole::Fallback);
+        cache.invalidate();
+        assert!(!target.exists());
+        assert_eq!(
+            std::fs::read(config).expect("config preserved"),
+            b"synthetic separate config bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_symlink_config_alias_preserves_config_and_link() {
+        let directory = tempfile::tempdir().expect("synthetic config directory");
+        let config = directory.path().join("config.json");
+        std::fs::write(&config, b"synthetic symlink config bytes").expect("config fixture");
+        let link = directory.path().join("cache-link.json");
+        std::os::unix::fs::symlink(&config, &link).expect("owned symlink");
+        assert_config_alias_is_preserved(link.clone(), &config);
+        assert!(
+            std::fs::symlink_metadata(link)
+                .expect("preserved symlink")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn cache_ascii_case_config_alias_preserves_configuration() {
+        let directory = tempfile::tempdir().expect("synthetic config directory");
+        let config = directory.path().join("config.json");
+        std::fs::write(&config, b"synthetic Windows case config bytes").expect("config fixture");
+        assert_config_alias_is_preserved(directory.path().join("CONFIG.JSON"), &config);
     }
 
     #[test]

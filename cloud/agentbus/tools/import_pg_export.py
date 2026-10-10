@@ -13,7 +13,9 @@ Safety properties:
   pattern, are never sent. Each exclusion is logged by id and reason only.
 - Idempotent: the cloud dedups on message id, so a re-run after a partial
   failure re-sends at most one batch. --state records the next row offset.
-- --dry-run does everything except the HTTP call and prints the counts.
+- --dry-run previews all rows without HTTP calls or state/report writes.
+- Resume offsets are bound to the exact exports, exclusions and import settings;
+  changed inputs and unbound nonzero legacy offsets are refused.
 - Any row the CLOUD rejects (not merely a local skip/exclude, and not a
   same-id "conflict", which just means the row already exists with
   different content) is treated as a hard failure: the run exits non-zero
@@ -29,6 +31,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import io
 import json
 import os
 import re
@@ -174,7 +178,10 @@ def post(url: str, token: str, payload: dict, retries: int = 5) -> dict:
 
 def load_state(path: Path | None) -> dict:
     if path and path.exists():
-        return json.loads(path.read_text())
+        state = json.loads(path.read_text())
+        if not isinstance(state, dict):
+            raise SystemExit("resume state must be a JSON object")
+        return state
     return {}
 
 
@@ -183,6 +190,21 @@ def save_state(path: Path | None, state: dict) -> None:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(state, indent=2))
         tmp.replace(path)
+
+
+def bind_resume_state(state: dict, binding: dict) -> dict:
+    """Refuse offsets whose immutable input identity is not established."""
+    for key in ("messages_offset", "presence_offset"):
+        offset = state.get(key, 0)
+        if type(offset) is not int or offset < 0:
+            raise SystemExit("resume offsets must be nonnegative integers")
+    previous = state.get("binding")
+    if previous is None:
+        if state.get("messages_offset", 0) or state.get("presence_offset", 0):
+            raise SystemExit("unbound nonzero legacy resume state refused")
+    elif previous != binding:
+        raise SystemExit("resume input or import settings changed; state refused")
+    return state | {"binding": binding}
 
 
 def main() -> int:
@@ -219,15 +241,51 @@ def main() -> int:
     if not args.dry_run and not token:
         raise SystemExit("AGENTBUS_TOKEN is not set")
 
+    # Hash and parse the same captured bytes, rather than hashing then reopening
+    # an export that could change before the rows are read.
+    inputs = {
+        name: path.read_bytes() if path else None
+        for name, path in (
+            ("messages", args.messages),
+            ("presence", args.presence),
+            ("exclude_ids", args.exclude_ids),
+        )
+    }
     excluded_ids: set[str] = set()
-    if args.exclude_ids:
+    if inputs["exclude_ids"] is not None:
         excluded_ids = {
             ln.split()[0]
-            for ln in args.exclude_ids.read_text().splitlines()
+            for ln in inputs["exclude_ids"].decode("utf-8-sig").splitlines()
             if ln.strip() and not ln.startswith("#")
         }
 
-    state = load_state(args.state)
+    settings = {
+        "url": args.url.rstrip("/"),
+        "origin_hub": args.origin_hub,
+        "origin_host": args.origin_host,
+        "allow_rejects": args.allow_rejects,
+        "credential_filters": [
+            [name, pattern.pattern, pattern.flags] for name, pattern in SECRET_PATTERNS
+        ],
+        "row_format_version": 1,
+    }
+    binding = {
+        "version": 1,
+        **{
+            f"{name}_sha256": hashlib.sha256(data).hexdigest()
+            if data is not None
+            else None
+            for name, data in inputs.items()
+        },
+        "settings_sha256": hashlib.sha256(
+            json.dumps(settings, sort_keys=True).encode("utf-8")
+        ).hexdigest(),
+    }
+    # A preview always examines the full inputs and never consumes a checkpoint.
+    state = {} if args.dry_run else bind_resume_state(load_state(args.state), binding)
+    for name in ("messages", "presence"):
+        if inputs[name] is None and state.get(f"{name}_offset", 0):
+            raise SystemExit("resume offset has no corresponding export")
     summary: dict = {
         "origin_hub": args.origin_hub,
         "dry_run": args.dry_run,
@@ -237,7 +295,7 @@ def main() -> int:
     base = args.url.rstrip("/")
 
     if args.messages:
-        rows = list(csv.DictReader(args.messages.open(newline="")))
+        rows = list(csv.DictReader(io.StringIO(inputs["messages"].decode("utf-8-sig"))))
         items, skipped = [], []
         for row in rows:
             if row["id"] in excluded_ids:
@@ -264,6 +322,8 @@ def main() -> int:
             "rejected": 0,
         }
         start = state.get("messages_offset", 0)
+        if start > len(items):
+            raise SystemExit("messages resume offset exceeds filtered export")
         rejected_detail = []
         conflict_detail = []
         for off in range(start, len(items), BATCH):
@@ -283,8 +343,9 @@ def main() -> int:
                     {"id": r.get("id"), "reason": r.get("reason")}
                     for r in res.get("rejected", [])
                 ]
-            state["messages_offset"] = off + len(batch)
-            save_state(args.state, state)
+            if not args.dry_run:
+                state["messages_offset"] = off + len(batch)
+                save_state(args.state, state)
             print(f"messages {off + len(batch)}/{len(items)}", file=sys.stderr)
         summary["messages"] = counts | {
             "skipped_ids": [{"id": i, "reason": r} for i, r in skipped],
@@ -293,7 +354,7 @@ def main() -> int:
         }
 
     if args.presence:
-        rows = list(csv.DictReader(args.presence.open(newline="")))
+        rows = list(csv.DictReader(io.StringIO(inputs["presence"].decode("utf-8-sig"))))
         items = [presence_item(r) for r in rows]
         counts = {
             "rows": len(rows),
@@ -303,6 +364,8 @@ def main() -> int:
             "rejected": 0,
         }
         start = state.get("presence_offset", 0)
+        if start > len(items):
+            raise SystemExit("presence resume offset exceeds export")
         presence_rejected_detail = []
         for off in range(start, len(items), BATCH):
             batch = items[off : off + BATCH]
@@ -327,8 +390,9 @@ def main() -> int:
                     {"origin_id": r.get("origin_id"), "reason": r.get("reason")}
                     for r in rejected_events
                 ]
-            state["presence_offset"] = off + len(batch)
-            save_state(args.state, state)
+            if not args.dry_run:
+                state["presence_offset"] = off + len(batch)
+                save_state(args.state, state)
             print(f"presence {off + len(batch)}/{len(items)}", file=sys.stderr)
         summary["presence"] = counts | {"rejected_ids": presence_rejected_detail}
 
@@ -339,7 +403,7 @@ def main() -> int:
     summary["allow_rejects"] = args.allow_rejects
 
     out = json.dumps(summary, indent=2)
-    if args.report:
+    if args.report and not args.dry_run:
         args.report.write_text(out)
     brief = {
         k: (

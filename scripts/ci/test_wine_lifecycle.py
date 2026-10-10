@@ -20,6 +20,7 @@ from wine_lifecycle import (
     bounded_client,
     WineCommandFailure,
     UNSETTLED_CLIENTS,
+    run_guest,
 )
 
 SPEC = importlib.util.spec_from_file_location(
@@ -129,6 +130,82 @@ class WineControls(unittest.TestCase):
                 pause=clock.pause,
             )
         self.assertFalse(provider.retired)
+
+    def test_http_stop_requires_owned_launcher_stop_after_listener_closes(self):
+        guest, provider, launcher = self.guest([{654: "agent-bus-http.exe"}, {}])
+        guest.guest_pid = 654
+        guest.ready = True
+        launcher.terminate.side_effect = lambda: setattr(
+            launcher.poll, "return_value", -15
+        )
+        stop = MagicMock()
+        guest.close(stop, lambda: True)
+        stop.assert_called_once()
+        launcher.terminate.assert_called_once()
+        launcher.kill.assert_not_called()
+        self.assertTrue(provider.waited)
+        self.assertTrue(provider.retired)
+
+    def test_replaced_guest_is_refused_before_launcher_signal(self):
+        guest, provider, launcher = self.guest([{654: "foreign.exe"}])
+        guest.guest_pid = 654
+        guest.ready = True
+        with self.assertRaisesRegex(RuntimeError, "identity changed"):
+            guest.close(lambda: None, lambda: True)
+        launcher.terminate.assert_not_called()
+        self.assertFalse(provider.retired)
+
+    def test_open_listener_never_requests_managed_guest_termination(self):
+        guest, _, launcher = self.guest([{654: "agent-bus-http.exe"}])
+        guest.guest_pid = 654
+        guest.ready = True
+        clock = Clock()
+        with self.assertRaisesRegex(RuntimeError, "did not settle"):
+            guest.close(
+                lambda: None,
+                lambda: False,
+                timeout=0.2,
+                clock=clock.now,
+                pause=clock.pause,
+            )
+        launcher.terminate.assert_not_called()
+
+    def test_launcher_signal_relays_only_to_original_unreaped_child(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            artifact = Path(temporary) / "agent-bus-http.exe"
+            artifact.write_bytes(b"synthetic fixture, never executed")
+            provider = MagicMock(unsafe=True)
+            provider.private_environment.return_value = {}
+            provider.guest_environment.return_value = {}
+            child = MagicMock()
+            child.poll.return_value = None
+            handlers = []
+            previous = object()
+
+            def install(_number, handler):
+                handlers.append(handler)
+                return previous
+
+            def wait():
+                handlers[0](15, None)
+                return -15
+
+            child.wait.side_effect = wait
+            with (
+                patch(
+                    "wine_lifecycle.NativeWineProvider.__new__", return_value=provider
+                ),
+                patch("wine_lifecycle.signal.signal", side_effect=install),
+                patch("wine_lifecycle.subprocess.Popen", return_value=child) as launch,
+            ):
+                self.assertEqual(
+                    run_guest(temporary, temporary, artifact, [], (1, 2, 3), (1, 4, 3)),
+                    -15,
+                )
+            child.terminate.assert_called_once()
+            child.kill.assert_not_called()
+            self.assertIs(handlers[-1], previous)
+            self.assertEqual(launch.call_count, 1)
 
     def test_success_requires_prefix_wait_and_preserves_unrelated_prefix(self):
         guest, provider, launcher = self.guest([{}], 0)
@@ -460,8 +537,7 @@ class WineControls(unittest.TestCase):
                 + "); "
                 + "ready.write_text(str(os.getpid())); deadline=time.monotonic()+12\n"
                 + "while not release.exists() and time.monotonic()<deadline: "
-                "time.sleep(.02)\n"
-                + "exited.write_text('natural-exit')\n"
+                "time.sleep(.02)\n" + "exited.write_text('natural-exit')\n"
             )
             client = (
                 "import os,subprocess,sys,time; from pathlib import Path; "
@@ -472,8 +548,7 @@ class WineControls(unittest.TestCase):
                 + repr(str(ready))
                 + "); deadline=time.monotonic()+4\n"
                 + "while not ready.exists() and time.monotonic()<deadline: "
-                "time.sleep(.01)\n"
-                + "os._exit(0 if ready.exists() else 8)\n"
+                "time.sleep(.01)\n" + "os._exit(0 if ready.exists() else 8)\n"
             )
             retained_before = len(UNSETTLED_CLIENTS)
             started = time.monotonic()

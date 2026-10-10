@@ -19,6 +19,8 @@
  */
 
 import { Hono } from "hono";
+import { handleMcp } from "./mcp";
+import { tokenManifest } from "./token-manifest";
 import {
   authenticate,
   bindAgent,
@@ -155,6 +157,9 @@ async function guarded(fn: () => unknown | Promise<unknown>): Promise<Response> 
 
 type Bindings = { Bindings: Env; Variables: { identity: Identity } };
 const app = new Hono<Bindings>();
+// Only requests constructed by our authenticated MCP adapter enter this set.
+// Re-authenticate the unchanged bearer on dispatch; count the external RPC once.
+const mcpRestRequests = new WeakSet<Request>();
 
 // --- Auth + rate limit middleware: every route except /health --------------
 
@@ -163,6 +168,8 @@ app.use("*", async (c, next) => {
   const identity = authenticate(c.req.raw, c.env);
   if (!identity) return unauthorizedResponse();
   c.set("identity", identity);
+
+  if (mcpRestRequests.has(c.req.raw)) return next();
 
   const limit = Number(c.env.RATE_LIMIT_PER_MINUTE) || DEFAULT_RATE_LIMIT_PER_MINUTE;
   const identityKey = `${identity.role}:${identity.agent}:${identity.host ?? ""}`;
@@ -930,6 +937,20 @@ app.get("/sync/stats", async (c) => {
   });
 });
 
+// --- Operator-only secret-map provenance; never export entries or tokens ------
+app.get("/admin/tokens/manifest", (c) => guarded(async () => {
+  requireRole(c.get("identity"), "operator");
+  return { ...await tokenManifest(c.env.AGENT_BUS_TOKENS),
+    build_version: BUILD_VERSION, hub_identity: cloudIdentity(c.env) };
+}));
+
+// --- MCP: supported REST-backed tools, with the same role/identity checks ------
+app.all("/mcp", (c) => handleMcp(c.req.raw, async (request) => {
+  mcpRestRequests.add(request);
+  try { return await app.request(request, undefined, c.env); }
+  finally { mcpRestRequests.delete(request); }
+}));
+
 // --- Deferred routes: return a clear 501 rather than a generic 404 -------------
 
 const DEFERRED_ROUTES = [
@@ -962,7 +983,6 @@ const DEFERRED_ROUTES = [
   "/dashboard",
   "/dashboard/data",
   "/support",
-  "/mcp",
 ];
 for (const path of DEFERRED_ROUTES) {
   app.all(path, (c) =>

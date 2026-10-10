@@ -12,6 +12,7 @@ use crate::hub_candidates::{
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
+use std::io::Write;
 
 // ---------------------------------------------------------------------------
 // Config file
@@ -93,7 +94,7 @@ pub struct ConfigFile {
 /// Checks `AGENT_BUS_CONFIG` first, then falls back to
 /// `%USERPROFILE%\.config\agent-bus\config.json` (Windows) or
 /// `~/.config/agent-bus/config.json` (other platforms).
-fn config_file_path() -> Option<std::path::PathBuf> {
+pub(crate) fn config_file_path() -> Option<std::path::PathBuf> {
     if let Ok(custom) = std::env::var("AGENT_BUS_CONFIG")
         && !custom.trim().is_empty()
     {
@@ -111,13 +112,17 @@ fn config_file_path() -> Option<std::path::PathBuf> {
     Some(path)
 }
 
-/// Load the config file, returning [`ConfigFile::default()`] on any error.
+/// Load configuration while retaining read and parsing failures.
+#[must_use]
 pub fn load_config_file() -> ConfigFile {
     let Some(path) = config_file_path() else {
         return ConfigFile::default();
     };
+    load_config_file_at(&path)
+}
 
-    match std::fs::read_to_string(&path) {
+fn load_config_file_at(path: &std::path::Path) -> ConfigFile {
+    match std::fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<ConfigFile>(&text) {
             Ok(cfg) => {
                 tracing::debug!("loaded agent-bus config from {}", path.display());
@@ -149,16 +154,36 @@ pub fn load_config_file() -> ConfigFile {
 }
 
 /// Write a default config file if one does not already exist.
-fn maybe_write_default_config(path: &std::path::Path) {
-    if path.exists() {
-        return;
+fn maybe_write_default_config(path: &std::path::Path) -> std::io::Result<()> {
+    write_default_config_before_open(path, |_| Ok(()))
+}
+
+// The synchronization boundary permits a real concurrent-creator regression;
+// the exclusive open, write and flush below always remain the actual writer.
+fn write_default_config_before_open(
+    path: &std::path::Path,
+    before_open: impl FnOnce(&std::path::Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    // Retain read-only existing-config behavior; CreateNew still protects the
+    // absence-check race, and try_exists exposes real metadata failures.
+    if path.try_exists()? {
+        return Ok(());
     }
-    let Some(parent) = path.parent() else {
-        return;
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| std::path::Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    before_open(path)?;
+    let mut file = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(error) => return Err(error),
     };
-    if std::fs::create_dir_all(parent).is_err() {
-        return;
-    }
     let default_json = r#"{
   "redis_url": "redis://127.0.0.1:6380/0",
   "database_url": "postgresql://postgres@127.0.0.1:5300/redis_backend",
@@ -179,9 +204,10 @@ fn maybe_write_default_config(path: &std::path::Path) {
 }
 
 "#;
-    if std::fs::write(path, default_json).is_ok() {
-        tracing::debug!("wrote default agent-bus config to {}", path.display());
-    }
+    file.write_all(default_json.as_bytes())?;
+    file.sync_all()?;
+    tracing::debug!("wrote default agent-bus config to {}", path.display());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -189,10 +215,20 @@ fn maybe_write_default_config(path: &std::path::Path) {
 // ---------------------------------------------------------------------------
 
 fn load_settings_config() -> ConfigFile {
-    if let Some(path) = config_file_path() {
-        maybe_write_default_config(&path);
+    config_file_path().map_or_else(ConfigFile::default, |path| load_settings_config_at(&path))
+}
+
+fn load_settings_config_at(path: &std::path::Path) -> ConfigFile {
+    if let Err(error) = maybe_write_default_config(path) {
+        return ConfigFile {
+            configuration_error: Some(format!(
+                "agent-bus configuration could not be initialized ({:?})",
+                error.kind()
+            )),
+            ..ConfigFile::default()
+        };
     }
-    load_config_file()
+    load_config_file_at(path)
 }
 
 /// Return the first non-`None` value among: env var → config file value → hardcoded default.
@@ -615,8 +651,8 @@ impl Settings {
         reason = "one flat field-by-field resolution of every setting"
     )]
     pub fn from_env() -> Self {
-        // Write a starter config if the file is absent (best-effort, silent on
-        // failure so we never prevent the process from starting).
+        // Exclusively create an absent starter config. Genuine initialization
+        // failures are retained for validation before any backend access.
         let cfg = load_settings_config();
         let (hub_candidates, hub_config_error) = resolve_candidate_settings(&cfg);
         let (network_locations, network_location_error) = resolve_location_settings(&cfg);
@@ -952,18 +988,114 @@ mod tests {
     fn starter_config_is_valid_json_and_preserves_existing_bytes() {
         let directory = tempfile::tempdir().expect("temporary config directory");
         let path = directory.path().join("nested/config.json");
-        maybe_write_default_config(&path);
+        maybe_write_default_config(&path).expect("starter config initialized");
         let bytes = std::fs::read(&path).expect("starter config created");
         let config: ConfigFile =
             serde_json::from_slice(&bytes).expect("starter config must remain valid JSON");
         assert_eq!(config.service_name.as_deref(), Some("AgentHub"));
         assert_eq!(config.server_host.as_deref(), Some("localhost"));
         std::fs::write(&path, b"existing configuration bytes").expect("existing fixture");
-        maybe_write_default_config(&path);
+        maybe_write_default_config(&path).expect("existing creator preserved");
         assert_eq!(
             std::fs::read(&path).expect("existing config preserved"),
             b"existing configuration bytes"
         );
+    }
+
+    #[test]
+    fn starter_config_preserves_creator_between_parent_setup_and_exclusive_open() {
+        let directory = tempfile::tempdir().expect("temporary config directory");
+        let path = directory.path().join("nested/config.json");
+        let mut creator = None;
+        let mut calls = 0;
+        // Deterministically interleave the external creator immediately before
+        // the real exclusive open. Its original file remains held until the
+        // actual writer returns. No thread, rendezvous or join can hang if
+        // this callback is omitted or returns an error.
+        let result = write_default_config_before_open(&path, |actual_path| {
+            assert_eq!(actual_path, path);
+            calls += 1;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(actual_path)?;
+            file.write_all(b"foreign creator exact bytes")?;
+            file.sync_all()?;
+            creator = Some(file);
+            Ok(())
+        });
+        // Release the actual owned creator before any potentially failing
+        // assertion, including a skipped-callback or initializer error.
+        drop(creator);
+        result.expect("concurrent creator preserved");
+        assert_eq!(calls, 1);
+        assert_eq!(
+            std::fs::read(&path).expect("foreign bytes"),
+            b"foreign creator exact bytes"
+        );
+    }
+
+    #[test]
+    fn starter_config_readonly_existing_file_still_loads_without_mutation() {
+        let directory = tempfile::tempdir().expect("temporary config directory");
+        let path = directory.path().join("config.json");
+        let bytes = br#"{"service_name":"SyntheticReadOnly"}"#;
+        std::fs::write(&path, bytes).expect("readonly config fixture");
+        let original_permissions = std::fs::metadata(&path).expect("metadata").permissions();
+        let mut readonly_permissions = original_permissions.clone();
+        readonly_permissions.set_readonly(true);
+        std::fs::set_permissions(&path, readonly_permissions).expect("set readonly fixture");
+        let initialized = maybe_write_default_config(&path);
+        let config = load_settings_config_at(&path);
+        let after = std::fs::read(&path).expect("read readonly config");
+        std::fs::set_permissions(&path, original_permissions).expect("restore owned permissions");
+        initialized.expect("existing readonly config does not need a writer");
+        assert_eq!(config.service_name.as_deref(), Some("SyntheticReadOnly"));
+        assert!(config.configuration_error.is_none());
+        assert_eq!(after, bytes);
+    }
+
+    #[test]
+    fn starter_config_parent_failure_is_propagated_and_blocks_settings() {
+        let directory = tempfile::tempdir().expect("temporary config directory");
+        let parent = directory.path().join("foreign-parent-file");
+        std::fs::write(&parent, b"foreign parent bytes").expect("foreign parent");
+        let path = parent.join("config.json");
+        let error = maybe_write_default_config(&path).expect_err("parent is a file");
+        assert_ne!(error.kind(), std::io::ErrorKind::NotFound);
+        let config = load_settings_config_at(&path);
+        assert!(
+            config
+                .configuration_error
+                .as_deref()
+                .is_some_and(|error| error.contains("could not be initialized"))
+        );
+        assert!(
+            resolve_candidate_tiers(&config, None, None, None)
+                .1
+                .is_some()
+        );
+        assert_eq!(
+            std::fs::read(&parent).expect("preserved parent"),
+            b"foreign parent bytes"
+        );
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn starter_config_preopen_io_failure_never_creates_target() {
+        let directory = tempfile::tempdir().expect("temporary config directory");
+        let path = directory.path().join("config.json");
+        let mut calls = 0;
+        let error = write_default_config_before_open(&path, |actual_path| {
+            assert_eq!(actual_path, path);
+            calls += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .expect_err("external I/O boundary failure");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(calls, 1);
+        assert!(!path.exists());
     }
 
     // -----------------------------------------------------------------------

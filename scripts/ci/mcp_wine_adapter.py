@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from wine_lifecycle import NativeWineProvider
@@ -234,6 +235,72 @@ def corroborate(provider, child, image):
     return candidates[0]
 
 
+def launch_ready(provider, path, digest, arguments, configured, env, child):
+    """Bind completed Wine setup before the client's protocol clock starts."""
+    config = (
+        local_path(provider.directory, configured["AGENT_BUS_CONFIG"])
+        if configured.get("AGENT_BUS_CONFIG")
+        else provider.directory / "mcp-wine-empty.json"
+    )
+    provider.assert_owner()
+    provider.assert_home()
+    if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+        raise RuntimeError("Configured MCP executable changed before readiness")
+    config_digest = hashlib.sha256(config.read_bytes()).hexdigest()
+    receipt = {
+        "profile": "configured-mcp-wine-launch-ready-v1",
+        "root": str(provider.directory),
+        "command": str(path),
+        "command_sha256": digest,
+        "arguments_sha256": hashlib.sha256(
+            json.dumps(arguments, sort_keys=True).encode()
+        ).hexdigest(),
+        "environment_sha256": hashlib.sha256(
+            json.dumps(env, sort_keys=True).encode()
+        ).hexdigest(),
+        "config": str(config),
+        "config_sha256": config_digest,
+        "prefix": str(provider.prefix),
+        "identity": provider.identity,
+        "home": str(provider.home),
+        "home_identity": provider.home_identity,
+        "launcher_pid": child.pid,
+    }
+    payload = json.dumps(receipt, sort_keys=True).encode()
+    receipt_path = provider.directory / f"mcp-launch-{uuid.uuid4().hex}.json"
+    descriptor = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(payload)
+    receipt_digest = hashlib.sha256(payload).hexdigest()
+
+    def verify():
+        provider.assert_owner()
+        provider.assert_home()
+        if (
+            hashlib.sha256(receipt_path.read_bytes()).hexdigest() != receipt_digest
+            or hashlib.sha256(path.read_bytes()).hexdigest() != digest
+            or hashlib.sha256(config.read_bytes()).hexdigest() != config_digest
+        ):
+            raise RuntimeError("Configured MCP launch receipt changed")
+
+    verify()
+    print(
+        json.dumps(
+            {
+                "id": 0,
+                "result": {
+                    "profile": receipt["profile"],
+                    "receipt": receipt_path.name,
+                    "sha256": receipt_digest,
+                    "command_sha256": digest,
+                },
+            }
+        ),
+        flush=True,
+    )
+    return verify
+
+
 def bridge(root, command, arguments, configured):
     provider = provider_for(root)
     path, digest = executable(command)
@@ -277,11 +344,17 @@ def bridge(root, command, arguments, configured):
     input_thread.start()
     error_thread.start()
     try:
+        # This private adapter frame is consumed before PS sends initialize.
+        # No Wine path/tasklist preflight consumes an MCP response deadline.
+        verify_launch = launch_ready(
+            provider, path, digest, arguments, configured, env, child
+        )
         for line in child.stdout:
             response = json.loads(line)
             if not isinstance(response, dict):
                 raise RuntimeError("Configured MCP response is not an object")
             if response.get("id") == 2 and "result" in response:
+                verify_launch()
                 # PS remains the protocol/count authority. Bind its response
                 # to the actual guest in the fresh prefix before forwarding it.
                 guest_pid = corroborate(provider, child, image)
@@ -314,6 +387,7 @@ def bridge(root, command, arguments, configured):
             raise
     if child.returncode != 0:
         raise RuntimeError("Configured MCP launcher failed")
+    verify_launch()
 
 
 def main(argv=None):

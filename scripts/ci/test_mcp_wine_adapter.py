@@ -3,6 +3,7 @@
 import io
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -301,6 +302,82 @@ class AdmissionControls(unittest.TestCase):
     def test_bridge_executable_rejects_native_python_and_non_exe(self):
         with self.assertRaises(RuntimeError):
             adapter.executable(__file__)
+
+    def launch_fixture(self, directory):
+        root = Path(directory)
+        command = root / "shipping.exe"
+        command.write_bytes(b"controlled-shipping-fixture")
+        config = root / "mcp-wine-empty.json"
+        config.write_text("{}", encoding="utf-8")
+        provider = Provider()
+        provider.directory = root
+        provider.prefix = root / "wine-prefix"
+        provider.home = root / "wine-home"
+        provider.identity = (1, 2, 3)
+        provider.home_identity = (1, 4, 3)
+        output = io.StringIO()
+        with patch.object(adapter.sys, "stdout", output):
+            verify = adapter.launch_ready(
+                provider,
+                command,
+                adapter.hashlib.sha256(command.read_bytes()).hexdigest(),
+                ["serve", "--transport", "stdio"],
+                {},
+                {"HOME": str(provider.home)},
+                SimpleNamespace(pid=77),
+            )
+        ready = json.loads(output.getvalue())
+        return provider, command, config, ready, verify
+
+    def test_ready_frame_binds_private_receipt_before_protocol_input(self):
+        with tempfile.TemporaryDirectory() as directory:
+            provider, command, config, ready, verify = self.launch_fixture(directory)
+            self.assertEqual(ready["id"], 0)
+            proof = ready["result"]
+            receipt_path = provider.directory / proof["receipt"]
+            payload = receipt_path.read_bytes()
+            self.assertEqual(
+                adapter.hashlib.sha256(payload).hexdigest(), proof["sha256"]
+            )
+            receipt = json.loads(payload)
+            self.assertEqual(receipt["command"], str(command))
+            self.assertEqual(receipt["config"], str(config))
+            self.assertEqual(receipt["identity"], [1, 2, 3])
+            self.assertEqual(receipt["home_identity"], [1, 4, 3])
+            self.assertEqual(receipt["launcher_pid"], 77)
+            if sys.platform != "win32":
+                self.assertEqual(receipt_path.stat().st_mode & 0o777, 0o600)
+            verify()
+
+    def test_ready_receipt_refuses_config_executable_or_receipt_changes(self):
+        for mutation in ("config", "command", "receipt"):
+            with (
+                self.subTest(mutation=mutation),
+                tempfile.TemporaryDirectory() as directory,
+            ):
+                provider, command, config, ready, verify = self.launch_fixture(
+                    directory
+                )
+                target = {
+                    "config": config,
+                    "command": command,
+                    "receipt": provider.directory / ready["result"]["receipt"],
+                }[mutation]
+                target.write_bytes(b"replaced")
+                with self.assertRaisesRegex(RuntimeError, "receipt changed"):
+                    verify()
+
+    def test_ready_receipt_refuses_changed_prefix_or_home_identity(self):
+        for check in ("assert_owner", "assert_home"):
+            with self.subTest(check=check), tempfile.TemporaryDirectory() as directory:
+                provider, _, _, _, verify = self.launch_fixture(directory)
+                setattr(
+                    provider,
+                    check,
+                    lambda: (_ for _ in ()).throw(RuntimeError("identity changed")),
+                )
+                with self.assertRaisesRegex(RuntimeError, "identity changed"):
+                    verify()
 
 
 if __name__ == "__main__":
