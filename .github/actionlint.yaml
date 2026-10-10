@@ -5,3 +5,4 @@ self-hosted-runner:
     - docker
     - local-build
     - docker-x64
+    - windows-cross

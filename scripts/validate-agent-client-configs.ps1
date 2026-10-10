@@ -9,10 +9,14 @@ param(
     [int]$ExpectedMcpToolCount = 17,
     [int]$McpSmokeTimeoutSeconds = 5,
     [string]$CodexConfigPath = "",
-    [switch]$CodexOnly
+    [switch]$CodexOnly,
+    [switch]$WineTestLauncher
 )
 
 $ErrorActionPreference = "Stop"
+if ($WineTestLauncher -and (-not $CodexOnly -or $SkipMcpSmoke -or $ExpectedMcpToolCount -ne 17)) {
+    throw 'Wine fixture validation requires CodexOnly and the real configured 17-tool stdio smoke.'
+}
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $resolvedCodexConfigPath = if ([string]::IsNullOrWhiteSpace($CodexConfigPath)) {
@@ -473,8 +477,14 @@ function Test-AgentBusMcpSmoke {
         return
     }
 
-    $mcpCommand = Get-Command $ActiveTransport.Command -CommandType Application -ErrorAction SilentlyContinue |
-        Select-Object -First 1
+    $mcpCommand = if ($WineTestLauncher -and $IsLinux -and
+        (Test-Path -LiteralPath $ActiveTransport.Command -PathType Leaf)) {
+        [pscustomobject]@{ Source = [IO.Path]::GetFullPath($ActiveTransport.Command) }
+    }
+    else {
+        Get-Command $ActiveTransport.Command -CommandType Application -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+    }
     if (-not $mcpCommand) {
         Add-CheckResult -Name "mcp-smoke:active" -Status "fail" -Detail "Configured Codex MCP command not found" -Path $ActiveTransport.Command
         return
@@ -486,7 +496,8 @@ function Test-AgentBusMcpSmoke {
             -ArgumentList @($ActiveTransport.Arguments) `
             -EnvironmentVariables $ActiveTransport.Environment `
             -TimeoutSeconds $TimeoutSeconds `
-            -ExpectedToolCount $ExpectedToolCount
+            -ExpectedToolCount $ExpectedToolCount `
+            -WineTestLauncher:$WineTestLauncher
         $smoke = $smokeOutput | ConvertFrom-Json -Depth 100
         if (-not $smoke.ok) {
             throw "MCP smoke did not report success."

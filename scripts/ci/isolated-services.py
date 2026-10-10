@@ -9,6 +9,7 @@ HTTP process handle created by this invocation. Missing prerequisites are errors
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
 import re
@@ -23,6 +24,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
+
+from wine_lifecycle import NativeWineProvider, WineGuest, prove_runner_namespace
 
 ROOT = Path(__file__).resolve().parents[2]
 RESERVED_PORTS = {6379, 6380, 5432, 5300, 8400, 8401, 18400}
@@ -110,7 +113,7 @@ def read_json(url, token=None):
 
 
 class Services:
-    def __init__(self, directory, mode, network_container=None):
+    def __init__(self, directory, mode, network_container=None, wine=False):
         self.directory = Path(directory)
         self.mode = mode
         self.network_container = network_container
@@ -121,6 +124,9 @@ class Services:
         self.cid_files = []
         self.http = None
         self.http_log = None
+        self.wine = wine
+        self.wine_provider = None
+        self.wine_guest = None
         self.env = clean_environment(os.environ)
         self.env.update(
             {name: str(self.directory) for name in ("TMPDIR", "TEMP", "TMP")}
@@ -281,6 +287,10 @@ class Services:
             stderr=subprocess.STDOUT,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
+        if self.wine:
+            self.wine_guest = WineGuest(
+                self.wine_provider, self.http, "agent-bus-http.exe", self.run_id
+            )
         deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if self.http.poll() is not None:
@@ -291,7 +301,9 @@ class Services:
                 time.sleep(0.2)
                 continue
             maintenance = health.get("maintenance", {})
-            if (
+            if self.wine:
+                self.wine_guest.corroborate(health)
+            elif (
                 maintenance.get("pid") != self.http.pid
                 or maintenance.get("service_agent_id")
                 != self.env["AGENT_BUS_SERVICE_AGENT_ID"]
@@ -314,6 +326,26 @@ class Services:
                 for flag in ("ok", "database_ok", "storage_ready")
             ):
                 read_json(url + "/admin/service", self.token)
+                if self.wine:
+                    # Authenticated backend readiness must precede stopping.
+                    final_health = read_json(url + "/health")
+                    self.wine_guest.corroborate(final_health)
+                    if not all(
+                        final_health.get(flag) is True
+                        for flag in ("ok", "database_ok", "storage_ready")
+                    ) or any(
+                        endpoint_identity(final_health.get(field, ""))
+                        != endpoint_identity(self.env[variable])
+                        for field, variable in (
+                            ("redis_url", "AGENT_BUS_REDIS_URL"),
+                            ("database_url", "AGENT_BUS_DATABASE_URL"),
+                        )
+                    ):
+                        raise RuntimeError(
+                            "Wine readiness/backend identity changed "
+                            "after authentication"
+                        )
+                    self.wine_guest.ready = True
                 return
             time.sleep(0.2)
         raise RuntimeError(
@@ -323,15 +355,51 @@ class Services:
     def close(self):
         errors = []
         try:
-            if self.http is not None and self.http.poll() is None:
+            if self.wine_guest is not None:
+
+                def stop():
+                    request = urllib.request.Request(
+                        self.env["AGENT_BUS_TEST_SERVER_URL"]
+                        + "/admin/service/control",
+                        data=json.dumps({"action": "stop", "flush": True}).encode(),
+                        headers={
+                            "Authorization": "Bearer " + self.token,
+                            "Content-Type": "application/json",
+                        },
+                        method="POST",
+                    )
+                    opener = urllib.request.build_opener(
+                        urllib.request.ProxyHandler({}), NoRedirect()
+                    )
+                    with opener.open(request, timeout=3) as response:
+                        if response.status != 200:
+                            raise RuntimeError("Owned Wine graceful stop failed")
+
+                def listener_closed():
+                    port = urllib.parse.urlsplit(
+                        self.env["AGENT_BUS_TEST_SERVER_URL"]
+                    ).port
+                    try:
+                        with socket.create_connection(("localhost", port), timeout=0.2):
+                            return False
+                    except ConnectionRefusedError:
+                        return True
+
+                self.wine_guest.close(stop, listener_closed)
+            elif self.wine_provider is not None:
+                self.wine_provider.wait_prefix(10)
+                self.wine_provider.retire_prefix()
+            elif self.http is not None and self.http.poll() is None:
                 self.http.terminate()
                 try:
                     self.http.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     self.http.kill()
                     self.http.wait(timeout=10)
-        except (subprocess.SubprocessError, OSError):
-            errors.append("owned HTTP process")
+        except (RuntimeError, subprocess.SubprocessError, OSError):
+            errors.append(
+                "owned Wine guest/prefix" if self.wine else "owned HTTP process"
+            )
         if self.http_log is not None:
             self.http_log.close()
         # Recover only cidfiles created in this invocation's private directory,
@@ -436,9 +504,22 @@ def execute(mode, services, cli=None, http=None, minimum_backend_tests=73):
         )
         if passed < minimum_backend_tests:
             raise RuntimeError(
-                f"Only {passed} backend tests passed; required floor is {minimum_backend_tests}"
+                f"Only {passed} backend tests passed; "
+                f"required floor is {minimum_backend_tests}"
             )
     else:
+        if services.wine:
+            services.wine_provider = NativeWineProvider(
+                services.directory, services.env
+            )
+            services.env["AGENT_BUS_TEST_WINE_PREFIX"] = str(
+                services.wine_provider.prefix
+            )
+            services.env["AGENT_BUS_TEST_WINE_IDENTITY"] = json.dumps(
+                services.wine_provider.identity
+            )
+            cli = services.wine_provider.wrapper(cli)
+            http = services.wine_provider.wrapper(http)
         # Reuse CLI checks without letting PowerShell own a nested HTTP child.
         run(
             [
@@ -462,6 +543,16 @@ def execute(mode, services, cli=None, http=None, minimum_backend_tests=73):
         )
         services.start_http(http)
         url = services.env["AGENT_BUS_TEST_SERVER_URL"]
+        wine_identity = (
+            [
+                "-ExpectedWineGuestProcessId",
+                str(services.wine_guest.guest_pid),
+                "-WinePrefix",
+                str(services.wine_provider.prefix),
+            ]
+            if services.wine
+            else []
+        )
         run(
             [
                 "pwsh",
@@ -484,10 +575,27 @@ def execute(mode, services, cli=None, http=None, minimum_backend_tests=73):
                 str(services.http.pid),
                 "-ExpectedServiceAgentId",
                 services.env["AGENT_BUS_SERVICE_AGENT_ID"],
+                *wine_identity,
             ],
             env=services.env,
             timeout=600,
         )
+
+
+@contextmanager
+def owned_directory(wine=False):
+    if not wine:
+        with tempfile.TemporaryDirectory(prefix="agent-bus-isolated-") as directory:
+            yield directory
+        return
+    directory = tempfile.mkdtemp(prefix="agent-bus-isolated-wine-")
+    try:
+        yield directory
+    except BaseException:
+        print("Failed Wine harness directory retained: " + directory, flush=True)
+        raise
+    else:
+        shutil.rmtree(directory)
 
 
 def main():
@@ -495,12 +603,29 @@ def main():
     parser.add_argument("mode", choices=("integration", "history", "smoke"))
     parser.add_argument("--cli", type=Path)
     parser.add_argument("--http", type=Path)
+    parser.add_argument("--wine", action="store_true")
+    parser.add_argument(
+        "--fixture-network", choices=("runner-container", "native-host")
+    )
     parser.add_argument(
         "--network-container",
         help="Explicit Docker runner container whose loopback namespace fixtures share",
     )
     parser.add_argument("--minimum-backend-tests", type=int, default=73)
     args = parser.parse_args()
+    if args.wine and (
+        args.mode != "smoke"
+        or args.fixture_network is None
+        or (args.fixture_network == "runner-container" and not args.network_container)
+        or (
+            args.fixture_network == "runner-container"
+            and not re.fullmatch(r"[a-f0-9]{64}", args.network_container or "")
+        )
+        or (args.fixture_network == "native-host" and args.network_container)
+    ):
+        raise RuntimeError("Wine smoke requires an explicit qualified fixture network")
+    if not args.wine and args.fixture_network:
+        raise RuntimeError("Wine fixture-network selection requires --wine")
     if args.minimum_backend_tests < 0:
         raise RuntimeError("Backend test floor must be nonnegative")
     required = ("pwsh",) if args.mode == "smoke" else ("cargo",)
@@ -530,8 +655,18 @@ def main():
         ):
             raise RuntimeError("Runner network container identity is not verified")
         network_container = owner[0]["Id"]
-    with tempfile.TemporaryDirectory(prefix="agent-bus-isolated-") as directory:
-        services = Services(directory, args.mode, network_container)
+        if args.wine:
+            prove_runner_namespace(
+                network_container,
+                lambda argv: run(argv, capture=True).stdout,
+                lambda path: (
+                    os.readlink(path)
+                    if path.endswith("ns/net")
+                    else Path(path).read_text(encoding="ascii")
+                ),
+            )
+    with owned_directory(args.wine) as directory:
+        services = Services(directory, args.mode, network_container, args.wine)
         try:
             print(f"Disposable {args.mode} run: {services.run_id}", flush=True)
             services.start()

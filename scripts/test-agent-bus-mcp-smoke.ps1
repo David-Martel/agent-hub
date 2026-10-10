@@ -5,7 +5,8 @@ param(
     [int]$TimeoutSeconds = 5,
     [string]$ExpectedProtocolVersion = "2024-11-05",
     [string]$ExpectedServerName = "agent-bus",
-    [int]$ExpectedToolCount = 17
+    [int]$ExpectedToolCount = 17,
+    [switch]$WineTestLauncher
 )
 
 $ErrorActionPreference = "Stop"
@@ -19,9 +20,24 @@ if ($TimeoutSeconds -lt 1) {
 if ($ExpectedToolCount -lt 1) {
     throw "ExpectedToolCount must be at least 1."
 }
+if ($WineTestLauncher -and ($ExpectedToolCount -ne 17 -or
+    $ExpectedProtocolVersion -ne '2024-11-05' -or $ExpectedServerName -ne 'agent-bus')) {
+    throw 'Wine fixture launch requires the unchanged agent-bus protocol and 17-tool registration.'
+}
 
-$resolvedCommand = Get-Command $Command -CommandType Application -ErrorAction Stop |
-    Select-Object -First 1
+if ($WineTestLauncher) {
+    if (-not $IsLinux -or [string]::IsNullOrWhiteSpace($env:AGENT_BUS_TEST_MCP_WINE_ROOT) -or
+        -not (Test-Path -LiteralPath $Command -PathType Leaf)) {
+        throw "Wine MCP launch requires Linux, a prepared private fixture and an actual configured EXE."
+    }
+    $resolvedCommand = [pscustomobject]@{ Source = [IO.Path]::GetFullPath($Command) }
+    $winePython = Get-Command python3 -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $wineAdapter = Join-Path $PSScriptRoot "ci/mcp_wine_adapter.py"
+}
+else {
+    $resolvedCommand = Get-Command $Command -CommandType Application -ErrorAction Stop |
+        Select-Object -First 1
+}
 
 function Read-McpResponse {
     param(
@@ -66,16 +82,31 @@ function Read-McpResponse {
 }
 
 $processInfo = [System.Diagnostics.ProcessStartInfo]::new()
-$processInfo.FileName = $resolvedCommand.Source
-foreach ($argument in $ArgumentList) {
-    $processInfo.ArgumentList.Add($argument)
+if ($WineTestLauncher) {
+    $processInfo.FileName = $winePython.Source
+    foreach ($argument in @('-B', $wineAdapter, 'bridge', '--root', $env:AGENT_BUS_TEST_MCP_WINE_ROOT,
+        '--command', $resolvedCommand.Source, '--arguments-json', (ConvertTo-Json -InputObject @($ArgumentList) -Compress))) {
+        $processInfo.ArgumentList.Add($argument)
+    }
+    # The configured environment is data; the adapter validates every accepted key,
+    # maps private paths and supplies closed backend routes in a fresh guest environment.
+    $processInfo.Environment.Clear()
+    $processInfo.Environment['PATH'] = $env:PATH
+    $processInfo.Environment['HOME'] = $env:AGENT_BUS_TEST_MCP_WINE_ROOT
+    $processInfo.Environment['AGENT_BUS_TEST_MCP_CONFIGURED_ENV'] = ConvertTo-Json -InputObject $EnvironmentVariables -Compress
+}
+else {
+    $processInfo.FileName = $resolvedCommand.Source
+    foreach ($argument in $ArgumentList) {
+        $processInfo.ArgumentList.Add($argument)
+    }
 }
 $processInfo.UseShellExecute = $false
 $processInfo.RedirectStandardInput = $true
 $processInfo.RedirectStandardOutput = $true
 $processInfo.RedirectStandardError = $true
 $processInfo.CreateNoWindow = $true
-foreach ($entry in $EnvironmentVariables.GetEnumerator()) {
+foreach ($entry in $(if ($WineTestLauncher) { @() } else { $EnvironmentVariables.GetEnumerator() })) {
     if ($null -eq $entry.Value) {
         $processInfo.Environment.Remove([string]$entry.Key)
     }
@@ -94,6 +125,7 @@ $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $processInfo
 $processStarted = $false
 $stderrTask = $null
+$wineSuccess = $null
 
 try {
     if (-not $process.Start()) {
@@ -173,7 +205,7 @@ try {
         throw "One or more MCP tools have a missing name."
     }
 
-    [pscustomobject]@{
+    $success = [pscustomobject]@{
         ok              = $true
         command         = $resolvedCommand.Source
         protocolVersion = $protocolVersion
@@ -181,7 +213,13 @@ try {
         serverVersion   = $serverVersion
         toolCount       = $tools.Count
         tools           = $toolNames
-    } | ConvertTo-Json -Depth 5 -Compress
+    }
+    if ($WineTestLauncher) {
+        $wineSuccess = $success
+    }
+    else {
+        $success | ConvertTo-Json -Depth 5 -Compress
+    }
 }
 finally {
     if ($processStarted -and -not $process.HasExited) {
@@ -191,9 +229,28 @@ finally {
         catch {
             Write-Verbose "MCP stdin was already closed during cleanup."
         }
-        if (-not $process.WaitForExit(500)) {
+        if ($WineTestLauncher) {
+            # Guest/prefix settlement has its own bounded adapter contract. An exited
+            # Unix launcher alone is not evidence that the Wine guest stopped.
+            if (-not $process.WaitForExit(12000)) {
+                $process.Kill()
+                [void]$process.WaitForExit(2000)
+                Set-Content -LiteralPath (Join-Path $env:AGENT_BUS_TEST_MCP_WINE_ROOT 'mcp-wine-HOLD') -Value 'launcher settlement failed' -Encoding utf8
+                throw "Wine MCP launcher settlement failed; prefix retained."
+            }
+        }
+        elseif (-not $process.WaitForExit(500)) {
             $process.Kill($true)
             [void]$process.WaitForExit(2000)
+        }
+    }
+    if ($WineTestLauncher -and $processStarted) {
+        if (-not $process.HasExited -or -not $stderrTask.Wait(2000)) {
+            Set-Content -LiteralPath (Join-Path $env:AGENT_BUS_TEST_MCP_WINE_ROOT 'mcp-wine-HOLD') -Value 'guest or stream settlement failed' -Encoding utf8
+            throw "Wine MCP guest or stream settlement failed; prefix retained."
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "Configured Wine MCP launch failed."
         }
     }
     if ($stderrTask -and $stderrTask.IsCompleted) {
@@ -201,4 +258,7 @@ finally {
         [void]$stderrTask.Result
     }
     $process.Dispose()
+}
+if ($WineTestLauncher -and $wineSuccess) {
+    $wineSuccess | ConvertTo-Json -Depth 5 -Compress
 }

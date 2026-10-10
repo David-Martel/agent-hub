@@ -11,53 +11,114 @@ permissions:
 env:
   AGENT_BUS_BUILD_REVISION: ${{ github.sha }}
   CARGO_TERM_COLOR: always
+  AGENT_BUS_CONFIG: .tmp/release/${{ github.run_id }}-${{ github.run_attempt }}/agent-bus-config.json
+  AGENT_BUS_REDIS_URL: redis://127.0.0.1:1/0
+  AGENT_BUS_DATABASE_URL: postgresql://postgres@127.0.0.1:1/none
+  AGENT_BUS_SERVER_URL: ""
+  AGENT_BUS_SERVER_URLS: ""
+  AGENT_BUS_AUTH_TOKEN: ""
+  AGENT_BUS_TEST_REDIS_URL: ""
+  AGENT_BUS_TEST_DATABASE_URL: ""
+  AGENT_BUS_TEST_SERVER_URL: ""
+  AGENT_BUS_STARTUP_ENABLED: "false"
+  AGENT_BUS_HUB_CACHE_TTL_SECONDS: "0"
 
 jobs:
   windows-x64:
     name: Windows x64 release
-    runs-on: [self-hosted, Windows, X64, local-build]
+    # Cross-compiled on Linux for x86_64-pc-windows-gnu (mingw-w64) on the windows-cross lane
+    # and checked under Wine. Earlier releases were MSVC-ABI builds from a native Windows runner.
+    runs-on: [self-hosted, Linux, X64, docker, windows-cross]
+    timeout-minutes: 60
+    env:
+      WINDOWS_TARGET: x86_64-pc-windows-gnu
+      WINEDEBUG: "-all"
     steps:
       - uses: actions/checkout@v7
-      - shell: pwsh
-        run: ./scripts/ci/setup-rust.ps1
+      - name: Validate owned Wine job controls
+        run: python3 -B -m unittest discover -s scripts/ci -p test_wine_job.py -v
+      - name: Verify qualified cross runner, pinned compiler and strict cache
+        shell: pwsh
+        run: ./scripts/ci/setup-windows-cross.ps1
 
       - name: Verify Cargo version matches tag
-        shell: pwsh
+        shell: bash
         run: |
-          $cargoVersion = (Select-String -Path crates/agent-bus-cli/Cargo.toml -Pattern '^version\s*=\s*"(.+)"').Matches[0].Groups[1].Value
-          $tagVersion = "${{ github.ref_name }}".TrimStart('v')
-          if ($cargoVersion -ne $tagVersion) {
-            throw "Cargo version $cargoVersion does not match tag $tagVersion"
+          cargo_version="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' crates/agent-bus-cli/Cargo.toml | head -1)"
+          tag_version="${GITHUB_REF_NAME#v}"
+          test "$cargo_version" = "$tag_version" || {
+            echo "Cargo version $cargo_version does not match tag $tag_version" >&2
+            exit 1
           }
 
-      - run: cargo build --locked --release --workspace --bins
+      - name: Release build
+        timeout-minutes: 25
+        run: cargo build --locked --release --target "$WINDOWS_TARGET" --workspace --bins
 
-      - name: Verify embedded runtime revision
+      - name: Verify embedded runtime revision under Wine
+        shell: bash
+        timeout-minutes: 5
+        run: |
+          python3 scripts/ci/wine_job.py versions \
+            --binary "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus.exe" \
+            --binary "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus-http.exe" \
+            --wine-version-file "$RUNNER_TEMP/wine-version.txt"
+
+      - name: Validate configured shipping GNU MCP executable
+        timeout-minutes: 10
         shell: pwsh
         run: |
-          $expectedPrefix = $env:AGENT_BUS_BUILD_REVISION.Substring(0, 12)
-          $releaseDir = Join-Path $env:CARGO_TARGET_DIR "release"
-          $cliVersion = & (Join-Path $releaseDir "agent-bus.exe") --version
-          if (-not $cliVersion.Contains($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "CLI build provenance mismatch: expected $expectedPrefix, got $cliVersion"
-          }
-          $httpVersion = & (Join-Path $releaseDir "agent-bus-http.exe") --version
-          if (-not $httpVersion.Contains($expectedPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "HTTP build provenance mismatch: expected $expectedPrefix, got $httpVersion"
-          }
+          $release = Join-Path $env:CARGO_TARGET_DIR "$env:WINDOWS_TARGET/release"
+          ./scripts/test-agent-client-config-validator.ps1 -WineTestLauncher `
+            -CliPath (Join-Path $release 'agent-bus.exe') `
+            -McpBinaryPath (Join-Path $release 'agent-bus-mcp.exe')
+
+      - name: Validate shipping CLI and HTTP against owned Wine fixtures
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B scripts/ci/isolated-services.py smoke --wine \
+            --fixture-network runner-container \
+            --network-container "$AGENT_BUS_CI_RUNNER_CONTAINER_ID" \
+            --cli "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus.exe" \
+            --http "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus-http.exe"
 
       - name: Stage artifacts and checksums
-        shell: pwsh
+        shell: bash
         run: |
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          $releaseDir = Join-Path $env:CARGO_TARGET_DIR "release"
-          $binaries = @('agent-bus', 'agent-bus-http', 'agent-bus-mcp')
-          foreach ($binary in $binaries) {
-            $name = "$binary-windows-x64.exe"
-            Copy-Item (Join-Path $releaseDir "${binary}.exe") "dist/$name"
-            $hash = (Get-FileHash "dist/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $name" | Add-Content -Path dist/SHA256SUMS-windows-x64 -Encoding ascii
-          }
+          release="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release"
+          mkdir -p dist
+          for binary in agent-bus agent-bus-http agent-bus-mcp; do
+            cp "$release/$binary.exe" "dist/$binary-windows-x64.exe"
+          done
+          {
+            echo "commit=$GITHUB_SHA"
+            echo "target=$WINDOWS_TARGET"
+            echo "abi=gnu"
+            echo "validation=wine"
+            echo "native_windows_validated=false"
+            echo "host_os=$RUNNER_OS"
+            echo "host_arch=$RUNNER_ARCH"
+            echo "runner_container_id=$AGENT_BUS_CI_RUNNER_CONTAINER_ID"
+            echo "runner_image_id=$AGENT_HUB_WINDOWS_CROSS_IMAGE_ID"
+            echo "runner_image_source_revision=$AGENT_HUB_WINDOWS_CROSS_IMAGE_SOURCE_REVISION"
+            echo "runner_dockerfile_sha256=$AGENT_HUB_WINDOWS_CROSS_IMAGE_DOCKERFILE_SHA256"
+            echo "configured_shipping_mcp_validation=wine-17-tools"
+            echo "native_windows_dll_validation=not-tested"
+            cat "$RUNNER_TEMP/wine-version.txt"
+            rustc --version
+            echo "cross_toolchain_and_cache_proof:"
+            cat "$CARGO_TARGET_DIR/cross-toolchain-proof.json"
+            echo "post_build_cache_stats:"
+            "$RUSTC_WRAPPER" --show-stats --stats-format=json
+            for binary in agent-bus agent-bus-http agent-bus-mcp; do
+              echo "pe_imports_binary=$binary.exe"
+              x86_64-w64-mingw32-objdump -p "$release/$binary.exe" | sed -n 's/^[[:space:]]*DLL Name: /dll=/p'
+            done
+          } > dist/BUILD-windows-x64.txt
+          cd dist
+          sha256sum ./*.exe > SHA256SUMS-windows-x64
 
       - uses: actions/upload-artifact@v7
         with:
