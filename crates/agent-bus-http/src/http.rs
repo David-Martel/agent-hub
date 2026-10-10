@@ -151,6 +151,60 @@ pub(crate) struct AppState {
     pub(crate) cloud_sync: crate::cloud_sync::SharedStatus,
 }
 
+/// Shared bearer authentication is mandatory on replay, even for an otherwise
+/// historical local-only unauthenticated server. It proves hub access only.
+async fn http_replay_handler(
+    State(state): State<AppState>,
+    body: Result<Json<agent_bus_core::outbox_hub::ReplayEnvelope>, JsonRejection>,
+) -> Result<Json<agent_bus_core::outbox::ReplayResponse>, (StatusCode, Json<serde_json::Value>)> {
+    ensure_writes_allowed(&state, "durable replay").await?;
+    if state
+        .settings
+        .auth_token
+        .as_ref()
+        .is_none_or(String::is_empty)
+    {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error":"authenticated replay unavailable"})),
+        ));
+    }
+    let Json(envelope) = body.map_err(|_sanitized| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error":"invalid replay envelope"})),
+        )
+    })?;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut connection = state
+            .redis
+            .get_connection()
+            .map_err(|_sanitized| agent_bus_core::outbox_hub::ReplayHubError::Unavailable)?;
+        agent_bus_core::outbox_hub::accept(
+            &mut connection,
+            &state.settings,
+            &envelope,
+            state.sse_subscriber_count.any(),
+        )
+    })
+    .await
+    .map_err(|_sanitized| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error":"replay temporarily unavailable"})),
+        )
+    })?;
+    result.map(Json).map_err(|error| {
+        use agent_bus_core::outbox_hub::ReplayHubError;
+        let status = match error {
+            ReplayHubError::Invalid | ReplayHubError::Representation => StatusCode::BAD_REQUEST,
+            ReplayHubError::Identity => StatusCode::FORBIDDEN,
+            ReplayHubError::Collision => StatusCode::CONFLICT,
+            ReplayHubError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        };
+        (status, Json(serde_json::json!({"error":error.to_string()})))
+    })
+}
 async fn ensure_writes_allowed(
     state: &AppState,
     operation: &str,
@@ -3688,6 +3742,12 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         .route("/mcp", post(handle_mcp_http).get(handle_mcp_sse))
         .route("/health", get(http_health_handler))
         .route(
+            "/replay",
+            post(http_replay_handler).layer(DefaultBodyLimit::max(
+                agent_bus_core::validation::MAX_BODY_LEN + 16_384,
+            )),
+        )
+        .route(
             "/admin/control",
             get(http_control_status_handler).post(http_control_action_handler),
         )
@@ -3907,6 +3967,45 @@ mod tests {
             postgres_replication_lag_seconds: None,
             cloud: None,
         }
+    }
+
+    #[tokio::test]
+    async fn replay_requires_configured_auth_and_rejects_unknown_envelope_without_backend() {
+        use axum::extract::FromRequest;
+        let mut state = test_state();
+        let mut settings = (*state.settings).clone();
+        settings.auth_token = None;
+        state.settings = Arc::new(settings);
+        let envelope = serde_json::from_value(serde_json::json!({"hub_identity":"fixture",
+            "request":{"request_id":"01900000-0000-7000-8000-000000000001",
+            "origin_id":"00000000-0000-4000-8000-000000000002","sequence":1,
+            "created_ms":100,"expires_ms":0,"operation":"send","surface":"mcp",
+            "arguments":{"sender":"fixture","recipient":"all","topic":"status","body":"one"}}}))
+        .unwrap();
+        let error = http_replay_handler(State(state.clone()), Ok(Json(envelope)))
+            .await
+            .unwrap_err();
+        assert_eq!(error.0, StatusCode::FORBIDDEN);
+        let mut settings = (*state.settings).clone();
+        settings.auth_token = Some("synthetic-fixture-auth".to_owned());
+        state.settings = Arc::new(settings);
+        let request = axum::http::Request::builder()
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                r#"{"hub_identity":"fixture","unknown":"reflected-synthetic-secret"}"#,
+            ))
+            .unwrap();
+        let payload =
+            Json::<agent_bus_core::outbox_hub::ReplayEnvelope>::from_request(request, &state).await;
+        assert!(
+            payload.is_err(),
+            "actual strict extractor must reject unknown envelope"
+        );
+        let error = http_replay_handler(State(state), payload)
+            .await
+            .unwrap_err();
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert!(!error.1.0.to_string().contains("reflected-synthetic-secret"));
     }
 
     fn test_state() -> AppState {

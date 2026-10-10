@@ -133,6 +133,72 @@ fn run_future<T>(future: impl Future<Output = T>) -> T {
 }
 
 impl RemoteMcpTransport for HttpMcpTransport {
+    fn supports_durable_replay(&self) -> bool {
+        true
+    }
+
+    fn replay_request(
+        &self,
+        url: &str,
+        hub: &str,
+        request: &agent_bus_core::outbox::ReplayRequest,
+        timeout: Duration,
+    ) -> std::result::Result<
+        agent_bus_core::outbox::ReplayResponse,
+        agent_bus_core::outbox::ReplayFailure,
+    > {
+        use agent_bus_core::outbox::ReplayFailure;
+        run_future(async {
+            let replay_url = format!("{}/replay", url.trim_end_matches('/'));
+            let client = self
+                .client()
+                .map_err(|_sanitized| ReplayFailure::Permanent)?;
+            let builder = self
+                .authed(&replay_url, client.post(&replay_url))
+                .map_err(|_sanitized| ReplayFailure::Permanent)?
+                .timeout(timeout)
+                .json(&agent_bus_core::outbox_hub::ReplayEnvelope {
+                    hub_identity: hub.to_owned(),
+                    request: request.clone(),
+                });
+            let built = builder
+                .build()
+                .map_err(|_sanitized| ReplayFailure::Permanent)?;
+            let mut response = client.execute(built).await.map_err(|error| {
+                if error.is_connect() || error.is_timeout() || error.is_request() {
+                    ReplayFailure::Transport
+                } else {
+                    ReplayFailure::Permanent
+                }
+            })?;
+            if response.status().as_u16() == 503 {
+                return Err(ReplayFailure::Transport);
+            }
+            if !response.status().is_success() {
+                return Err(ReplayFailure::Permanent);
+            }
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|_sanitized| ReplayFailure::Transport)?
+            {
+                if bytes.len().saturating_add(chunk.len())
+                    > agent_bus_core::validation::MAX_BODY_LEN + 16_384
+                {
+                    return Err(ReplayFailure::Permanent);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            serde_json::from_slice(&bytes).map_err(|error| {
+                if error.is_eof() {
+                    ReplayFailure::Transport
+                } else {
+                    ReplayFailure::Permanent
+                }
+            })
+        })
+    }
     fn probe_health(&self, url: &str) -> Option<ProbeInfo> {
         run_future(async {
             let health_url = format!("{url}/health");
@@ -256,6 +322,24 @@ fn unwrap_tool_result(
     name: &str,
     sent_token: Option<&str>,
 ) -> Result<Value> {
+    if let Some(flag) = body.get("result").and_then(|result| result.get("isError")) {
+        match flag.as_bool() {
+            Some(false) => {}
+            Some(true) => {
+                // Tool errors can contain arbitrary reflected credentials,
+                // including another JSON document encoded inside text content.
+                // Reject the error without copying that content to diagnostics.
+                return Err(AgentBusError::Internal(format!(
+                    "remote hub {url} rejected '{name}': tools/call reported isError"
+                )));
+            }
+            None => {
+                return Err(AgentBusError::Internal(format!(
+                    "remote hub {url} returned an invalid tools/call isError flag for '{name}'"
+                )));
+            }
+        }
+    }
     let text = body
         .get("result")
         .and_then(|r| r.get("content"))
@@ -426,6 +510,58 @@ mod tests {
             captured
         });
         (format!("http://{address}"), handle)
+    }
+
+    #[test]
+    fn durable_replay_transport_classifies_auth_shape_and_lost_reply() {
+        use agent_bus_core::outbox::{ReplayFailure, ReplayRequest, ReplayResponse};
+        let request: ReplayRequest = serde_json::from_value(serde_json::json!({
+            "request_id":"01900000-0000-7000-8000-000000000001",
+            "origin_id":"00000000-0000-4000-8000-000000000002",
+            "sequence":1,"created_ms":100,"expires_ms":0,"operation":"send","surface":"mcp",
+            "arguments":{"sender":"fixture","recipient":"all","topic":"status","body":"one"}
+        }))
+        .unwrap();
+        for (status, body, classification) in [
+            (
+                200,
+                r#"{"status":"applied","result":{"id":"original"}}"#,
+                "applied",
+            ),
+            (
+                401,
+                r#"{"error":"reflected synthetic-durable-token"}"#,
+                "permanent",
+            ),
+            (503, r#"{"error":"unavailable"}"#, "transport"),
+            (200, r#"{"status":"unsupported"}"#, "permanent"),
+            (200, r#"{"status":"applied","result": "#, "transport"),
+        ] {
+            let (url, server) = capture_mock_body(status, String::new(), 1, body);
+            let url = url.replace("127.0.0.1", "localhost");
+            let mut settings = isolated_settings();
+            settings.auth_token = Some("synthetic-durable-token".to_owned());
+            settings.server_urls = vec![url.clone()];
+            let response = HttpMcpTransport::new(&settings).replay_request(
+                &url,
+                "fixture-hub",
+                &request,
+                Duration::from_secs(2),
+            );
+            match classification {
+                "applied" => assert_eq!(
+                    response,
+                    Ok(ReplayResponse::Applied {
+                        result: serde_json::json!({"id":"original"})
+                    })
+                ),
+                "permanent" => assert_eq!(response, Err(ReplayFailure::Permanent)),
+                _ => assert_eq!(response, Err(ReplayFailure::Transport)),
+            }
+            let headers = server.join().unwrap().remove(0);
+            assert!(headers.contains("post /replay http/1.1"));
+            assert!(headers.contains("authorization: bearer synthetic-durable-token"));
+        }
     }
 
     fn isolated_settings() -> Settings {
@@ -652,6 +788,61 @@ mod tests {
             handle.join().expect("fixture completion")[0]
                 .contains("authorization: bearer abc/def\r\n")
         );
+    }
+
+    #[test]
+    fn mcp_tool_error_is_rejected_without_reflecting_nested_credentials() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"isError":true,"content":[{"type":"text","text":"{\"error\":\"rejected \\u0061bc\\/def\",\"status\":403}"}]}}"#;
+        let (url, handle) = capture_mock_body(200, String::new(), 1, body);
+        let transport = transport_with_token(Some("abc/def"), &url);
+        let error = transport
+            .call_tool(&url, "bus_send", &Map::new())
+            .expect_err("HTTP 200 tool failure must not be accepted as success");
+        let message = error.to_string();
+        assert!(message.contains("tools/call reported isError"));
+        assert!(!message.contains("abc/def"));
+        assert!(!message.contains(r"\u0061bc"));
+        assert!(!message.contains("status"));
+        assert!(
+            handle.join().expect("tool-error fixture completion")[0]
+                .contains("authorization: bearer abc/def\r\n")
+        );
+    }
+
+    #[test]
+    fn malformed_mcp_error_flag_is_rejected_before_content_decode() {
+        for flag in [
+            Value::Null,
+            Value::String("false".to_owned()),
+            Value::from(0),
+        ] {
+            let body = serde_json::json!({"result": {
+                "isError": flag, "content": [{"text": "{\"ok\":true}"}]
+            }});
+            let error = unwrap_tool_result(&body, "fixture", "bus_send", None)
+                .expect_err("only a boolean MCP error flag is valid");
+            assert!(
+                error
+                    .to_string()
+                    .contains("invalid tools/call isError flag")
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_success_flag_preserves_business_result_and_shape_checks() {
+        let body = serde_json::json!({"result": {
+            "isError": false, "content": [{"text": "{\"business\":\"abc/def\"}"}]
+        }});
+        let value = unwrap_tool_result(&body, "fixture", "bus_send", Some("abc/def"))
+            .expect("explicit MCP success must remain usable");
+        assert_eq!(value["business"], "abc/def");
+        for malformed in [
+            serde_json::json!({"result": {"isError": false}}),
+            serde_json::json!({"result": {"isError": false, "content": []}}),
+        ] {
+            assert!(unwrap_tool_result(&malformed, "fixture", "bus_send", None).is_err());
+        }
     }
 
     #[test]

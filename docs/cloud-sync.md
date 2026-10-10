@@ -69,8 +69,12 @@ rechecks concurrent local announcements before writing. It is never added to the
 PostgreSQL presence history, so it cannot be pushed back.
 
 **Claims are not synced or proxied.** They are not in the message stream and
-the task contains no claim code. A cloud claim is never authoritative for an
-on-site resource.
+the task contains no claim code. Cloud HTTP claim/resolve/renew/release
+requests refuse with 409 after their existing guards. Cloud state/event reads
+describe retained Cloud records, never current on-site ownership; existing
+read-triggered expiry housekeeping remains. The conservative implementation
+default retains ASUS authority and supersedes the old SYNC-CONTRACT section 6
+proposal without claiming an explicit operator-selected global migration.
 
 ## Failure behaviour
 
@@ -133,6 +137,7 @@ SYNC-CONTRACT.md section 7.
   persistence of local messages.
 - If reading the persisted cursors or the stream tail fails at startup, sync
   stays off until the hub restarts; it does not retry.
-- The cloud's own `/channels/arbitrate/*` routes still grant claims. Making them
-  read-only or answering `409` is a Worker change in a later step.
-- MCP clients cannot use the cloud as a candidate hub (`/mcp` answers 501).
+- Cloud claim mutation routes refuse with 409; direct ClaimDO migration
+  fixtures and retained reads do not establish on-site ownership.
+- The Worker MCP endpoint implements eight REST-backed tools; claims are
+  unsupported. Final installed client/candidate qualification remains separate.

@@ -17,6 +17,10 @@ pub mod mcp_dispatch;
 pub mod models;
 pub mod network_location;
 pub mod ops;
+pub mod outbox;
+pub mod outbox_client;
+pub mod outbox_hub;
+mod outbox_private;
 pub mod output;
 pub mod postgres_store;
 pub mod redis_bus;
@@ -109,3 +113,5 @@ pub fn maybe_announce_startup(settings: &Settings) {
         },
     );
 }
+
+mod outbox_pg;

@@ -291,6 +291,11 @@ fn serve_one(
             "body": String::from_utf8_lossy(&body),
         }));
 
+    // A zero-status fixture closes the socket AFTER capturing the full request.
+    // It models a lost response to a consuming DELETE, not a failed health probe.
+    if route.is_some_and(|route| route.status == 0) {
+        return Ok(());
+    }
     let response = if let Some(r) = route {
         format!(
             "HTTP/1.1 {} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -643,6 +648,600 @@ fn direct_read_uses_reachable_configured_fallback_hub() {
     assert!(output.status.success(), "{}", stderr_of(&output));
     assert!(stdout_of(&output).contains("fallback receipt"));
     assert_eq!(hub.hits(), 2);
+}
+
+#[cfg(feature = "server-mode")]
+fn task_card_fixture() -> serde_json::Value {
+    serde_json::json!({
+        "id": "task-fixture", "repo": "agent-bus", "paths": [],
+        "priority": "critical", "depends_on": ["task-before"],
+        "reply_to": "msg-before", "tags": ["repo:agent-bus", "review"],
+        "status": "pending", "body": "review café\n東京",
+        "created_by": "codex-review", "created_at": "2026-10-09T00:00:00Z"
+    })
+}
+
+#[cfg(feature = "server-mode")]
+fn task_args(command: &'static str) -> Vec<&'static str> {
+    let mut args = vec![command, "--agent", "carbon", "--encoding", "json"];
+    if command == "push-task" {
+        args.extend(["--task", "review"]);
+    }
+    args
+}
+
+#[cfg(feature = "server-mode")]
+fn task_method(command: &str) -> &'static str {
+    match command {
+        "push-task" => "POST",
+        "pull-task" => "DELETE",
+        "peek-tasks" => "GET",
+        _ => panic!("unexpected task command"),
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_push_routes_encoded_identity_and_all_card_fields_with_auth() {
+    let card = task_card_fixture();
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "POST",
+            path: "/tasks/carbon%2Froom%20%3F%23",
+            status: 200,
+            body: card.to_string(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "task-push-card")
+        .env("AGENT_BUS_AUTH_TOKEN", "disposable-task-token")
+        .args([
+            "push-task",
+            "--agent",
+            "carbon/room ?#",
+            "--task",
+            "review café\n東京",
+            "--repo",
+            "agent-bus",
+            "--priority",
+            "critical",
+            "--tags",
+            "repo:agent-bus,review",
+            "--depends-on",
+            "task-before",
+            "--reply-to",
+            "msg-before",
+            "--created-by",
+            "codex-review",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run task push");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        card
+    );
+    let requests = hub.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[1]["method"], "POST");
+    assert_eq!(requests[1]["target"], "/tasks/carbon%2Froom%20%3F%23");
+    assert_eq!(requests[1]["authorization"], "Bearer disposable-task-token");
+    let payload: serde_json::Value =
+        serde_json::from_str(requests[1]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        payload,
+        serde_json::json!({"task": "review café\n東京", "repo": "agent-bus",
+        "priority": "critical", "tags": ["repo:agent-bus", "review"], "depends_on": ["task-before"],
+        "reply_to": "msg-before", "created_by": "codex-review"})
+    );
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_pull_returns_full_card_or_exact_empty_envelope_with_auth() {
+    for response in [
+        task_card_fixture(),
+        serde_json::json!({"agent": "carbon/room ?#", "task": null}),
+    ] {
+        let hub = MockHub::spawn(vec![
+            health_route(),
+            MockRoute {
+                method: "DELETE",
+                path: "/tasks/carbon%2Froom%20%3F%23",
+                status: 200,
+                body: response.to_string(),
+            },
+        ]);
+        let output = agent_bus_with_hub_candidates(&[hub.url()], "task-pull-card")
+            .env("AGENT_BUS_AUTH_TOKEN", "disposable-task-token")
+            .args([
+                "pull-task",
+                "--agent",
+                "carbon/room ?#",
+                "--encoding",
+                "json",
+            ])
+            .output()
+            .expect("run task pull");
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+            response
+        );
+        let requests = hub.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1]["method"], "DELETE");
+        assert_eq!(requests[1]["authorization"], "Bearer disposable-task-token");
+        assert_eq!(requests[1]["body"], "");
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_peek_preserves_cli_envelope_and_encoded_limits() {
+    for limit in [None, Some("0"), Some("1"), Some("37")] {
+        let card = task_card_fixture();
+        let hub = MockHub::spawn(vec![health_route(), MockRoute {
+            method: "GET", path: "/tasks/carbon%2Froom%20%3F%23", status: 200,
+            body: serde_json::json!({"agent": "carbon/room ?#", "tasks": [card.clone()], "count": 1, "queue_length": 7}).to_string(),
+        }]);
+        let mut command = agent_bus_with_hub_candidates(&[hub.url()], "task-peek-limits");
+        command
+            .env("AGENT_BUS_AUTH_TOKEN", "disposable-task-token")
+            .args([
+                "peek-tasks",
+                "--agent",
+                "carbon/room ?#",
+                "--encoding",
+                "json",
+            ]);
+        if let Some(limit) = limit {
+            command.args(["--limit", limit]);
+        }
+        let output = command.output().expect("run task peek");
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+            serde_json::json!({"agent": "carbon/room ?#", "tasks": [card], "count": 1})
+        );
+        let requests = hub.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[1]["authorization"], "Bearer disposable-task-token");
+        assert_eq!(
+            requests[1]["target"],
+            format!(
+                "/tasks/carbon%2Froom%20%3F%23?limit={}",
+                limit.unwrap_or("10")
+            )
+        );
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_commands_refuse_offline_hubs_without_local_store_fallback() {
+    for command in ["push-task", "pull-task", "peek-tasks"] {
+        let output =
+            agent_bus_with_hub_candidates(&["http://127.0.0.1:1".to_owned()], "task-offline")
+                .args(task_args(command))
+                .output()
+                .expect("run offline task command");
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(
+            stderr_of(&output).contains("refusing to silently read or write a local store"),
+            "{}",
+            stderr_of(&output)
+        );
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_commands_use_reachable_configured_fallback_before_sending() {
+    for command in ["push-task", "pull-task", "peek-tasks"] {
+        let response = if command == "peek-tasks" {
+            serde_json::json!({"agent": "carbon", "tasks": [], "count": 0, "queue_length": 0})
+        } else {
+            task_card_fixture()
+        };
+        let hub = MockHub::spawn(vec![
+            health_route(),
+            MockRoute {
+                method: task_method(command),
+                path: "/tasks/carbon",
+                status: 200,
+                body: response.to_string(),
+            },
+        ]);
+        let output = agent_bus_with_hub_candidates(
+            &["http://127.0.0.1:1".to_owned(), hub.url()],
+            "task-resolved-fallback",
+        )
+        .args(task_args(command))
+        .output()
+        .expect("run fallback task command");
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        assert_eq!(hub.requests().len(), 2);
+        assert_eq!(hub.requests()[1]["method"], task_method(command));
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_commands_surface_http_failures_and_redact_auth_without_retry() {
+    for command in ["push-task", "pull-task", "peek-tasks"] {
+        for status in [401, 403, 501, 503] {
+            let hub = MockHub::spawn(vec![
+                health_route(),
+                MockRoute {
+                    method: task_method(command),
+                    path: "/tasks/carbon",
+                    status,
+                    body: r#"{"error":"disposable-task-token"}"#.to_owned(),
+                },
+            ]);
+            let fallback = MockHub::spawn(vec![health_route()]);
+            let output =
+                agent_bus_with_hub_candidates(&[hub.url(), fallback.url()], "task-http-failure")
+                    .env("AGENT_BUS_AUTH_TOKEN", "disposable-task-token")
+                    .args(task_args(command))
+                    .output()
+                    .expect("run rejected task command");
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            let diagnostic = stderr_of(&output);
+            assert!(
+                diagnostic.contains(&format!("HTTP {status}")),
+                "{diagnostic}"
+            );
+            assert!(!diagnostic.contains("disposable-task-token"));
+            assert_eq!(hub.requests().len(), 2);
+            assert_eq!(fallback.hits(), 0, "must not fail over after task request");
+        }
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_pull_lost_response_never_retries_or_consumes_on_a_second_hub() {
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "DELETE",
+            path: "/tasks/carbon",
+            status: 0,
+            body: String::new(),
+        },
+    ]);
+    let fallback = MockHub::spawn(vec![health_route()]);
+    let output =
+        agent_bus_with_hub_candidates(&[hub.url(), fallback.url()], "task-pull-lost-response")
+            .args(task_args("pull-task"))
+            .output()
+            .expect("run lost task pull response");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let requests = hub.requests();
+    assert_eq!(requests.len(), 2, "one health probe and exactly one DELETE");
+    assert_eq!(requests[1]["method"], "DELETE");
+    assert_eq!(fallback.hits(), 0);
+    assert!(
+        stderr_of(&output).contains("DELETE"),
+        "{}",
+        stderr_of(&output)
+    );
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_commands_reject_malformed_json_cards_and_envelopes() {
+    for (command, body) in [
+        ("push-task", "not JSON"),
+        ("push-task", r#"{"body":"missing card fields"}"#),
+        ("pull-task", "[]"),
+        ("pull-task", r#"{"agent":"other","task":null}"#),
+        ("pull-task", r#"{"agent":"carbon"}"#),
+        ("peek-tasks", r#"{"agent":"carbon","tasks":[],"count":1}"#),
+        ("peek-tasks", r#"{"agent":"other","tasks":[],"count":0}"#),
+        ("peek-tasks", r#"{"agent":"carbon","tasks":[{}],"count":1}"#),
+    ] {
+        let hub = MockHub::spawn(vec![
+            health_route(),
+            MockRoute {
+                method: task_method(command),
+                path: "/tasks/carbon",
+                status: 200,
+                body: body.to_owned(),
+            },
+        ]);
+        let output = agent_bus_with_hub_candidates(&[hub.url()], "task-malformed")
+            .args(task_args(command))
+            .output()
+            .expect("run malformed task response");
+        assert!(!output.status.success(), "{command} accepted {body}");
+        assert!(output.stdout.is_empty());
+        assert_eq!(hub.requests().len(), 2);
+    }
+    let mut invalid_status = task_card_fixture();
+    invalid_status["status"] = serde_json::json!("invented_status");
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "DELETE",
+            path: "/tasks/carbon",
+            status: 200,
+            body: invalid_status.to_string(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "task-invalid-status")
+        .args(task_args("pull-task"))
+        .output()
+        .expect("run invalid card status");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(hub.requests().len(), 2);
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_commands_omit_reflected_bearer_from_typed_http_success_errors() {
+    let token = "disposable-task-token";
+    for command in ["push-task", "pull-task", "peek-tasks"] {
+        for field in ["status", "paths"] {
+            let mut card = task_card_fixture();
+            card[field] = serde_json::json!(token);
+            let response = if command == "peek-tasks" {
+                serde_json::json!({"agent": "carbon", "tasks": [card], "count": 1, "queue_length": 1})
+            } else {
+                card
+            };
+            let hub = MockHub::spawn(vec![
+                health_route(),
+                MockRoute {
+                    method: task_method(command),
+                    path: "/tasks/carbon",
+                    status: 200,
+                    body: response.to_string(),
+                },
+            ]);
+            let fallback = MockHub::spawn(vec![health_route()]);
+            let output = agent_bus_with_hub_candidates(
+                &[hub.url(), fallback.url()],
+                "task-typed-token-error",
+            )
+            .env("AGENT_BUS_AUTH_TOKEN", token)
+            .args(task_args(command))
+            .output()
+            .expect("run reflected typed task error");
+            assert!(
+                !output.status.success(),
+                "must reject malformed typed {field}"
+            );
+            assert!(output.stdout.is_empty());
+            let requests = hub.requests();
+            assert_eq!(
+                requests.len(),
+                2,
+                "must test the actual hub response, not local failure"
+            );
+            assert_eq!(requests[1]["authorization"], format!("Bearer {token}"));
+            assert_eq!(
+                fallback.hits(),
+                0,
+                "typed response failure must not trigger fallback"
+            );
+            let diagnostic = stderr_of(&output);
+            assert!(
+                !diagnostic.contains(token),
+                "reflected credential leaked: {diagnostic}"
+            );
+            assert!(
+                diagnostic.contains("response is not"),
+                "fixed response context required: {diagnostic}"
+            );
+            assert!(
+                diagnostic.contains("category: Data"),
+                "safe error category required: {diagnostic}"
+            );
+        }
+    }
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/tasks/carbon",
+            status: 200,
+            body: serde_json::json!({"agent": "carbon", "tasks": [], "count": token}).to_string(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "task-typed-envelope-token")
+        .env("AGENT_BUS_AUTH_TOKEN", token)
+        .args(task_args("peek-tasks"))
+        .output()
+        .expect("run reflected count type error");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(hub.requests().len(), 2);
+    assert!(!stderr_of(&output).contains(token));
+    assert!(stderr_of(&output).contains("category: Data"));
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_commands_preserve_valid_business_body_equal_to_bearer() {
+    let token = "disposable-task-token";
+    for command in ["push-task", "pull-task", "peek-tasks"] {
+        let mut card = task_card_fixture();
+        card["body"] = serde_json::json!(token);
+        let response = if command == "peek-tasks" {
+            serde_json::json!({"agent": "carbon", "tasks": [card.clone()], "count": 1, "queue_length": 1})
+        } else {
+            card.clone()
+        };
+        let hub = MockHub::spawn(vec![
+            health_route(),
+            MockRoute {
+                method: task_method(command),
+                path: "/tasks/carbon",
+                status: 200,
+                body: response.to_string(),
+            },
+        ]);
+        let output = agent_bus_with_hub_candidates(&[hub.url()], "task-business-token-body")
+            .env("AGENT_BUS_AUTH_TOKEN", token)
+            .args(task_args(command))
+            .output()
+            .expect("run successful task with literal business token");
+        assert!(output.status.success(), "{}", stderr_of(&output));
+        let returned: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let expected = if command == "peek-tasks" {
+            serde_json::json!({"agent": "carbon", "tasks": [card], "count": 1})
+        } else {
+            card
+        };
+        assert_eq!(
+            returned, expected,
+            "diagnostic omission must not change successful business data"
+        );
+        assert_eq!(hub.requests().len(), 2);
+        assert_eq!(
+            hub.requests()[1]["authorization"],
+            format!("Bearer {token}")
+        );
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_commands_reject_dot_only_remote_agents_before_health() {
+    for command in ["push-task", "pull-task", "peek-tasks"] {
+        for agent in [".", "..", "  .  ", "  ..  "] {
+            let hub = MockHub::spawn(vec![health_route()]);
+            let mut args = task_args(command);
+            args[2] = agent;
+            let output = agent_bus_with_hub_candidates(&[hub.url()], "task-dot-agent")
+                .args(args)
+                .output()
+                .expect("run unsupported remote task identity");
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            assert_eq!(
+                hub.hits(),
+                0,
+                "dot-only identity must fail before health or task request"
+            );
+            assert!(
+                stderr_of(&output).contains("unsupported for HTTP task queues"),
+                "{}",
+                stderr_of(&output)
+            );
+        }
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_commands_keep_dot_only_local_identity_behavior() {
+    for command in ["push-task", "pull-task", "peek-tasks"] {
+        for agent in [".", ".."] {
+            let mut args = task_args(command);
+            args[2] = agent;
+            let output = isolated_agent_bus("task-local-dot-agent")
+                .args(args)
+                .output()
+                .expect("run legacy local dot identity");
+            assert!(!output.status.success(), "closed local Redis must fail");
+            assert!(output.stdout.is_empty());
+            let diagnostic = stderr_of(&output);
+            assert!(
+                diagnostic.contains("Redis connection failed"),
+                "local identity must reach existing Redis path: {diagnostic}"
+            );
+            assert!(!diagnostic.contains("unsupported for HTTP task queues"));
+        }
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_push_validates_inputs_before_any_http_request() {
+    for (field, value) in [
+        ("--agent", "  "),
+        ("--task", "  "),
+        ("--created-by", "  "),
+        ("--priority", "urgent"),
+    ] {
+        let hub = MockHub::spawn(vec![health_route()]);
+        let mut args = task_args("push-task");
+        if let Some(index) = args.iter().position(|arg| *arg == field) {
+            args[index + 1] = value;
+        } else {
+            args.extend([field, value]);
+        }
+        let output = agent_bus_with_hub_candidates(&[hub.url()], "task-invalid-input")
+            .args(args)
+            .output()
+            .expect("run invalid task input");
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error_field = match field {
+            "--created-by" => "created_by",
+            other => other.trim_start_matches('-'),
+        };
+        assert!(
+            stderr_of(&output).contains(error_field),
+            "{}",
+            stderr_of(&output)
+        );
+        assert_eq!(
+            hub.hits(),
+            0,
+            "invalid input must be rejected before health or storage"
+        );
+    }
+}
+
+#[cfg(feature = "server-mode")]
+#[test]
+fn task_push_preserves_multiline_unicode_body() {
+    // Stay under OS argument-size limits; the byte boundary is a unit control.
+    let body = "review café\n東京".repeat(512);
+    let mut card = task_card_fixture();
+    card["body"] = serde_json::json!(body);
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "POST",
+            path: "/tasks/carbon",
+            status: 200,
+            body: card.to_string(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "task-body-limit")
+        .args([
+            "push-task",
+            "--agent",
+            "carbon",
+            "--task",
+            &body,
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run task body boundary");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let requests = hub.requests();
+    assert_eq!(requests.len(), 2);
+    let payload: serde_json::Value =
+        serde_json::from_str(requests[1]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["task"], body);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["body"],
+        body
+    );
 }
 
 #[cfg(feature = "server-mode")]

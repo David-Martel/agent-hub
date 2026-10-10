@@ -171,8 +171,9 @@ def guest_environment(provider, configured):
     # HOME/TMPDIR are consumed by the Unix Wine launcher. Windows TEMP/TMP and
     # the Rust configuration are guest paths; never feed a drive path to host HOME.
     result["HOME"] = str(provider.home)
+    temporary_path = map_path(provider, provider.directory)
     for key in ("TEMP", "TMP"):
-        result[key] = map_path(provider, provider.directory)
+        result[key] = temporary_path
     observed = provider.command(
         ["wine", "cmd", "/c", "type", result["AGENT_BUS_CONFIG"]], env=result
     )

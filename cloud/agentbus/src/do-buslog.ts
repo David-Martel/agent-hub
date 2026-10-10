@@ -578,7 +578,9 @@ export class BusLog extends DurableObject<Env> {
     return out;
   }
 
-  /** Inbox approximation: messages addressed to `agent`, newest first. The
+  /** Inbox approximation: messages addressed to `agent`. Initial snapshots
+   * are newest first; cursor reads are oldest unread first so a limited page
+   * cannot advance past unread rows. The
    * Rust hub fans every send out to a dedicated per-recipient notification
    * stream (`agent_bus:notify:<agent>`) with its own reason/ack metadata;
    * the cloud tier derives the same information from the message log
@@ -595,7 +597,7 @@ export class BusLog extends DurableObject<Env> {
       .exec<MessageRow>(
         `SELECT * FROM messages
          WHERE (to_agent = ? OR to_agent = 'all') AND seq > ?
-         ORDER BY seq DESC LIMIT ?`,
+         ORDER BY seq ${sinceId ? "ASC" : "DESC"} LIMIT ?`,
         agent,
         sinceSeq,
         Math.max(limit, 1),

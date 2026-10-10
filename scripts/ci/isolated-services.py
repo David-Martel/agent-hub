@@ -30,6 +30,7 @@ from wine_lifecycle import NativeWineProvider, WineGuest, prove_runner_namespace
 
 ROOT = Path(__file__).resolve().parents[2]
 RESERVED_PORTS = {6379, 6380, 5432, 5300, 8400, 8401, 18400}
+DOCKER_PREREQUISITE_TIMEOUT = 15
 
 
 def run(args, *, env=None, capture=False, timeout=180):
@@ -63,6 +64,31 @@ def clean_environment(source):
     return env
 
 
+def _docker_prerequisite(operation):
+    """Probe one fixed Docker prerequisite without exposing native command details."""
+    args = {
+        "context-inspect": ["docker", "context", "inspect"],
+        "linux-container-info": ["docker", "info", "--format", "{{.OSType}}"],
+    }[operation]
+    try:
+        return run(args, capture=True, timeout=DOCKER_PREREQUISITE_TIMEOUT)
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        OSError,
+        RuntimeError,
+    ) as exc:
+        if isinstance(exc, subprocess.CalledProcessError):
+            detail = f"native exit {exc.returncode}"
+        elif isinstance(exc, subprocess.TimeoutExpired):
+            detail = f"timed out after {DOCKER_PREREQUISITE_TIMEOUT}s"
+        else:
+            detail = type(exc).__name__
+        raise RuntimeError(
+            f"Docker prerequisite {operation} failed ({detail}); no fixtures created"
+        ) from None
+
+
 def require_local_docker():
     if not shutil.which("docker"):
         raise RuntimeError("Docker is required; no shared-service fallback exists")
@@ -71,17 +97,14 @@ def require_local_docker():
         None if os.environ.get("DOCKER_CONTEXT") else os.environ.get("DOCKER_HOST")
     )
     if not endpoint:
-        context = json.loads(run(["docker", "context", "inspect"], capture=True).stdout)
+        context = json.loads(_docker_prerequisite("context-inspect").stdout)
         endpoint = context[0]["Endpoints"]["docker"]["Host"]
     parsed = urllib.parse.urlsplit(endpoint)
     if parsed.scheme not in {"unix", "npipe"} and not (
         parsed.scheme == "tcp" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
     ):
         raise RuntimeError("A local Docker endpoint is required")
-    if (
-        run(["docker", "info", "--format", "{{.OSType}}"], capture=True).stdout.strip()
-        != "linux"
-    ):
+    if _docker_prerequisite("linux-container-info").stdout.strip() != "linux":
         raise RuntimeError("Docker must provide Linux containers")
 
 

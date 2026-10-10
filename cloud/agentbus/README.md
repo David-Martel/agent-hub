@@ -17,6 +17,15 @@ D1 and R2 are **not used**: the Cloudflare API token available for this build
 denies both (error 10000). Every table lives in Durable Object **SQLite
 storage** (`ctx.storage.sql`) instead — see "Design change" below.
 
+## Claims authority boundary
+
+The on-site hub remains authoritative. Valid Cloud claim, resolve, renew and
+release HTTP requests return 409 and leave retained ClaimDO state unchanged.
+Resolve still requires an Operator token; Agent actor mismatches still return
+403, and unauthenticated requests return 401. Cloud GET state/events are
+retained Cloud records, not permission to use an on-site resource. Their
+existing expiry/retention housekeeping remains. See SYNC-CONTRACT.md §6.
+
 ## Auth model (agent-hub#82)
 
 Every bearer token in `AGENT_BUS_TOKENS` maps to `{agent, host?, role, hub?}`
@@ -28,13 +37,13 @@ Every bearer token in `AGENT_BUS_TOKENS` maps to `{agent, host?, role, hub?}`
   omitted value resolves to the token's identity.
 - **`hub`** — may VOUCH for any agent value (needed so the on-site hub can
   relay real on-site agents' actions through one token — see
-  SYNC-CONTRACT.md §6). Required for `/sync/push`, `/sync/push-presence`, and
+  SYNC-CONTRACT.md §6a). Required for `/sync/push`, `/sync/push-presence`, and
   (together with `operator`) `/sync/pull`. Its `hub` field is the ONLY source
   of `origin_hub` on every `/sync/*` route — never the request body.
   Malformed entries (missing `hub` for a `hub`-role token) are rejected at
   token-map parse time, fail closed.
 - **`operator`** — may also vouch for any agent value. Required for
-  `PUT .../resolve` (the global claims authority's arbitration decision) and
+  `PUT .../resolve` (validation followed by the on-site-authority refusal) and
   `GET /sync/stats`.
 
 The `AGENT_BUS_AUTH_TOKEN` shared-token fallback is disabled unless
@@ -123,6 +132,7 @@ alone means any role.
 | Method | Path | Auth | Rust source | Request body | Response |
 |---|---|---|---|---|---|
 | GET | `/health` | open | `http_health_handler` (redacted subset) | — | `Health` (no fleet counts) |
+| GET | `/admin/tokens/manifest` | **operator** | cloud-only read-only provenance | — | exact UTF-8 secret-binding SHA-256, unfiltered entry count, existing build/hub identity |
 | POST | `/messages` | bearer (sender bound to identity) | `http_send_handler` -> `validated_post_message` | sender, recipient, topic, body, thread_id?, tags?, priority?, request_ack?, reply_to?, metadata?, schema?, +#79: client_msg_id?, origin_host?, origin_hub?, hlc?, sensitivity? | `Message` |
 | GET | `/messages` | bearer | `http_read_handler` -> `list_messages_live` | query: agent, from, topic, repo, session, tag*, thread_id, since, limit, broadcast, excerpt | `Message[]` |
 | POST | `/messages/batch` | bearer (sender bound per item) | `http_batch_send_handler` -> `validated_batch_send` | `{messages: SendBody[]}` (<=100) | `{ids, count}` |
@@ -135,11 +145,11 @@ alone means any role.
 | GET | `/presence/history` | bearer | `http_presence_history_handler` -> `list_presence_history_postgres` | query: agent, since, limit | `Presence[]` |
 | GET | `/notifications/:agent_id` | bearer | `http_notifications_handler` -> `list_notifications[_since_id]` (approximated — see below) | query: since_id, history | `Notification[]` |
 | GET | `/pending-acks` | bearer | `http_pending_acks_handler` -> `ops_list_pending_acks` | query: agent | `PendingAck[]` |
-| POST | `/channels/arbitrate/:resource` | bearer (agent bound) | `http_claim_handler` -> `claim_resource_with_options` | `{agent, priority_argument?, mode?, namespace?, scope_kind?, scope_path?, repo_scopes?, thread_id?, lease_ttl_seconds?, scope?}` | `OwnershipClaim` |
+| POST | `/channels/arbitrate/:resource` | bearer (agent bound) | `http_claim_handler` -> `claim_resource_with_options` | `{agent, priority_argument?, mode?, namespace?, scope_kind?, scope_path?, repo_scopes?, thread_id?, lease_ttl_seconds?, scope?}` | JSON 409: on-site authority; no Cloud mutation |
 | GET | `/channels/arbitrate/:resource` | bearer | `http_arbitration_state_handler` -> `get_arbitration_state` | — | `ArbitrationState` |
-| PUT | `/channels/arbitrate/:resource/resolve` | **operator** | `http_resolve_handler` -> `resolve_claim` | `{winner, reason?, resolved_by?}` | `ArbitrationState` |
-| POST | `/channels/arbitrate/:resource/renew` | bearer (agent bound — owner-only) | `http_renew_claim_handler` -> `renew_claim` | `{agent, lease_ttl_seconds?}` (TTL capped 1..86400s) | `OwnershipClaim` |
-| POST | `/channels/arbitrate/:resource/release` | bearer (agent bound — owner-only) | `http_release_claim_handler` -> `release_claim` | `{agent}` | `ArbitrationState` |
+| PUT | `/channels/arbitrate/:resource/resolve` | **operator** | `http_resolve_handler` -> `resolve_claim` | `{winner, reason?, resolved_by?}` | JSON 409: on-site authority; no Cloud mutation |
+| POST | `/channels/arbitrate/:resource/renew` | bearer (agent bound — owner-only) | `http_renew_claim_handler` -> `renew_claim` | `{agent, lease_ttl_seconds?}` (TTL capped 1..86400s) | JSON 409: on-site authority; no Cloud mutation |
+| POST | `/channels/arbitrate/:resource/release` | bearer (agent bound — owner-only) | `http_release_claim_handler` -> `release_claim` | `{agent}` | JSON 409: on-site authority; no Cloud mutation |
 | GET | `/resource-events/:resource_id` | bearer | `http_resource_events_handler` (bonus — cheap given ClaimDO already has the data) | query: limit | `ResourceEvent[]` |
 | POST | `/sync/push` | **hub** | new, agent-hub#79/#82 | `{origin_hub?, messages: SyncPushMessageInput[]}` (<=500; `origin_hub` always comes from the token, not the body) | `{accepted[], duplicates[], conflicts[], rejected[], cursor}` |
 | GET | `/sync/pull` | **hub or operator** | new, agent-hub#79/#82 | query: since, exclude_origin, limit | `{messages[], next_cursor, has_more}` |
@@ -148,10 +158,8 @@ alone means any role.
 
 ### Deferred (out of the agent-hub#79 cloud subset — return `501`, not `404`)
 
-`/events*` (SSE), `/mcp` (JSON-RPC bridge — the CLI/MCP client speaks plain
-REST when `server_url` is set, confirmed by reading
-`crates/agent-bus-cli/src/server_mode.rs`, so this was never required),
-`/admin/*`, `/channels/direct/*`, `/channels/groups*`, `/channels/escalate`,
+`/events*` (SSE),
+`/admin/*` (except `/admin/tokens/manifest`), `/channels/direct/*`, `/channels/groups*`, `/channels/escalate`,
 `/channels/summary`, `/token-count`, `/compact-context`, `/session-summary`,
 `/thread-summary`, `/compact-thread`, `/orchestrator-summary`, `/tasks/*`,
 `/subscriptions*`, `/inventory`, `/threads*`, `/overdue-acks`, `/dashboard*`,
@@ -163,10 +171,73 @@ presence/claims/ack/health`) — nothing here was silently dropped.
 The Rust hub fans every send out to a dedicated per-recipient Redis stream
 (`agent_bus:notify:<agent>`) with its own `reason`/`requires_ack` bookkeeping.
 The cloud tier derives the same `Notification[]` shape directly from the
-message log (`to = agent OR to = 'all'`, newest first) instead of
-maintaining a second write path — functionally equivalent for `check_inbox`,
-but `id`/`notification_stream_id` are the message's own `seq`, not an
-independent notification-stream id.
+message log (`to = agent OR to = 'all'`) instead of maintaining a second
+write path. A request without `since_id` takes a newest-first snapshot.
+With `since_id` (including `0-0`), it returns oldest-unread-first pages;
+advance to the last returned `id` to drain pages without skipping unread
+rows. `id`/`notification_stream_id` are the message's own `seq`, not an
+independent notification-stream id. The cloud does not implement the native
+MCP `check_inbox` tool's persistent, filter-scoped cursors.
+
+### MCP over authenticated HTTP
+
+`POST /mcp` accepts one JSON-RPC 2.0 request per JSON body. It implements
+`initialize`, `ping`, `tools/list` and `tools/call`; initialized/cancelled
+notifications return empty `202` responses. This is a stateless JSON
+transport, with no SSE, sessions or server callbacks. `GET /mcp` returns
+`405`. Protocol negotiation supports `2024-11-05`, `2025-03-26`,
+`2025-06-18` and `2025-11-25`; it does not advertise the newer handshake-free
+protocol. Existing native `HttpMcpTransport` direct `tools/call` requests
+remain usable without a prior handshake or additional version headers.
+
+The catalog contains exactly eight native-named tools: `bus_health`,
+`post_message`, `list_messages`, `ack_message`, `set_presence`,
+`list_presence`, `list_presence_history` and `knock_agent`. Argument names,
+types, bounds and required fields match their native schemas. Results are
+JSON serialized inside `result.content[0].text`, as the dedicated native
+MCP client expects. These operations use the same REST handlers, validation,
+sender/agent binding and recipient-only ack checks. Agent tokens cannot
+impersonate another agent; hub/operator tokens retain existing vouching
+rights. Each external RPC consumes one existing per-identity rate-limit
+unit; internal REST dispatch re-authenticates the same bearer.
+
+Claims, arbitration, local channels, native inbox cursors and `negotiate`
+are not advertised or emulated. Cloud health describes cloud SQLite
+storage, not Redis/PostgreSQL or on-site authoritative readiness. A knock
+is durable but does not promise cloud SSE delivery.
+
+Use a cloud-only identity-bound bearer stored privately; never reuse an
+on-site hub token or put it in command arguments, logs or committed MCP
+configuration. Send `Content-Type: application/json`; ordinary Streamable
+HTTP clients should send `Accept: application/json, text/event-stream`.
+Browser Origins must match the request origin. Requests are bounded to
+1 MiB while reading, including requests without `Content-Length`.
+Malformed envelopes/methods/arguments receive JSON-RPC errors. Existing REST
+authorization or validation failures become `isError: true` tool results
+with a generic rejection/status; internals and rejected payloads are not
+echoed. This source change does not activate a fleet cloud candidate or
+change the on-site claims authority. An absent `MCP-Protocol-Version` header
+uses the compatible `2025-03-26` transport rules; an explicit unsupported
+header is rejected with HTTP `400`.
+
+### Read-only token-map provenance
+
+An operator-role bearer may read `GET /admin/tokens/manifest`. It returns
+`representation: "utf8-secret-binding-v1"`, SHA-256 of the exact UTF-8
+`AGENT_BUS_TOKENS` binding string, and `entry_count` for every top-level
+object key, including malformed entries the authentication parser filters
+out. Whitespace, Unicode and trailing newlines affect the digest; it is
+never computed from a reserialized or filtered map. Malformed/non-object
+bindings fail closed. No token entries, individual digests, roles or secret
+values are returned or logged. Agent and hub roles are denied.
+
+The response also includes the existing `build_version` and `hub_identity`;
+the static build label is not an immutable deployment ID or Git revision.
+Bind the response to separately authenticated Cloudflare deployment/source
+evidence before accepting a preserved map. Compare the complete candidate
+bytes/hash/count locally after strict parsing; do not infer map equivalence
+from one usable token. This endpoint cannot modify credentials, and does
+not authorize a replacement or rotation. All responses use `no-store`.
 
 ## Schema additions (agent-hub#79/#82, additive & optional)
 
@@ -309,14 +380,12 @@ npx vitest run
   metadata PHI screening, agent-identity binding on `PUT /presence/:agent`.
 - `test/inbox.test.ts` — `/notifications/:agent_id` (incl. `since_id`
   pagination and `requires_ack`), `/pending-acks` (incl. `stale`).
-- `test/claims.test.ts` — claim/renew/release/resolve/get; shared vs.
-  exclusive vs. shared_namespaced conflict rules; reroute suggestions
-  (generic and machine-global-pattern); **exclusive-claim contention across
-  two concurrent `Promise.all` requests**; lease expiry (1-second TTL, pruned
-  on next read); lease TTL capping; resource-events lifecycle including "no
-  ClaimDO minted on an unclaimed resource's read"; resource-name
-  normalization (case-fold, backslash-fold); owner-only renew/release;
-  operator-only resolve; auth.
+- test/claims.test.ts — authenticated Agent/Hub/Operator refusal, original
+  401/403/400 guards, exact retained SQL rows unchanged (including expired
+  claims), no new ClaimDO tables and retained read/event wire shapes.
+- test/claim-do.test.ts — direct disposable RPC coverage for retained
+  conflict/reroute/resolve/renew/release/expiry semantics. These fixtures do
+  not qualify Cloud HTTP grants; the existing contract fixtures remain.
 - `test/sync.test.ts` — push/pull/push-presence/stats, all now hub- or
   operator-gated; **idempotent re-push** on `id` and on `client_msg_id`
   alone; **per-origin conflict detection** (same id, different content);
@@ -407,8 +476,8 @@ Object namespaces, and (for the custom domain) zone DNS/Routes permission.
    ```
 
    This example describes credential isolation, not fleet readiness. The
-   Worker's authenticated `/mcp` endpoint is currently deferred (`501`), and
-   several CLI routes are also deferred. Do not add it to the deployed fleet
+   Worker's authenticated `/mcp` endpoint supports only the eight tools
+   documented above; several CLI routes remain deferred. Do not add it to the deployed fleet
    candidate list until the required routes, on-site synchronization and
    role-scoped credentials have been validated. Public `/health` success
    verifies reachability only; unauthenticated `/mcp` must return `401`.
@@ -416,9 +485,12 @@ Object namespaces, and (for the custom domain) zone DNS/Routes permission.
    `cloud_*` health) is in `crates/agent-bus-http/src/cloud_sync.rs`; see
    `docs/cloud-sync.md` for configuration. It is off until a cloud URL, a
    0600 token file and `hub_identity` are set. The
-   `/channels/arbitrate/*` proxy-to-cloud switch described in SYNC-CONTRACT.md
-   §6 is NOT built, and the plan is to keep claims on-site instead; that needs
-   an owner decision recorded against §6.
+   claims proxy is not built. Cloud claim/resolve/renew/release requests
+   return 409 after existing authentication and input guards; use the
+   on-site authority. SYNC-CONTRACT.md §6 records the conservative current
+   implementation default without asserting an explicit operator migration
+   decision. GET state/events expose retained Cloud records only, and state
+   reads retain their existing expired-row housekeeping.
 8. **Historical import** — the one-time backfill importer at
    `~/.local/share/jules-fleet/handoff-2026-09-26/agentbus-import/import_pg_export.py`
    targets `/sync/push` and `/sync/push-presence` exactly as implemented

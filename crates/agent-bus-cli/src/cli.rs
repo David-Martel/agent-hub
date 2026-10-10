@@ -78,6 +78,19 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
+pub(crate) enum OutboxCmd {
+    /// List retained stable IDs without submitting new requests.
+    Status {
+        #[arg(long, default_value = "compact", value_enum)]
+        encoding: Encoding,
+    },
+    /// Replay retained requests in order without enqueueing a new request.
+    Flush {
+        #[arg(long, default_value = "compact", value_enum)]
+        encoding: Encoding,
+    },
+}
+#[derive(Subcommand)]
 pub(crate) enum HistoryCmd {
     /// Apply pending, checksum-verified history catalog migrations.
     Migrate {
@@ -93,6 +106,11 @@ pub(crate) enum HistoryCmd {
 
 #[derive(Subcommand)]
 pub(crate) enum Cmd {
+    /// Inspect or drain the automatic stable-ID outbox; manual spool is separate.
+    Outbox {
+        #[command(subcommand)]
+        action: OutboxCmd,
+    },
     /// Check Redis bus health and report runtime metadata.
     #[command(long_about = "Ping Redis and, when configured, PostgreSQL.\n\n\
         Returns: ok, protocol_version, build_version, redis_url, database_url, database_ok,\n\
@@ -1011,7 +1029,10 @@ pub(crate) enum Cmd {
     #[command(
         long_about = "Push a task JSON string (or plain text) to the tail of the target\n\
             agent's task queue. Tasks are stored as a Redis LIST under the key\n\
-            'bus:tasks:<agent>'. Returns the new queue length.\n\n\
+            'bus:tasks:<agent>'. Returns the created TaskCard JSON.\n\n\
+            Uses the configured HTTP hub when server candidates are configured;\n\
+            otherwise uses local Redis. An unavailable hub does not fall back locally.\n\n\
+            Agent IDs '.' and '..' are unsupported when using an HTTP hub.\n\n\
             Use 'pull-task' to consume the next task and 'peek-tasks' to\n\
             inspect pending work without consuming it.\n\n\
             Example:\n  \
@@ -1053,7 +1074,10 @@ pub(crate) enum Cmd {
     #[command(
         long_about = "Pop and return the next task from the head of an agent's task\n\
             queue (LPOP).  The task is permanently removed from the queue.\n\n\
-            Returns JSON: {\"agent\": \"<id>\", \"task\": \"<payload>\" | null}\n\n\
+            Returns a TaskCard JSON object, or {\"agent\": \"<id>\", \"task\": null}\n\
+            when empty. A lost response can mean the task was consumed; no retry\n\
+            is attempted. Configured hubs never fall back to local Redis.\n\n\
+            Agent IDs '.' and '..' are unsupported when using an HTTP hub.\n\n\
             Example:\n  \
             agent-bus pull-task --agent codex"
     )]
@@ -1071,7 +1095,9 @@ pub(crate) enum Cmd {
     #[command(
         long_about = "Read up to --limit tasks from the head of an agent's queue\n\
             without consuming them (LRANGE).  Use --limit 0 to return all entries.\n\n\
-            Returns JSON: {\"agent\": \"<id>\", \"tasks\": [...], \"count\": N}\n\n\
+            Returns JSON: {\"agent\": \"<id>\", \"tasks\": [...TaskCard], \"count\": N}\n\
+            Uses the configured HTTP hub when present, with no local fallback.\n\n\
+            Agent IDs '.' and '..' are unsupported when using an HTTP hub.\n\n\
             Example:\n  \
             agent-bus peek-tasks --agent codex --limit 5 --encoding json"
     )]
@@ -1286,6 +1312,30 @@ pub(crate) enum Cmd {
         #[arg(long, default_value = "compact", value_enum, help = "Output format")]
         encoding: Encoding,
     },
+
+    /// Mint, store, and smoke-test Cloudflare cloud-tier tokens (no env secrets).
+    CloudTokens(CloudTokensCmd),
+}
+
+/// Operator subcommands for cloud credentials.
+#[derive(clap::Args)]
+pub(crate) struct CloudTokensCmd {
+    #[arg(value_enum)]
+    pub action: crate::cloud_tokens::CloudTokensAction,
+    #[command(flatten)]
+    pub options: CloudTokenOptions,
+}
+
+#[derive(clap::Args)]
+pub(crate) struct CloudTokenOptions {
+    #[arg(long)]
+    pub manifest: Option<std::path::PathBuf>,
+    #[arg(long)]
+    pub example: Option<std::path::PathBuf>,
+    #[arg(long)]
+    pub repo_root: Option<std::path::PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
 }
 
 #[cfg(test)]

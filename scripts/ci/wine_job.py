@@ -12,7 +12,7 @@ import shutil
 import tempfile
 import time
 
-from wine_lifecycle import NativeWineProvider
+from wine_lifecycle import NativeWineProvider, WineCommandFailure
 
 TARGET = "x86_64-pc-windows-gnu"
 UNIT_COMMANDS = (
@@ -194,6 +194,40 @@ def group(
     return outputs
 
 
+def failure_summary(failure):
+    """Publish structural test evidence without reflecting diagnostic bodies."""
+    metadata = failure.metadata
+    result = {
+        key: metadata[key]
+        for key in (
+            "reason",
+            "exit",
+            "pipes_and_child_settled",
+            "elapsed_seconds",
+            "stdout_bytes",
+            "stderr_bytes",
+            "stdout_sha256",
+            "stderr_sha256",
+            "stdout_path",
+            "stderr_path",
+            "retention_failure_type",
+        )
+        if key in metadata
+    }
+    text = failure.stdout.decode("utf-8", errors="replace")
+    result["failed_tests"] = re.findall(
+        r"^test ([A-Za-z0-9_:]{1,200}) \.\.\. FAILED\r?$", text, re.MULTILINE
+    )[:100]
+    result["test_results"] = re.findall(
+        r"^test result: (?:ok|FAILED)\. [0-9]+ passed; [0-9]+ failed; "
+        r"[0-9]+ ignored; [0-9]+ measured; [0-9]+ filtered out; "
+        r"finished in [0-9.]+s\r?$",
+        text,
+        re.MULTILINE,
+    )[:20]
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("mode", choices=("units", "versions"))
@@ -266,5 +300,10 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except WineCommandFailure as failure:
+        print(json.dumps(failure_summary(failure)), flush=True)
+        raise SystemExit(
+            "Owned Wine job failed; private prefix evidence retained"
+        ) from None
     except (RuntimeError, OSError, ValueError, KeyError, TypeError):
         raise SystemExit("Owned Wine job failed; see owned custody evidence") from None

@@ -19,6 +19,8 @@
  */
 
 import { Hono } from "hono";
+import { handleMcp } from "./mcp";
+import { tokenManifest } from "./token-manifest";
 import {
   authenticate,
   bindAgent,
@@ -110,6 +112,14 @@ const SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
 } as const;
 
+/** The on-site hub remains the claims authority. Never dispatch a refused
+ * mutation to ClaimDO, including with hub/operator credentials. */
+class ClaimsAuthorityError extends Error {
+  constructor() {
+    super("cloud claims are read-only; use the on-site claims authority");
+  }
+}
+
 function errorResponse(status: number, message: string): Response {
   return new Response(JSON.stringify({ error: message }), {
     status,
@@ -134,6 +144,7 @@ async function guarded(fn: () => unknown | Promise<unknown>): Promise<Response> 
     const result = await fn();
     return json(result);
   } catch (err) {
+    if (err instanceof ClaimsAuthorityError) return errorResponse(409, err.message);
     // A `ValidationError`/`ForbiddenError` thrown inside a Durable Object RPC
     // method crosses the DO<->Worker boundary via structured-clone-like
     // serialization, which does not preserve the custom subclass's prototype
@@ -155,6 +166,9 @@ async function guarded(fn: () => unknown | Promise<unknown>): Promise<Response> 
 
 type Bindings = { Bindings: Env; Variables: { identity: Identity } };
 const app = new Hono<Bindings>();
+// Only requests constructed by our authenticated MCP adapter enter this set.
+// Re-authenticate the unchanged bearer on dispatch; count the external RPC once.
+const mcpRestRequests = new WeakSet<Request>();
 
 // --- Auth + rate limit middleware: every route except /health --------------
 
@@ -163,6 +177,8 @@ app.use("*", async (c, next) => {
   const identity = authenticate(c.req.raw, c.env);
   if (!identity) return unauthorizedResponse();
   c.set("identity", identity);
+
+  if (mcpRestRequests.has(c.req.raw)) return next();
 
   const limit = Number(c.env.RATE_LIMIT_PER_MINUTE) || DEFAULT_RATE_LIMIT_PER_MINUTE;
   const identityKey = `${identity.role}:${identity.agent}:${identity.host ?? ""}`;
@@ -624,12 +640,12 @@ app.post("/channels/arbitrate/:resource", async (c) => {
     // oversized/empty resource name must 400 through the normal JSON error
     // path, not escape as Hono's default plain-text 500 the way it did when
     // this validation ran before `guarded` was ever entered.
-    const resource = normalizeResourceName(rawResource);
+    normalizeResourceName(rawResource);
     const identity = c.get("identity");
-    const agent = bindAgent(identity, body.agent, "agent");
+    bindAgent(identity, body.agent, "agent");
     const mode = parseLeaseMode(body.mode ?? "exclusive");
-    const scope = body.scope ? parseResourceScope(body.scope) : undefined;
-    const leaseTtlSeconds = coerceOptionalInt(body.lease_ttl_seconds, "lease_ttl_seconds", {
+    if (body.scope) parseResourceScope(body.scope);
+    coerceOptionalInt(body.lease_ttl_seconds, "lease_ttl_seconds", {
       min: MIN_LEASE_TTL_SECONDS,
       max: MAX_LEASE_TTL_SECONDS,
     });
@@ -638,23 +654,12 @@ app.post("/channels/arbitrate/:resource", async (c) => {
     // used to 500 deep inside the DO, and `repo_scopes:"abc"` was stored and
     // served back as a bare string).
     const claimFields = validateClaimCore(body);
-    const stub = claimStub(c.env, resource);
-    return stub.claim(
-      {
-        resource,
-        agent,
-        priorityArgument: claimFields.priorityArgument,
-        mode,
-        namespace: claimFields.namespace,
-        scopeKind: claimFields.scopeKind,
-        scopePath: claimFields.scopePath,
-        repoScopes: claimFields.repoScopes,
-        threadId: claimFields.threadId,
-        leaseTtlSeconds: leaseTtlSeconds ?? 3600,
-        scope,
-      },
-      formatTimestampUtc(),
-    );
+    // This cross-field constraint previously ran inside ClaimDO. Preserve
+    // its input rejection without touching the object's retained state.
+    if (mode === "shared_namespaced" && !(claimFields.namespace ?? "").trim()) {
+      throw new ValidationError("shared_namespaced claims require --namespace");
+    }
+    throw new ClaimsAuthorityError();
   });
 });
 
@@ -670,17 +675,15 @@ app.put("/channels/arbitrate/:resource/resolve", async (c) => {
   const rawResource = c.req.param("resource");
   const body = await c.req.json<{ winner?: string; reason?: string; resolved_by?: string }>().catch(() => ({} as { winner?: string; reason?: string; resolved_by?: string }));
   return guarded(async () => {
-    const resource = normalizeResourceName(rawResource);
+    normalizeResourceName(rawResource);
     const identity = c.get("identity");
-    // The global claims authority's resolve is a policy decision, not a
-    // self-service action — restrict it to operator-role tokens
-    // (agent-hub#82 review H2: it was previously open to every token, and
-    // `resolved_by` was self-asserted).
+    // Preserve the original operator-only resolve guard before refusing
+    // Cloud mutations. The on-site authority owns arbitration decisions.
     requireRole(identity, "operator");
     const winner = (body.winner ?? "").trim();
     if (!winner) throw new ValidationError("winner must not be empty");
-    const resolvedBy = bindOptionalAgent(identity, body.resolved_by);
-    return claimStub(c.env, resource).resolve(resource, winner, body.reason ?? "resolved by orchestrator", resolvedBy);
+    bindOptionalAgent(identity, body.resolved_by);
+    throw new ClaimsAuthorityError();
   });
 });
 
@@ -688,17 +691,17 @@ app.post("/channels/arbitrate/:resource/renew", async (c) => {
   const rawResource = c.req.param("resource");
   const body = await c.req.json<{ agent?: string; lease_ttl_seconds?: number }>().catch(() => ({} as { agent?: string; lease_ttl_seconds?: number }));
   return guarded(async () => {
-    const resource = normalizeResourceName(rawResource);
+    normalizeResourceName(rawResource);
     const identity = c.get("identity");
     // Owner-only (agent-hub#82 review H2/P2): an agent-role token can only
     // renew its OWN claim; hub/operator tokens may vouch for the on-site
     // agent they're relaying for.
-    const agent = bindAgent(identity, body.agent, "agent");
-    const leaseTtlSeconds = coerceOptionalInt(body.lease_ttl_seconds, "lease_ttl_seconds", {
+    bindAgent(identity, body.agent, "agent");
+    coerceOptionalInt(body.lease_ttl_seconds, "lease_ttl_seconds", {
       min: MIN_LEASE_TTL_SECONDS,
       max: MAX_LEASE_TTL_SECONDS,
     });
-    return claimStub(c.env, resource).renew(resource, agent, leaseTtlSeconds, formatTimestampUtc());
+    throw new ClaimsAuthorityError();
   });
 });
 
@@ -706,11 +709,11 @@ app.post("/channels/arbitrate/:resource/release", async (c) => {
   const rawResource = c.req.param("resource");
   const body = await c.req.json<{ agent?: string }>().catch(() => ({} as { agent?: string }));
   return guarded(async () => {
-    const resource = normalizeResourceName(rawResource);
+    normalizeResourceName(rawResource);
     const identity = c.get("identity");
     // Owner-only, same rule as renew.
-    const agent = bindAgent(identity, body.agent, "agent");
-    return claimStub(c.env, resource).release(resource, agent);
+    bindAgent(identity, body.agent, "agent");
+    throw new ClaimsAuthorityError();
   });
 });
 
@@ -930,6 +933,20 @@ app.get("/sync/stats", async (c) => {
   });
 });
 
+// --- Operator-only secret-map provenance; never export entries or tokens ------
+app.get("/admin/tokens/manifest", (c) => guarded(async () => {
+  requireRole(c.get("identity"), "operator");
+  return { ...await tokenManifest(c.env.AGENT_BUS_TOKENS),
+    build_version: BUILD_VERSION, hub_identity: cloudIdentity(c.env) };
+}));
+
+// --- MCP: supported REST-backed tools, with the same role/identity checks ------
+app.all("/mcp", (c) => handleMcp(c.req.raw, async (request) => {
+  mcpRestRequests.add(request);
+  try { return await app.request(request, undefined, c.env); }
+  finally { mcpRestRequests.delete(request); }
+}));
+
 // --- Deferred routes: return a clear 501 rather than a generic 404 -------------
 
 const DEFERRED_ROUTES = [
@@ -962,7 +979,6 @@ const DEFERRED_ROUTES = [
   "/dashboard",
   "/dashboard/data",
   "/support",
-  "/mcp",
 ];
 for (const path of DEFERRED_ROUTES) {
   app.all(path, (c) =>

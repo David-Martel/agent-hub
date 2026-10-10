@@ -344,7 +344,7 @@ const NOTIFICATION_STREAM_PREFIX: &str = "agent_bus:notify:";
 /// Redis key prefix for durable notification cursors.
 const NOTIFICATION_CURSOR_PREFIX: &str = "bus:notify_cursor:";
 
-fn notification_reason(msg: &Message) -> &'static str {
+pub(crate) fn notification_reason(msg: &Message) -> &'static str {
     if msg.topic == "knock" {
         "knock"
     } else if msg.request_ack {
@@ -354,7 +354,7 @@ fn notification_reason(msg: &Message) -> &'static str {
     }
 }
 
-fn should_publish_message_event(msg: &Message, has_sse_subscribers: bool) -> bool {
+pub(crate) fn should_publish_message_event(msg: &Message, has_sse_subscribers: bool) -> bool {
     has_sse_subscribers || (!msg.to.is_empty() && msg.to != "all")
 }
 
@@ -951,22 +951,22 @@ fn lz4_decompress_body(encoded: &str) -> Result<String> {
 /// Owning the strings here keeps them alive across the entire pipeline
 /// execution window — the redis pipeline borrows them by reference until
 /// [`redis::Pipeline::query`] returns.
-struct PreparedMessage {
+pub(crate) struct PreparedMessage {
     /// Application-level [`Message`] returned to callers.
     /// `stream_id` is `None` until the pipeline result is backfilled.
-    message: Message,
+    pub(crate) message: Message,
     /// Body written to Redis (may be LZ4+base64 when body was large).
-    stored_body: String,
+    pub(crate) stored_body: String,
     /// Serialised JSON for the `tags` field.
-    tags_json: String,
+    pub(crate) tags_json: String,
     /// `"true"` or `"false"` for the `request_ack` field.
-    ack_str: &'static str,
+    pub(crate) ack_str: &'static str,
     /// `thread_id` value or empty string (never the sentinel `"None"`).
-    thread_str: String,
+    pub(crate) thread_str: String,
     /// Serialised JSON for the `metadata` field (includes `_schema`/`_compressed`).
-    meta_json: String,
+    pub(crate) meta_json: String,
     /// `true` when the body was LZ4-compressed.
-    is_compressed: bool,
+    pub(crate) is_compressed: bool,
 }
 
 /// Extract and prepare all per-message state needed for a Redis XADD.
@@ -986,7 +986,7 @@ struct PreparedMessage {
     clippy::too_many_arguments,
     reason = "maps directly to protocol fields — same arity as bus_post_message"
 )]
-fn prepare_message(
+pub(crate) fn prepare_message(
     from: &str,
     to: &str,
     topic: &str,

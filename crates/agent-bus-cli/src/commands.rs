@@ -26,7 +26,7 @@ use crate::ops::inbox::{
     summarize_session as ops_summarize_session, summarize_thread as ops_summarize_thread,
 };
 use crate::ops::task::{
-    PushTaskCardRequest, peek_task_cards as ops_peek_task_cards,
+    PushTaskCardRequest, VALID_TASK_PRIORITIES, peek_task_cards as ops_peek_task_cards,
     pull_task_card as ops_pull_task_card, push_task_card as ops_push_task_card,
 };
 use crate::ops::{
@@ -40,7 +40,7 @@ use crate::output::{
 use crate::redis_bus::{bus_list_messages, connect};
 #[cfg(feature = "server-mode")]
 use crate::server_mode::{
-    active_hub_backend, http_get, http_post, http_put, offline_error,
+    active_hub_backend, http_delete, http_get, http_post, http_put, offline_error,
     resolve_authoritative_claim_url, resolve_hub_url, use_server_mode,
 };
 use crate::server_mode::{
@@ -122,6 +122,53 @@ fn build_server_direct_url(base: &str, other: &str) -> Result<reqwest::Url> {
         .pop_if_empty()
         .extend(["channels", "direct", other]);
     Ok(url)
+}
+
+#[cfg(feature = "server-mode")]
+fn build_server_task_url(base: &str, agent: &str) -> Result<reqwest::Url> {
+    validate_server_task_agent(agent)?;
+    let mut url = reqwest::Url::parse(base).context("invalid server URL")?;
+    url.path_segments_mut()
+        .map_err(|()| anyhow::anyhow!("server URL does not support path segments"))?
+        .pop_if_empty()
+        .extend(["tasks", agent]);
+    Ok(url)
+}
+
+#[cfg(feature = "server-mode")]
+#[derive(serde::Deserialize)]
+struct HubTaskPeekResponse {
+    agent: String,
+    tasks: Vec<crate::ops::task::TaskCard>,
+    count: usize,
+}
+
+#[cfg(feature = "server-mode")]
+fn validate_server_task_agent(agent: &str) -> Result<()> {
+    if matches!(agent.trim(), "." | "..") {
+        anyhow::bail!("--agent '.' and '..' are unsupported for HTTP task queues");
+    }
+    Ok(())
+}
+
+#[cfg(feature = "server-mode")]
+fn decode_task_response<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+    context: &'static str,
+) -> Result<T> {
+    // Serde's unknown-variant/type errors include server-controlled values.
+    // Omit that error chain entirely: values can reflect a sent bearer token.
+    serde_json::from_value(value).map_err(|error| {
+        anyhow::anyhow!(
+            "{context} (category: {:?}; response value omitted)",
+            error.classify()
+        )
+    })
+}
+
+fn validated_task_body(task: &str) -> Result<&str> {
+    let body = non_empty(task, "--task")?;
+    Ok(non_empty(body, "body")?)
 }
 
 fn list_filtered_messages(
@@ -523,6 +570,18 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
         let fitted_body = auto_fit_schema(body, effective_schema);
         validate_message_schema(&fitted_body, effective_schema)?;
 
+        let durable = serde_json::json!({"sender":from,"recipient":to,"topic":topic,
+            "body":body,"priority":args.priority,"request_ack":args.request_ack,
+            "tags":args.tags,"metadata":meta,"schema":args.schema,
+            "thread_id":args.thread_id,"reply_to":args.reply_to});
+        if let Some(value) = crate::server_mode::durable_write(
+            settings,
+            "post_message",
+            durable.as_object().context("durable send shape")?.clone(),
+        )? {
+            output(&value, args.encoding);
+            return Ok(());
+        }
         let base = resolve_hub_url(settings, "send")?;
         let url = format!("{base}/messages");
         let mut payload = serde_json::json!({
@@ -734,6 +793,15 @@ pub(crate) fn cmd_ack(
     // but unreachable (an offline ack is a lost ack, not a local one).
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
+        let durable = serde_json::json!({"agent":agent,"message_id":message_id,"body":body});
+        if let Some(value) = crate::server_mode::durable_write(
+            settings,
+            "ack_message",
+            durable.as_object().context("durable ack shape")?.clone(),
+        )? {
+            output(&value, encoding);
+            return Ok(());
+        }
         return match active_hub_backend(settings) {
             agent_bus_core::hub::HubBackend::Remote { url, .. } => {
                 let mut ack_url = reqwest::Url::parse(&url).context("invalid hub URL")?;
@@ -812,6 +880,20 @@ pub(crate) fn cmd_presence(settings: &Settings, args: &PresenceArgs<'_>) -> Resu
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
+        let durable = serde_json::json!({"agent":agent,"status":args.status,
+            "ttl_seconds":args.ttl_seconds,"capabilities":args.capabilities,
+            "metadata":meta,"session_id":args.session_id});
+        if let Some(value) = crate::server_mode::durable_write(
+            settings,
+            "set_presence",
+            durable
+                .as_object()
+                .context("durable presence shape")?
+                .clone(),
+        )? {
+            output(&value, args.encoding);
+            return Ok(());
+        }
         let base = resolve_hub_url(settings, "presence")?;
         let url = format!("{base}/presence/{agent}");
         let mut payload = serde_json::json!({
@@ -1569,6 +1651,18 @@ pub(crate) fn cmd_claim(
         // either, since a second hub tier (e.g. a future Cloudflare-hosted
         // candidate) must never let two different hubs believe they can both
         // grant the same claim.
+        let durable = serde_json::json!({"resource":resource,"agent":agent,"reason":reason,
+            "mode":mode,"namespace":namespace,"scope_kind":scope_kind,"scope_path":scope_path,
+            "repo_scopes":repo_scopes,"thread_id":thread_id,
+            "lease_ttl_seconds":lease_ttl_seconds,"scope":scope});
+        if let Some(value) = crate::server_mode::durable_write(
+            settings,
+            "claim_resource",
+            durable.as_object().context("durable claim shape")?.clone(),
+        )? {
+            output(&value, encoding);
+            return Ok(());
+        }
         let base = resolve_authoritative_claim_url(settings, "claim")?;
         let request_url = build_server_resource_url(&base, resource, None)?;
         let val = http_post(
@@ -2152,7 +2246,34 @@ pub(crate) fn cmd_push_task(
     created_by: &str,
 ) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
-    let body = non_empty(task, "--task")?;
+    // Use the core field name for body size/NUL validation on both transports.
+    let body = validated_task_body(task)?;
+    let created_by = non_empty(created_by, "created_by")?;
+    crate::validation::reject_nul_bytes(agent, "agent")?;
+    if !VALID_TASK_PRIORITIES.contains(&priority) {
+        anyhow::bail!(
+            "invalid task priority '{priority}'; must be one of: {}",
+            VALID_TASK_PRIORITIES.join(", ")
+        );
+    }
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        validate_server_task_agent(agent)?;
+        let base = resolve_hub_url(settings, "push-task")?;
+        let url = build_server_task_url(&base, agent)?;
+        let value = http_post(
+            url.as_str(),
+            &serde_json::json!({
+                "task": body, "repo": repo, "priority": priority,
+                "tags": tags, "depends_on": depends_on, "reply_to": reply_to,
+                "created_by": created_by,
+            }),
+        )?;
+        let card: crate::ops::task::TaskCard =
+            decode_task_response(value, "hub push-task response is not a task card")?;
+        output(&serde_json::to_value(&card)?, encoding);
+        return Ok(());
+    }
     let card = ops_push_task_card(
         settings,
         &PushTaskCardRequest {
@@ -2181,6 +2302,29 @@ pub(crate) fn cmd_push_task(
 /// Returns an error if the Redis connection or `LPOP` fails.
 pub(crate) fn cmd_pull_task(settings: &Settings, agent: &str, encoding: &Encoding) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
+    crate::validation::reject_nul_bytes(agent, "agent")?;
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        validate_server_task_agent(agent)?;
+        let base = resolve_hub_url(settings, "pull-task")?;
+        let url = build_server_task_url(&base, agent)?;
+        // LPOP consumes work. Send once; even a lost response must never cause
+        // a retry or a second consume against another candidate/local store.
+        let value = http_delete(url.as_str())?;
+        if value.as_object().is_some_and(|object| object.len() == 2)
+            && value.get("agent").and_then(serde_json::Value::as_str) == Some(agent)
+            && value.get("task") == Some(&serde_json::Value::Null)
+        {
+            output(&serde_json::json!({"agent": agent, "task": null}), encoding);
+        } else {
+            let card: crate::ops::task::TaskCard = decode_task_response(
+                value,
+                "hub pull-task response is not a task card or empty queue envelope",
+            )?;
+            output(&serde_json::to_value(&card)?, encoding);
+        }
+        return Ok(());
+    }
     let card = ops_pull_task_card(settings, agent)?;
     match card {
         Some(c) => output(&serde_json::to_value(&c)?, encoding),
@@ -2205,6 +2349,30 @@ pub(crate) fn cmd_peek_tasks(
     encoding: &Encoding,
 ) -> Result<()> {
     let agent = non_empty(agent, "--agent")?;
+    crate::validation::reject_nul_bytes(agent, "agent")?;
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        validate_server_task_agent(agent)?;
+        let base = resolve_hub_url(settings, "peek-tasks")?;
+        let mut url = build_server_task_url(&base, agent)?;
+        url.query_pairs_mut()
+            .append_pair("limit", &limit.to_string());
+        let response: HubTaskPeekResponse = decode_task_response(
+            http_get(url.as_str())?,
+            "hub peek-tasks response is not a task list envelope",
+        )?;
+        if response.agent != agent
+            || response.count != response.tasks.len()
+            || (limit != 0 && response.tasks.len() > limit)
+        {
+            anyhow::bail!("hub peek-tasks response has an inconsistent agent, count, or limit");
+        }
+        output(
+            &serde_json::json!({"agent": agent, "tasks": response.tasks, "count": response.count}),
+            encoding,
+        );
+        return Ok(());
+    }
     let cards = ops_peek_task_cards(settings, agent, limit)?;
     let count = cards.len();
     output(
@@ -2709,6 +2877,45 @@ mod tests {
             .expect_err("blank agent must fail");
 
         assert!(err.to_string().contains("--agent"));
+    }
+
+    #[test]
+    fn task_body_validates_trimmed_utf8_byte_boundary_and_nul() {
+        let body = "é".repeat(crate::validation::MAX_BODY_LEN / 2);
+        assert_eq!(validated_task_body(&body).unwrap(), body);
+        assert_eq!(validated_task_body(&format!("  {body}\n")).unwrap(), body);
+        let err = validated_task_body(&format!("{body}x")).expect_err("one byte over limit");
+        assert!(err.to_string().contains("body exceeds maximum length"));
+        let err = validated_task_body("hello\0world").expect_err("embedded NUL must fail");
+        assert!(err.to_string().contains("NUL"));
+    }
+
+    #[test]
+    fn task_commands_reject_nul_identity_before_queue_access() {
+        let settings = test_settings();
+        let pull = cmd_pull_task(&settings, "agent\0other", &Encoding::Json).unwrap_err();
+        let peek = cmd_peek_tasks(&settings, "agent\0other", 10, &Encoding::Json).unwrap_err();
+        assert!(pull.to_string().contains("NUL"));
+        assert!(peek.to_string().contains("NUL"));
+    }
+
+    #[cfg(feature = "server-mode")]
+    #[test]
+    fn task_url_preserves_base_path_and_encodes_agent_as_one_segment() {
+        let url = build_server_task_url("https://hub.example/api/", "carbon/room ?#").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://hub.example/api/tasks/carbon%2Froom%20%3F%23"
+        );
+    }
+
+    #[cfg(feature = "server-mode")]
+    #[test]
+    fn task_url_rejects_dot_only_identity_before_normalization() {
+        for agent in [".", "..", "  .  ", "  ..  "] {
+            let err = build_server_task_url("https://hub.example/api/", agent).unwrap_err();
+            assert!(err.to_string().contains("unsupported for HTTP task queues"));
+        }
     }
 
     #[test]
