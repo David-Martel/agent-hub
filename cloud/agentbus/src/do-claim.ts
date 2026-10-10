@@ -1,5 +1,7 @@
 /**
- * `ClaimDO` Durable Object — the GLOBAL claims authority for agent-hub#79.
+ * `ClaimDO` Durable Object retained from the agent-hub#79 authority proposal.
+ * Cloud HTTP mutations are disabled; this direct implementation is not
+ * the current on-site claims authority.
  *
  * One instance per resource (`env.CLAIM_DO.idFromName(normalizeResource(resource))`),
  * giving a single strongly-consistent writer per resource without any extra

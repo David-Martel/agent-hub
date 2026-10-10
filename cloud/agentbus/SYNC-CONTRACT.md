@@ -68,32 +68,32 @@ An unreachable cloud tier must never degrade the on-site hub. Concretely:
   `cloud_queue_depth` / `cloud_last_push_age_seconds` — informational, never
   an error returned from `send`/`read`.
 
-## 6. Claims proxy with an explicit lab-scoped fallback
+## 6. Retain the on-site claims authority
 
-Per the operator's decision in agent-hub#79 (§"Decisions for the operator",
-item 2): **the cloud `ClaimDO` is the global claims authority.** The on-site
-hub's `POST/GET /channels/arbitrate/:resource` (and `/resolve`, `/renew`,
-`/release`) become a **proxy** to `https://agentbus.dtmventures.com/channels/arbitrate/:resource`
-when the cloud is reachable.
+The implementation retains the current on-site hub (asuspro13) as the claims
+authority. This supersedes the earlier section 6 proposal to make Cloud
+ClaimDO authoritative and proxy claims to it. It is a conservative
+implementation decision, not a claim that the operator explicitly selected a
+global authority migration. A later explicit operator decision can replace
+this policy through a coordinated migration; no such migration is performed
+by this Worker change.
 
-When the cloud is unreachable, the on-site hub falls back to **granting only
-lab-scoped resources** — i.e. it may still serve `claim_resource` requests
-locally (using today's Redis-backed `channels::claim_resource_with_options`
-logic, unchanged), but:
-
-- Every claim granted in fallback mode carries a marker (e.g.
-  `scope_kind: "lab-fallback"` or a dedicated `granted_offline: true` field)
-  so agents and the eventual reconciliation pass can tell a lab-scoped grant
-  from a globally-authoritative one.
-- On reconnect, the local hub must reconcile any fallback-mode claims against
-  the cloud authority (last-write-wins is NOT safe for exclusive claims —
-  reconciliation should re-submit each fallback claim to the cloud and honor
-  whatever the cloud's `recompute_claim_statuses` decides, notifying the
-  local holder if it loses).
-- Roaming agents (the actual agent-hub#79 motivating case: dtm-p1gen7 off the
-  lab LAN with no route to asuspro13 at all) have **no lab-scoped fallback**
-  available to them — they see the same offline-claims behavior agent-hub#78
-  already specifies (`Exclusive claims are never granted offline`).
+- The on-site hub continues its existing claim, resolve, renew and release
+  behavior. Claims are neither synced nor proxied to Cloud.
+- After authentication, role/actor binding and existing input validation,
+  Cloud claim, resolve, renew and release HTTP requests return JSON 409
+  directing the caller to the on-site authority. They do not invoke ClaimDO
+  mutation methods, prune its claims or change its event/resolution rows.
+- Authenticated Cloud state/event GETs retain their existing wire shapes.
+  They describe retained Cloud records, **not current on-site ownership**.
+  Existing state reads may prune expired Cloud claim rows as housekeeping;
+  event history is retained under its existing retention limit.
+- ClaimDO implementation and direct disposable test fixtures remain for a
+  possible future coordinated migration. Their ability to grant a direct RPC
+  fixture is not permission to grant Cloud HTTP claims.
+- Roaming clients without a route to the on-site authority cannot obtain
+  an exclusive grant offline. Durable claim requests remain requests until
+  the actual on-site authority accepts them; Cloud is not a fallback grant.
 
 ## 6a. Hub delegation and identity binding (agent-hub#82)
 
@@ -101,14 +101,10 @@ The cloud tier's auth model (`src/auth.ts`) now binds every write-route actor
 field to the caller's bearer-token identity, with one deliberate exception
 this section documents: a **hub-role token may vouch for any agent**.
 
-This is required by §6 above: the proxy described there authenticates to
-the cloud with ONE hub-role token (asuspro13's own), but forwards claim/
-renew/release/ack/knock/message requests on behalf of MANY different
-real on-site agents (claude, codex, gemini, ...). If hub-role tokens were
-bound the same way agent-role tokens are (body value must equal the token's
-own `agent`), every proxied request would be forced to claim/renew/release/
-send as the HUB's identity, not the real on-site agent — losing exactly the
-end-to-end agent identity the operator's hard requirement calls for.
+Hub-role vouching supports message, acknowledgement, knock and presence
+replication for real on-site agents through one token. The retained claims
+input guards still apply before a 409, but this delegation never enables
+a Cloud claim grant under section 6.
 
 Concretely:
 - **Agent-role tokens are bound.** A body/path value that disagrees with the
@@ -117,19 +113,13 @@ Concretely:
 - **Hub- and operator-role tokens may vouch** for any non-empty agent value.
   `origin_hub` is the one field even a hub-role token cannot override at
   will beyond its own `hub` — see §6b.
-- The proxy from §6 (when it lands) MUST set `sender`/`agent`/`from` to the
-  REAL on-site agent's name on every proxied call — vouching is not a license
-  to relabel or omit the real actor. This is a trust boundary the proxy
-  itself owns; the cloud tier can only verify that some hub-role token
-  authorized the request, not that the proxy is telling the truth about
-  which on-site agent originated it. That trust is inherent to the design
-  (the alternative — one cloud token per on-site agent, kept in sync with
-  the fleet's actual agent roster — was rejected as needless fleet-topology
-  coupling for a first cut).
+- Relayed message/ack/knock/presence actors must name the real on-site agent.
+  A hub-role token authorizes that assertion; it does not independently prove
+  which originating client requested the relay.
 
 ## 6a-1. The hub->cloud sync client's token is a SEPARATE credential (2026-09-27)
 
-The proxy/sync client described in §6 and §6a — the on-site `asuspro13`
+The message/presence sync client described in §6a — the on-site `asuspro13`
 process that will eventually call `POST /sync/push` / `/sync/push-presence`
 / `GET /sync/pull` against this Worker — authenticates to the **cloud**
 tier with its **own dedicated hub-role cloud token**, generated
@@ -161,7 +151,7 @@ and stored (0600, outside the repo, never committed).
 
 ## 6b. origin_hub is exclusively hub-identity-derived (agent-hub#82)
 
-`origin_hub` on every `/sync/*` route (§6's proxy included, once it exists)
+`origin_hub` on every `/sync/*` route (message/presence replication only)
 comes from the hub-role token's OWN `hub` field — never a value the caller
 supplies. A whole-request `origin_hub` in the body that disagrees with the
 token's `hub` is a 403 for the entire call; a PER-ITEM `origin_hub` (in a
@@ -269,12 +259,11 @@ The cloud tier is in this directory. The Rust-side sync task (sections 1 to 5,
 7 and the wire contract above, minus claims) is implemented in
 `crates/agent-bus-http/src/cloud_sync.rs`; see
 [`docs/cloud-sync.md`](../../docs/cloud-sync.md) for configuration and
-behaviour. Two deviations from the text above, both pending owner sign-off:
+behaviour. Current implementation qualifications:
 
-- **Section 6 (claims proxy) is not implemented.** The hub neither proxies nor
-  syncs claims, and the task has no claim code. The proposal on agent-hub#79 is
-  to keep claims on-site and supersede section 6; until that decision is
-  recorded, treat section 6 as the superseded design and not as behaviour.
+- **Section 6 retains on-site authority.** Cloud HTTP mutations refuse with
+  409; retained Cloud reads remain non-authoritative. This is the current
+  implementation default, not a global authority migration.
 - **Section 7 health fields.** `cloud_reachable` means the last push or pull
   pass succeeded (there is no separate probe), `cloud_queue_depth` counts
   messages loaded but unacknowledged, and the block also carries

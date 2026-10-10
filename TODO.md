@@ -41,8 +41,11 @@ Current Warp integration and deployment queue: [fleet completion ledger](docs/fl
   replay and shipping-crate tests pass; final source CI and installed
   offline/reconnect qualification are still pending.
 - [ ] Qualify on-site sync and final installed cloud MCP/CLI routes, then
-  remaining claims forwarding and scoped historical import. Import
-  dry-run/resume tooling is repaired; actual ingestion remains unperformed.
+  verify the Cloud mutation refusal while retaining ASUS claims authority,
+  and complete scoped historical import. Claims forwarding is superseded
+  by this conservative implementation default; it is not a claim of an
+  explicit operator-selected global migration. Import dry-run/resume tooling
+  is repaired; actual ingestion remains unperformed.
   Backfill disabled does not complete the history requirement. Do not add
   the cloud fleet candidate before runtime acceptance passes.
 - [ ] Finish role-specific cloud/fleet acceptance for the final consolidated

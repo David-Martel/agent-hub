@@ -8,6 +8,7 @@
  * probe from the review has an unambiguous, named regression test even where
  * it would otherwise be scattered.
  */
+import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 // `?raw` is a Vite/vitest build-time transform (resolved when this test file
 // is bundled, not a runtime filesystem read) — safe inside the Workers
@@ -63,7 +64,10 @@ describe("P1: identity spoofing on POST /messages (H1)", () => {
 describe("P2: claims authority has no authorization (H2)", () => {
   it("a claude token cannot renew, release or resolve codex's claim", async () => {
     const res = `p2-${crypto.randomUUID()}`;
-    await postJson(`/channels/arbitrate/${res}`, { agent: "codex" }, CODEX_TOKEN);
+    // Seed legacy Cloud state directly; HTTP must never grant a fresh claim.
+    await env.CLAIM_DO.get(env.CLAIM_DO.idFromName(res)).claim({
+      resource: res, agent: "codex", priorityArgument: "", mode: "exclusive",
+    }, new Date().toISOString());
 
     const renew = await postJson(`/channels/arbitrate/${res}/renew`, { agent: "codex" }, CLAUDE_TOKEN);
     expect(renew.status).toBe(403);
@@ -82,43 +86,31 @@ describe("P2: claims authority has no authorization (H2)", () => {
   });
 });
 
-describe("P3: unbounded/malformed claim lease TTL (M4)", () => {
-  it("a huge lease_ttl_seconds is capped, not left to overflow the expiry timestamp", async () => {
-    const res = `p3-huge-${crypto.randomUUID()}`;
-    const { status, body } = await postJson<{ lease_ttl_seconds: number; expires_at: string }>(
-      `/channels/arbitrate/${res}`,
-      { agent: "claude", lease_ttl_seconds: 1e9 },
+describe("P3: malformed claim lease TTL is still validated before refusal (M4)", () => {
+  it("a valid oversized claim TTL is capped but cannot grant a Cloud claim", async () => {
+    for (const ttl of [1e9, 1e13]) {
+      const result = await postJson<{ error: string }>(
+        "/channels/arbitrate/p3-" + crypto.randomUUID(),
+        { agent: "claude", lease_ttl_seconds: ttl },
+      );
+      expect(result.status).toBe(409);
+      expect(result.body.error).toContain("on-site claims authority");
+    }
+  });
+
+  it("a non-numeric claim TTL remains 400, not an internal date error", async () => {
+    const result = await postJson<{ error: string }>(
+      "/channels/arbitrate/p3-" + crypto.randomUUID(),
+      { agent: "claude", lease_ttl_seconds: "abc" },
     );
-    expect(status).toBe(200);
-    expect(body.lease_ttl_seconds).toBeLessThanOrEqual(86_400);
-    // A valid, parseable timestamp — not the "+011533-..." garbage a 3e11
-    // second lease produced before the cap existed.
-    expect(body.expires_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(result.status).toBe(400);
+    expect(result.body.error).not.toMatch(/Invalid time value/);
   });
 
-  it("1e13 and a non-numeric lease_ttl_seconds are 400s, not 500 'Invalid time value'", async () => {
-    const huge = await postJson<{ error: string }>(`/channels/arbitrate/${crypto.randomUUID()}`, {
-      agent: "claude",
-      lease_ttl_seconds: 1e13,
-    });
-    expect(huge.status).toBe(200); // clamped, not rejected — still succeeds, just capped
-    const nonNumeric = await postJson<{ error: string }>(`/channels/arbitrate/${crypto.randomUUID()}`, {
-      agent: "claude",
-      lease_ttl_seconds: "abc" as unknown as number,
-    });
-    expect(nonNumeric.status).toBe(400);
-    expect(nonNumeric.body.error).not.toMatch(/Invalid time value/);
-  });
-
-  it("renew also caps and validates lease_ttl_seconds", async () => {
-    const res = `p3-renew-${crypto.randomUUID()}`;
-    await postJson(`/channels/arbitrate/${res}`, { agent: "claude" });
-    const { status, body } = await postJson<{ lease_ttl_seconds: number }>(`/channels/arbitrate/${res}/renew`, {
-      agent: "claude",
-      lease_ttl_seconds: 1e9,
-    });
-    expect(status).toBe(200);
-    expect(body.lease_ttl_seconds).toBeLessThanOrEqual(86_400);
+  it("renew validates TTL but never changes a Cloud lease", async () => {
+    const path = "/channels/arbitrate/p3-" + crypto.randomUUID() + "/renew";
+    expect((await postJson(path, { agent: "claude", lease_ttl_seconds: 1e9 })).status).toBe(409);
+    expect((await postJson(path, { agent: "claude", lease_ttl_seconds: "abc" })).status).toBe(400);
   });
 });
 
