@@ -7,6 +7,11 @@ import os
 import sys
 import time
 import json
+import hashlib
+import shutil
+import subprocess
+
+import wine_job
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -642,6 +647,109 @@ class WineControls(unittest.TestCase):
                 finally:
                     if owned.http_log:
                         owned.http_log.close()
+
+
+class FailureRetention(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "linux", "Linux prefix permission control")
+    def test_failed_child_streams_survive_runner_temp_cleanup(self):
+        """Protects: private failure evidence survives runner cleanup."""
+        with tempfile.TemporaryDirectory() as root:
+            root = Path(root)
+            runner = root / "runner-temp"
+            runner.mkdir(mode=0o700)
+            prefix = root / "retained-prefix"
+            prefix.mkdir(mode=0o700)
+            home = runner / "wine-home"
+            home.mkdir(mode=0o700)
+            p = NativeWineProvider.__new__(NativeWineProvider)
+            p.directory = runner
+            p.home = home
+            p.prefix = prefix
+            p.env = {}
+            p.identity = (prefix.stat().st_dev, prefix.stat().st_ino, os.getuid())
+            p.home_identity = (home.stat().st_dev, home.stat().st_ino, os.getuid())
+            payload = (
+                b"test fixture::fails ... FAILED\r\nsecret=DO_NOT_PUBLISH\r\n"
+                b"test result: FAILED. 0 passed; 1 failed; 0 ignored; "
+                b"0 measured; 0 filtered out; finished in 0.01s\r\n"
+            )
+            try:
+                p.command(
+                    [
+                        sys.executable,
+                        "-I",
+                        "-c",
+                        "import os;os.write(1,"
+                        + repr(payload)
+                        + ");os.write(2,b'private-password');raise SystemExit(7)",
+                    ],
+                    env={},
+                    timeout=5,
+                )
+            except WineCommandFailure as failure:
+                assert failure.metadata["exit"] == 7
+                summary = wine_job.failure_summary(failure)
+                assert summary["failed_tests"] == ["fixture::fails"]
+                assert len(summary["test_results"]) == 1
+                assert "DO_NOT_PUBLISH" not in json.dumps(summary)
+                assert "private-password" not in json.dumps(summary)
+                shutil.rmtree(runner)
+                metadata = json.loads(next(prefix.glob("*.json")).read_text())
+                for name, expected in [
+                    ("stdout", payload),
+                    ("stderr", b"private-password"),
+                ]:
+                    leaf = Path(metadata[name + "_path"])
+                    assert leaf.read_bytes() == expected
+                    assert (
+                        leaf.stat().st_uid == os.getuid()
+                        and stat.S_IMODE(leaf.stat().st_mode) == 0o600
+                    )
+                    assert (
+                        metadata[name + "_sha256"]
+                        == hashlib.sha256(expected).hexdigest()
+                    )
+
+            else:
+                raise AssertionError("Expected real failing child")
+
+
+class RetentionFaults(unittest.TestCase):
+    def test_partial_streams_retained_if_direct_child_kill_fails(self):
+        """Protects: original kill failure retains already captured bytes."""
+        process = MagicMock()
+        process.poll.return_value = None
+        process.communicate.side_effect = subprocess.TimeoutExpired(
+            "synthetic", 1, output=b"partial stdout", stderr=b"partial stderr"
+        )
+        process.kill.side_effect = OSError("synthetic kill refusal")
+        with patch("wine_lifecycle.subprocess.Popen", return_value=process):
+            with self.assertRaises(WineCommandFailure) as caught:
+                bounded_client(["synthetic"], {}, 1)
+        self.assertEqual(caught.exception.stdout, b"partial stdout")
+        self.assertEqual(caught.exception.stderr, b"partial stderr")
+        self.assertEqual(
+            caught.exception.metadata["reason"], "direct-child-kill-failed"
+        )
+        UNSETTLED_CLIENTS.remove(process)
+
+    def test_retention_write_fault_preserves_original_child_failure(self):
+        """Protects: diagnostic write faults do not mask the failed child."""
+        provider = NativeWineProvider.__new__(NativeWineProvider)
+        provider.assert_owner = MagicMock()
+        provider.assert_home = MagicMock()
+        provider.prefix = Path("synthetic-prefix")
+        provider.env = {}
+        failure = WineCommandFailure(
+            {"reason": "nonzero-exit", "exit": 7}, b"private", b""
+        )
+        with patch("wine_lifecycle.bounded_client", side_effect=failure):
+            with patch("wine_lifecycle.os.open", side_effect=OSError("SECRET")):
+                with self.assertRaises(WineCommandFailure) as caught:
+                    provider.command(["synthetic"])
+        self.assertIs(caught.exception, failure)
+        self.assertEqual(failure.metadata["retention_failure_type"], "OSError")
+        self.assertNotIn("SECRET", json.dumps(wine_job.failure_summary(failure)))
 
 
 if __name__ == "__main__":

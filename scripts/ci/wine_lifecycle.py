@@ -25,9 +25,11 @@ UNSETTLED_CLIENTS = []
 
 
 class WineCommandFailure(RuntimeError):
-    def __init__(self, metadata):
+    def __init__(self, metadata, stdout=b"", stderr=b""):
         super().__init__("Owned finite Wine client failed; prefix retained")
         self.metadata = metadata
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 def bounded_client(args, env, timeout):
@@ -67,7 +69,9 @@ def bounded_client(args, env, timeout):
                         "pid": process.pid,
                         "exit": process.poll(),
                         "pipes_and_child_settled": False,
-                    }
+                    },
+                    stdout,
+                    stderr,
                 ) from None
         try:
             stdout, stderr = process.communicate(
@@ -94,7 +98,9 @@ def bounded_client(args, env, timeout):
                 "stderr_bytes": len(stderr),
                 "stdout_sha256": hashlib.sha256(stdout).hexdigest(),
                 "stderr_sha256": hashlib.sha256(stderr).hexdigest(),
-            }
+            },
+            stdout,
+            stderr,
         )
     return stdout.decode("utf-8", errors="strict")
 
@@ -315,15 +321,40 @@ class NativeWineProvider:
         try:
             result = bounded_client(args, env or self.env, timeout)
         except WineCommandFailure as failure:
-            # Metadata only: arguments/environment and raw diagnostic streams can
-            # contain disposable credentials. Preserve their sizes/hashes privately.
-            self.assert_home()
-            receipt = self.home / (
-                "finite-client-failure-" + uuid.uuid4().hex + ".json"
-            )
-            descriptor = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump(failure.metadata, stream)
+            try:
+                # Failed prefixes survive runner temporary-directory cleanup. Raw
+                # streams stay private; publish only bounded structural metadata.
+                self.assert_owner()
+                identifier = "finite-client-failure-" + uuid.uuid4().hex
+                metadata = dict(failure.metadata)
+                for label, data in (
+                    ("stdout", failure.stdout),
+                    ("stderr", failure.stderr),
+                ):
+                    leaf = self.prefix / (identifier + "." + label)
+                    descriptor = os.open(
+                        leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                    )
+                    with os.fdopen(descriptor, "wb") as stream:
+                        stream.write(data)
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    metadata[label + "_path"] = str(leaf)
+                    metadata[label + "_bytes"] = len(data)
+                    metadata[label + "_sha256"] = hashlib.sha256(data).hexdigest()
+                receipt = self.prefix / (identifier + ".json")
+                descriptor = os.open(
+                    receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                )
+                with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                    json.dump(metadata, stream)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                failure.metadata = metadata
+            except OSError as retention_failure:
+                failure.metadata["retention_failure_type"] = type(
+                    retention_failure
+                ).__name__
             raise
         self.assert_owner()
         self.assert_home()
