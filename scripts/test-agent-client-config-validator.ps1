@@ -1,6 +1,7 @@
 param(
     [string]$CliPath = "",
-    [string]$McpBinaryPath = ""
+    [string]$McpBinaryPath = "",
+    [switch]$WineTestLauncher
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,12 +13,12 @@ $targetDir = if ([string]::IsNullOrWhiteSpace($env:CARGO_TARGET_DIR)) {
 else {
     $env:CARGO_TARGET_DIR
 }
-$releaseDir = Join-Path $targetDir "release"
+$releaseDir = Join-Path $targetDir $(if ($WineTestLauncher) { 'x86_64-pc-windows-gnu/release' } else { 'release' })
 if ([string]::IsNullOrWhiteSpace($CliPath)) {
-    $CliPath = Join-Path $releaseDir "agent-bus$(if ($IsWindows) { '.exe' })"
+    $CliPath = Join-Path $releaseDir "agent-bus$(if ($IsWindows -or $WineTestLauncher) { '.exe' })"
 }
 if ([string]::IsNullOrWhiteSpace($McpBinaryPath)) {
-    $McpBinaryPath = Join-Path $releaseDir "agent-bus-mcp$(if ($IsWindows) { '.exe' })"
+    $McpBinaryPath = Join-Path $releaseDir "agent-bus-mcp$(if ($IsWindows -or $WineTestLauncher) { '.exe' })"
 }
 foreach ($binary in @($CliPath, $McpBinaryPath)) {
     if (-not (Test-Path -LiteralPath $binary)) {
@@ -41,7 +42,8 @@ function Invoke-CodexFixtureValidation {
         -CodexConfigPath $ConfigPath `
         -CodexOnly `
         -Strict:$Strict `
-        -McpSmokeTimeoutSeconds 10
+        -McpSmokeTimeoutSeconds 10 `
+        -WineTestLauncher:$WineTestLauncher
 }
 
 function Assert-ConfigRejected {
@@ -73,10 +75,158 @@ function Assert-ConfigRejected {
     }
 }
 
+function Invoke-OwnedWineFixtureOperation {
+    param([ValidateSet('prepare', 'finalize')][string]$Operation)
+
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    # Separate fixture bootstrap: existing provider wineboot (120s) plus prefix
+    # wait (10s) and bounded drainage. MCP response deadlines remain 10s.
+    $budget = if ($Operation -eq 'prepare') { 140000 } else { 12000 }
+    $python = Get-Command python3 -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = $python.Source
+    foreach ($value in @('-B', $wineAdapter, $Operation, '--root', $fixtureRoot)) {
+        $info.ArgumentList.Add($value)
+    }
+    $info.Environment.Clear()
+    $info.Environment['PATH'] = $env:PATH
+    $info.Environment['HOME'] = $fixtureRoot
+    $info.Environment['TMPDIR'] = $fixtureRoot
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $client = [Diagnostics.Process]::new()
+    $client.StartInfo = $info
+    $started = $false
+    $retain = $false
+    $failure = $null
+    $output = $null
+    $errorOutput = $null
+    $identity = $null
+    $childStartTicks = $null
+    $settled = $false
+    $directKillAttempted = $false
+    $directKilled = $false
+    try {
+        if (-not $client.Start()) { throw 'Owned Wine fixture client failed to start.' }
+        $started = $true
+        $identity = $client.Id
+        try { $childStartTicks = $client.StartTime.ToUniversalTime().Ticks } catch { }
+        $output = $client.StandardOutput.ReadToEndAsync()
+        $errorOutput = $client.StandardError.ReadToEndAsync()
+        $remaining = [Math]::Max(0, $budget - [int]$clock.ElapsedMilliseconds)
+        if (-not $client.WaitForExit($remaining) -or $clock.ElapsedMilliseconds -ge $budget) {
+            $failure = 'Owned Wine fixture client deadline expired; prefix retained.'
+            if (-not $client.HasExited) {
+                # Only the exact newly started Process object; never a tree or PID search.
+                $directKillAttempted = $true
+                try { $client.Kill(); $directKilled = $true } catch { }
+            }
+        }
+        # One shared settlement budget covers both direct-child exit and both pipes.
+        $settlement = [Diagnostics.Stopwatch]::StartNew()
+        $exited = $client.WaitForExit(2000)
+        [Threading.Tasks.Task[]]$tasks = @($output, $errorOutput)
+        $drained = [Threading.Tasks.Task]::WaitAll($tasks, [Math]::Max(0, 2000 - [int]$settlement.ElapsedMilliseconds))
+        $settled = $exited -and $drained
+        $retain = -not $settled
+        if (-not $failure -and $clock.ElapsedMilliseconds -ge $budget) {
+            $failure = 'Owned Wine fixture client deadline expired; prefix retained.'
+        }
+        if (-not $failure -and (-not $settled -or $client.ExitCode -ne 0)) {
+            $failure = 'Owned Wine fixture operation did not settle; prefix retained.'
+        }
+        if ($failure) {
+            throw $failure
+        }
+        # Never print stderr: guest output may contain configured fixture material.
+        $result = $output.Result | ConvertFrom-Json
+        if (($Operation -eq 'prepare' -and -not $result.prepared) -or
+            ($Operation -eq 'finalize' -and -not $result.settled)) {
+            throw 'Owned Wine fixture receipt is incomplete.'
+        }
+        # Receipt parsing is inside the same admitted operation budget. A fully
+        # exited, drained client cannot pass after its deadline.
+        if ($clock.ElapsedMilliseconds -ge $budget) {
+            throw 'Owned Wine fixture client deadline expired; prefix retained.'
+        }
+    }
+    catch {
+        $errorRecord = $_
+        $retain = $started -and (-not $client.HasExited -or
+            ($output -and -not $output.IsCompleted) -or ($errorOutput -and -not $errorOutput.IsCompleted))
+        $metadata = [ordered]@{
+            operation = $Operation
+            original_child_pid = $identity
+            original_child_start_ticks = $childStartTicks
+            elapsed_ms = $clock.ElapsedMilliseconds
+            deadline_expired = ($clock.ElapsedMilliseconds -ge $budget)
+            child_exited = ($started -and $client.HasExited)
+            exit_code = $(if ($started -and $client.HasExited) { $client.ExitCode } else { $null })
+            direct_child_kill_attempted = $directKillAttempted
+            direct_child_killed = $directKilled
+            stdout_complete = ($null -ne $output -and $output.IsCompletedSuccessfully)
+            stderr_complete = ($null -ne $errorOutput -and $errorOutput.IsCompletedSuccessfully)
+            handles_retained = $retain
+        }
+        $errorRecord.Exception.Data['OwnedWineFixtureClient'] = $metadata
+        if ($retain) {
+            if (-not (Get-Variable AgentBusUnsettledWineFixtureClients -Scope Script -ErrorAction SilentlyContinue)) {
+                $script:AgentBusUnsettledWineFixtureClients = [Collections.Generic.List[object]]::new()
+            }
+            $script:AgentBusUnsettledWineFixtureClients.Add([pscustomobject]@{
+                Client = $client; OutputTask = $output; ErrorTask = $errorOutput; Metadata = $metadata
+            })
+        }
+        throw
+    }
+    finally {
+        if (-not $retain) { $client.Dispose() }
+    }
+}
+
 $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) "agent-bus-validator-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+$wineRootBefore = [Environment]::GetEnvironmentVariable('AGENT_BUS_TEST_MCP_WINE_ROOT', 'Process')
+$wineAdapter = Join-Path $PSScriptRoot 'ci/mcp_wine_adapter.py'
+$winePrepared = $false
+$wineSettled = $false
 
 try {
+    if ($WineTestLauncher) {
+        if (-not $IsLinux) { throw 'Wine configured MCP fixtures require Linux.' }
+        [IO.File]::SetUnixFileMode($fixtureRoot, [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute)
+        $env:AGENT_BUS_TEST_MCP_WINE_ROOT = $fixtureRoot
+        # Separate setup; real initialize/tools-list deadlines remain unchanged.
+        Invoke-OwnedWineFixtureOperation -Operation prepare
+        $winePrepared = $true
+    }
+    # Run the real installer unchanged, with its adjacent validator forwarding
+    # explicitly to the real config/parser/stdio checks for this fixture only.
+    # Full machine-install auditing belongs to deployment validation, not this test.
+    $fixtureInstallerRoot = Join-Path $fixtureRoot "installer"
+    New-Item -ItemType Directory -Path $fixtureInstallerRoot | Out-Null
+    $fixtureInstaller = Join-Path $fixtureInstallerRoot "install-mcp-clients.ps1"
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "install-mcp-clients.ps1") -Destination $fixtureInstaller
+    if ((Get-FileHash -LiteralPath $fixtureInstaller).Hash -cne
+        (Get-FileHash -LiteralPath (Join-Path $PSScriptRoot "install-mcp-clients.ps1")).Hash) {
+        throw "Fixture installer copy differs from the real installer."
+    }
+    Write-Output "Fixture installer byte-copy verified."
+    $validatorSource = (Join-Path $PSScriptRoot "validate-agent-client-configs.ps1").Replace("'", "''")
+    $wineProxySwitch = if ($WineTestLauncher) { '-WineTestLauncher' } else { '' }
+    @"
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = `$true)][string]`$CodexConfigPath,
+    [Parameter(Mandatory = `$true)][string]`$ExpectedServerUrl,
+    [Parameter(Mandatory = `$true)][string]`$ExpectedRedisUrl,
+    [Parameter(Mandatory = `$true)][string]`$ExpectedDatabaseUrl
+)
+& '$validatorSource' -CodexOnly -CodexConfigPath `$CodexConfigPath -ExpectedServerUrl `$ExpectedServerUrl -ExpectedRedisUrl `$ExpectedRedisUrl -ExpectedDatabaseUrl `$ExpectedDatabaseUrl $wineProxySwitch
+"@ | Set-Content -LiteralPath (Join-Path $fixtureInstallerRoot "validate-agent-client-configs.ps1") -Encoding utf8
+
     $multilinePath = Join-Path $fixtureRoot "multiline-args.toml"
     @"
 [mcp_servers.agent_bus]
@@ -118,7 +268,7 @@ RUST_LOG = "error"
 "@ | Set-Content -LiteralPath $validEnvironmentPath -Encoding utf8
     Invoke-CodexFixtureValidation -ConfigPath $validEnvironmentPath -Strict
 
-    $versionedMcpPath = Join-Path $fixtureRoot "agent-bus-mcp-fd70c8d$(if ($IsWindows) { '.exe' })"
+    $versionedMcpPath = Join-Path $fixtureRoot "agent-bus-mcp-fd70c8d$(if ($IsWindows -or $WineTestLauncher) { '.exe' })"
     Copy-Item -LiteralPath $McpBinaryPath -Destination $versionedMcpPath
     $versionedMcpConfigPath = Join-Path $fixtureRoot "versioned-mcp-command.toml"
     @"
@@ -132,7 +282,7 @@ RUST_LOG = "error"
 "@ | Set-Content -LiteralPath $versionedMcpConfigPath -Encoding utf8
     Invoke-CodexFixtureValidation -ConfigPath $versionedMcpConfigPath -Strict
 
-    $invalidMcpNamePath = Join-Path $fixtureRoot "agent-bus-mcp-$(if ($IsWindows) { '.exe' })"
+    $invalidMcpNamePath = Join-Path $fixtureRoot "agent-bus-mcp-$(if ($IsWindows -or $WineTestLauncher) { '.exe' })"
     Copy-Item -LiteralPath $McpBinaryPath -Destination $invalidMcpNamePath
     $invalidMcpNameConfigPath = Join-Path $fixtureRoot "invalid-versioned-mcp-command.toml"
     @"
@@ -232,12 +382,15 @@ AGENT_BUS_STARTUP_ENABLED = "false"
     $customPathRejected = $false
     try {
         $null = (
-            & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+            & $fixtureInstaller `
                 -Claude:$false `
                 -Codex:$true `
                 -Gemini:$false `
                 -CodexConfigPath $duplicateEnvironmentPath `
                 -CommandPath $McpBinaryPath `
+                -RedisUrl "redis://localhost:1/0" `
+                -DatabaseUrl "postgresql://postgres@localhost:1/validator_fixture" `
+                -ServerUrl "http://localhost:1" `
                 -ValidateOnly |
                 Out-String
         )
@@ -254,12 +407,15 @@ AGENT_BUS_STARTUP_ENABLED = "false"
     $preflightMarker | Set-Content -LiteralPath $preflightPath -Encoding utf8
     $unsafeHostRejected = $false
     try {
-        & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+        & $fixtureInstaller `
             -Claude:$false `
             -Codex:$true `
             -Gemini:$false `
             -CodexConfigPath $preflightPath `
             -CommandPath $McpBinaryPath `
+            -RedisUrl "redis://localhost:1/0" `
+            -DatabaseUrl "postgresql://postgres@localhost:1/validator_fixture" `
+            -ServerUrl "http://localhost:1" `
             -ServerHost "0.0.0.0"
     }
     catch {
@@ -295,12 +451,15 @@ sandbox = "elevated"
 status_line = ["model"]
 "@ | Set-Content -LiteralPath $managedSuffixPath -Encoding utf8
 
-    & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+    & $fixtureInstaller `
         -Claude:$false `
         -Codex:$true `
         -Gemini:$false `
         -CodexConfigPath $managedSuffixPath `
         -CommandPath $McpBinaryPath `
+        -RedisUrl "redis://localhost:1/0" `
+        -DatabaseUrl "postgresql://postgres@localhost:1/validator_fixture" `
+        -ServerUrl "http://localhost:1" `
         -NoBackup
 
     $managedSuffixContent = Get-Content -LiteralPath $managedSuffixPath -Raw
@@ -333,12 +492,15 @@ sandbox = "elevated"
 status_line = ["model"]
 "@ | Set-Content -LiteralPath $legacyIndentedSuffixPath -Encoding utf8
 
-    & (Join-Path $PSScriptRoot "install-mcp-clients.ps1") `
+    & $fixtureInstaller `
         -Claude:$false `
         -Codex:$true `
         -Gemini:$false `
         -CodexConfigPath $legacyIndentedSuffixPath `
         -CommandPath $McpBinaryPath `
+        -RedisUrl "redis://localhost:1/0" `
+        -DatabaseUrl "postgresql://postgres@localhost:1/validator_fixture" `
+        -ServerUrl "http://localhost:1" `
         -NoBackup
 
     $legacyIndentedSuffixContent = Get-Content -LiteralPath $legacyIndentedSuffixPath -Raw
@@ -350,8 +512,24 @@ status_line = ["model"]
         throw "Legacy upgrade did not produce exactly one managed agent-bus block."
     }
 
-    Write-Output "Agent client config validator fixtures passed."
+    if (-not $WineTestLauncher) {
+        Write-Output "Agent client config validator fixtures passed."
+    }
 }
 finally {
-    Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+    try {
+        if ($WineTestLauncher -and $winePrepared) {
+            Invoke-OwnedWineFixtureOperation -Operation finalize
+            $wineSettled = $true
+        }
+        if (-not $WineTestLauncher -or $wineSettled) {
+            Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable('AGENT_BUS_TEST_MCP_WINE_ROOT', $wineRootBefore, 'Process')
+    }
+}
+if ($WineTestLauncher -and $wineSettled) {
+    Write-Output "Agent client config validator fixtures passed."
 }

@@ -40,6 +40,9 @@ read-only; do not inherit live bus configuration or credentials.
 
 - `cargo build --release -p agent-bus -p agent-bus-http -p agent-bus-mcp`: build the three shipping binaries.
 - `bash scripts/test-agent-bus-isolated.sh`: canonical pre-push workspace test entry point; sanitizes inherited configuration and pins stores to closed ports.
+- `python3 -B scripts/ci/isolated-services.py integration`: provision owned disposable backends and run every workspace backend test; requires a local Docker daemon with Linux containers and enforces the existing 73-test floor. Docker-hosted CI runners explicitly pass `--network-container <runner-container-id>` so fixtures share their loopback namespace.
+- `python3 -B scripts/ci/isolated-services.py history`: run the history migration contract in a fresh owned PostgreSQL container, never a database on the fleet's PostgreSQL service.
+- `python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'`: service-free isolation-harness regressions.
 - `cargo test --workspace --lib --bins`: CI's unit selection, with the isolation settings in its `test-unit` job. No live backend is required.
 - `cargo test -p agent-bus --lib <test_filter>`: select CLI command library unit tests inside the same isolated environment. `--bin agent-bus` does not select those library tests.
 - `cargo test --workspace --tests -- --ignored --test-threads=1` at repo root: run the `#[ignore]`d backend tests. They require `AGENT_BUS_TEST_REDIS_URL`, `AGENT_BUS_TEST_DATABASE_URL` and `AGENT_BUS_TEST_SERVER_URL` pointing at DISPOSABLE backends and fail (never skip) when those are unset or unreachable; the live bus ports 6380/5300/8400 are refused. CI's `test-integration` job shows how to start them.
@@ -72,6 +75,15 @@ or update tests in the affected runtime. Prefer focused unit tests first, then
 integration coverage for Redis/PostgreSQL behavior, HTTP endpoints, and MCP
 behavior when transport semantics change.
 
+The CLI backend targets additionally require `AGENT_BUS_TEST_RUN_ID` and
+`AGENT_BUS_TEST_AUTH_TOKEN` from the owned harness. Before mutations they check
+the selected service identity, Redis/PostgreSQL identities, readiness and
+authenticated administration. Their subprocesses clear inherited agent-bus
+configuration and proxy settings. Harness cleanup uses captured container IDs
+and its exact HTTP child, and reports cleanup failures. For artifact smoke use
+`python -B scripts/ci/isolated-services.py smoke --cli <artifact> --http <artifact>`;
+the maintained PowerShell smoke script validates the existing owned HTTP child.
+
 ## Commit & Pull Request Guidelines
 
 Use conventional commits with optional scopes, matching recent history: `feat(http): ...`, `perf(pg): ...`, `docs: ...`, `chore: ...`. Install hooks with `lefthook install`; pre-commit runs `fmt` and `clippy`, and pre-push runs `cargo test` and a blocking `cargo audit`. PRs should describe behavior changes, note required local services or env vars, link issues when applicable, and include screenshots only for dashboard/UI changes.
@@ -101,3 +113,10 @@ Jules (Google's async coding agent) reads this file. It runs in a Google-hosted 
 ## Learned Backend Lifecycle Rules (append-only)
 
 - **[2026-10-05] HTTP shutdown is not managed-process termination.** A successful HTTP stop/flush response and a closed listener prove those operations only. Before declaring a managed hub stopped, verify its supervisor/service state and process exit independently; use the owning service manager to complete termination when the process remains active. Preserve flush/readback evidence and the first failure. Do not attribute a lingering process to SSE without connection or lifecycle evidence. A failed server-admin status request must fail visibly rather than return success with `admin: null`; Windows SCM-only and builds without server-mode must identify their narrower evidence tier.
+
+## Quality Gates And Fleet DNS
+
+- Repo quality contract: [docs/QUALITY_GATES.md](./docs/QUALITY_GATES.md)
+- git-guard overlay: [.qa-gate.conf](./.qa-gate.conf) (account-wide git-guard + this file)
+- Fleet DNS / Cloudflare status: [docs/fleet-dns-and-cloud-status.md](./docs/fleet-dns-and-cloud-status.md)
+- Network-location routing: [docs/network-location-routing.md](./docs/network-location-routing.md)

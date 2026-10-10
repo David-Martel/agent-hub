@@ -3,6 +3,9 @@ $ErrorActionPreference = "Stop"
 $doctor = Join-Path $PSScriptRoot "test-agent-bus-fleet.ps1"
 $manifest = Join-Path (Split-Path -Parent $PSScriptRoot) "config/fleet/agent-bus-fleet-v1.json"
 
+$fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) "agent-bus-fleet-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
+try {
 . $doctor -ManifestPath $manifest -SkipLive -Strict | Out-Null
 
 if (-not (Test-BuildRevisionMatch -VersionText "agent-bus 0.5.0 (v0.5.0-20-gfd70c8d)" -Revision "fd70c8d")) {
@@ -15,6 +18,84 @@ if (Test-BuildRevisionMatch -VersionText "agent-bus 0.5.0 (v0.5.0-20-gfd70c8d-ex
     throw "Fleet doctor accepted a non-exact build revision."
 }
 
+$fullRevision = "53292d9d706217994d1791227d60be6ed1f7f79f"
+foreach ($version in @(
+        "agent-bus 0.5.0 ($fullRevision 2026-10-08)",
+        "0.5.0 ($fullRevision 2026-10-08)",
+        "agent-bus-http 0.5.0 ($fullRevision 2026-10-08)",
+        "0.5.0 (v0.5.0-20-g$fullRevision 2026-10-08)")) {
+    if (-not (Test-BuildRevisionMatch -VersionText $version -Revision $fullRevision)) {
+        throw "Fleet doctor rejected a supported clean provenance format: $version"
+    }
+}
+foreach ($version in @(
+        "agent-bus 0.5.0 ($fullRevision-dirty 2026-10-08)",
+        "agent-bus 0.5.0 ($fullRevision-extra 2026-10-08)",
+        "agent-bus 0.5.0 ($fullRevision 2026-10-08) ignored",
+        "agent-bus 0.5.0 (53292d9 2026-10-08)",
+        "agent-bus 0.5.0 (v0.5.0-20-g53292d9 2026-10-08)",
+        "agent-bus 0.5.0 (63292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)")) {
+    if (Test-BuildRevisionMatch -VersionText $version -Revision $fullRevision) {
+        throw "Fleet doctor accepted dirty, suffixed, truncated or mismatched provenance: $version"
+    }
+}
+if (Test-BuildRevisionMatch -VersionText "0.5.0 ($fullRevision 2026-10-08)" -Revision "53292d9") {
+    throw "Fleet doctor accepted a revision prefix collision."
+}
+
+$fixtureMachine = [pscustomobject]@{
+    id = "client-a"; role = "client"; client_server_url = "http://authority.invalid:8400"
+}
+$healthy = [pscustomobject]@{
+    ok = $true; storage_ready = $true; protocol_version = "1.0"
+    # The remote hub's provenance must win over client/local provenance.
+    build_version = "0.5.0 (63292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)"
+    hub_identity = "authority-a"; pg_dropped_writes = 0; pg_write_errors = 0
+    backend = [pscustomobject]@{
+        mode = "remote"; url = "http://authority.invalid:8400"; authoritative = $true
+        hub_build = "0.5.0 ($fullRevision 2026-10-08)"
+    }
+}
+$results.Clear()
+
+$authorityFixture = [pscustomobject]@{
+    id = "authority-a"; role = "authority"; allow_default_server_url = $true
+    client_server_url = "http://localhost:8400"
+}
+$localHealth = $healthy | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+$localHealth.backend = [pscustomobject]@{ mode = "local" }
+Test-FleetHealthRoute -Machine $authorityFixture -Health $localHealth -AuthorityMachine "authority-a"
+if (@($results | Where-Object status -ne "ok").Count) {
+    throw "Fleet doctor rejected the authority's local backend."
+}
+$results.Clear()
+Test-FleetHealthRoute -Machine $fixtureMachine -Health $localHealth -AuthorityMachine "authority-a"
+if (@($results | Where-Object { $_.check -eq "route" -and $_.status -eq "fail" }).Count -ne 1) {
+    throw "Fleet doctor accepted a client-local island as the fleet route."
+}
+$results.Clear()
+Test-FleetHealthRoute -Machine $fixtureMachine -Health $healthy -AuthorityMachine "authority-a"
+Test-HealthDocument -Machine "client-a" -Health $healthy -ProtocolVersion "1.0" -Revision $fullRevision
+if ($results.Count -ne 7 -or @($results | Where-Object status -ne "ok").Count) {
+    throw "Fleet doctor rejected current remote health or selected the client's build."
+}
+foreach ($control in @("route", "hub-identity", "authority", "service-build-revision")) {
+    $badHealth = $healthy | ConvertTo-Json -Depth 6 | ConvertFrom-Json
+    switch ($control) {
+        "route" { $badHealth.backend.url = "http://wrong.invalid:8400" }
+        "hub-identity" { $badHealth.hub_identity = "other-hub" }
+        "authority" { $badHealth.backend.authoritative = $false }
+        "service-build-revision" { $badHealth.backend.hub_build = "0.5.0 (63292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)" }
+    }
+    $results.Clear()
+    Test-FleetHealthRoute -Machine $fixtureMachine -Health $badHealth -AuthorityMachine "authority-a"
+    Test-HealthDocument -Machine "client-a" -Health $badHealth -ProtocolVersion "1.0" -Revision $fullRevision
+    if (@($results | Where-Object { $_.check -eq $control -and $_.status -eq "fail" }).Count -ne 1) {
+        throw "Fleet doctor missed the $control negative control."
+    }
+}
+$results.Clear()
+
 $expectedLiteral = ConvertTo-PosixShellLiteral -Path "/opt/agent-bus/bin/agent-bus"
 if ($expectedLiteral -ne "'/opt/agent-bus/bin/agent-bus'") {
     throw "Fleet doctor did not preserve a safe manifest path."
@@ -24,11 +105,80 @@ try {
     ConvertTo-PosixShellLiteral -Path "/opt/agent-bus;echo-injected" | Out-Null
 }
 catch {
+    if ($_.Exception.Message -ne "Unsafe absolute POSIX path in fleet manifest: /opt/agent-bus;echo-injected") { throw }
     $unsafePathRejected = $true
 }
 if (-not $unsafePathRejected) {
     throw "Fleet doctor accepted an unsafe remote manifest path."
 }
+
+    $tokenPath = Join-Path $fixtureRoot "candidate-token"
+    # Empty and missing files do not establish a source. Metadata is sufficient;
+    # the doctor must never consume or expose the fixture credential contents.
+    [IO.File]::WriteAllText($tokenPath, "")
+    $candidateConfig = [pscustomobject]@{
+        auth_token_present = $true
+        server_urls = @([pscustomobject]@{ url = "http://authority.invalid:8400"; token_file = $tokenPath })
+    }
+    if (Test-FleetConfigAuthSource -Config $candidateConfig -RouteUrl "http://authority.invalid:8400") {
+        throw "Fleet doctor substituted global auth for an empty candidate token file."
+    }
+    [IO.File]::WriteAllText($tokenPath, "fixture-only")
+    $candidateConfig.auth_token_present = $false
+    if (-not (Test-FleetConfigAuthSource -Config $candidateConfig -RouteUrl "http://authority.invalid:8400")) {
+        throw "Fleet doctor rejected an available candidate token-file source."
+    }
+    if (Test-FleetConfigAuthSource -Config $candidateConfig -RouteUrl "http://other.invalid:8400") {
+        throw "Fleet doctor borrowed another route's token file."
+    }
+    $candidateConfig.server_urls[0].token_file = Join-Path $fixtureRoot "missing-token"
+    $candidateConfig.auth_token_present = $true
+    if (Test-FleetConfigAuthSource -Config $candidateConfig -RouteUrl "http://authority.invalid:8400") {
+        throw "Fleet doctor substituted global auth for a missing candidate file."
+    }
+    $candidateConfig.server_urls[0].token_file = $tokenPath
+    $candidateConfig.auth_token_present = $false
+    $legacyConfig = [pscustomobject]@{ auth_token = "fixture-only"; server_url = "http://authority.invalid:8400" }
+    if (-not (Test-FleetConfigAuthSource -Config $legacyConfig -RouteUrl "http://authority.invalid:8400")) {
+        throw "Fleet doctor rejected the legacy global credential source."
+    }
+
+    $cliPath = Join-Path $fixtureRoot "fixture-cli.ps1"
+    @'
+if ($env:AGENT_BUS_SERVER_URL -cne "http://caller-route.invalid:8400") {
+    throw "Fleet doctor changed caller routing during the health probe"
+}
+if ($args[0] -eq "--version") {
+    Write-Output "agent-bus 0.5.0 (53292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)"
+} elseif (($args -join " ") -eq "health --encoding json") {
+    Write-Output '{"ok":true,"storage_ready":true,"protocol_version":"1.0","build_version":"0.5.0 (53292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)","hub_identity":"authority-a","pg_dropped_writes":0,"pg_write_errors":0,"backend":{"mode":"remote","url":"http://authority.invalid:8400","authoritative":true,"hub_build":"0.5.0 (53292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)"}}'
+} else { throw "Unexpected fixture CLI command" }
+$global:LASTEXITCODE = 0
+'@ | Set-Content -LiteralPath $cliPath -Encoding utf8
+    $configPath = Join-Path $fixtureRoot "candidate-config.json"
+    $candidateConfig | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
+    $liveFixturePath = Join-Path $fixtureRoot "synthetic-live.json"
+    @{
+        schema_version = 1; authority_machine = "authority-a"; expected_protocol_version = "1.0"
+        expected_build_revision = $fullRevision
+        machines = @(@{
+            id = "authority-a"; connection = "local-windows"; os = "windows"; architecture = "x86_64"
+            role = "authority"; canonical_repo = $fixtureRoot; cli_path = $cliPath; config_path = $configPath
+            auth_source = "client-config"; client_server_url = "http://authority.invalid:8400"
+            required_active_services = @(); required_inactive_services = @()
+        })
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $liveFixturePath -Encoding utf8
+    $previousUrl = $env:AGENT_BUS_SERVER_URL
+    try {
+        $env:AGENT_BUS_SERVER_URL = "http://caller-route.invalid:8400"
+        $report = (& $doctor -ManifestPath $liveFixturePath -Strict -Json | Out-String) | ConvertFrom-Json
+        if (@($report | Where-Object status -ne "ok").Count -or @($report | Where-Object check -eq "route").Count -ne 1) {
+            throw "Synthetic live doctor did not qualify the candidate route."
+        }
+    } finally {
+        if ($null -eq $previousUrl) { Remove-Item Env:AGENT_BUS_SERVER_URL -ErrorAction SilentlyContinue }
+        else { $env:AGENT_BUS_SERVER_URL = $previousUrl }
+    }
 
 $doctorText = Get-Content -LiteralPath $doctor -Raw
 foreach ($hardCodedPath in @('$HOME/.local/bin/agent-bus', '$HOME/.config/agent-bus/config.json')) {
@@ -37,9 +187,6 @@ foreach ($hardCodedPath in @('$HOME/.local/bin/agent-bus', '$HOME/.config/agent-
     }
 }
 
-$fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) "agent-bus-fleet-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
-try {
     $duplicatePath = Join-Path $fixtureRoot "duplicate.json"
     @{
         schema_version          = 1
@@ -68,6 +215,7 @@ try {
         & $doctor -ManifestPath $duplicatePath -SkipLive -Strict | Out-Null
     }
     catch {
+        if ($_.Exception.Message -ne "Fleet manifest machine IDs must be unique.") { throw }
         $rejected = $true
     }
     if (-not $rejected) {
@@ -77,5 +225,10 @@ try {
     Write-Output "Fleet doctor fixtures passed."
 }
 finally {
-    Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+    $resolvedFixture = (Resolve-Path -LiteralPath $fixtureRoot).Path
+    if ($resolvedFixture -ne [IO.Path]::GetFullPath($fixtureRoot) -or
+        -not $resolvedFixture.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refuse cleanup outside the fixture directory"
+    }
+    Remove-Item -LiteralPath $resolvedFixture -Recurse -Force
 }

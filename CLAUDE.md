@@ -11,7 +11,7 @@ been removed.
 Current crate layout:
 
 - `crates/agent-bus-core` — shared library: storage adapters (redis_bus,
-  postgres_store), channels, settings, models, token helpers, validation,
+  postgres_store), sync_store (Redis half of cloud sync), channels, settings, models, token helpers, validation,
   output, journal, codex_bridge, agent_profile, bootstrap, mcp_dispatch
   (shared `McpToolDispatch`), error, and ops subtree.
 - `crates/agent-bus-cli` — package name `agent-bus`, produces the `agent-bus`
@@ -19,8 +19,9 @@ Current crate layout:
   mcp_discovery.rs. Still links axum/rmcp/reqwest because `serve` starts
   HTTP/MCP inline. Depends on `agent-bus-core`.
 - `crates/agent-bus-http` — package name `agent-bus-http`, produces the
-  `agent-bus-http` binary. Owns http.rs. Depends only on `agent-bus-core`
-  plus Axum/rmcp/Redis.
+  `agent-bus-http` binary. Owns http.rs and cloud_sync.rs (the opt-in hub to
+  cloud sync task, see `docs/cloud-sync.md`). Depends only on `agent-bus-core`
+  plus Axum/rmcp/Redis/reqwest.
 - `crates/agent-bus-mcp` — package name `agent-bus-mcp`, produces the
   `agent-bus-mcp` binary. Owns mcp.rs. Lightest dependency footprint.
 
@@ -234,6 +235,19 @@ Lefthook (install with `lefthook install`):
 - **commit-msg**: conventional commit format advisory
 
 ## Rust Conventions
+
+### Owned disposable integration fixtures
+
+Use `python3 -B scripts/ci/isolated-services.py integration` for the entire
+workspace backend suite and `python3 -B scripts/ci/isolated-services.py history`
+for the history migration contract. Both require a local Docker daemon;
+containerized CI explicitly selects its runner container with
+`--network-container <container-id>`. The history contract creates a fresh
+container and never creates or drops a database on the fleet PostgreSQL port.
+The harness clears inherited agent-bus settings, requires service/backend
+identity plus authenticated administration before mutations, and cleans only
+captured fixture IDs and its owned HTTP child. Run its pure regressions with
+`python3 -B -m unittest discover -s scripts/ci -p 'test_*.py'`.
 
 - **Allocator**: mimalloc per M-MIMALLOC-APPS
 - **Error handling**: `anyhow::Result` with `.context()` — no unwrap in business logic

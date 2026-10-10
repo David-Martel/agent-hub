@@ -194,7 +194,17 @@ For each client location, check these against the on-site hub:
 - `agent-bus health` selects the expected route;
 - `network_locations` lists the expected sites;
 - an authenticated `read`, a `send` and `presence` succeed;
+- authenticated `read-direct --agent-a <local-id> --agent-b <peer-id>` and
+  `post-direct --from-agent <local-id> --to-agent <peer-id> --body <message>`
+  use the selected hub's private channel, preserving thread IDs and tags;
 - a claim is granted only through an authoritative route.
+
+Direct-channel commands follow the same configured candidate selection and
+per-candidate bearer authentication as ordinary messages. If every configured
+hub is unreachable, they fail explicitly instead of accessing local Redis.
+HTTP rejection or an invalid response also fails without reporting success.
+With no hub configured, the existing local direct-channel operations remain
+available. Builds without `server-mode` retain that local command surface.
 
 Run the cloud tier separately: `/health` must answer, and authenticated
 calls need a cloud-tier token. Cloud tokens are a separate credential space

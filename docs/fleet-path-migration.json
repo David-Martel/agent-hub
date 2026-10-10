@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "note": "Destination collisions checked; original bytes preserved before reference updates. Historical observations remain dated in content.",
+  "files": [
+    {
+      "sha256": "962159BC9DF8DBE58BDCC06AA000D050B686BF5C5D2525EF49B11DAAC8650FCF",
+      "old": "docs/fleet-audit-p1gen7-2026-10-08.md",
+      "new": "docs/fleet-audit-p1gen7.md"
+    },
+    {
+      "sha256": "5E05484956BEAEB5711944BD050F4566FBBEC92750DEE639FC15E46BE4A315C4",
+      "old": "docs/fleet-dns-and-cloud-status-2026-10-08.md",
+      "new": "docs/fleet-dns-and-cloud-status.md"
+    }
+  ],
+  "observed_at": "2026-10-09T02:18:36.0862236Z",
+  "source_commit": "4874d850ea5e90965ddeac9be7782ac369a71d7d"
+}

@@ -44,23 +44,24 @@ if (Test-AgentBusWritableHealth -Health $blockedHealth) {
     throw "Maintenance-blocked service was accepted as writable."
 }
 
-$originalWrapper = $env:RUSTC_WRAPPER
+$originalDisableFlag = $script:AgentBusDisableSccacheForCargoSteps
+$originalWrappers = @{}
+$wrapperNames = @('RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER',
+    'CARGO_BUILD_RUSTC_WRAPPER', 'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER')
+foreach ($name in $wrapperNames) { $originalWrappers[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
 try {
-    $env:RUSTC_WRAPPER = "fixture-sccache"
+    foreach ($name in $wrapperNames) { [Environment]::SetEnvironmentVariable($name, 'fixture-sccache', 'Process') }
     Disable-AgentBusSccacheForCargoSteps
-    if (Test-Path Env:RUSTC_WRAPPER) {
-        throw "Disable-AgentBusSccacheForCargoSteps did not clear RUSTC_WRAPPER."
+    foreach ($name in $wrapperNames) {
+        if (Test-Path "Env:$name") { throw "Explicit disable did not clear wrapper: $name" }
     }
-    if (-not $script:AgentBusDisableSccacheForCargoSteps) {
-        throw "Disable-AgentBusSccacheForCargoSteps did not enable the Cargo config override."
-    }
+    if (-not $script:AgentBusDisableSccacheForCargoSteps) { throw 'Explicit disable did not enable Cargo config override' }
 }
 finally {
-    if ([string]::IsNullOrEmpty($originalWrapper)) {
-        Remove-Item Env:RUSTC_WRAPPER -ErrorAction SilentlyContinue
-    }
-    else {
-        $env:RUSTC_WRAPPER = $originalWrapper
+    $script:AgentBusDisableSccacheForCargoSteps = $originalDisableFlag
+    foreach ($name in $wrapperNames) {
+        if ($null -eq $originalWrappers[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+        else { Set-Item "Env:$name" $originalWrappers[$name] }
     }
 }
 
@@ -83,6 +84,163 @@ if (-not $clippyStep.Success) { throw "Expected strict Windows Clippy step was n
 $clippyCommands = $clippyStep.Groups["commands"].Value -replace '(?m)^          ', ''
 $clippyScript = [scriptblock]::Create($clippyCommands)
 
+# Resolve the repository's native compiler before any fixture changes USERPROFILE
+# or RUSTUP_HOME. Windows rustup otherwise discovers the synthetic empty home.
+$nativeFixtureCargo = Resolve-AgentBusNativeCargo
+$nativeFixtureCompiler = Join-Path (Split-Path -Parent $nativeFixtureCargo.Path) $(if ($IsWindows) { 'rustc.exe' } else { 'rustc' })
+if (-not (Test-Path -LiteralPath $nativeFixtureCompiler -PathType Leaf)) { throw 'Fixture native compiler unavailable beside pinned Cargo' }
+
+function New-AgentBusNativeCargoFixture {
+    param([Parameter(Mandatory)][string]$Directory, [Parameter(Mandatory)][string]$CompilerPath)
+    $rustc = @(Microsoft.PowerShell.Core\Get-Command $CompilerPath -CommandType Application -ErrorAction Stop)[0].Source
+    $hostLine = @(& $rustc -vV | Where-Object { $_ -like 'host: *' })
+    if ($LASTEXITCODE -ne 0 -or $hostLine.Count -ne 1) { throw 'Fixture compiler host unavailable' }
+    $hostTriple = $hostLine[0].Substring(6)
+    $rustupHome = Join-Path $Directory 'private-rustup'
+    $bin = Join-Path $rustupHome "toolchains/1.98.1-$hostTriple/bin"
+    New-Item -ItemType Directory -Force -Path $bin | Out-Null
+    $cargo = Join-Path $bin $(if ($IsWindows) { 'cargo.exe' } else { 'cargo' })
+    $cache = Join-Path $Directory $(if ($IsWindows) { 'fixture-cache.exe' } else { 'fixture-cache' })
+    $source = Join-Path $Directory 'fixture-cargo.rs'
+    @'
+use std::{env, fs::OpenOptions, io::Write, path::Path, process::{Command, exit}};
+fn main() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if Path::new(&env::args().next().unwrap()).file_stem().unwrap() == "fixture-cache" {
+        std::fs::write(env::var("AGENT_BUS_FIXTURE_TRAFFIC").unwrap(), b"actual owned cache child executed").unwrap();
+        return;
+    }
+    let keys = ["RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER"];
+    let values: Vec<String> = keys.iter().map(|key| env::var(key).unwrap_or_default()).collect();
+    let mut file = OpenOptions::new().create(true).append(true).open(env::var("AGENT_BUS_FIXTURE_CALLS").unwrap()).unwrap();
+    writeln!(file, "{{\"command\":\"cargo\",\"arguments\":{:?},\"wrapper\":{:?},\"workspace_wrapper\":{:?},\"build_wrapper\":{:?},\"build_workspace_wrapper\":{:?},\"toolchain\":{:?},\"cargo_raw\":{:?}}}",
+        args, values[0], values[1], values[2], values[3], env::var("RUSTUP_TOOLCHAIN").unwrap_or_default(), env::var("CARGO_RAW").unwrap_or_default()).unwrap();
+    for value in values.iter().filter(|value| !value.is_empty()) {
+        Command::new(value).arg("--fixture-cache-traffic").status().unwrap();
+    }
+    let mode = std::fs::read_to_string(env::var("AGENT_BUS_FIXTURE_MODE").unwrap()).unwrap();
+    if mode.trim() == "clippy-failure" && args.iter().any(|arg| arg == "clippy") {
+        println!("error: fixture strict Clippy warning"); exit(1);
+    }
+    println!("fixture native cargo 1.98.1");
+}
+'@ | Set-Content -LiteralPath $source -Encoding utf8
+    & $rustc --edition=2021 $source -o $cargo
+    if ($LASTEXITCODE -ne 0) { throw 'Small standalone native Cargo fixture compilation failed' }
+    Copy-Item -LiteralPath $cargo -Destination $cache
+    return [pscustomobject]@{ Cargo=$cargo; Cache=$cache; RustupHome=$rustupHome }
+}
+
+function Test-AgentBusExplicitUncachedFixture {
+    $fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('agent-bus-uncached-' + [guid]::NewGuid().ToString('N'))
+    $wrapperNames = @('RUSTC_WRAPPER', 'RUSTC_WORKSPACE_WRAPPER',
+        'CARGO_BUILD_RUSTC_WRAPPER', 'CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER')
+    $environmentNames = $wrapperNames + @('RUSTUP_HOME', 'RUSTUP_TOOLCHAIN', 'USERPROFILE',
+        'CARGO_TARGET_DIR', 'CARGO_INCREMENTAL', 'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER',
+        'RUSTFLAGS', 'CARGO_RAW', 'AGENT_BUS_FIXTURE_CALLS', 'AGENT_BUS_FIXTURE_MODE', 'AGENT_BUS_FIXTURE_TRAFFIC')
+    $saved = @{}
+    foreach ($name in $environmentNames) { $saved[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+    $savedFlag = $script:AgentBusDisableSccacheForCargoSteps
+    try {
+        New-Item -ItemType Directory -Path $fixtureRoot | Out-Null
+        $fixture = New-AgentBusNativeCargoFixture -Directory $fixtureRoot -CompilerPath $nativeFixtureCompiler
+        $env:RUSTUP_HOME = $fixture.RustupHome
+        $env:RUSTUP_TOOLCHAIN = 'contrary-image-override'
+        $env:USERPROFILE = $fixtureRoot
+        $env:AGENT_BUS_FIXTURE_CALLS = Join-Path $fixtureRoot 'calls.jsonl'
+        $env:AGENT_BUS_FIXTURE_MODE = Join-Path $fixtureRoot 'mode.txt'
+        $env:AGENT_BUS_FIXTURE_TRAFFIC = Join-Path $fixtureRoot 'cache-traffic'
+        'healthy' | Set-Content -LiteralPath $env:AGENT_BUS_FIXTURE_MODE
+        foreach ($name in $wrapperNames) { [Environment]::SetEnvironmentVariable($name, $fixture.Cache, 'Process') }
+        $script:AgentBusDisableSccacheForCargoSteps = $false
+        $omitted = Use-AgentBusRustBuildEnv -RepoRoot $repoRoot -TargetDir (Join-Path $fixtureRoot 'omitted')
+        if ($script:AgentBusDisableSccacheForCargoSteps) { throw 'Omitted cache preference disabled a custom wrapper' }
+        foreach ($name in $wrapperNames) {
+            if ([Environment]::GetEnvironmentVariable($name, 'Process') -cne $fixture.Cache) { throw 'Omitted preference removed a custom wrapper' }
+        }
+        Restore-AgentBusRustBuildEnv -State $omitted
+        $state = Use-AgentBusRustBuildEnv -RepoRoot $repoRoot -TargetDir (Join-Path $fixtureRoot 'uncached') -PreferSccache:$false
+        $initiallyDisabled = $script:AgentBusDisableSccacheForCargoSteps -and
+            @($wrapperNames | Where-Object { [Environment]::GetEnvironmentVariable($_, 'Process') }).Count -eq 0
+        foreach ($name in $wrapperNames) { [Environment]::SetEnvironmentVariable($name, $fixture.Cache, 'Process') }
+        $env:CARGO_RAW = 'original-cargo-raw'
+        function Invoke-CargoToolsReinitializingFixture {
+            'alias executed' | Set-Content -LiteralPath (Join-Path $fixtureRoot 'alias-traffic')
+            $env:RUSTC_WRAPPER = $fixture.Cache
+            & $fixture.Cargo @args
+        }
+        Set-Alias -Name cargo -Value Invoke-CargoToolsReinitializingFixture -Scope Local
+        $result = Invoke-AgentBusRawCargo -Command clippy -AdditionalArgs @('--workspace', '--all-targets', '--', '-D', 'warnings') -DisableSccache
+        Write-Output "Uncached control: initially_disabled=$initiallyDisabled alias_traffic=$(Test-Path -LiteralPath (Join-Path $fixtureRoot 'alias-traffic')) cache_child_traffic=$(Test-Path -LiteralPath $env:AGENT_BUS_FIXTURE_TRAFFIC)"
+        if (-not $initiallyDisabled -or $result.ExitCode -ne 0 -or
+            (Test-Path -LiteralPath (Join-Path $fixtureRoot 'alias-traffic')) -or
+            (Test-Path -LiteralPath $env:AGENT_BUS_FIXTURE_TRAFFIC)) {
+            throw 'Explicit uncached build leaked its inherited wrappers or executed the reinitializing alias/cache child'
+        }
+        $call = Get-Content -LiteralPath $env:AGENT_BUS_FIXTURE_CALLS -Raw | ConvertFrom-Json
+        if ($call.wrapper -or $call.workspace_wrapper -or $call.build_wrapper -or $call.build_workspace_wrapper -or
+            $call.toolchain -cne '1.98.1' -or ($call.arguments -join ' ') -cne
+            '--config build.rustc-wrapper="" --config build.rustc-workspace-wrapper="" clippy --workspace --all-targets -- -D warnings') {
+            throw 'Native uncached child did not receive pinned compiler and both empty wrapper configs'
+        }
+        foreach ($name in $wrapperNames) {
+            if ([Environment]::GetEnvironmentVariable($name, 'Process') -cne $fixture.Cache) { throw 'Successful native call did not restore wrapper environment' }
+        }
+        if ($env:RUSTUP_TOOLCHAIN -cne 'contrary-image-override') { throw 'Native Cargo call leaked its temporary toolchain override' }
+        'clippy-failure' | Set-Content -LiteralPath $env:AGENT_BUS_FIXTURE_MODE
+        $failed = $false
+        try { Invoke-AgentBusCargo -Label 'explicit uncached fixture' -Command clippy -AdditionalArgs @('--', '-D', 'warnings') }
+        catch {
+            if ($_.Exception.Message -cne 'Cargo step failed: explicit uncached fixture (exit code 1)') { throw }
+            $failed = $true
+        }
+        if (-not $failed -or $env:CARGO_RAW -cne 'original-cargo-raw') { throw 'Uncached failure was suppressed or leaked CargoTools state' }
+        foreach ($name in $wrapperNames) {
+            if ([Environment]::GetEnvironmentVariable($name, 'Process') -cne $fixture.Cache) { throw 'Failed native call did not restore wrapper environment' }
+        }
+        Restore-AgentBusRustBuildEnv -State $state
+        if ($script:AgentBusDisableSccacheForCargoSteps) { throw 'Build scope did not restore the original cache flag' }
+        foreach ($name in $wrapperNames) {
+            if ([Environment]::GetEnvironmentVariable($name, 'Process') -cne $fixture.Cache) { throw 'Build scope did not restore original wrapper values' }
+        }
+        if ((Test-Path -LiteralPath (Join-Path $fixtureRoot 'alias-traffic')) -or
+            (Test-Path -LiteralPath $env:AGENT_BUS_FIXTURE_TRAFFIC)) { throw 'Failure path executed alias or cache child' }
+        foreach ($name in $wrapperNames) { [Environment]::SetEnvironmentVariable($name, '', 'Process') }
+        $emptyState = Use-AgentBusRustBuildEnv -RepoRoot $repoRoot -TargetDir (Join-Path $fixtureRoot 'empty-values') -PreferSccache:$false
+        $mixed = @{}
+        foreach ($name in $wrapperNames) {
+            $mixed[$name] = $(if ($name -like '*WORKSPACE*') { $null } else { '' })
+            if ($null -eq $mixed[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+            else { Set-Item "Env:$name" $mixed[$name] }
+        }
+        $emptyResult = Invoke-AgentBusRawCargo -Command clippy -AdditionalArgs @('--', '-D', 'warnings') -DisableSccache
+        if ($emptyResult.ExitCode -ne 1) { throw 'Empty/absent restoration control did not execute the failing native child' }
+        foreach ($name in $wrapperNames) {
+            $restored = [Environment]::GetEnvironmentVariable($name, 'Process')
+            if (($null -eq $restored) -ne ($null -eq $mixed[$name]) -or $restored -cne $mixed[$name]) {
+                throw "Failed native invocation did not distinguish empty/absent wrapper: $name"
+            }
+        }
+        Restore-AgentBusRustBuildEnv -State $emptyState
+        foreach ($name in $wrapperNames) {
+            $restored = [Environment]::GetEnvironmentVariable($name, 'Process')
+            if ($null -eq $restored -or $restored -cne '') { throw 'Build scope did not distinguish empty wrapper values from absent variables' }
+        }
+        Write-Output 'Explicit uncached native Cargo fixtures passed: custom-wrapper preservation, alias/cache isolation, pinned toolchain, success/failure, scope restoration and empty-value preservation'
+    }
+    finally {
+        foreach ($name in $environmentNames) {
+            if ($null -eq $saved[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+            else { Set-Item "Env:$name" $saved[$name] }
+        }
+        $script:AgentBusDisableSccacheForCargoSteps = $savedFlag
+        $resolved = [IO.Path]::GetFullPath($fixtureRoot)
+        if (-not $resolved.StartsWith([IO.Path]::GetFullPath([IO.Path]::GetTempPath()), [StringComparison]::OrdinalIgnoreCase)) { throw 'Fixture cleanup escaped temporary storage' }
+        Remove-Item -LiteralPath $resolved -Recurse -Force
+    }
+}
+
+
 function Test-AgentBusCiSetupFixture {
     param([Parameter(Mandatory = $true)][string]$Mode)
 
@@ -90,7 +248,9 @@ function Test-AgentBusCiSetupFixture {
     $environmentNames = @(
         "AGENT_HUB_CI_CACHE_ROOT", "LOCALAPPDATA", "USERPROFILE", "PATH",
         "GITHUB_ENV", "GITHUB_PATH", "GITHUB_JOB", "RUNNER_ARCH",
-        "CARGO_TARGET_DIR", "CARGO_INCREMENTAL", "SCCACHE_DIR", "SCCACHE_SERVER_PORT", "RUSTC_WRAPPER"
+        "CARGO_TARGET_DIR", "CARGO_INCREMENTAL", "SCCACHE_DIR", "SCCACHE_SERVER_PORT", "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+        "RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "AGENT_BUS_FIXTURE_CALLS", "AGENT_BUS_FIXTURE_MODE", "AGENT_BUS_FIXTURE_TRAFFIC"
     )
     $savedEnvironment = @{}
     foreach ($name in $environmentNames) {
@@ -193,7 +353,11 @@ exit $global:LASTEXITCODE
         $env:RUSTC_WRAPPER = "stale-runner-wrapper"
         "RUSTC_WRAPPER=stale-runner-wrapper" | Set-Content -LiteralPath $env:GITHUB_ENV -Encoding utf8
         $setupFailure = $null
-        try { & $ciSetupPath } catch { $setupFailure = $_.Exception.Message }
+        $cacheDiagnostics = @()
+        try {
+            $cacheDiagnostics = @(& $ciSetupPath 6>&1)
+            $cacheDiagnostics | ForEach-Object { Write-Host $_ }
+        } catch { $setupFailure = $_.Exception.Message }
         if ($Mode -ne "healthy") {
             if (-not $setupFailure) { throw "$Mode fixture: unhealthy cache silently admitted" }
             if ($env:RUSTC_WRAPPER) { throw "$Mode fixture: exported unhealthy wrapper" }
@@ -206,6 +370,13 @@ exit $global:LASTEXITCODE
             return
         }
         if ($setupFailure) { throw "Healthy cache admission failed: $setupFailure" }
+        $diagnostics = ($cacheDiagnostics | ForEach-Object { $_.ToString() }) -join "`n"
+        foreach ($operation in @('stats-before', 'compile-first', 'compile-second', 'stats-after')) {
+            if ($diagnostics -notmatch "operation=$operation state=started client_pid=[0-9]+ timeout_seconds=30" -or
+                $diagnostics -notmatch "operation=$operation state=completed client_pid=[0-9]+ elapsed_ms=[0-9]+ exit_code=0") {
+                throw "Missing bounded cache operation diagnostics: $operation"
+            }
+        }
 
         $expectedWrapper = if ($Mode -eq "healthy") { $fixtureSccache } else { $null }
         if ($env:RUSTC_WRAPPER -ne $expectedWrapper) {
@@ -262,7 +433,16 @@ exit $global:LASTEXITCODE
         if ($Mode -eq "healthy") {
             # Execute the actual YAML step: it must bypass both inherited env and
             # Cargo config wrappers, preserve -D warnings, and leave GITHUB_ENV alone.
-            function cargo { & (Join-Path $fixtureRoot "cargo.ps1") @args }
+            $nativeFixture = New-AgentBusNativeCargoFixture -Directory $fixtureRoot -CompilerPath $nativeFixtureCompiler
+            $env:RUSTUP_HOME = $nativeFixture.RustupHome
+            $env:RUSTUP_TOOLCHAIN = 'contrary-image-override'
+            $env:AGENT_BUS_FIXTURE_CALLS = Join-Path $fixtureRoot 'calls.jsonl'
+            $env:AGENT_BUS_FIXTURE_MODE = Join-Path $fixtureRoot 'mode.txt'
+            $env:AGENT_BUS_FIXTURE_TRAFFIC = Join-Path $fixtureRoot 'native-cache-traffic'
+            function Invoke-CargoToolsFixture {
+                throw 'Strict Clippy executed a CargoTools-style alias instead of native Cargo'
+            }
+            Set-Alias -Name cargo -Value Invoke-CargoToolsFixture -Scope Local
             $exportsBeforeClippy = Get-Content -LiteralPath $env:GITHUB_ENV -Raw
             Push-Location $repoRoot
             try {
@@ -286,7 +466,7 @@ exit $global:LASTEXITCODE
                 Where-Object { $_.command -eq "cargo" -and $_.arguments -contains "clippy" })
             if ($clippyCalls.Count -ne 2) { throw "Unexpected Clippy retry or missing invocation." }
             foreach ($call in $clippyCalls) {
-                if ($call.wrapper -or ($call.arguments -join " ") -cne '--config build.rustc-wrapper="" clippy --workspace --all-targets -- -D warnings') {
+                if ($call.wrapper -or ($call.arguments -join " ") -cne '--config build.rustc-wrapper="" --config build.rustc-workspace-wrapper="" clippy --workspace --all-targets -- -D warnings') {
                     throw "Clippy did not preserve strictness and bypass both wrapper sources."
                 }
             }
@@ -296,7 +476,8 @@ exit $global:LASTEXITCODE
     }
     finally {
         foreach ($name in $environmentNames) {
-            [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], "Process")
+            if ($null -eq $savedEnvironment[$name]) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
+            else { Set-Item "Env:$name" $savedEnvironment[$name] }
         }
         if ($hadExitCode) {
             $global:LASTEXITCODE = $savedExitCode
@@ -308,6 +489,8 @@ exit $global:LASTEXITCODE
         }
     }
 }
+
+Test-AgentBusExplicitUncachedFixture
 
 foreach ($mode in @("healthy", "mismatched", "transport-failure", "probe-exception", "version-failure", "absent", "synthetic", "no-hit", "non-cacheable", "compile-failure", "read-error", "cache-error", "artifact-drift")) {
     Test-AgentBusCiSetupFixture -Mode $mode
@@ -333,7 +516,7 @@ try {
         throw "Shared cache port admitted"
     } catch { if ($_.Exception.Message -cne "Invalid dedicated Windows cache policy") { throw } }
     $slowScript = Join-Path $controlRoot "slow.ps1"
-    [IO.File]::WriteAllText($slowScript, 'Start-Sleep -Seconds 30')
+    [IO.File]::WriteAllText($slowScript, '[Console]::Out.WriteLine("fixture stdout before timeout"); [Console]::Error.WriteLine("fixture stderr before timeout"); Start-Sleep -Seconds 30')
     $foreign = [Diagnostics.Process]::new()
     $foreign.StartInfo.FileName = (Get-Process -Id $PID).Path
     $foreign.StartInfo.UseShellExecute = $false
@@ -341,11 +524,18 @@ try {
     if (-not $foreign.Start()) { throw "Foreign control process failed to start" }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     try {
-        $null = Invoke-AgentBusCacheCommand -Executable $slowScript -Arguments @() -TimeoutSeconds 1
+        # A cold pwsh shim takes several seconds to initialize on Windows.
+        # Give the fixture time to emit its witness output before the timeout;
+        # the production policy remains 30 seconds.
+        $null = Invoke-AgentBusCacheCommand -Executable $slowScript -Arguments @() -TimeoutSeconds 5 -Operation compile-first
         throw "Client timeout not enforced"
-    } catch { if ($_.Exception.Message -cne "Cache preflight client timed out; daemon left untouched") { throw } }
+    } catch {
+        if ($_.Exception.Message -notlike 'Cache preflight client timed out; daemon left untouched (operation=compile-first client_pid=* elapsed_ms=*)*' -or
+            $_.Exception.Message -notmatch 'stdout: fixture stdout before timeout' -or
+            $_.Exception.Message -notmatch 'stderr: fixture stderr before timeout') { throw }
+    }
     $clock.Stop()
-    if ($clock.Elapsed.TotalSeconds -gt 5 -or $foreign.HasExited) { throw "Timeout escaped bound or terminated foreign process" }
+    if ($clock.Elapsed.TotalSeconds -gt 9 -or $foreign.HasExited) { throw "Timeout escaped bound or terminated foreign process" }
     Write-Output "Cache controls passed: foreign path and shared port refused; bounded owned-client timeout preserved foreign process"
 } finally {
     if ($foreign) {
@@ -355,3 +545,8 @@ try {
     Remove-Item -LiteralPath $controlRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Output "Rust build helper regression fixtures passed."
+& (Join-Path $PSScriptRoot 'ci/test-cache-preflight.ps1')
+
+# Expected native failures above must not determine the successful test entrypoint exit.
+# Uncaught assertion failures terminate before this explicit success result.
+exit 0

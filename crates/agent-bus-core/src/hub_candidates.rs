@@ -577,6 +577,51 @@ fn token_value(raw: &str) -> Result<BearerToken, SkipReason> {
     Ok(BearerToken::new(token))
 }
 
+/// Read and validate a bearer token from a file, expanding a leading `~`.
+///
+/// The file must not be accessible to group or other users on Unix (mode
+/// 0600-style): a token readable by other local users is refused, not
+/// merely warned about. The error text never contains the token value.
+///
+/// # Errors
+/// [`SkipReason`] when the path is invalid, the file cannot be read, is too
+/// permissive, or holds an empty or malformed token.
+pub fn read_private_token_file(
+    path: &str,
+    env: &dyn CredentialEnv,
+) -> Result<BearerToken, SkipReason> {
+    if path.trim().is_empty() || path.chars().any(char::is_control) {
+        return Err(SkipReason("invalid token_file reference".to_owned()));
+    }
+    let expanded = expanded_token_path(path, env)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&expanded)
+            .map_err(|error| {
+                SkipReason(format!(
+                    "cannot stat token_file {path:?}: {:?}",
+                    error.kind()
+                ))
+            })?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(SkipReason(format!(
+                "token_file {path:?} must not be accessible to group or other (mode {:o}); run chmod 600",
+                mode & 0o777
+            )));
+        }
+    }
+    let raw = env.read_to_string(&expanded).map_err(|error| {
+        SkipReason(format!(
+            "cannot read token_file {path:?}: {:?}",
+            error.kind()
+        ))
+    })?;
+    token_value(&raw)
+}
+
 fn expanded_token_path(value: &str, env: &dyn CredentialEnv) -> Result<PathBuf, SkipReason> {
     if value == "~" || value.starts_with("~/") || value.starts_with("~\\") {
         let home = env

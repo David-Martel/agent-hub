@@ -114,6 +114,16 @@ fn build_server_resource_url(base: &str, resource: &str, action: Option<&str>) -
     Ok(url.to_string())
 }
 
+#[cfg(feature = "server-mode")]
+fn build_server_direct_url(base: &str, other: &str) -> Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse(base).context("invalid server URL")?;
+    url.path_segments_mut()
+        .map_err(|()| anyhow::anyhow!("server URL does not support path segments"))?
+        .pop_if_empty()
+        .extend(["channels", "direct", other]);
+    Ok(url)
+}
+
 fn list_filtered_messages(
     settings: &Settings,
     agent: Option<&str>,
@@ -1408,6 +1418,25 @@ pub(crate) fn cmd_post_direct(
     let from = non_empty(from_agent, "--from-agent")?;
     let to = non_empty(to_agent, "--to-agent")?;
     let body = non_empty(body, "--body")?;
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = resolve_hub_url(settings, "post-direct")?;
+        let url = build_server_direct_url(&base, to)?;
+        let value = http_post(
+            url.as_str(),
+            &serde_json::json!({
+                "sender": from,
+                "topic": topic,
+                "body": body,
+                "thread_id": thread_id,
+                "tags": tags,
+            }),
+        )?;
+        let message: Message =
+            serde_json::from_value(value).context("hub post-direct response is not a message")?;
+        output(&message, encoding);
+        return Ok(());
+    }
     let msg = ops_post_direct(
         settings,
         &PostDirectRequest {
@@ -1435,6 +1464,18 @@ pub(crate) fn cmd_read_direct(
     limit: usize,
     encoding: &Encoding,
 ) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = resolve_hub_url(settings, "read-direct")?;
+        let mut url = build_server_direct_url(&base, agent_b)?;
+        url.query_pairs_mut()
+            .append_pair("agent", agent_a)
+            .append_pair("limit", &limit.to_string());
+        let messages: Vec<Message> = serde_json::from_value(http_get(url.as_str())?)
+            .context("hub read-direct response is not a message list")?;
+        output_messages(&messages, encoding);
+        return Ok(());
+    }
     let msgs = ops_read_direct(
         settings,
         &ReadDirectRequest {
@@ -2442,6 +2483,11 @@ mod tests {
             reply_to: None,
             metadata: serde_json::Value::Null,
             stream_id: None,
+            client_msg_id: None,
+            origin_hub: None,
+            origin_seq: None,
+            hlc: None,
+            sensitivity: None,
         }
     }
 

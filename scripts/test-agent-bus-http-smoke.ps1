@@ -12,10 +12,15 @@ param(
     [string]$AuthToken = $env:AGENT_BUS_AUTH_TOKEN,
     [switch]$UseExistingServer,
     [int]$ExpectedProcessId,
-    [string]$ExpectedServiceAgentId
+    [string]$ExpectedServiceAgentId,
+    [int]$ExpectedWineGuestProcessId,
+    [string]$WinePrefix
 )
 
 $ErrorActionPreference = "Stop"
+if (($ExpectedWineGuestProcessId -or $WinePrefix) -and -not $UseExistingServer) {
+    throw 'Wine identity is supported only for an existing owned harness service'
+}
 $sseSmokeScript = Join-Path $PSScriptRoot "test-agent-bus-sse-smoke.ps1"
 
 if (-not (Test-Path $sseSmokeScript)) {
@@ -106,9 +111,33 @@ try {
         }
         $existingProcess = Get-Process -Id $ExpectedProcessId -ErrorAction Stop
         if ($existingProcess.HasExited) { throw 'Owned HTTP process has exited' }
+        $healthProcessId = $ExpectedProcessId
+        if ($ExpectedWineGuestProcessId -or $WinePrefix) {
+            if (-not $IsLinux -or $ExpectedWineGuestProcessId -le 0 -or
+                -not [IO.Path]::IsPathFullyQualified($WinePrefix) -or
+                $WinePrefix -cne $env:AGENT_BUS_TEST_WINE_PREFIX -or
+                -not (Test-Path -LiteralPath $WinePrefix -PathType Container) -or
+                ((Get-Item -LiteralPath $WinePrefix).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw 'Explicit owned Wine prefix and guest identity are required'
+            }
+            if ([string]::IsNullOrWhiteSpace($env:AGENT_BUS_TEST_WINE_IDENTITY)) {
+                throw 'Fixed Wine prefix identity is required'
+            }
+            # The same leaf checks owner/mode/dev/inode before and after its bounded
+            # Windows query; it never accepts a replaced or recreated prefix.
+            $guestRows = & python3 -B (Join-Path $PSScriptRoot 'ci/wine_lifecycle.py') query `
+                --prefix $WinePrefix --identity $env:AGENT_BUS_TEST_WINE_IDENTITY `
+                --directory (Split-Path -Parent $env:AGENT_BUS_CONFIG) --timeout 10
+            if ($LASTEXITCODE -ne 0) { throw 'Windows guest process query failed' }
+            $guestProcesses = $guestRows | ConvertFrom-Json -AsHashtable
+            if ($guestProcesses["$ExpectedWineGuestProcessId"] -cne 'agent-bus-http.exe') {
+                throw 'Windows guest PID/image readback does not match'
+            }
+            $healthProcessId = $ExpectedWineGuestProcessId
+        }
         $Health = Invoke-RestMethod -Uri "$($BaseUrl.TrimEnd('/'))/health" `
             -TimeoutSec 10 -MaximumRedirection 0
-        if ($Health.maintenance.pid -ne $ExpectedProcessId -or
+        if ($Health.maintenance.pid -ne $healthProcessId -or
             $Health.maintenance.service_agent_id -cne $ExpectedServiceAgentId -or
             -not $Health.ok -or -not $Health.database_ok -or -not $Health.storage_ready) {
             throw 'HTTP identity or readiness does not match the isolated harness'
