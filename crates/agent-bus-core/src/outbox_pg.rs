@@ -142,6 +142,7 @@ mod tests {
                     Err(error) => panic!("owned PG fixture accept: {error}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();

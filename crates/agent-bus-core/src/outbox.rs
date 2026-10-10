@@ -1006,14 +1006,17 @@ mod tests {
     #[test]
     fn invalid_arguments_and_unsupported_operations_are_never_retained() {
         let temp = NamedTempFile::new().unwrap();
-        let mut journal = open(&temp);
+        let journal = open(&temp);
+        drop(journal);
         let before = std::fs::read(temp.path()).unwrap();
+        let mut journal = open(&temp);
         let mut invalid = send("bad");
         invalid.insert("priority".to_owned(), serde_json::json!("unknown"));
         assert!(matches!(
             journal.enqueue(Operation::Send, ClientSurface::Mcp, invalid, 100),
             Err(OutboxError::InvalidRequest)
         ));
+        drop(journal);
         assert_eq!(std::fs::read(temp.path()).unwrap(), before);
         for tool in ["renew_claim", "release_claim", "pull_task", "list_messages"] {
             assert_eq!(Operation::from_tool(tool), None);
