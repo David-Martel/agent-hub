@@ -18,6 +18,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
@@ -396,7 +397,22 @@ class Services:
                 except subprocess.TimeoutExpired:
                     self.http.kill()
                     self.http.wait(timeout=10)
-        except (RuntimeError, subprocess.SubprocessError, OSError):
+        except (RuntimeError, subprocess.SubprocessError, OSError) as error:
+            # Retain the first cleanup subcause without publishing commands,
+            # URLs, credentials or exception payloads from external clients.
+            failure = {
+                "stage": "owned-wine-close" if self.wine else "owned-http-close",
+                "type": type(error).__name__,
+                "reason": (
+                    str(error)
+                    if isinstance(error, RuntimeError)
+                    and str(error).startswith("Owned Wine")
+                    else "Owned process cleanup failed"
+                ),
+            }
+            if hasattr(error, "metadata"):
+                failure["finite_client"] = error.metadata
+            print(json.dumps({"cleanup_failure": failure}), file=sys.stderr)
             errors.append(
                 "owned Wine guest/prefix" if self.wine else "owned HTTP process"
             )
