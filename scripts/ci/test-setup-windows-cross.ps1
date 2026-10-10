@@ -59,6 +59,18 @@ $labels = [pscustomobject]@{ revision = $revision; dockerfile = $dockerfile }
 $ns = [pscustomobject]@{ boot = '12345678-1234-1234-1234-123456789abc'; net = 'net:[123]'; pid = 'pid:[456]' }
 Assert-CrossRunnerBinding $container ('a' * 12) $image $revision $dockerfile $labels $ns $ns
 Assert-SetupFixture $true 'dynamic hostname resolves qualified full CID'
+$rawImage = $container | ConvertTo-Json | ConvertFrom-Json
+$rawImage.image = 'b' * 64
+Assert-CrossRunnerBinding $rawImage ('a' * 12) $image $revision $dockerfile $labels $ns $ns
+Assert-SetupFixture $true 'exact raw config digest resolves to the same qualified image'
+foreach ($invalidImage in @(('e' * 64), ('B' * 64), ('b' * 63), ('b' * 65),
+        (' ' + ('b' * 64)), (('b' * 64) + "`n"), ('sha256:' + ('B' * 64)),
+        ($image + ' '), 'repo:latest')) {
+    $bad = $container | ConvertTo-Json | ConvertFrom-Json; $bad.image = $invalidImage
+    Reject-SetupFixture {
+        Assert-CrossRunnerBinding $bad ('a' * 12) $image $revision $dockerfile $labels $ns $ns
+    } 'wrong or noncanonical config digest refused'
+}
 foreach ($field in @('running', 'image', 'id')) {
     $bad = $container | ConvertTo-Json | ConvertFrom-Json
     $bad.$field = switch ($field) { running { $false } image { 'sha256:' + ('e' * 64) } id { 'f' * 64 } }

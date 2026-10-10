@@ -53,9 +53,14 @@ function Invoke-CrossSetupTool {
 function Assert-CrossRunnerBinding {
     param($Container, [string]$Candidate, [string]$Image, [string]$Revision,
         [string]$DockerfileHash, $Labels, $LocalNamespace, $RemoteNamespace)
+    # Container inspect can return the exact config digest without its prefix.
+    $containerImage = $Container.image
+    if ($containerImage -is [string] -and $containerImage -cmatch '\A[a-f0-9]{64}\z') {
+        $containerImage = "sha256:$containerImage"
+    }
     if ($Candidate -cnotmatch '^[a-f0-9]{12,64}$' -or $Container.id -cnotmatch '^[a-f0-9]{64}$' -or
         -not $Container.id.StartsWith($Candidate, [StringComparison]::Ordinal) -or
-        $Container.running -isnot [bool] -or -not $Container.running -or $Container.image -cne $Image -or
+        $Container.running -isnot [bool] -or -not $Container.running -or $containerImage -cne $Image -or
         $Labels.revision -cne $Revision -or $Labels.dockerfile -cne $DockerfileHash) {
         throw 'Running container differs from the qualified immutable source/image binding'
     }
