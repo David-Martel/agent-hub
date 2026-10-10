@@ -95,6 +95,47 @@ class AdmissionControls(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 adapter.guest_environment(SimpleNamespace(env={}), env)
 
+    def test_guest_environment_reuses_verified_private_temp_mapping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            config = root / "fixture.json"
+            config.write_text("{}", encoding="utf-8")
+            paths = {
+                str(config): r"Z:\owned\fixture.json",
+                str(root): r"Z:\owned",
+            }
+            reverse_paths = {value: key for key, value in paths.items()}
+            calls = []
+
+            def command(arguments, **kwargs):
+                calls.append(arguments)
+                if arguments[:2] == ["winepath", "-w"]:
+                    return paths[arguments[2]]
+                if arguments[:2] == ["winepath", "-u"]:
+                    return reverse_paths[arguments[2]]
+                self.assertEqual(
+                    arguments, ["wine", "cmd", "/c", "type", paths[str(config)]]
+                )
+                self.assertEqual(kwargs["env"]["AGENT_BUS_CONFIG"], paths[str(config)])
+                return config.read_text(encoding="utf-8")
+
+            provider = SimpleNamespace(
+                directory=root,
+                home=root / "wine-home",
+                env=adapter.host_environment(root),
+                command=command,
+            )
+            result = adapter.guest_environment(
+                provider, {"AGENT_BUS_CONFIG": str(config)}
+            )
+            self.assertEqual(result["TEMP"], paths[str(root)])
+            self.assertEqual(result["TMP"], result["TEMP"])
+            self.assertEqual(result["HOME"], str(provider.home))
+            self.assertEqual(result["AGENT_BUS_CONFIG"], paths[str(config)])
+            self.assertEqual(calls.count(["winepath", "-w", str(root)]), 1)
+            self.assertEqual(calls.count(["winepath", "-u", paths[str(root)]]), 1)
+            self.assertEqual(len(calls), 5)
+
     def test_guest_identity_binds_unique_actual_image(self):
         provider = Provider([{77: "agent-bus-mcp.exe", 1: "services.exe"}])
         self.assertEqual(
