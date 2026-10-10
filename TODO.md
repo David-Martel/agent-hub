@@ -18,25 +18,38 @@ Current Warp integration and deployment queue: [fleet completion ledger](docs/fl
   deployment and future client-process qualification remain separate gates.
 - [x] Make Cloudflare retention scheduling awaitable and validate both
   fresh historical ingestion and expired-ingest pruning against real
-  Durable Object SQLite; local typecheck and all 171 tests pass. Production
-  source-only deployment of cf7397a is verified, with existing opaque secrets
-  preserved. The current MCP/import candidate still needs publication and
-  deployment parity after its source and CI checks.
+  Durable Object SQLite. Reviewed Worker source 9e307f0, including cloud MCP
+  and pagination, has verified source-only deployment/source parity with
+  existing opaque secrets preserved. This does not qualify final installed
+  clients, on-site sync or actual historical ingestion.
 - [x] Isolate the standalone functional harness from inherited routing
   tiers and require disposable loopback backend inputs before it can publish
   probes; 40 regression cases validate rejection, isolation, forced degraded
   execution and restoration/cleanup. PR #121 passed all 16 required checks,
   including real GNU/Wine CLI/HTTP/database/SSE smoke and managed guest cleanup.
-- [ ] Coordinate cloud agent-role tokens with Claude-ASUS, preserving the
-  full existing write-only token map; obtain retired-credential revocation
-  evidence separately from client source hardening.
-- [ ] Implement/validate on-site sync and required cloud MCP/CLI routes,
-  then claims forwarding, outbox (#80) and historical import. Do not add
-  the cloud fleet candidate before these gates pass.
-- [ ] Confirm the final consolidated Cloudflare deployment/source parity and
-  role-specific authentication/storage behavior. Baseline cf7397a source-only
-  deployment, hub pull/operator stats and public health/unauthenticated refusal
-  are verified; they do not qualify the new MCP/import source or an agent role.
+- [x] Complete the owned cloud Agent lifecycle and retired-token revocation.
+  The complete original three-token map is independently proven. One new
+  owned Agent was published and independently verified in the complete
+  four-entry map after retaining the first immediate ValueError. Rotation,
+  private activation and targeted revocation passed: fresh final readback
+  proves replacement 200, retired 401 and all original three entries 200.
+  First failed immediate checks are retained; installed consumers remain
+  unchanged and still require final shipping qualification.
+- [x] Implement and independently review durable client outbox (#80):
+  protected journal, stable request IDs, honest terminal dispositions,
+  current claim authority checks and lazy replay. Disposable Redis/PG
+  replay and shipping-crate tests pass; final source CI and installed
+  offline/reconnect qualification are still pending.
+- [ ] Qualify on-site sync and final installed cloud MCP/CLI routes, then
+  remaining claims forwarding and scoped historical import. Import
+  dry-run/resume tooling is repaired; actual ingestion remains unperformed.
+  Backfill disabled does not complete the history requirement. Do not add
+  the cloud fleet candidate before runtime acceptance passes.
+- [ ] Finish role-specific cloud/fleet acceptance for the final consolidated
+  shipping revision. Worker 9e307f0 source-only deployment/source parity,
+  original complete-map authority and the owned Agent's fresh live readback
+  are verified. Final PR/main CI, native artifacts, installed clients,
+  on-site federation and off-LAN CLI/MCP checks remain pending.
 - [ ] Validate remaining network locations individually; current P1 public
   health/auth checks pass and are not a geographic-policy approval hold.
 - [ ] Reconcile DTM-WORK/DTM-SUPER-NUC client/MCP configuration and tooling

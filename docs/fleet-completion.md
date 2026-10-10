@@ -15,7 +15,8 @@ entrypoint; the fleet audit and DNS status retain their dated observations.
 | Direct routing #117 | Merged as 3b7cd9c with configured-hub routing checks | Complete source work; verify installed clients |
 | Windows GNU/Wine #120 and #121 | Both merged; #121 accepted as ecb9d25 with all 16 required checks green | Preserve shipping MCP17 and managed-process cleanup receipts |
 | Consolidation #118 and Task #119 | Existing #118 combines reviewed admission policy, Task routing, native MCP error rejection and Cloud MCP/import work | Codex: final combined review and fresh PR/main CI; close #119 only after inclusion and merge |
-| Cloud-token toolkit | Rust implementation and thin wrappers qualified on Linux, native Windows and GNU/Wine; private writes and recovery/authority gates enforced | Codex: integrate reviewed source; preserve unknown production map and obtain targeted revocation evidence separately |
+| Cloud-token toolkit | Reviewed source integrated; the complete original three-token production map is independently proven and preserved. The owned Agent was minted, published, rotated, privately activated and selectively revoked; fresh readback proves replacement 200, retired 401 and all original entries 200 | Codex: finish final source CI and installed-client acceptance; preserve first failed immediate checks |
+| Durable client outbox #80 | Implemented and independently reviewed in the consolidation: protected journal, stable request IDs, current claim authority checks and lazy replay; disposable Redis/PostgreSQL and shipping-crate tests pass | Codex: qualify final source CI and installed offline/reconnect behavior |
 
 ## Fleet acceptance
 
@@ -54,17 +55,29 @@ native artifact acceptance and installation still require their own receipts.
 The desired-state manifest is unchanged.
 
 Cloud public health is insufficient for fleet fallback. Claims remain on-site.
-Baseline cf7397a source-only Worker deployment is verified with no secret writes,
-resource creation or settings changes; hub pull and operator stats role checks
-pass. Its source receipt does not qualify this candidate's new MCP/import code.
-Known hub/operator credentials permit source-only deployment and on-site sync;
-the full production token map remains unknown and must not be overwritten.
-Final cloud acceptance still needs source/deployment parity, off-LAN CLI/MCP
-checks, federation replay/no-echo/no-offsite and the remaining original handoff
-requirements. Durable locked/checkpointed outbox #80 and targeted credential
-revocation remain open; a manual NDJSON spool is not their completion evidence.
-Current P1 public health and authentication checks pass without an approval hold;
-other network locations need their own observations.
+Reviewed Worker source 9e307f0 is deployed with strict keep-vars and verified
+source/version parity, preserving the original opaque secret and resource/settings
+identities. Authenticated raw-digest/count comparison independently established
+the complete original three-token map. One new owned Agent was published; the
+first immediate post-put check failed with ValueError, then an independent fresh
+four-entry readback passed. Rotation, private activation and targeted revocation
+are complete: fresh final readback proves replacement 200 and retired 401;
+the original three entries remain unchanged, each returns 200, and first failed
+immediate checks are retained. No installed consumer has been changed.
+This operational evidence is separate from final shipping acceptance.
+
+Durable client outbox #80 is implemented and reviewed with real disposable
+Redis/PostgreSQL replay tests; final installed offline/reconnect acceptance is
+pending. Remaining original Warp handoff work includes final consolidated
+PR/main CI and native shipping artifacts, fleet installation and fresh CLI/MCP
+qualification, on-site sync with replay/no-echo/no-offsite and cursor persistence,
+off-LAN CLI/MCP and
+individual network-location checks, and Work/NUC client reconciliation.
+Historical import tooling has read-only dry-run and content-bound resume repairs;
+actual scoped ingestion remains unperformed. Disabled backfill is not
+evidence of historical import completion. Current P1 HTTPS health and role checks
+pass with operational tooling; final installed clients and other network locations
+still need their own observations.
 
 ## Cleanup predicates
 

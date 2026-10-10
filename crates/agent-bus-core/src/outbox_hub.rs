@@ -496,8 +496,9 @@ mod backend_tests {
                 .expect("PG fixture required"),
         )
         .expect("validated disposable PG URL");
-        url.set_password(Some(&format!("invalid-fixture-{}", Uuid::new_v4())))
-            .expect("PG URL accepts password");
+        // Local disposable PostgreSQL may trust loopback; a fresh absent database
+        // refuses connection independently of its password authentication policy.
+        url.set_path(&format!("/unavailable_fixture_{}", Uuid::new_v4().simple()));
         url.into()
     }
     fn fixture() -> (Settings, redis::Connection) {

@@ -388,13 +388,12 @@ mod tests {
     #[test]
     fn removed_credentials_refuse_new_legacy_write_ahead_of_retained_debt() {
         use crate::hub_candidates::{CandidateAuth, HubCandidate};
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
         let private_root = tempfile::tempdir().unwrap();
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(private_root.path(), std::fs::Permissions::from_mode(0o700))
-                .unwrap();
-        }
+        std::fs::set_permissions(private_root.path(), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
         let temp = NamedTempFile::new_in(private_root.path()).unwrap();
         let mut settings = Settings::for_test();
         settings.server_urls = vec!["http://localhost:8484".to_owned()];
