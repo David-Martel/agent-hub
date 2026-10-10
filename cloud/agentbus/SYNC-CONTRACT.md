@@ -215,6 +215,11 @@ with the token's `hub` is a 403 for the whole request; a PER-ITEM
   pushing doesn't re-ingest its own writes. `has_more` tells the caller
   whether another page is available. A non-integer `since` is a `400`, never
   a silently-empty page with `next_cursor: null`.
+  The cursor advances over excluded rows even when the page is empty. Each
+  pull uses a captured high-water sequence; an exhausted page advances to
+  that sequence, while a page with lookahead stops at its last returned row.
+  Appends beyond the snapshot remain available on the next pull, and a
+  supplied future cursor never moves backwards.
 - `POST /sync/push-presence` (agent-hub#82) — body `{ origin_hub?: string,
   origin_host?: string, events: [{origin_id: int, timestamp_utc,
   protocol_version, agent, status, session_id?, capabilities?, metadata?,

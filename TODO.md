@@ -28,6 +28,11 @@ Current Warp integration and deployment queue: [fleet completion ledger](docs/fl
   transport interruption: two stable request IDs across separate CLI processes,
   reconnect applies two, repeat applies zero, and exact reads return two.
   The production hub was never taken offline.
+- [x] Advance the Cloud message pull cursor over an excluded-only tail without
+  skipping lookahead messages or appends beyond the captured snapshot.
+  Native disposable Durable Object tests pass all 223 cases; the original
+  source fails the new excluded-tail regression. Production capacity and
+  historical import acceptance remain separate gates.
 - [ ] Restore Cloud account capacity after confirmed free-tier Durable Objects
   read-quota exhaustion. Deployment-token billing access returns HTTP 403.
   Reconcile the failed Island first batch before resuming its validated import;
