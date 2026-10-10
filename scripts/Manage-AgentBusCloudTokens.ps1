@@ -9,7 +9,7 @@ this host's supported secret tooling before bw-upsert or wrangler-put.
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('init-manifest','mint','rotate','activate','write-client','bw-upsert','wrangler-put','wrangler-hint','smoke','status')]
+    [ValidateSet('init-manifest','mint','rotate','activate','write-client','bw-upsert','wrangler-put','revoke','wrangler-hint','smoke','status')]
     [string]$Action = 'status',
     [string]$Manifest = '',
     [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot),

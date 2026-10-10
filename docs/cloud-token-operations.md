@@ -187,6 +187,26 @@ effort.
 - [Repository entrypoint](../README.md)
 - [Example identity manifest](../config/cloud-tokens.manifest.example.json)
 - agent-hub#79, #82, #110
-- `docs/fleet-dns-and-cloud-status-2026-10-08.md`
+- `docs/fleet-dns-and-cloud-status.md`
 - `docs/QUALITY_GATES.md`
 - `cloud/agentbus/README.md`, `SYNC-CONTRACT.md`
+
+## Targeted retired-token revocation
+
+`cloud-tokens revoke` is separate from additive mint/upload. Both wrappers accept `revoke`; dry-run previews only local selection and hash-bound evidence, with no writes, providers, HTTP or on-site configuration reads. The example leaves `revocation` null to refuse implicit removal.
+
+Supply a `revocation` object with `retired` entries (`identity_id`, full `token_sha256`, `cutover_receipt_path`, `cutover_receipt_sha256`) and `exclusive_lease_path`/`exclusive_lease_sha256`. Each cutover receipt binds identity ID, retired and replacement token digests, canonical baseline digest, cloud URL, owner-observed replacement authentication/disconnection, and evidence reference. The replacement must match the identity and survive every selection. Current configured client and final operator/hub removal are refused. Unknown entries and metadata survive exactly; never put raw credentials in argv or public receipts.
+
+Existing canonical `deployed_map_authority` evidence must bind the complete independently established baseline and exact baseline-minus-selection candidate. Live proof is separate: authenticated operator `/admin/tokens/manifest` returns `utf8-secret-binding-v1` digest/count of exact deployed UTF8 bytes. Fresh baseline equality immediately precedes upload, after replacement reauthentication. Post-upload checks verify exact candidate bytes/count, replacement authentication and401 for retired credentials. UNKNOWN complete-map authority cannot authorize replacement/revocation; source-only Worker publication preserving the opaque secret remains possible.
+
+Supply an actually owned hash-bound exclusive lease: status `GRANTED`, owner, resource `cloudflare-worker:<worker_name>:AGENT_BUS_TOKENS`, RFC3339 expiry and evidence reference. Toolkit neither creates that authority nor implements provider compare-and-swap. Exclude competing mutations. Provider deadline stays120s plus2s settlement; live readback20s plus2s settlement, body capped64KiB. Raw owner-only rollback is retained before recovery editing. Failed fresh readback can leave recovery holding candidate while deployment/local files stay baseline; inspect retained rollback. Ambiguous upload/verification is a visible failure without blind retry or automatic rollback.
+
+Preview an independently prepared private manifest:
+
+```sh
+uv run python scripts/manage_agentbus_cloud_tokens.py revoke --manifest /private/revocation-manifest.json --dry-run
+```
+
+Preview proves local selection only. Actual complete baseline, scoped cutover, exclusive lease and deployed manifest route must be independently established before a real operation. No production authority is inferred from example schema or fake unit controls.
+
+Live revocation requires a build with server-mode; minimal builds reject it before recovery or file changes.

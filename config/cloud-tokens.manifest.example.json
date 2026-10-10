@@ -23,6 +23,7 @@
     "require_bw_item_before_wrangler_put": true,
     "forbid_onsite_token_reuse": true
   },
+  "revocation": null,
   "identities": [
     {
       "id": "hub-asuspro13-sync",

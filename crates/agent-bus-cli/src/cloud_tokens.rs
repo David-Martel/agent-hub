@@ -26,6 +26,8 @@ struct Manifest {
     identities: Vec<Identity>,
     #[serde(default)]
     deployed_map_authority: Option<DeployedMapAuthority>,
+    #[serde(default)]
+    revocation: Option<Revocation>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -102,6 +104,48 @@ struct DeployedMapAuthority {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct Revocation {
+    retired: Vec<RetiredToken>,
+    exclusive_lease_path: String,
+    exclusive_lease_sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RevocationLease {
+    status: String,
+    owner: String,
+    resource: String,
+    expires_at_utc: String,
+    evidence_reference: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RevocationPhase {
+    BeforeUpload,
+    AfterUpload,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct RetiredToken {
+    identity_id: String,
+    token_sha256: String,
+    cutover_receipt_path: String,
+    cutover_receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct CutoverReceipt {
+    identity_id: String,
+    retired_token_sha256: String,
+    replacement_token_sha256: String,
+    baseline_sha256: String,
+    cloud_base_url: String,
+    replacement_authenticated: bool,
+    retired_client_disconnected: bool,
+    evidence_reference: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct Bitwarden {
     #[serde(default = "default_item_name")]
     item_name: String,
@@ -132,6 +176,7 @@ pub enum CloudTokensAction {
     WranglerHint,
     BwUpsert,
     WranglerPut,
+    Revoke,
 }
 
 fn home_dir() -> Result<PathBuf> {
@@ -404,7 +449,7 @@ mod windows_private_file {
         Ok(value)
     }
 
-    pub(super) fn create(path: &Path) -> Result<fs::File> {
+    fn private_descriptor() -> Result<LocalMemory> {
         let sid = owner_sid()?;
         // Explicit current-user owner and protected DACL: no inherited or
         // other principal can read bytes, even before the first write.
@@ -425,10 +470,21 @@ mod windows_private_file {
         {
             return Err(std::io::Error::last_os_error()).context("construct private Windows DACL");
         }
-        let owned = LocalMemory(descriptor);
+        Ok(LocalMemory(descriptor))
+    }
+
+    #[cfg(test)]
+    pub(super) fn inspect_private_descriptor(inspect: impl FnOnce(*const c_void)) -> Result<()> {
+        let descriptor = private_descriptor()?;
+        inspect(descriptor.0);
+        Ok(())
+    }
+
+    pub(super) fn create(path: &Path) -> Result<fs::File> {
+        let owned = private_descriptor()?;
         let attributes = SecurityAttributes {
             length: u32::try_from(std::mem::size_of::<SecurityAttributes>())?,
-            descriptor,
+            descriptor: owned.0,
             inherit: 0,
         };
         let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
@@ -491,7 +547,17 @@ fn action_manifest(manifest: &Path, example: &Path, dry_run: bool) -> Result<Man
     }
 }
 
-fn lock_token_map(path: &Path) -> Result<fs::File> {
+/// Release the map lock even when a subprocess inherited its file description.
+struct TokenMapLock(fs::File);
+
+impl Drop for TokenMapLock {
+    fn drop(&mut self) {
+        // Closing one descriptor does not release a Unix lock while a clone survives.
+        let _ = self.0.unlock();
+    }
+}
+
+fn lock_token_map(path: &Path) -> Result<TokenMapLock> {
     validate_secret_path(path)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -516,7 +582,7 @@ fn lock_token_map(path: &Path) -> Result<fs::File> {
     };
     file.try_lock()
         .map_err(|_error| anyhow::anyhow!("another cloud-token operation holds the map lock"))?;
-    Ok(file)
+    Ok(TokenMapLock(file))
 }
 
 fn assert_no_onsite_reuse<T>(map: &BTreeMap<String, T>, onsite: Option<&str>) -> Result<()> {
@@ -1302,7 +1368,10 @@ fn token_map_sha256(map: &BTreeMap<String, Value>) -> Result<String> {
     Ok(hex_bytes(&Sha256::digest(serde_json::to_vec(&canonical)?)))
 }
 
-fn require_deployment_authority(m: &Manifest, candidate: &BTreeMap<String, Value>) -> Result<()> {
+fn authority_baseline(
+    m: &Manifest,
+    candidate: &BTreeMap<String, Value>,
+) -> Result<BTreeMap<String, Value>> {
     let evidence = m.deployed_map_authority.as_ref().context(
         "deployed-map authority UNKNOWN; upload refused; preserve the opaque deployed secret",
     )?;
@@ -1335,11 +1404,618 @@ fn require_deployment_authority(m: &Manifest, candidate: &BTreeMap<String, Value
     {
         bail!("stored-baseline or candidate authority binding differs; upload refused");
     }
-    for (token, metadata) in recovered {
+    Ok(recovered)
+}
+
+fn require_deployment_authority(m: &Manifest, candidate: &BTreeMap<String, Value>) -> Result<()> {
+    for (token, metadata) in authority_baseline(m, candidate)? {
         if candidate.get(&token) != Some(&metadata) {
             bail!("candidate omits or changes an authoritative baseline entry; upload refused");
         }
     }
+    Ok(())
+}
+
+fn token_sha256(token: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    hex_bytes(&Sha256::digest(token.as_bytes()))
+}
+
+fn read_cutover_receipt(selection: &RetiredToken) -> Result<CutoverReceipt> {
+    use sha2::{Digest as _, Sha256};
+    let path = expand_path(&selection.cutover_receipt_path)?;
+    validate_secret_path(&path)?;
+    let bytes = fs::read(path).context("read cutover evidence")?;
+    if hex_bytes(&Sha256::digest(&bytes)) != selection.cutover_receipt_sha256 {
+        bail!("cutover evidence changed; revocation refused");
+    }
+    serde_json::from_slice(&bytes).map_err(|_error| anyhow::anyhow!("parse cutover evidence"))
+}
+
+fn revocation_candidate(
+    m: &Manifest,
+    baseline: &BTreeMap<String, Value>,
+    active_client: &str,
+    mut receipt: impl FnMut(&RetiredToken) -> Result<CutoverReceipt>,
+) -> Result<BTreeMap<String, Value>> {
+    validate_token_map(baseline)?;
+    let revocation = m
+        .revocation
+        .as_ref()
+        .context("missing explicit revocation selection")?;
+    if revocation.retired.is_empty() || !baseline.contains_key(active_client) {
+        bail!("empty selection or active client is not in the baseline");
+    }
+    let baseline_sha256 = token_map_sha256(baseline)?;
+    let mut candidate = baseline.clone();
+    let mut selected = std::collections::BTreeSet::new();
+    for selection in &revocation.retired {
+        if !selected.insert(selection.token_sha256.clone()) {
+            bail!("duplicate retired-token selection");
+        }
+        let identities: Vec<_> = m
+            .identities
+            .iter()
+            .filter(|identity| identity.id == selection.identity_id)
+            .collect();
+        if identities.len() != 1 {
+            bail!("retired identity must identify exactly one manifest identity");
+        }
+        let identity = identities[0];
+        let (token, value) = baseline
+            .iter()
+            .find(|(token, _)| token_sha256(token) == selection.token_sha256)
+            .context("selected retired token is not in the baseline")?;
+        if token == active_client {
+            bail!("current active client token cannot be revoked");
+        }
+        let meta: TokenMeta = serde_json::from_value(value.clone())?;
+        if !identity_matches(
+            &meta,
+            &identity.role,
+            &identity.agent,
+            identity.host.as_deref(),
+            identity.hub.as_deref(),
+        ) {
+            bail!("retired token does not match its named identity");
+        }
+        let proof = receipt(selection)?;
+        let replacement = baseline
+            .iter()
+            .find(|(key, _)| token_sha256(key) == proof.replacement_token_sha256)
+            .context("cutover replacement is not in the authoritative baseline")?;
+        let replacement_meta: TokenMeta = serde_json::from_value(replacement.1.clone())?;
+        if proof.identity_id != selection.identity_id
+            || proof.retired_token_sha256 != selection.token_sha256
+            || proof.baseline_sha256 != baseline_sha256
+            || proof.cloud_base_url != m.cloud_base_url
+            || !proof.replacement_authenticated
+            || !proof.retired_client_disconnected
+            || proof.evidence_reference.trim().is_empty()
+            || replacement.0 == token
+            || !identity_matches(
+                &replacement_meta,
+                &identity.role,
+                &identity.agent,
+                identity.host.as_deref(),
+                identity.hub.as_deref(),
+            )
+        {
+            bail!("cutover evidence is incomplete or has a different binding");
+        }
+        candidate.remove(token);
+    }
+    validate_token_map(&candidate)?;
+    for role in ["operator", "hub"] {
+        if !candidate
+            .values()
+            .any(|value| value.get("role").and_then(Value::as_str) == Some(role))
+        {
+            bail!("revocation would leave no operator or hub token");
+        }
+    }
+    // A replacement selected for retirement elsewhere is not a cutover survivor.
+    for selection in &revocation.retired {
+        let proof = receipt(selection)?;
+        if !candidate
+            .keys()
+            .any(|token| token_sha256(token) == proof.replacement_token_sha256)
+        {
+            bail!("cutover replacement must survive the complete selection");
+        }
+    }
+    Ok(candidate)
+}
+
+fn require_revocation_authority(
+    m: &Manifest,
+    candidate: &BTreeMap<String, Value>,
+    active_client: &str,
+) -> Result<BTreeMap<String, Value>> {
+    let baseline = authority_baseline(m, candidate)?;
+    require_revocation_shape(m, &baseline, candidate, active_client, read_cutover_receipt)?;
+    Ok(baseline)
+}
+
+fn require_revocation_shape(
+    m: &Manifest,
+    baseline: &BTreeMap<String, Value>,
+    candidate: &BTreeMap<String, Value>,
+    active_client: &str,
+    receipt: impl FnMut(&RetiredToken) -> Result<CutoverReceipt>,
+) -> Result<()> {
+    if &revocation_candidate(m, baseline, active_client, receipt)? != candidate {
+        bail!("revocation candidate must be exactly baseline minus the selected retired tokens");
+    }
+    Ok(())
+}
+
+fn require_revocation_lease(m: &Manifest, remaining_seconds: i64) -> Result<()> {
+    use sha2::{Digest as _, Sha256};
+    let revocation = m
+        .revocation
+        .as_ref()
+        .context("missing revocation selection")?;
+    let path = expand_path(&revocation.exclusive_lease_path)?;
+    validate_secret_path(&path)?;
+    let bytes = fs::read(path).context("read exclusive mutation lease")?;
+    if hex_bytes(&Sha256::digest(&bytes)) != revocation.exclusive_lease_sha256 {
+        bail!("exclusive mutation lease changed");
+    }
+    let lease: RevocationLease = serde_json::from_slice(&bytes)
+        .map_err(|_error| anyhow::anyhow!("parse exclusive mutation lease"))?;
+    let expected_resource = format!(
+        "cloudflare-worker:{}:AGENT_BUS_TOKENS",
+        m.worker_name.as_deref().unwrap_or("agentbus-cloud")
+    );
+    let expires = chrono::DateTime::parse_from_rfc3339(&lease.expires_at_utc)
+        .map_err(|_error| anyhow::anyhow!("invalid mutation lease expiry"))?;
+    if lease.status != "GRANTED"
+        || lease.owner.trim().is_empty()
+        || lease.evidence_reference.trim().is_empty()
+        || lease.resource != expected_resource
+        || (expires.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds()
+            < remaining_seconds
+    {
+        bail!("exclusive mutation lease is missing or has insufficient remaining time");
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "server-mode", test))]
+fn validate_live_token_manifest(value: &Value, raw_sha256: &str, count: usize) -> Result<()> {
+    if value.get("representation").and_then(Value::as_str) != Some("utf8-secret-binding-v1")
+        || value.get("sha256").and_then(Value::as_str) != Some(raw_sha256)
+        || value.get("entry_count").and_then(Value::as_u64) != u64::try_from(count).ok()
+    {
+        bail!("live production token manifest differs; mutation/readback not verified");
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "server-mode", test))]
+const MANIFEST_BODY_LIMIT: usize = 65_536;
+
+#[cfg(any(feature = "server-mode", test))]
+fn checked_manifest_content_length(length: Option<u64>) -> Result<()> {
+    if length.is_some_and(|length| length > MANIFEST_BODY_LIMIT as u64) {
+        bail!("production manifest response exceeds the bounded body limit");
+    }
+    Ok(())
+}
+
+#[cfg(any(feature = "server-mode", test))]
+fn checked_manifest_body_size(current: usize, additional: usize) -> Result<usize> {
+    current
+        .checked_add(additional)
+        .filter(|size| *size <= MANIFEST_BODY_LIMIT)
+        .context("production manifest response exceeds the bounded body limit")
+}
+
+#[cfg(feature = "server-mode")]
+async fn read_live_token_manifest(mut response: reqwest::Response) -> Result<Value> {
+    checked_manifest_content_length(response.content_length())?;
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_error| anyhow::anyhow!("read production manifest body"))?
+    {
+        checked_manifest_body_size(bytes.len(), chunk.len())?;
+        bytes.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&bytes).map_err(|_error| anyhow::anyhow!("parse production manifest"))
+}
+
+#[cfg(feature = "server-mode")]
+fn verify_live_revocation(
+    m: &Manifest,
+    baseline: &BTreeMap<String, Value>,
+    candidate: &BTreeMap<String, Value>,
+    phase: RevocationPhase,
+) -> Result<()> {
+    use sha2::{Digest as _, Sha256};
+    let base = reqwest::Url::parse(&m.cloud_base_url)
+        .map_err(|_error| anyhow::anyhow!("invalid cloud URL"))?;
+    if !base.username().is_empty()
+        || base.password().is_some()
+        || base.query().is_some()
+        || base.fragment().is_some()
+        || base.scheme() != "https"
+    {
+        bail!("live revocation requires a credential-free HTTPS cloud URL");
+    }
+    let authority = m
+        .deployed_map_authority
+        .as_ref()
+        .context("authority missing")?;
+    let bytes = if phase == RevocationPhase::BeforeUpload {
+        let bytes = fs::read(expand_path(&authority.baseline_path)?)?;
+        let captured: BTreeMap<String, Value> = serde_json::from_slice(&bytes)
+            .map_err(|_error| anyhow::anyhow!("parse production proof baseline"))?;
+        if &captured != baseline {
+            bail!("production proof baseline changed");
+        }
+        bytes
+    } else {
+        // Exactly the bytes passed to Wrangler, not the canonical authority hash.
+        serde_json::to_vec(candidate)?
+    };
+    let expected_hash = hex_bytes(&Sha256::digest(&bytes));
+    let count = if phase == RevocationPhase::BeforeUpload {
+        baseline.len()
+    } else {
+        candidate.len()
+    };
+    let operator = candidate
+        .iter()
+        .find(|(_, value)| value.get("role").and_then(Value::as_str) == Some("operator"))
+        .context("no surviving operator for manifest readback")?
+        .0
+        .clone();
+    let mut replacements = Vec::new();
+    let mut retired = Vec::new();
+    for selection in &m.revocation.as_ref().context("missing revocation")?.retired {
+        let proof = read_cutover_receipt(selection)?;
+        replacements.push(
+            candidate
+                .keys()
+                .find(|token| token_sha256(token) == proof.replacement_token_sha256)
+                .context("replacement must survive")?
+                .clone(),
+        );
+        retired.push(
+            baseline
+                .keys()
+                .find(|token| token_sha256(token) == selection.token_sha256)
+                .context("retired baseline entry missing")?
+                .clone(),
+        );
+    }
+    let base = base.as_str().trim_end_matches('/').to_owned();
+    run_live_revocation_readback(LiveRevocationReadback {
+        base,
+        operator,
+        replacements,
+        retired,
+        expected_hash,
+        count,
+        phase,
+    })
+}
+
+#[cfg(feature = "server-mode")]
+struct LiveRevocationReadback {
+    base: String,
+    operator: String,
+    replacements: Vec<String>,
+    retired: Vec<String>,
+    expected_hash: String,
+    count: usize,
+    phase: RevocationPhase,
+}
+
+#[cfg(feature = "server-mode")]
+async fn live_revocation_requests(
+    readback: LiveRevocationReadback,
+    budget: std::time::Duration,
+) -> Result<()> {
+    let LiveRevocationReadback {
+        base,
+        operator,
+        replacements,
+        retired,
+        expected_hash,
+        count,
+        phase,
+    } = readback;
+    let client = reqwest::Client::builder()
+        .timeout(budget)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_error| anyhow::anyhow!("build revocation HTTP client"))?;
+    for token in &replacements {
+        let response = client
+            .get(format!("{base}/presence"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|_error| anyhow::anyhow!("replacement authentication transport failed"))?;
+        if !response.status().is_success() {
+            bail!("replacement is not currently authenticated");
+        }
+    }
+    if phase == RevocationPhase::AfterUpload {
+        for token in &retired {
+            let response = client
+                .get(format!("{base}/presence"))
+                .bearer_auth(token)
+                .send()
+                .await
+                .map_err(|_error| {
+                    anyhow::anyhow!("retired credential readback transport failed")
+                })?;
+            if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+                bail!("retired credential rejection is not verified");
+            }
+        }
+    }
+    // Last request before secret-put is the fresh, operator-only raw binding.
+    let response = client
+        .get(format!("{base}/admin/tokens/manifest"))
+        .bearer_auth(&operator)
+        .send()
+        .await
+        .map_err(|_error| anyhow::anyhow!("production manifest transport failed"))?;
+    if !response.status().is_success() {
+        bail!("operator manifest readback denied");
+    }
+    let value = read_live_token_manifest(response).await?;
+    validate_live_token_manifest(&value, &expected_hash, count)
+}
+
+#[cfg(feature = "server-mode")]
+fn run_live_revocation_readback(readback: LiveRevocationReadback) -> Result<()> {
+    let started = std::time::Instant::now();
+    let budget = std::time::Duration::from_secs(20);
+    let settlement = std::time::Duration::from_secs(2);
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    let (done, cleanup) = std::sync::mpsc::sync_channel(1);
+    let _worker = std::thread::Builder::new()
+        .name("cloud-token-revocation-readback".to_owned())
+        .spawn(move || {
+            let runtime = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(runtime) => runtime,
+                Err(_error) => {
+                    let _ = sender.send(Err(anyhow::anyhow!("build readback runtime")));
+                    let _ = done.send(());
+                    return;
+                }
+            };
+            let result = runtime.block_on(async {
+                tokio::time::timeout(
+                    budget.saturating_sub(started.elapsed()),
+                    live_revocation_requests(readback, budget),
+                )
+                .await
+            });
+            let result = if started.elapsed() >= budget {
+                Err(anyhow::anyhow!("live revocation readback deadline"))
+            } else {
+                result.unwrap_or_else(|_deadline| {
+                    Err(anyhow::anyhow!("live revocation readback deadline"))
+                })
+            };
+            let _ = sender.send(result);
+            runtime.shutdown_timeout((budget + settlement).saturating_sub(started.elapsed()));
+            let _ = done.send(());
+        })
+        .context("start owned revocation readback worker")?;
+    let result = receiver
+        .recv_timeout((budget + settlement).saturating_sub(started.elapsed()))
+        .map_err(|_error| {
+            anyhow::anyhow!("revocation readback unsettled; do not retry mutation")
+        })?;
+    if cleanup
+        .recv_timeout((budget + settlement).saturating_sub(started.elapsed()))
+        .is_err()
+    {
+        return Err(result
+            .err()
+            .unwrap_or_else(|| anyhow::anyhow!("readback runtime cleanup unsettled")));
+    }
+    if started.elapsed() >= budget + settlement {
+        bail!("revocation readback settlement deadline");
+    }
+    result
+}
+
+#[cfg(not(feature = "server-mode"))]
+fn verify_live_revocation(
+    _m: &Manifest,
+    _baseline: &BTreeMap<String, Value>,
+    _candidate: &BTreeMap<String, Value>,
+    _phase: RevocationPhase,
+) -> Result<()> {
+    bail!("live revocation requires server-mode for authenticated manifest readback")
+}
+
+fn cmd_revoke(
+    manifest: &Path,
+    root: Option<&Path>,
+    dry_run: bool,
+    invoke: impl FnMut(&str, &[&str], Option<&[u8]>, Option<&Path>) -> Result<Vec<u8>>,
+    live: impl FnMut(
+        &Manifest,
+        &BTreeMap<String, Value>,
+        &BTreeMap<String, Value>,
+        RevocationPhase,
+    ) -> Result<()>,
+) -> Result<()> {
+    #[cfg(not(feature = "server-mode"))]
+    if !dry_run {
+        bail!("live revocation requires server-mode before any recovery mutation");
+    }
+    cmd_revoke_with_onsite(manifest, root, dry_run, invoke, live, onsite_hub_token_fp)
+}
+
+fn preserve_revocation_rollback(
+    m: &Manifest,
+    baseline: &BTreeMap<String, Value>,
+    store: &Path,
+    client: &Path,
+) -> Result<()> {
+    let backup_dir = expand_path(&m.anti_lockout.backup_dir)?;
+    validate_secret_path(&backup_dir)?;
+    fs::create_dir_all(&backup_dir)?;
+    let rollback = backup_dir.join(format!(
+        "revocation-baseline-{}.json",
+        token_map_sha256(baseline)?
+    ));
+    let baseline_path = expand_path(
+        &m.deployed_map_authority
+            .as_ref()
+            .context("authority missing")?
+            .baseline_path,
+    )?;
+    let baseline_bytes = fs::read(&baseline_path)?;
+    let backup_map: BTreeMap<String, Value> = serde_json::from_slice(&baseline_bytes)
+        .map_err(|_error| anyhow::anyhow!("parse rollback baseline"))?;
+    if &backup_map != baseline {
+        bail!("authoritative baseline changed before rollback preservation");
+    }
+    for protected in [store, client, baseline_path.as_path()] {
+        if resolved_storage_path(&rollback)? == resolved_storage_path(protected)? {
+            bail!("rollback must be distinct from live files and authority baseline");
+        }
+    }
+    if rollback.exists() {
+        validate_secret_path(&rollback)?;
+        if fs::read(&rollback)? != baseline_bytes {
+            bail!("rollback baseline collision");
+        }
+    } else {
+        let mut file = create_private_file(&rollback)?;
+        file.write_all(&baseline_bytes)?;
+        file.sync_all()?;
+    }
+    Ok(())
+}
+
+fn cmd_revoke_with_onsite(
+    manifest: &Path,
+    root: Option<&Path>,
+    dry_run: bool,
+    mut invoke: impl FnMut(&str, &[&str], Option<&[u8]>, Option<&Path>) -> Result<Vec<u8>>,
+    mut live: impl FnMut(
+        &Manifest,
+        &BTreeMap<String, Value>,
+        &BTreeMap<String, Value>,
+        RevocationPhase,
+    ) -> Result<()>,
+    onsite: impl FnOnce() -> Result<Option<String>>,
+) -> Result<()> {
+    use base64::Engine as _;
+    // No manifest initialization, locks, provider calls or file writes in preview.
+    let m = load_manifest(manifest)?;
+    validate_storage_paths(&m.storage)?;
+    if !m.anti_lockout.keep_previous_map_backup
+        || !m.anti_lockout.require_bw_item_before_wrangler_put
+    {
+        bail!("revocation requires baseline backup and recovery gates");
+    }
+    let store = expand_path(&m.storage.tokens_map_path)?;
+    let client = expand_path(&m.storage.client_token_path)?;
+    let active_client = fs::read_to_string(&client).context("read active client binding")?;
+    let active_client = active_client.trim();
+    let original = read_token_map(&store)?;
+    let candidate = revocation_candidate(&m, &original, active_client, read_cutover_receipt)?;
+    let baseline = require_revocation_authority(&m, &candidate, active_client)?;
+    if original != baseline {
+        bail!("local map must equal the authoritative baseline before revocation");
+    }
+    let worker = m.worker_name.as_deref().unwrap_or("agentbus-cloud");
+    if worker.is_empty()
+        || !worker
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        bail!("invalid Worker name");
+    }
+    let cwd = root.unwrap_or(Path::new(".")).join("cloud/agentbus");
+    if !cwd.is_dir() {
+        bail!("cloud Worker directory is missing");
+    }
+    if dry_run {
+        println!(
+            "DRY: exact retired-token removal validated; no providers invoked or files changed"
+        );
+        return Ok(());
+    }
+    assert_no_onsite_reuse(&baseline, onsite()?.as_deref())?;
+    require_revocation_lease(&m, 150)?;
+    let _lock = lock_token_map(&store)?;
+    if read_token_map(&store)? != baseline || fs::read_to_string(&client)?.trim() != active_client {
+        bail!("local baseline or active client changed before revocation");
+    }
+    require_unlocked_bw(&mut invoke)?;
+    let raw = invoke("bw", &["get", "item", &m.bitwarden.item_name], None, None)?;
+    let mut item: Value = serde_json::from_slice(&raw)
+        .map_err(|_error| anyhow::anyhow!("parse Bitwarden recovery item"))?;
+    if recovered_token_map(&item)? != baseline {
+        bail!("recovery baseline differs; revocation refused");
+    }
+    let id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .context("existing recovery item has no id")?
+        .to_owned();
+    preserve_revocation_rollback(&m, &baseline, &store, &client)?;
+    item["notes"] = Value::String(serde_json::to_string(&candidate)?);
+    let encoded = base64::engine::general_purpose::STANDARD.encode(serde_json::to_vec(&item)?);
+    require_revocation_lease(&m, 150)?;
+    invoke("bw", &["edit", "item", &id], Some(encoded.as_bytes()), None)
+        .context("recovery mutation failed; inspect retained rollback before any retry")?;
+    verify_recovery(&m, &candidate, &mut invoke)
+        .context("candidate recovery not verified; upload not attempted")?;
+    let body = serde_json::to_vec(&candidate)?;
+    require_revocation_lease(&m, 150)?;
+    live(&m, &baseline, &candidate, RevocationPhase::BeforeUpload)?;
+    // Cover the existing 120s provider budget, 2s settlement, and 22s readback.
+    require_revocation_lease(&m, 150)?;
+    if read_token_map(&store)? != baseline || fs::read_to_string(&client)?.trim() != active_client {
+        bail!(
+            "local baseline or active client changed before upload; recovery may contain candidate"
+        );
+    }
+    invoke(
+        "wrangler",
+        &["secret", "put", "AGENT_BUS_TOKENS", "--name", worker],
+        Some(&body),
+        Some(&cwd),
+    )
+    .context("upload failed or ambiguous; recovery may contain candidate; do not retry blindly")?;
+    require_revocation_lease(&m, 25).context(
+        "upload returned success but lease no longer covers readback; reconcile before retry",
+    )?;
+    live(&m, &baseline, &candidate, RevocationPhase::AfterUpload).context(
+        "upload returned success but production revocation readback failed; do not retry blindly",
+    )?;
+    require_revocation_lease(&m, 1).context(
+        "production readback returned but mutation lease expired before local publication",
+    )?;
+    write_secret_file(&store, &serde_json::to_string_pretty(&candidate)?).context(
+        "upload returned success but local map publication failed; reconcile before retry",
+    )?;
+    require_revocation_lease(&m, 1)
+        .context("local map was published but mutation lease expired; reconcile before retry")?;
+    println!(
+        "Exact retired-token removal and live rejection/readback verified; rollback retained (values redacted)"
+    );
     Ok(())
 }
 
@@ -1533,6 +2209,13 @@ pub fn run_cloud_tokens(
             dry_run,
             run_external,
         ),
+        CloudTokensAction::Revoke => cmd_revoke(
+            &manifest_path,
+            repo_root,
+            dry_run,
+            run_external,
+            verify_live_revocation,
+        ),
     }
 }
 
@@ -1540,6 +2223,508 @@ pub fn run_cloud_tokens(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn revocation_fixture(
+        dir: &Path,
+    ) -> (PathBuf, Manifest, BTreeMap<String, Value>, CutoverReceipt) {
+        use sha2::{Digest as _, Sha256};
+        let (manifest, example) = sample_manifest(dir);
+        let mut value: Value = serde_json::from_slice(&fs::read(&example).unwrap()).unwrap();
+        let old = "a".repeat(64);
+        let replacement = "b".repeat(64);
+        let baseline = BTreeMap::from([
+            (
+                old.clone(),
+                serde_json::json!({"role":"agent", "agent":"warp-oz-p1gen7", "host":"dtm-p1gen7"}),
+            ),
+            (
+                replacement.clone(),
+                serde_json::json!({"role":"agent", "agent":"warp-oz-p1gen7", "host":"dtm-p1gen7"}),
+            ),
+            (
+                "c".repeat(64),
+                serde_json::json!({"role":"hub", "agent":"asuspro13-sync", "hub":"asuspro13"}),
+            ),
+            (
+                "d".repeat(64),
+                serde_json::json!({"role":"operator", "agent":"operator"}),
+            ),
+            (
+                "e".repeat(64),
+                serde_json::json!({"role":"agent", "agent":"unknown-to-manifest", "extension":{"nested":[17,true,"retain"]}}),
+            ),
+        ]);
+        let mut candidate = baseline.clone();
+        candidate.remove(&old);
+        let authority_path = dir.join("independent-baseline.json");
+        write_secret_file(
+            &authority_path,
+            &serde_json::to_string_pretty(&baseline).unwrap(),
+        )
+        .unwrap();
+        write_secret_file(
+            &dir.join("tokens.json"),
+            &serde_json::to_string(&baseline).unwrap(),
+        )
+        .unwrap();
+        write_secret_file(&dir.join("client.token"), &replacement).unwrap();
+        let proof = CutoverReceipt {
+            identity_id: "ag".into(),
+            retired_token_sha256: token_sha256(&old),
+            replacement_token_sha256: token_sha256(&replacement),
+            baseline_sha256: token_map_sha256(&baseline).unwrap(),
+            cloud_base_url: "https://agentbus.example.test".into(),
+            replacement_authenticated: true,
+            retired_client_disconnected: true,
+            evidence_reference: "isolated fake cutover; not production evidence".into(),
+        };
+        let receipt_path = dir.join("cutover.json");
+        let receipt_bytes = serde_json::to_vec(&proof).unwrap();
+        fs::write(&receipt_path, &receipt_bytes).unwrap();
+        let lease_path = dir.join("lease.json");
+        let lease_bytes = serde_json::to_vec(&serde_json::json!({
+            "status":"GRANTED", "owner":"isolated-fake-owner",
+            "resource":"cloudflare-worker:agentbus-cloud:AGENT_BUS_TOKENS",
+            "expires_at_utc":(chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            "evidence_reference":"isolated fake lease; not coordination evidence"
+        }))
+        .unwrap();
+        fs::write(&lease_path, &lease_bytes).unwrap();
+        value["deployed_map_authority"] = serde_json::json!({
+            "source_kind":"independently-verified-stored-baseline",
+            "authority_reference":"isolated simulated authority; not production evidence",
+            "baseline_path":authority_path,
+            "baseline_sha256":token_map_sha256(&baseline).unwrap(),
+            "candidate_sha256":token_map_sha256(&candidate).unwrap()
+        });
+        value["revocation"] = serde_json::json!({
+            "retired":[{"identity_id":"ag", "token_sha256":token_sha256(&old),
+                "cutover_receipt_path":receipt_path, "cutover_receipt_sha256":hex_bytes(&Sha256::digest(&receipt_bytes))}],
+            "exclusive_lease_path":lease_path,
+            "exclusive_lease_sha256":hex_bytes(&Sha256::digest(&lease_bytes))
+        });
+        fs::create_dir_all(dir.join("cloud/agentbus")).unwrap();
+        fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+        let m = load_manifest(&manifest).unwrap();
+        (manifest, m, baseline, proof)
+    }
+
+    #[test]
+    fn revocation_removes_exact_selection_and_retains_unknown_metadata() {
+        let dir = tempdir().unwrap();
+        let (_, m, baseline, proof) = revocation_fixture(dir.path());
+        let candidate =
+            revocation_candidate(&m, &baseline, &"b".repeat(64), |_| Ok(proof.clone())).unwrap();
+        let mut expected = baseline.clone();
+        expected.remove(&"a".repeat(64));
+        assert_eq!(candidate, expected);
+        assert_eq!(
+            candidate.get(&"e".repeat(64)),
+            baseline.get(&"e".repeat(64))
+        );
+        assert!(require_revocation_authority(&m, &candidate, &"b".repeat(64)).is_ok());
+        assert!(
+            require_deployment_authority(&m, &candidate).is_err(),
+            "additive upload guard must still reject removal"
+        );
+    }
+
+    #[test]
+    fn revocation_rejects_changed_or_omitted_surviving_entries() {
+        let dir = tempdir().unwrap();
+        let (_, m, baseline, proof) = revocation_fixture(dir.path());
+        let candidate =
+            revocation_candidate(&m, &baseline, &"b".repeat(64), |_| Ok(proof.clone())).unwrap();
+        for scenario in 0..3 {
+            let mut changed = candidate.clone();
+            match scenario {
+                0 => {
+                    changed.remove(&"e".repeat(64));
+                }
+                1 => {
+                    changed.get_mut(&"e".repeat(64)).unwrap()["extension"] = Value::Null;
+                }
+                2 => {
+                    changed.insert("f".repeat(64), baseline[&"e".repeat(64)].clone());
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                require_revocation_shape(&m, &baseline, &changed, &"b".repeat(64), |_| Ok(
+                    proof.clone()
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn revocation_refuses_active_client_and_invalid_cutover_binding() {
+        let dir = tempdir().unwrap();
+        let (_, m, baseline, proof) = revocation_fixture(dir.path());
+        assert!(
+            revocation_candidate(&m, &baseline, &"a".repeat(64), |_| Ok(proof.clone())).is_err()
+        );
+        for scenario in 0..9 {
+            let mut changed = proof.clone();
+            match scenario {
+                0 => changed.replacement_authenticated = false,
+                1 => changed.retired_client_disconnected = false,
+                2 => changed.baseline_sha256 = "0".repeat(64),
+                3 => changed.identity_id = "other".into(),
+                4 => changed.retired_token_sha256 = token_sha256(&"e".repeat(64)),
+                5 => changed.replacement_token_sha256 = token_sha256(&"a".repeat(64)),
+                6 => changed.replacement_token_sha256 = token_sha256(&"d".repeat(64)),
+                7 => changed.cloud_base_url = "https://different.example.test".into(),
+                8 => changed.evidence_reference.clear(),
+                _ => unreachable!(),
+            }
+            assert!(
+                revocation_candidate(&m, &baseline, &"b".repeat(64), |_| Ok(changed.clone()))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn revocation_refuses_duplicate_or_missing_named_selection() {
+        let dir = tempdir().unwrap();
+        let (_, m, baseline, proof) = revocation_fixture(dir.path());
+        for scenario in 0..4 {
+            let mut changed = m.clone();
+            match scenario {
+                0 => changed.revocation.as_mut().unwrap().retired.clear(),
+                1 => {
+                    let selection = changed.revocation.as_ref().unwrap().retired[0].clone();
+                    changed.revocation.as_mut().unwrap().retired.push(selection);
+                }
+                2 => changed.revocation.as_mut().unwrap().retired[0].identity_id = "unknown".into(),
+                3 => changed.identities.push(changed.identities[2].clone()),
+                _ => unreachable!(),
+            }
+            assert!(
+                revocation_candidate(&changed, &baseline, &"b".repeat(64), |_| Ok(proof.clone()))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn revocation_refuses_removing_last_operator_or_hub() {
+        let dir = tempdir().unwrap();
+        let (_, m, original, _) = revocation_fixture(dir.path());
+        for (identity_id, first) in [("op", "d".repeat(64)), ("hub", "c".repeat(64))] {
+            let second = "f".repeat(64);
+            let mut baseline = original.clone();
+            baseline.insert(second.clone(), baseline[&first].clone());
+            let mut changed = m.clone();
+            let selection = changed.revocation.as_ref().unwrap().retired[0].clone();
+            changed.revocation.as_mut().unwrap().retired = [first.clone(), second.clone()]
+                .into_iter()
+                .map(|token| RetiredToken {
+                    identity_id: identity_id.into(),
+                    token_sha256: token_sha256(&token),
+                    ..selection.clone()
+                })
+                .collect();
+            let error = revocation_candidate(&changed, &baseline, &"b".repeat(64), |selected| {
+                Ok(CutoverReceipt {
+                    identity_id: identity_id.into(),
+                    retired_token_sha256: selected.token_sha256.clone(),
+                    replacement_token_sha256: token_sha256(
+                        if selected.token_sha256 == token_sha256(&first) {
+                            &second
+                        } else {
+                            &first
+                        },
+                    ),
+                    baseline_sha256: token_map_sha256(&baseline).unwrap(),
+                    cloud_base_url: changed.cloud_base_url.clone(),
+                    replacement_authenticated: true,
+                    retired_client_disconnected: true,
+                    evidence_reference: "isolated cyclic retirement fixture".into(),
+                })
+            })
+            .unwrap_err();
+            assert!(error.to_string().contains("leave no operator or hub"));
+        }
+    }
+
+    #[test]
+    fn revocation_dry_run_changes_no_files_and_invokes_no_tools_or_http() {
+        let dir = tempdir().unwrap();
+        let (manifest, _, _, _) = revocation_fixture(dir.path());
+        let before: BTreeMap<_, _> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_file())
+            .map(|path| (path.clone(), fs::read(path).unwrap()))
+            .collect();
+        cmd_revoke(
+            &manifest,
+            Some(dir.path()),
+            true,
+            |_, _, _, _| panic!("dry run must never invoke a provider"),
+            |_, _, _, _| panic!("dry run must never send HTTP"),
+        )
+        .unwrap();
+        let after: BTreeMap<_, _> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.is_file())
+            .map(|path| (path.clone(), fs::read(path).unwrap()))
+            .collect();
+        assert_eq!(after, before);
+        assert!(!dir.path().join("backups").exists());
+        assert!(
+            !pending_client_path(&dir.path().join("client.token"))
+                .unwrap()
+                .exists()
+        );
+    }
+
+    #[test]
+    fn revocation_refuses_unknown_authority_and_changed_cutover_before_providers() {
+        let dir = tempdir().unwrap();
+        let (manifest, m, _, _) = revocation_fixture(dir.path());
+        fs::write(
+            &m.revocation.as_ref().unwrap().retired[0].cutover_receipt_path,
+            b"changed",
+        )
+        .unwrap();
+        assert!(
+            cmd_revoke(
+                &manifest,
+                Some(dir.path()),
+                false,
+                |_, _, _, _| panic!("changed receipt must refuse before providers"),
+                |_, _, _, _| panic!("changed receipt must refuse before HTTP")
+            )
+            .is_err()
+        );
+        let fresh = tempdir().unwrap();
+        let (manifest, _, _, _) = revocation_fixture(fresh.path());
+        let mut value: Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("deployed_map_authority");
+        fs::write(&manifest, serde_json::to_vec(&value).unwrap()).unwrap();
+        assert!(
+            cmd_revoke(
+                &manifest,
+                Some(fresh.path()),
+                false,
+                |_, _, _, _| panic!("UNKNOWN authority must refuse before providers"),
+                |_, _, _, _| panic!("UNKNOWN authority must refuse before HTTP")
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn live_manifest_binding_is_raw_utf8_not_canonical_authority() {
+        use sha2::{Digest as _, Sha256};
+        let dir = tempdir().unwrap();
+        let (_, _, baseline, _) = revocation_fixture(dir.path());
+        let raw = serde_json::to_vec_pretty(&baseline).unwrap();
+        let raw_hash = hex_bytes(&Sha256::digest(&raw));
+        let canonical_hash = token_map_sha256(&baseline).unwrap();
+        assert_ne!(raw_hash, canonical_hash);
+        let valid = serde_json::json!({"representation":"utf8-secret-binding-v1", "sha256":raw_hash, "entry_count":baseline.len()});
+        assert!(validate_live_token_manifest(&valid, &raw_hash, baseline.len()).is_ok());
+        for scenario in 0..4 {
+            let mut changed = valid.clone();
+            match scenario {
+                0 => changed["sha256"] = serde_json::json!(canonical_hash),
+                1 => changed["entry_count"] = serde_json::json!(baseline.len() + 1),
+                2 => changed["representation"] = serde_json::json!("canonical-map-v1"),
+                3 => changed["entry_count"] = serde_json::json!(5.0),
+                _ => unreachable!(),
+            }
+            assert!(validate_live_token_manifest(&changed, &raw_hash, baseline.len()).is_err());
+        }
+    }
+
+    #[test]
+    fn live_manifest_body_limit_refuses_declared_or_streamed_overflow() {
+        assert!(checked_manifest_content_length(None).is_ok());
+        assert!(checked_manifest_content_length(Some(MANIFEST_BODY_LIMIT as u64)).is_ok());
+        assert!(checked_manifest_content_length(Some(MANIFEST_BODY_LIMIT as u64 + 1)).is_err());
+        assert_eq!(
+            checked_manifest_body_size(0, MANIFEST_BODY_LIMIT).unwrap(),
+            MANIFEST_BODY_LIMIT
+        );
+        assert_eq!(
+            checked_manifest_body_size(17, MANIFEST_BODY_LIMIT - 17).unwrap(),
+            MANIFEST_BODY_LIMIT
+        );
+        assert!(checked_manifest_body_size(0, MANIFEST_BODY_LIMIT + 1).is_err());
+        assert!(checked_manifest_body_size(MANIFEST_BODY_LIMIT, 1).is_err());
+        assert!(checked_manifest_body_size(usize::MAX, 1).is_err());
+    }
+
+    #[test]
+    fn revocation_lease_rejects_changed_or_expired_mutation_evidence() {
+        use sha2::{Digest as _, Sha256};
+        let dir = tempdir().unwrap();
+        let (_, m, _, _) = revocation_fixture(dir.path());
+        assert!(require_revocation_lease(&m, 150).is_ok());
+        let revocation = m.revocation.as_ref().unwrap();
+        let bytes = fs::read(&revocation.exclusive_lease_path).unwrap();
+        for scenario in 0..4 {
+            let mut changed = m.clone();
+            let mut value: Value = serde_json::from_slice(&bytes).unwrap();
+            match scenario {
+                0 => {
+                    value["expires_at_utc"] = serde_json::json!(
+                        (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339()
+                    );
+                }
+                1 => value["status"] = serde_json::json!("RELEASED"),
+                2 => value["resource"] = serde_json::json!("different-worker"),
+                3 => value["owner"] = serde_json::json!(""),
+                _ => unreachable!(),
+            }
+            let altered = serde_json::to_vec(&value).unwrap();
+            fs::write(&revocation.exclusive_lease_path, &altered).unwrap();
+            assert!(
+                require_revocation_lease(&m, 150).is_err(),
+                "changed hash must refuse"
+            );
+            changed.revocation.as_mut().unwrap().exclusive_lease_sha256 =
+                hex_bytes(&Sha256::digest(&altered));
+            assert!(
+                require_revocation_lease(&changed, 150).is_err(),
+                "invalid bound lease must refuse"
+            );
+        }
+    }
+
+    fn assert_revocation_events(events: &[&str], before_ok: bool) {
+        assert_eq!(
+            events,
+            if before_ok {
+                vec!["recovery-edit", "live-before", "upload", "live-after"]
+            } else {
+                vec!["recovery-edit", "live-before"]
+            }
+        );
+    }
+
+    #[test]
+    fn revocation_fake_providers_preserve_rollback_and_require_fresh_readback() {
+        use base64::Engine as _;
+        for before_ok in [false, true] {
+            let dir = tempdir().unwrap();
+            let (manifest, m, baseline, proof) = revocation_fixture(dir.path());
+            let candidate =
+                revocation_candidate(&m, &baseline, &"b".repeat(64), |_| Ok(proof.clone()))
+                    .unwrap();
+            let baseline_bytes = fs::read(
+                m.deployed_map_authority
+                    .as_ref()
+                    .unwrap()
+                    .baseline_path
+                    .clone(),
+            )
+            .unwrap();
+            let mut item = serde_json::json!({"id":"fake-existing-item", "notes":serde_json::to_string(&baseline).unwrap(), "fields":[{"name":"retain", "value":"fake-nonsecret"}]});
+            let events = std::cell::RefCell::new(Vec::new());
+            let result = cmd_revoke_with_onsite(
+                &manifest,
+                Some(dir.path()),
+                false,
+                |program, args, input, cwd| {
+                    assert!(
+                        !args.iter().any(|arg| baseline.contains_key(*arg)),
+                        "tokens must not enter argv"
+                    );
+                    match (program, args) {
+                        ("bw", ["status"]) => Ok(br#"{"status":"unlocked"}"#.to_vec()),
+                        ("bw", ["get", "item", _]) => Ok(serde_json::to_vec(&item).unwrap()),
+                        ("bw", ["edit", "item", "fake-existing-item"]) => {
+                            events.borrow_mut().push("recovery-edit");
+                            item = serde_json::from_slice(
+                                &base64::engine::general_purpose::STANDARD
+                                    .decode(input.unwrap())
+                                    .unwrap(),
+                            )
+                            .unwrap();
+                            assert_eq!(
+                                item["fields"],
+                                serde_json::json!([{"name":"retain", "value":"fake-nonsecret"}])
+                            );
+                            assert_eq!(recovered_token_map(&item).unwrap(), candidate);
+                            Ok(Vec::new())
+                        }
+                        (
+                            "wrangler",
+                            [
+                                "secret",
+                                "put",
+                                "AGENT_BUS_TOKENS",
+                                "--name",
+                                "agentbus-cloud",
+                            ],
+                        ) => {
+                            assert!(events.borrow().contains(&"live-before"));
+                            assert!(before_ok, "failed fresh readback must prevent upload");
+                            assert_eq!(cwd.unwrap(), dir.path().join("cloud/agentbus"));
+                            assert_eq!(input.unwrap(), serde_json::to_vec(&candidate).unwrap());
+                            events.borrow_mut().push("upload");
+                            Ok(Vec::new())
+                        }
+                        _ => panic!("unexpected fake provider invocation"),
+                    }
+                },
+                |_, observed_baseline, observed_candidate, phase| {
+                    assert_eq!(observed_baseline, &baseline);
+                    assert_eq!(observed_candidate, &candidate);
+                    match phase {
+                        RevocationPhase::BeforeUpload => {
+                            events.borrow_mut().push("live-before");
+                            if !before_ok {
+                                bail!("isolated fake raw-binding mismatch");
+                            }
+                        }
+                        RevocationPhase::AfterUpload => {
+                            assert!(events.borrow().contains(&"upload"));
+                            events.borrow_mut().push("live-after");
+                        }
+                    }
+                    Ok(())
+                },
+                || Ok(None),
+            );
+            let rollback = dir.path().join("backups").join(format!(
+                "revocation-baseline-{}.json",
+                token_map_sha256(&baseline).unwrap()
+            ));
+            assert_eq!(fs::read(rollback).unwrap(), baseline_bytes);
+            assert_eq!(result.is_ok(), before_ok);
+            assert_eq!(
+                read_token_map(&dir.path().join("tokens.json")).unwrap(),
+                if before_ok { candidate } else { baseline }
+            );
+            assert_revocation_events(&events.borrow(), before_ok);
+        }
+    }
+
+    #[test]
+    fn revocation_dry_run_never_reads_onsite_configuration() {
+        let dir = tempdir().unwrap();
+        let (manifest, _, _, _) = revocation_fixture(dir.path());
+        cmd_revoke_with_onsite(
+            &manifest,
+            Some(dir.path()),
+            true,
+            |_, _, _, _| panic!("dry-run provider"),
+            |_, _, _, _| panic!("dry-run HTTP"),
+            || panic!("dry-run onsite configuration read"),
+        )
+        .unwrap();
+    }
 
     fn sample_manifest(dir: &Path) -> (PathBuf, PathBuf) {
         let example = dir.join("example.json");
@@ -2219,6 +3404,20 @@ mod tests {
         assert!(!dir.path().join("backups").exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn map_lock_drop_unlocks_while_an_inherited_descriptor_remains_open() {
+        let td = tempfile::tempdir().unwrap();
+        let path = td.path().join("tokens.json");
+        let guard = lock_token_map(&path).unwrap();
+        let inherited = guard.0.try_clone().unwrap();
+        assert!(lock_token_map(&path).is_err());
+        drop(guard);
+        let reacquired = lock_token_map(&path).unwrap();
+        drop(reacquired);
+        drop(inherited);
+    }
+
     #[test]
     fn map_lock_rejects_mutation_then_releases_without_changing_map() {
         let dir = tempdir().unwrap();
@@ -2441,7 +3640,7 @@ mod tests {
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+        assert_eq!(file.metadata().unwrap().len(), 0);
         drop(file);
         write_secret_file(&path, "dummy-secret").unwrap();
         assert_eq!(
@@ -2478,22 +3677,389 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("secret.token");
         let file = create_private_file(&path).unwrap();
-        assert_eq!(fs::metadata(&path).unwrap().len(), 0);
+        assert_eq!(file.metadata().unwrap().len(), 0);
+        windows_acl_fixture::assert_private(&file);
         drop(file);
-        let script = r"$acl=Get-Acl -LiteralPath $env:CLOUD_TOKEN_ACL_FIXTURE; $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User; $rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])); if(-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].AccessControlType -ne 'Allow' -or $rules[0].IsInherited){exit 1}";
-        for content in [None, Some("dummy-secret")] {
-            if let Some(content) = content {
-                write_secret_file(&path, content).unwrap();
+        write_secret_file(&path, "dummy-secret").unwrap();
+        windows_acl_fixture::assert_private(&fs::File::open(&path).unwrap());
+    }
+
+    #[cfg(windows)]
+    mod windows_acl_fixture {
+        use std::ffi::c_void;
+        use std::os::windows::io::AsRawHandle as _;
+
+        #[repr(C)]
+        struct AclSizeInformation {
+            count: u32,
+            used: u32,
+            free: u32,
+        }
+        #[repr(C)]
+        struct AceHeader {
+            kind: u8,
+            flags: u8,
+            size: u16,
+        }
+        #[repr(C)]
+        struct AllowedAce {
+            header: AceHeader,
+            mask: u32,
+            sid_start: u32,
+        }
+
+        #[link(name = "advapi32")]
+        unsafe extern "system" {
+            fn GetSecurityDescriptorOwner(
+                descriptor: *const c_void,
+                owner: *mut *mut c_void,
+                defaulted: *mut i32,
+            ) -> i32;
+            fn GetSecurityDescriptorDacl(
+                descriptor: *const c_void,
+                present: *mut i32,
+                dacl: *mut *mut c_void,
+                defaulted: *mut i32,
+            ) -> i32;
+            fn IsWellKnownSid(sid: *const c_void, kind: u32) -> i32;
+            fn GetSecurityInfo(
+                handle: *mut c_void,
+                kind: u32,
+                information: u32,
+                owner: *mut *mut c_void,
+                group: *mut *mut c_void,
+                dacl: *mut *mut c_void,
+                sacl: *mut *mut c_void,
+                descriptor: *mut *mut c_void,
+            ) -> u32;
+            fn GetSecurityDescriptorControl(
+                descriptor: *const c_void,
+                control: *mut u16,
+                revision: *mut u32,
+            ) -> i32;
+            fn GetAclInformation(
+                acl: *const c_void,
+                output: *mut c_void,
+                length: u32,
+                class: u32,
+            ) -> i32;
+            fn GetAce(acl: *const c_void, index: u32, output: *mut *mut c_void) -> i32;
+            fn IsValidAcl(acl: *const c_void) -> i32;
+            fn IsValidSid(sid: *const c_void) -> i32;
+            fn GetLengthSid(sid: *const c_void) -> u32;
+            fn EqualSid(first: *const c_void, second: *const c_void) -> i32;
+            fn OpenProcessToken(process: *mut c_void, access: u32, token: *mut *mut c_void) -> i32;
+            fn GetTokenInformation(
+                token: *mut c_void,
+                class: u32,
+                data: *mut c_void,
+                size: u32,
+                needed: *mut u32,
+            ) -> i32;
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn GetModuleHandleW(name: *const u16) -> *mut c_void;
+            fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+            fn GetCurrentProcess() -> *mut c_void;
+            fn CloseHandle(handle: *mut c_void) -> i32;
+            fn LocalFree(memory: *mut c_void) -> *mut c_void;
+        }
+        struct Token(*mut c_void);
+        impl Drop for Token {
+            fn drop(&mut self) {
+                // SAFETY: Token owns only the successful OpenProcessToken result.
+                unsafe {
+                    CloseHandle(self.0);
+                }
             }
+        }
+        struct Descriptor(*mut c_void);
+        impl Drop for Descriptor {
+            fn drop(&mut self) {
+                // SAFETY: Descriptor owns the LocalAlloc-backed GetSecurityInfo result.
+                unsafe {
+                    LocalFree(self.0);
+                }
+            }
+        }
+
+        fn process_user() -> Vec<usize> {
+            let mut raw = std::ptr::null_mut();
+            assert_ne!(
+                // SAFETY: Current-process pseudo-handle is valid; raw is writable output.
+                unsafe { OpenProcessToken(GetCurrentProcess(), 8, &raw mut raw) },
+                0
+            );
+            let token = Token(raw);
+            let mut needed = 0;
+            // SAFETY: Null buffer/zero length queries TOKEN_USER's required buffer size.
+            unsafe { GetTokenInformation(token.0, 1, std::ptr::null_mut(), 0, &raw mut needed) };
             assert!(
-                std::process::Command::new("pwsh")
-                    .args(["-NoLogo", "-NoProfile", "-Command", script])
-                    .env("CLOUD_TOKEN_ACL_FIXTURE", &path)
-                    .status()
+                (std::mem::size_of::<usize>()..=1_048_576)
+                    .contains(&usize::try_from(needed).unwrap())
+            );
+            let mut data = vec![
+                0_usize;
+                usize::try_from(needed)
                     .unwrap()
-                    .success()
+                    .div_ceil(std::mem::size_of::<usize>())
+            ];
+            assert_ne!(
+                // SAFETY: Aligned data allocation has at least needed writable bytes.
+                unsafe {
+                    GetTokenInformation(
+                        token.0,
+                        1,
+                        data.as_mut_ptr().cast(),
+                        needed,
+                        &raw mut needed,
+                    )
+                },
+                0
+            );
+            data
+        }
+
+        fn acl_count(dacl: *const c_void) -> u32 {
+            assert!(!dacl.is_null());
+            // SAFETY: DACL pointer belongs to a valid still-owned descriptor.
+            assert_ne!(unsafe { IsValidAcl(dacl) }, 0);
+            let mut info = AclSizeInformation {
+                count: 0,
+                used: 0,
+                free: 0,
+            };
+            assert_ne!(
+                // SAFETY: Valid ACL and aligned, correctly sized output.
+                unsafe {
+                    GetAclInformation(
+                        dacl,
+                        (&raw mut info).cast(),
+                        u32::try_from(std::mem::size_of::<AclSizeInformation>()).unwrap(),
+                        2,
+                    )
+                },
+                0
+            );
+            info.count
+        }
+
+        fn allowed_ace_sid(dacl: *const c_void, index: u32) -> *const c_void {
+            let mut raw = std::ptr::null_mut();
+            // SAFETY: Caller checked valid ACL and bounds index against its count.
+            assert_ne!(unsafe { GetAce(dacl, index, &raw mut raw) }, 0);
+            assert!(!raw.is_null());
+            // SAFETY: Valid ACL ACE has DWORD alignment and at least ACE_HEADER bytes.
+            let header = unsafe { &*raw.cast::<AceHeader>() };
+            assert_eq!(header.kind, 0, "ACCESS_ALLOWED_ACE required");
+            assert_eq!(header.flags, 0, "no inherited or inheritable ACE flags");
+            let sid_offset = std::mem::offset_of!(AllowedAce, sid_start);
+            assert!(usize::from(header.size) >= sid_offset + 8);
+            // SAFETY: Allowed ACE type, alignment and minimum size were checked.
+            let allowed = unsafe { &*raw.cast::<AllowedAce>() };
+            assert_eq!(allowed.mask, 0x001f_01ff, "FILE_ALL_ACCESS required");
+            let sid = (&raw const allowed.sid_start).cast::<c_void>();
+            // SAFETY: Checked ACE size includes the eight-byte SID header.
+            let subauthorities = unsafe { *sid.cast::<u8>().add(1) };
+            assert!(subauthorities <= 15);
+            assert!(sid_offset + 8 + usize::from(subauthorities) * 4 <= usize::from(header.size));
+            // SAFETY: The entire SID implied by its header fits the valid ACE.
+            assert_ne!(unsafe { IsValidSid(sid) }, 0);
+            // SAFETY: SID was validated and backing descriptor remains alive.
+            assert!(
+                usize::try_from(
+                    // SAFETY: SID validated and its backing descriptor remains alive.
+                    unsafe { GetLengthSid(sid) },
+                )
+                .unwrap()
+                    + sid_offset
+                    <= usize::from(header.size)
+            );
+            sid
+        }
+
+        fn assert_single_user_ace(dacl: *const c_void, user: *const c_void) {
+            assert_eq!(acl_count(dacl), 1, "exactly one owner ACE required");
+            let sid = allowed_ace_sid(dacl, 0);
+            assert_ne!(
+                // SAFETY: Both SIDs are valid in still-live allocations.
+                unsafe { EqualSid(sid, user) },
+                0,
+                "ACE must match current process user"
             );
         }
+
+        fn is_wine() -> bool {
+            let name: Vec<u16> = "ntdll.dll".encode_utf16().chain(Some(0)).collect();
+            // SAFETY: NUL-terminated owned string queries an already-loaded module only.
+            let module = unsafe { GetModuleHandleW(name.as_ptr()) };
+            assert!(!module.is_null(), "ntdll must already be loaded");
+            // SAFETY: Live module and NUL-terminated ASCII export name; no export is invoked.
+            !unsafe { GetProcAddress(module, c"wine_get_version".as_ptr().cast()) }.is_null()
+        }
+
+        fn assert_creation_descriptor(user: *const c_void) {
+            super::super::windows_private_file::inspect_private_descriptor(|descriptor| {
+                let mut owner = std::ptr::null_mut();
+                let mut defaulted = 0;
+                let mut present = 0;
+                let mut dacl = std::ptr::null_mut();
+                let mut control = 0;
+                let mut revision = 0;
+                assert_ne!(
+                    // SAFETY: Callback borrows the actual production descriptor before LocalFree.
+                    unsafe {
+                        GetSecurityDescriptorOwner(descriptor, &raw mut owner, &raw mut defaulted)
+                    },
+                    0
+                );
+                assert!(!owner.is_null());
+                // SAFETY: Returned owner is inside the live descriptor; user already validated.
+                assert_ne!(unsafe { IsValidSid(owner) }, 0);
+                // SAFETY: Both validated SIDs remain alive for comparison.
+                assert_ne!(unsafe { EqualSid(owner, user) }, 0);
+                assert_ne!(
+                    // SAFETY: Valid descriptor and writable output fields.
+                    unsafe {
+                        GetSecurityDescriptorDacl(
+                            descriptor,
+                            &raw mut present,
+                            &raw mut dacl,
+                            &raw mut defaulted,
+                        )
+                    },
+                    0
+                );
+                assert_ne!(present, 0);
+                assert_ne!(
+                    // SAFETY: Valid live descriptor and correctly typed writable outputs.
+                    unsafe {
+                        GetSecurityDescriptorControl(
+                            descriptor,
+                            &raw mut control,
+                            &raw mut revision,
+                        )
+                    },
+                    0
+                );
+                assert_eq!(revision, 1);
+                assert_eq!(
+                    control & 0x1004,
+                    0x1004,
+                    "production descriptor must be protected on every host"
+                );
+                assert_single_user_ace(dacl, user);
+            })
+            .unwrap();
+        }
+
+        fn assert_wine_projection(dacl: *const c_void, user: *const c_void) {
+            // Wine 9 server/file.c mode_to_sd synthesizes LocalSystem plus the
+            // Unix owner, and cannot preserve SE_DACL_PROTECTED. This verifies
+            // that exact emulation tier, never native filesystem protection.
+            assert_eq!(
+                acl_count(dacl),
+                2,
+                "exact Wine owner/system projection required"
+            );
+            let mut users = 0;
+            let mut systems = 0;
+            for index in 0..2 {
+                let sid = allowed_ace_sid(dacl, index);
+                // SAFETY: Valid SID and still-live user allocation.
+                if unsafe { EqualSid(sid, user) } != 0 {
+                    users += 1;
+                }
+                // SAFETY: Valid SID; WinLocalSystemSid is WELL_KNOWN_SID_TYPE 22.
+                else if unsafe { IsWellKnownSid(sid, 22) } != 0 {
+                    systems += 1;
+                } else {
+                    panic!("unexpected principal in Wine projected ACL");
+                }
+            }
+            assert_eq!((users, systems), (1, 1));
+            eprintln!("WINE_EMULATED_ACL_ONLY: native protected filesystem ACL NOT_ESTABLISHED");
+        }
+
+        pub(super) fn assert_private(file: &std::fs::File) {
+            let user_data = process_user();
+            // SAFETY: Successful TOKEN_USER buffer read initialized its first SID pointer.
+            let user = unsafe { *user_data.as_ptr().cast::<*const c_void>() };
+            // SAFETY: TOKEN_USER owns the SID within the still-live aligned user_data allocation.
+            assert_ne!(unsafe { IsValidSid(user) }, 0);
+            let mut owner = std::ptr::null_mut();
+            let mut dacl = std::ptr::null_mut();
+            let mut descriptor = std::ptr::null_mut();
+            // SAFETY: Owned file handle is live; output pointers are writable; other outputs optional.
+            let code = unsafe {
+                GetSecurityInfo(
+                    file.as_raw_handle(),
+                    1,
+                    5,
+                    &raw mut owner,
+                    std::ptr::null_mut(),
+                    &raw mut dacl,
+                    std::ptr::null_mut(),
+                    &raw mut descriptor,
+                )
+            };
+            assert_eq!(code, 0, "GetSecurityInfo must succeed");
+            assert!(!descriptor.is_null());
+            let descriptor = Descriptor(descriptor);
+            assert!(!owner.is_null());
+            // SAFETY: Owner SID was returned inside the still-owned security descriptor.
+            assert_ne!(unsafe { IsValidSid(owner) }, 0);
+            assert_ne!(
+                // SAFETY: Both SIDs validated; descriptor and TOKEN_USER buffers are live.
+                unsafe { EqualSid(owner, user) },
+                0,
+                "current-user owner required"
+            );
+            let mut control = 0;
+            let mut revision = 0;
+            assert_ne!(
+                // SAFETY: Owned descriptor valid; control and revision are writable outputs.
+                unsafe {
+                    GetSecurityDescriptorControl(descriptor.0, &raw mut control, &raw mut revision)
+                },
+                0
+            );
+            assert_eq!(revision, 1);
+            assert_creation_descriptor(user);
+            if is_wine() {
+                assert_eq!(
+                    control & 0x1004,
+                    4,
+                    "documented Wine projected descriptor expected"
+                );
+                assert_wine_projection(dacl, user);
+            } else {
+                assert_eq!(
+                    control & 0x1004,
+                    0x1004,
+                    "native present, protected DACL required"
+                );
+                assert_single_user_ace(dacl, user);
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(not(feature = "server-mode"))]
+    fn minimal_revoke_refuses_before_any_file_or_provider_operation() {
+        assert!(
+            cmd_revoke(
+                Path::new("absent-fixture.json"),
+                None,
+                false,
+                |_, _, _, _| panic!("minimal build provider invoked"),
+                |_, _, _, _| panic!("minimal build HTTP invoked")
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("requires server-mode")
+        );
     }
 
     #[test]

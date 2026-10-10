@@ -24,6 +24,7 @@ def main() -> int:
             "write-client",
             "bw-upsert",
             "wrangler-put",
+            "revoke",
             "wrangler-hint",
             "status",
             "smoke",
