@@ -267,15 +267,29 @@ foreach ($hardCodedPath in @('$HOME/.local/bin/agent-bus', '$HOME/.config/agent-
     if ($remoteErrors.Count -or $remoteScript.Contains('fixture-only') -or $command -notmatch '^powershell\.exe .* -EncodedCommand [A-Za-z0-9+/=]+$') {
         throw 'Remote Windows projection was not safe encoded source'
     }
-    $windowsMachine.cli_path = $cliPath
-    $windowsMachine.config_path = $configPath
     $windowsMachine.client_server_url = 'http://authority.invalid:8400'
     $fixtureCommand = Get-FleetWindowsCommand $windowsMachine
     $fixtureScript = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($fixtureCommand -split ' ')[-1]))
+    $payloadMatches = [regex]::Matches($fixtureScript, "FromBase64String\('([A-Za-z0-9+/=]+)'\)")
+    if ($payloadMatches.Count -ne 1) { throw 'Expected exactly one generated Windows payload' }
+    $windowsPayload = $payloadMatches[0].Groups[1].Value
+    $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($windowsPayload)) | ConvertFrom-Json
+    if ($payload.cli -cne $windowsMachine.cli_path -or $payload.config -cne $windowsMachine.config_path -or
+        $payload.route -cne $windowsMachine.client_server_url -or @($payload.services).Count -ne 0) {
+        throw 'Generated Windows payload differs from validated machine inputs'
+    }
+    # Exercise the complete production template with host-native synthetic files.
+    $payload.cli = $cliPath
+    $payload.config = $configPath
+    $nativePayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress)))
+    $nativeFixtureScript = $fixtureScript.Replace($windowsPayload, $nativePayload)
+    if ($nativeFixtureScript.Replace($nativePayload, $windowsPayload) -cne $fixtureScript) {
+        throw 'Host-native fixture substitution changed the production template'
+    }
     $previousUrl = $env:AGENT_BUS_SERVER_URL
     try {
         $env:AGENT_BUS_SERVER_URL = 'http://caller-route.invalid:8400'
-        $projectionText = & ([scriptblock]::Create($fixtureScript)) | Out-String
+        $projectionText = & ([scriptblock]::Create($nativeFixtureScript)) | Out-String
         $projection = $projectionText | ConvertFrom-Json
         if ($projection.config.server_url -cne 'http://authority.invalid:8400' -or
             $projection.config.auth_token_present -ne $true -or $projection.health.ok -ne $true -or

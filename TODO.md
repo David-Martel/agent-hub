@@ -28,6 +28,10 @@ Current Warp integration and deployment queue: [fleet completion ledger](docs/fl
   transport interruption: two stable request IDs across separate CLI processes,
   reconnect applies two, repeat applies zero, and exact reads return two.
   The production hub was never taken offline.
+- [ ] Restore Cloud account capacity after confirmed free-tier Durable Objects
+  read-quota exhaustion. Deployment-token billing access returns HTTP 403.
+  Reconcile the failed Island first batch before resuming its validated import;
+  preserve all original rejected rows on-site and existing Durable Object data.
 - [ ] Complete remaining network-location checks.
 - [x] Reconcile the fleet desired-state manifest with immutable accepted
   shipping revision 1233662 and Carbon's actual client-only topology.

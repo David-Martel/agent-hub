@@ -15,7 +15,7 @@ entrypoint; the fleet audit and DNS status retain their dated observations.
 | Direct routing #117 | Merged as 3b7cd9c with configured-hub routing checks | Source and installed clients accepted; preserve receipts |
 | Windows GNU/Wine #120 and #121 | Both merged; #121 accepted as ecb9d25 with all 16 required checks green | Preserve shipping MCP17 and managed-process cleanup receipts |
 | Consolidation #118 and Task #119 | #118 merged as 1233662bd4537bd2b2f7e1cfc034c40419ed4d21; its tree exactly matches reviewed e3e6949. Main run 38046540678 passed all 16 required checks. #119 is closed after verified inclusion; its signed tip, owned patch and ignored artifacts are preserved and its redundant worktree/branch retired | Source integration complete; preserve final receipts and ignored artifacts before normal worktree retirement |
-| Cloud-token toolkit | Reviewed source integrated; the complete original three-token production map is independently proven and preserved. The owned Agent was minted, published, rotated, privately activated and selectively revoked; fresh readback proves replacement 200, retired 401 and all original entries 200 | Final main CI and both owned installed Cloud profiles pass. Preserve first failed immediate checks |
+| Cloud-token toolkit | Reviewed source integrated; the complete original three-token production map is independently proven and preserved. The owned Agent was minted, published, rotated, privately activated and selectively revoked; fresh readback proves replacement 200, retired 401 and all original entries 200 | Final main CI and both owned installed Cloud profiles passed pre-import qualification. Account quota recovery below remains open; preserve first failed immediate checks |
 | Durable client outbox #80 | Implemented and independently reviewed in the consolidation: protected journal, stable request IDs, current claim authority checks and lazy replay; disposable Redis/PostgreSQL and shipping-crate tests pass | Final main CI and installed native offline/reconnect pass; preserve receipts |
 
 ## Fleet acceptance
@@ -91,8 +91,10 @@ The owned Agent lifecycle passed replacement 200 and retired 401 checks after
 retaining the first immediate ValueError and other failed immediate checks.
 The P1 and Carbon profiles use distinct Agent identities and exact host bindings,
 without sharing Hub/Operator credentials. Both installed native actor-specific
-Cloud profiles pass CLI health, MCP17 with semantic Cloud health, and exact
-owned send/read/ACK. Cloud health is Worker0.2 and non-authoritative; it is not
+Cloud profiles passed pre-import CLI health, MCP17 with semantic Cloud health,
+and exact owned send/read/ACK. The subsequent provider quota exhaustion below
+means these earlier receipts do not prove current cloud availability.
+Cloud health is Worker0.2 and non-authoritative; it is not
 relabeled as the ASUS main build. Worker-only checks do not qualify arbitrary
 agents/network locations; installed sync has its separate runtime receipts.
 
@@ -111,10 +113,19 @@ network-location checks, and Work/NUC client
 reconciliation. Historical import tooling has read-only dry-run and content-bound
 resume repairs. The first ASUS ingestion retained a failure after storing
 27,259 messages and 75,261 presence events; four legacy over-length records
-remain preserved on-site. Island validation retained 22 additional over-length presence records on-site and produced an exact-cell eligible copy with 7,793 events. Its first import failed with HTTP 500 before a durable checkpoint; authenticated manifest and stats reads also fail on the shared BusLog path. Server-side acceptance and provider recovery are being reconciled before any resume.
+remain preserved on-site. Island validation retained 22 additional over-length
+presence records on-site and produced an exact-cell eligible copy with 7,793
+events. Its first import failed with HTTP 500 before a durable checkpoint;
+authenticated manifest and stats reads also fail on the shared BusLog path.
+A bounded provider trace confirmed: "Exceeded allowed rows read in Durable
+Objects free tier."
+Billing subscription access returns HTTP 403 with the deployment token.
+Restore account capacity or wait for the daily quota reset, then reconcile
+the exact first batch before resuming. No history or Durable Object namespace
+was deleted.
 Raw LLM session histories are excluded. Disabled
 backfill does not prove historical import completion. P1 and Carbon own installed
-Cloud profiles pass; other network locations still need their own observations.
+Cloud profiles passed before the import; other network locations still need their own observations.
 
 ## Cleanup predicates
 
