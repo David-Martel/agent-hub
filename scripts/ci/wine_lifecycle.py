@@ -9,6 +9,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -175,6 +176,7 @@ class WineGuest:
         elif self.launcher.poll() is None:
             # Only the original direct child; no PID search or prefix/global kill.
             self.launcher.terminate()
+        termination_requested = False
         while True:
             remaining = deadline - clock()
             if remaining <= 0:
@@ -183,7 +185,21 @@ class WineGuest:
                 )
             guests = self.provider.processes(timeout=remaining)
             guest_absent = self.guest_pid is None or self.guest_pid not in guests
-            if guest_absent and listener_closed() and self.launcher.poll() is not None:
+            closed = listener_closed()
+            if not guest_absent and guests.get(self.guest_pid) != self.image:
+                raise RuntimeError("Owned Wine guest identity changed during shutdown")
+            if (
+                self.ready
+                and closed
+                and not termination_requested
+                and self.launcher.poll() is None
+            ):
+                # HTTP stop closes the listener; the owning launcher must also
+                # stop its original guest. Never signal a discovered guest PID.
+                self.provider.assert_owner()
+                self.launcher.terminate()
+                termination_requested = True
+            if guest_absent and closed and self.launcher.poll() is not None:
                 break
             if clock() >= deadline:
                 raise RuntimeError(
@@ -397,10 +413,28 @@ def run_guest(prefix, directory, artifact, argv, identity, home_identity):
         )
     # This is the deliberately long-lived HTTP/CLI guest launcher supervised by
     # the outer smoke harness. It is distinct from finite query/init/wait clients.
-    process = subprocess.Popen(
-        ["wine", str(Path(artifact).resolve(strict=True)), *argv], env=env
-    )
-    result = process.wait()
+    process = None
+    requested = False
+
+    def terminate_original(_number, _frame):
+        nonlocal requested
+        requested = True
+        provider.assert_owner()
+        provider.assert_home()
+        if process is not None and process.poll() is None:
+            # Popen owns this unreaped child: no guest PID/name/tree lookup.
+            process.terminate()
+
+    previous = signal.signal(signal.SIGTERM, terminate_original)
+    try:
+        process = subprocess.Popen(
+            ["wine", str(Path(artifact).resolve(strict=True)), *argv], env=env
+        )
+        if requested:
+            terminate_original(signal.SIGTERM, None)
+        result = process.wait()
+    finally:
+        signal.signal(signal.SIGTERM, previous)
     provider.assert_owner()
     provider.assert_home()
     return result
