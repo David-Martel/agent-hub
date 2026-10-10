@@ -416,7 +416,7 @@ pub fn validate_resource_name(resource: &str) -> Result<()> {
     Ok(())
 }
 
-fn claims_key(resource: &str) -> String {
+pub(crate) fn claims_key(resource: &str) -> String {
     // Preserve pre-sync keys and live leases: claims are not cloud-synced.
     let normalised = resource.replace('\\', "/");
     format!("{CLAIMS_PREFIX}{normalised}")

@@ -32,7 +32,7 @@ use clap::Parser;
 use mimalloc::MiMalloc;
 
 use agent_bus_core::bootstrap;
-use cli::{Cli, CloudTokensCmd, Cmd, HistoryCmd};
+use cli::{Cli, CloudTokensCmd, Cmd, HistoryCmd, OutboxCmd};
 use cloud_tokens::run_cloud_tokens;
 use commands::{
     CompactContextArgs, PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_backup, cmd_batch_send,
@@ -452,6 +452,24 @@ fn run(args: Vec<OsString>) -> Result<()> {
             cmd_validate_backup(input, encoding)?;
         }
 
+        Cmd::Outbox { ref action } => match action {
+            OutboxCmd::Status { encoding } => {
+                let value = agent_bus_core::outbox_client::status(&settings, None)?;
+                crate::output::output(&value, encoding);
+            }
+            OutboxCmd::Flush { encoding } => {
+                #[cfg(feature = "server-mode")]
+                {
+                    let value = crate::server_mode::durable_flush(&settings)?;
+                    crate::output::output(&value, encoding);
+                }
+                #[cfg(not(feature = "server-mode"))]
+                {
+                    let _ = encoding;
+                    anyhow::bail!("outbox flush requires native HTTP transport support");
+                }
+            }
+        },
         Cmd::SpoolSend {
             ref from_agent,
             ref to_agent,

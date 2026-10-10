@@ -78,6 +78,19 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
+pub(crate) enum OutboxCmd {
+    /// List retained stable IDs without submitting new requests.
+    Status {
+        #[arg(long, default_value = "compact", value_enum)]
+        encoding: Encoding,
+    },
+    /// Replay retained requests in order without enqueueing a new request.
+    Flush {
+        #[arg(long, default_value = "compact", value_enum)]
+        encoding: Encoding,
+    },
+}
+#[derive(Subcommand)]
 pub(crate) enum HistoryCmd {
     /// Apply pending, checksum-verified history catalog migrations.
     Migrate {
@@ -93,6 +106,11 @@ pub(crate) enum HistoryCmd {
 
 #[derive(Subcommand)]
 pub(crate) enum Cmd {
+    /// Inspect or drain the automatic stable-ID outbox; manual spool is separate.
+    Outbox {
+        #[command(subcommand)]
+        action: OutboxCmd,
+    },
     /// Check Redis bus health and report runtime metadata.
     #[command(long_about = "Ping Redis and, when configured, PostgreSQL.\n\n\
         Returns: ok, protocol_version, build_version, redis_url, database_url, database_ok,\n\

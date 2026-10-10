@@ -3,7 +3,7 @@
 //! ([`Settings::server_urls`]) before every call and either proxies to the
 //! resolved remote hub, dispatches locally, or refuses loudly when offline.
 //!
-//! This module owns no transport of its own — it is generic over
+//! This module owns no transport of its own â€” it is generic over
 //! [`RemoteMcpTransport`], implemented by each binary crate against whatever
 //! HTTP client it already links (keeping `agent-bus-core` free of a hard
 //! `reqwest` dependency and making the routing logic itself testable with a
@@ -11,7 +11,7 @@
 //!
 //! **A hub never proxies to itself.** `agent-bus-http`'s own `/mcp` endpoint
 //! must keep constructing [`McpToolDispatch`] directly (see
-//! `dispatch_mcp_method` in `agent-bus-http`), never [`RoutingDispatch`] —
+//! `dispatch_mcp_method` in `agent-bus-http`), never [`RoutingDispatch`] â€”
 //! even if the hub's own `config.json` somehow named a `server_url`, it must
 //! never call back out to itself. Only client-facing transports (stdio MCP
 //! today) should use [`RoutingDispatch`].
@@ -98,7 +98,7 @@ fn claim_pending_error(name: &str, tried: &[String]) -> AgentBusError {
 pub trait RemoteMcpTransport {
     /// Probe `{url}/health`. Return `Some` on any healthy 2xx JSON response,
     /// `None` on any failure (unreachable, timeout, non-2xx, malformed
-    /// body) — this trait does not distinguish *why* a probe failed.
+    /// body) â€” this trait does not distinguish *why* a probe failed.
     fn probe_health(&self, url: &str) -> Option<ProbeInfo>;
 
     /// Forward a `tools/call` to the hub's `/mcp` JSON-RPC bridge and return
@@ -108,11 +108,44 @@ pub trait RemoteMcpTransport {
     /// Returns an error if the request fails, the hub returns a transport or
     /// JSON-RPC error, or the response cannot be parsed.
     fn call_tool(&self, url: &str, name: &str, args: &Map<String, Value>) -> Result<Value>;
+
+    /// Only native transports with reviewed replay semantics opt in.
+    fn supports_durable_replay(&self) -> bool {
+        false
+    }
+
+    /// Separate immutable replay envelope; no extra MCP tool is advertised.
+    ///
+    /// # Errors
+    /// Transport ambiguity or permanent rejection of the immutable request.
+    fn replay_request(
+        &self,
+        _url: &str,
+        _hub: &str,
+        _request: &crate::outbox::ReplayRequest,
+        _timeout: Duration,
+    ) -> std::result::Result<crate::outbox::ReplayResponse, crate::outbox::ReplayFailure> {
+        Err(crate::outbox::ReplayFailure::Permanent)
+    }
 }
 
+struct DurableTransport<'a, T>(&'a T);
+impl<T: RemoteMcpTransport> crate::outbox_client::NativeReplayTransport
+    for DurableTransport<'_, T>
+{
+    fn replay(
+        &self,
+        url: &str,
+        hub: &str,
+        request: &crate::outbox::ReplayRequest,
+        timeout: Duration,
+    ) -> std::result::Result<crate::outbox::ReplayResponse, crate::outbox::ReplayFailure> {
+        self.0.replay_request(url, hub, request, timeout)
+    }
+}
 /// Routes MCP tool calls to the configured remote hub when reachable, dispatches
 /// locally when no hub is configured, and refuses writes/reads loudly when the
-/// hub is configured but unreachable — never silently falling back to a local
+/// hub is configured but unreachable â€” never silently falling back to a local
 /// store and presenting it as fleet state.
 #[derive(Debug)]
 pub struct RoutingDispatch<'a, T> {
@@ -166,7 +199,7 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
     /// Dispatch a tool call by name and arguments, returning the result as JSON.
     ///
     /// `bus_health` is always answered (never returns `Err`), with a
-    /// `backend` field describing exactly which store answered — remote
+    /// `backend` field describing exactly which store answered â€” remote
     /// (with the hub's build and whether it was the authoritative,
     /// first-priority candidate or a fallback), offline (with every
     /// candidate tried), or local. This is what makes an island detectable:
@@ -187,8 +220,65 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
         if let Some(error) = &self.settings.hub_config_error {
             return Err(AgentBusError::InvalidParams(error.clone()));
         }
+        // Reconnect/read calls drain existing IDs without creating a new entry.
+        // Invalid tools never cause unrelated writes. The health result retains
+        // its existing backend contract and exposes any journal drain failure.
+        let automatic_drain = if self.transport.supports_durable_replay()
+            && crate::outbox::Operation::from_tool(name).is_none()
+            && self
+                .settings
+                .effective_hub_candidates()
+                .iter()
+                .any(|candidate| {
+                    candidate.role == crate::hub_candidates::HubRole::Authoritative
+                        && candidate.hub.as_ref().is_some_and(|hub| !hub.is_empty())
+                }) {
+            crate::mcp_dispatch::validate_tool_arguments(name, args)?;
+            Some(crate::outbox_client::flush_pending(
+                self.settings,
+                &DurableTransport(&self.transport),
+                None,
+            ))
+        } else {
+            None
+        };
         if name == "bus_health" {
-            return Ok(self.bus_health_report());
+            let mut result = self.bus_health_report();
+            if let Some(drain) = automatic_drain {
+                result["outbox"] = match drain {
+                    Ok(report) => report,
+                    Err(_) => {
+                        serde_json::json!({"status":"pending_recovery","error":"durable outbox unavailable; preserve journal"})
+                    }
+                };
+            }
+            return Ok(result);
+        }
+        if let Some(drain) = automatic_drain {
+            let _ = drain?;
+        }
+        // Four original #80 operations use stable-ID native replay. Legacy
+        // unnamed candidates retain their existing path; they cannot safely
+        // bind an offline queue to an unknown hub identity.
+        if self.transport.supports_durable_replay()
+            && crate::outbox_client::durable_replay_configured(self.settings)
+            && let Some(operation) = crate::outbox::Operation::from_tool(name)
+        {
+            return crate::outbox_client::submit(
+                self.settings,
+                &DurableTransport(&self.transport),
+                operation,
+                crate::outbox::ClientSurface::Mcp,
+                args.clone(),
+                None,
+            );
+        }
+
+        if self.transport.supports_durable_replay()
+            && crate::outbox::Operation::from_tool(name).is_some()
+            && !crate::outbox_client::durable_replay_configured(self.settings)
+        {
+            crate::outbox_client::legacy_write_guard(self.settings, None)?;
         }
 
         // Claim-authority tools (grant/renew/release/resolve an exclusive
@@ -300,6 +390,8 @@ mod tests {
     struct FakeTransport {
         healthy_urls: Vec<String>,
         hub_build: Option<String>,
+        hub_identity: Option<String>,
+        durable: bool,
         remote_tool_result: RefCell<Option<Value>>,
         remote_tool_error: bool,
         probed: RefCell<Vec<String>>,
@@ -307,13 +399,17 @@ mod tests {
     }
 
     impl RemoteMcpTransport for FakeTransport {
+        fn supports_durable_replay(&self) -> bool {
+            self.durable
+        }
+
         fn probe_health(&self, url: &str) -> Option<ProbeInfo> {
             self.probed.borrow_mut().push(url.to_owned());
             self.healthy_urls
                 .contains(&url.to_owned())
                 .then(|| ProbeInfo {
                     build_version: self.hub_build.clone(),
-                    hub_identity: None,
+                    hub_identity: self.hub_identity.clone(),
                 })
         }
 
@@ -344,6 +440,71 @@ mod tests {
     }
 
     #[test]
+    fn named_legacy_unauthenticated_authority_dispatches_once_without_outbox() {
+        use crate::hub_candidates::{CandidateAuth, HubCandidate, HubRole};
+        let url = "http://localhost:8484".to_owned();
+        let mut settings = test_settings(std::slice::from_ref(&url));
+        settings.auth_token = None;
+        settings.hub_candidates = vec![HubCandidate {
+            url: url.clone(),
+            role: HubRole::Authoritative,
+            auth: CandidateAuth::Global,
+            hub: Some("fixture-authority".to_owned()),
+            sites: Vec::new(),
+        }];
+        let transport = FakeTransport {
+            healthy_urls: vec![url.clone()],
+            hub_identity: Some("fixture-authority".to_owned()),
+            durable: true,
+            ..Default::default()
+        };
+        let dispatch = RoutingDispatch::new(&settings, transport);
+        assert!(!crate::outbox_client::durable_replay_configured(&settings));
+        let args = serde_json::json!({"agent":"fixture","resource":"owned-fixture"})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(dispatch.dispatch_tool("claim_resource", &args).is_ok());
+        assert_eq!(
+            *dispatch.transport.called.borrow(),
+            vec![(url.clone(), "claim_resource".to_owned())]
+        );
+        // Configuration of any credential source for this SAME authority
+        // selects durable replay even when the provider is invalid/missing.
+        settings.hub_candidates.push(HubCandidate {
+            url: "http://localhost:8485".to_owned(),
+            role: HubRole::Authoritative,
+            auth: CandidateAuth::TokenFile("/missing-owned-outbox-fixture-token".to_owned()),
+            hub: Some("fixture-authority".to_owned()),
+            sites: Vec::new(),
+        });
+        settings.server_urls = settings
+            .hub_candidates
+            .iter()
+            .map(|candidate| candidate.url.clone())
+            .collect();
+        assert!(crate::outbox_client::durable_replay_configured(&settings));
+        let dispatch = RoutingDispatch::new(
+            &settings,
+            FakeTransport {
+                durable: true,
+                ..Default::default()
+            },
+        );
+        assert!(dispatch.dispatch_tool("claim_resource", &args).is_err());
+        assert!(dispatch.transport.called.borrow().is_empty());
+        assert!(dispatch.transport.probed.borrow().is_empty());
+        settings.hub_candidates.truncate(1);
+        settings.server_urls.truncate(1);
+        settings.auth_token = Some(String::new());
+        assert!(crate::outbox_client::durable_replay_configured(&settings));
+        settings.auth_token = None;
+        settings.hub_candidates[0].auth =
+            CandidateAuth::TokenEnv("OWNED_OUTBOX_MISSING_PROVIDER_FIXTURE".to_owned());
+        assert!(crate::outbox_client::durable_replay_configured(&settings));
+    }
+
+    #[test]
     fn no_candidates_dispatches_locally() {
         let settings = test_settings(&[]);
         let transport = FakeTransport::default();
@@ -351,7 +512,7 @@ mod tests {
         assert!(matches!(dispatch.resolve_backend(), HubBackend::Local));
         // A non-health tool against the closed-port local backend fails at
         // connect, but it must be a LOCAL connect failure, not the offline
-        // error — proving no remote/offline path was taken.
+        // error â€” proving no remote/offline path was taken.
         let err = dispatch
             .dispatch_tool("list_messages", &Map::new())
             .expect_err("closed-port Redis must fail");
@@ -471,7 +632,7 @@ mod tests {
     /// really would have failed this test. `McpToolDispatch` alone (what
     /// every MCP dispatch call used before this change) has no concept of
     /// `server_urls` at all, so it always reports its own local Redis/PG
-    /// health regardless of configured remote candidates — it would show
+    /// health regardless of configured remote candidates â€” it would show
     /// `backend` missing entirely (or, if merged naively, `mode: "local"`
     /// even when candidates are configured), which is exactly the
     /// undetectable-island failure #78 reports.

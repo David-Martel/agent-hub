@@ -938,7 +938,7 @@ fn validate_localhost_url(url: &str, env_var: &str) -> Result<()> {
 }
 
 /// Verify an identifier is non-empty and contains no whitespace.
-fn validate_identifier(value: &str, env_var: &str) -> Result<()> {
+pub(crate) fn validate_identifier(value: &str, env_var: &str) -> Result<()> {
     if value.is_empty() {
         return Err(crate::error::AgentBusError::InvalidParams(format!(
             "{env_var} must not be empty"

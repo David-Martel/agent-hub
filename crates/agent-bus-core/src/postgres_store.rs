@@ -318,82 +318,7 @@ pub fn ensure_postgres_storage(client: &mut PgClient, settings: &Settings) -> Re
     }
 
     client.batch_execute("create schema if not exists agent_bus")?;
-    client.batch_execute(&format!(
-        r"
-        create table if not exists {message_table} (
-            id uuid primary key,
-            timestamp_utc timestamptz not null,
-            protocol_version text not null default '1.0',
-            sender text not null,
-            recipient text not null,
-            topic text not null,
-            body text not null,
-            thread_id text null,
-            priority text not null,
-            tags jsonb not null default '[]'::jsonb,
-            request_ack boolean not null default false,
-            reply_to text not null,
-            metadata jsonb not null default '{{}}'::jsonb,
-            stream_id text null
-        );
-        alter table {message_table} add column if not exists protocol_version text not null default '1.0';
-        alter table {message_table} add column if not exists thread_id text null;
-        alter table {message_table} add column if not exists stream_id text null;
-        create index if not exists agent_bus_messages_recipient_ts_idx
-            on {message_table} (recipient, timestamp_utc desc);
-        create index if not exists agent_bus_messages_sender_ts_idx
-            on {message_table} (sender, timestamp_utc desc);
-        create index if not exists agent_bus_messages_topic_ts_idx
-            on {message_table} (topic, timestamp_utc desc);
-        create index if not exists agent_bus_messages_thread_id_ts_idx
-            on {message_table} (thread_id, timestamp_utc desc);
-        create index if not exists agent_bus_messages_reply_to_idx
-            on {message_table} (reply_to);
-        create unique index if not exists agent_bus_messages_stream_id_idx
-            on {message_table} (stream_id) where stream_id is not null;
-        create index if not exists agent_bus_messages_tags_idx
-            on {message_table} using gin (tags);
-        -- agent-hub#79 cloud-sync columns. All nullable and additive: rows and
-        -- writers that predate them keep working, and a NULL origin_hub means
-        -- this hub.
-        alter table {message_table} add column if not exists client_msg_id text null;
-        alter table {message_table} add column if not exists origin_hub text null;
-        alter table {message_table} add column if not exists origin_seq bigint null;
-        alter table {message_table} add column if not exists hlc text null;
-        alter table {message_table} add column if not exists sensitivity text null;
-        -- Partial, so legacy rows (NULL origin_hub / client_msg_id) never enter
-        -- the index. Mirrors the Worker's idempotency on (origin_hub, client_msg_id).
-        create unique index if not exists agent_bus_messages_origin_client_msg_idx
-            on {message_table} (origin_hub, client_msg_id)
-            where origin_hub is not null and client_msg_id is not null;
-        -- Timestamp-only index: enables index-only scans for count(*) and range
-        -- queries that do not filter by recipient/sender/topic.  Added 2026-03-20
-        -- after EXPLAIN ANALYZE showed 993 seq scans on the health count path.
-        create index if not exists agent_bus_messages_ts_idx
-            on {message_table} (timestamp_utc desc);
-
-        create table if not exists {presence_event_table} (
-            id bigserial primary key,
-            timestamp_utc timestamptz not null,
-            protocol_version text not null default '1.0',
-            agent text not null,
-            status text not null,
-            session_id text not null,
-            capabilities jsonb not null default '[]'::jsonb,
-            metadata jsonb not null default '{{}}'::jsonb,
-            ttl_seconds bigint not null
-        );
-        alter table {presence_event_table} add column if not exists protocol_version text not null default '1.0';
-        create index if not exists agent_bus_presence_events_agent_ts_idx
-            on {presence_event_table} (agent, timestamp_utc desc);
-        -- Timestamp-only index: enables index-only scans for count(*) and
-        -- unfiltered time-range queries on presence_events.  Added 2026-03-20.
-        create index if not exists agent_bus_presence_events_ts_idx
-            on {presence_event_table} (timestamp_utc desc);
-        ",
-        message_table = settings.message_table,
-        presence_event_table = settings.presence_event_table,
-    ))?;
+    client.batch_execute(&postgres_storage_sql(settings))?;
 
     if let Ok(mut guard) = storage_cache().lock() {
         guard.insert(cache_key);
@@ -1499,6 +1424,92 @@ fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>) {
         }
     }
     metrics.batches_flushed.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Shared exact storage DDL for ordinary and bounded replay writers.
+pub(crate) fn postgres_storage_sql(settings: &Settings) -> String {
+    format!(
+        r"
+        create table if not exists {message_table} (
+            id uuid primary key,
+            timestamp_utc timestamptz not null,
+            protocol_version text not null default '1.0',
+            sender text not null,
+            recipient text not null,
+            topic text not null,
+            body text not null,
+            thread_id text null,
+            priority text not null,
+            tags jsonb not null default '[]'::jsonb,
+            request_ack boolean not null default false,
+            reply_to text not null,
+            metadata jsonb not null default '{{}}'::jsonb,
+            stream_id text null
+        );
+        alter table {message_table} add column if not exists protocol_version text not null default '1.0';
+        alter table {message_table} add column if not exists thread_id text null;
+        alter table {message_table} add column if not exists stream_id text null;
+        create index if not exists agent_bus_messages_recipient_ts_idx
+            on {message_table} (recipient, timestamp_utc desc);
+        create index if not exists agent_bus_messages_sender_ts_idx
+            on {message_table} (sender, timestamp_utc desc);
+        create index if not exists agent_bus_messages_topic_ts_idx
+            on {message_table} (topic, timestamp_utc desc);
+        create index if not exists agent_bus_messages_thread_id_ts_idx
+            on {message_table} (thread_id, timestamp_utc desc);
+        create index if not exists agent_bus_messages_reply_to_idx
+            on {message_table} (reply_to);
+        create unique index if not exists agent_bus_messages_stream_id_idx
+            on {message_table} (stream_id) where stream_id is not null;
+        create index if not exists agent_bus_messages_tags_idx
+            on {message_table} using gin (tags);
+        -- agent-hub#79 cloud-sync columns. All nullable and additive: rows and
+        -- writers that predate them keep working, and a NULL origin_hub means
+        -- this hub.
+        alter table {message_table} add column if not exists client_msg_id text null;
+        alter table {message_table} add column if not exists origin_hub text null;
+        alter table {message_table} add column if not exists origin_seq bigint null;
+        alter table {message_table} add column if not exists hlc text null;
+        alter table {message_table} add column if not exists sensitivity text null;
+        -- Partial, so legacy rows (NULL origin_hub / client_msg_id) never enter
+        -- the index. Mirrors the Worker's idempotency on (origin_hub, client_msg_id).
+        create unique index if not exists agent_bus_messages_origin_client_msg_idx
+            on {message_table} (origin_hub, client_msg_id)
+            where origin_hub is not null and client_msg_id is not null;
+        -- Timestamp-only index: enables index-only scans for count(*) and range
+        -- queries that do not filter by recipient/sender/topic.  Added 2026-03-20
+        -- after EXPLAIN ANALYZE showed 993 seq scans on the health count path.
+        create index if not exists agent_bus_messages_ts_idx
+            on {message_table} (timestamp_utc desc);
+
+        create table if not exists {presence_event_table} (
+            id bigserial primary key,
+            timestamp_utc timestamptz not null,
+            protocol_version text not null default '1.0',
+            agent text not null,
+            status text not null,
+            session_id text not null,
+            capabilities jsonb not null default '[]'::jsonb,
+            metadata jsonb not null default '{{}}'::jsonb,
+            ttl_seconds bigint not null
+        );
+        alter table {presence_event_table} add column if not exists protocol_version text not null default '1.0';
+        -- Optional native durable replay identities leave legacy rows untouched.
+        alter table {presence_event_table} add column if not exists replay_hub text;
+        alter table {presence_event_table} add column if not exists replay_request_id uuid;
+        create unique index if not exists agent_bus_presence_replay_id_idx
+            on {presence_event_table} (replay_hub, replay_request_id)
+            where replay_hub is not null and replay_request_id is not null;
+        create index if not exists agent_bus_presence_events_agent_ts_idx
+            on {presence_event_table} (agent, timestamp_utc desc);
+        -- Timestamp-only index: enables index-only scans for count(*) and
+        -- unfiltered time-range queries on presence_events.  Added 2026-03-20.
+        create index if not exists agent_bus_presence_events_ts_idx
+            on {presence_event_table} (timestamp_utc desc);
+        ",
+        message_table = settings.message_table,
+        presence_event_table = settings.presence_event_table,
+    )
 }
 
 #[cfg(test)]

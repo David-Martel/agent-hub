@@ -271,7 +271,7 @@ pub(crate) fn use_server_mode(settings: &Settings) -> bool {
 }
 
 /// Probe one candidate hub's `/health` for [`resolve_configured_hub`]. Returns `None` on
-/// any failure — unreachable, timeout, non-2xx, or an unparseable body —
+/// any failure â€” unreachable, timeout, non-2xx, or an unparseable body â€”
 /// [`resolve_configured_hub`] does not distinguish why a probe failed.
 #[cfg(feature = "server-mode")]
 fn probe_hub_health(settings: &Settings, url: &str) -> Option<ProbeInfo> {
@@ -309,7 +309,7 @@ fn probe_hub_health(settings: &Settings, url: &str) -> Option<ProbeInfo> {
 /// (#78): the first reachable candidate (`Remote`, `authoritative` iff it was
 /// index 0), `Offline` if candidates are configured but none answered, or
 /// `Local` if none are configured at all. Never falls back to a local Redis
-/// read/write when candidates were configured but unreachable — that is
+/// read/write when candidates were configured but unreachable â€” that is
 /// exactly the split-brain island #78 reports.
 #[cfg(feature = "server-mode")]
 pub(crate) fn active_hub_backend(settings: &Settings) -> HubBackend {
@@ -681,6 +681,59 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn durable_replay_transport_classifies_auth_shape_and_lost_reply() {
+        use agent_bus_core::outbox::{ReplayFailure, ReplayRequest, ReplayResponse};
+        let request: ReplayRequest = serde_json::from_value(serde_json::json!({
+            "request_id":"01900000-0000-7000-8000-000000000001",
+            "origin_id":"00000000-0000-4000-8000-000000000002",
+            "sequence":1,"created_ms":100,"expires_ms":0,"operation":"send","surface":"mcp",
+            "arguments":{"sender":"fixture","recipient":"all","topic":"status","body":"one"}
+        }))
+        .unwrap();
+        for (status, body, classification) in [
+            (
+                200,
+                r#"{"status":"applied","result":{"id":"original"}}"#,
+                "applied",
+            ),
+            (
+                401,
+                r#"{"error":"reflected synthetic-durable-token"}"#,
+                "permanent",
+            ),
+            (503, r#"{"error":"unavailable"}"#, "transport"),
+            (200, r#"{"status":"unsupported"}"#, "permanent"),
+            (200, r#"{"status":"applied","result": "#, "transport"),
+        ] {
+            let (url, server) = capture_mock_body(status, String::new(), body);
+            let url = url.replace("127.0.0.1", "localhost");
+            let mut settings = isolated_settings();
+            settings.auth_token = Some("synthetic-durable-token".to_owned());
+            settings.server_urls = vec![url.clone()];
+            let response = agent_bus_core::outbox_client::NativeReplayTransport::replay(
+                &DurableReplayTransport(&settings),
+                &url,
+                "fixture-hub",
+                &request,
+                Duration::from_secs(2),
+            );
+            match classification {
+                "applied" => assert_eq!(
+                    response,
+                    Ok(ReplayResponse::Applied {
+                        result: serde_json::json!({"id":"original"})
+                    })
+                ),
+                "permanent" => assert_eq!(response, Err(ReplayFailure::Permanent)),
+                _ => assert_eq!(response, Err(ReplayFailure::Transport)),
+            }
+            let headers = server.join().unwrap();
+            assert!(headers.contains("post /replay http/1.1"));
+            assert!(headers.contains("authorization: bearer synthetic-durable-token"));
+        }
+    }
 
     fn isolated_settings() -> Settings {
         let mut settings = Settings::from_env();
@@ -1096,4 +1149,105 @@ mod tests {
              got: {message}"
         );
     }
+}
+
+/// Stable-ID writes use the existing native candidate credential guard.
+#[cfg(feature = "server-mode")]
+pub(crate) fn durable_write(
+    settings: &Settings,
+    tool: &str,
+    mut args: serde_json::Map<String, serde_json::Value>,
+) -> Result<Option<serde_json::Value>> {
+    if !agent_bus_core::outbox_client::durable_replay_configured(settings) {
+        agent_bus_core::outbox_client::legacy_write_guard(settings, None)?;
+        return Ok(None);
+    }
+    let operation = agent_bus_core::outbox::Operation::from_tool(tool)
+        .ok_or_else(|| anyhow::anyhow!("unsupported durable operation"))?;
+    // Existing REST optional-null fields become omitted MCP-schema arguments.
+    args.retain(|_, value| !value.is_null());
+    agent_bus_core::outbox_client::submit(
+        settings,
+        &DurableReplayTransport(settings),
+        operation,
+        agent_bus_core::outbox::ClientSurface::Cli,
+        args,
+        None,
+    )
+    .map(Some)
+    .map_err(anyhow::Error::from)
+}
+#[cfg(feature = "server-mode")]
+pub(crate) struct DurableReplayTransport<'a>(&'a Settings);
+#[cfg(feature = "server-mode")]
+impl agent_bus_core::outbox_client::NativeReplayTransport for DurableReplayTransport<'_> {
+    fn replay(
+        &self,
+        url: &str,
+        hub: &str,
+        request: &agent_bus_core::outbox::ReplayRequest,
+        timeout: Duration,
+    ) -> std::result::Result<
+        agent_bus_core::outbox::ReplayResponse,
+        agent_bus_core::outbox::ReplayFailure,
+    > {
+        use agent_bus_core::outbox::ReplayFailure;
+        run_server_future(async {
+            Ok(async {
+                let client = client_with_retry_policy(self.0, false)
+                    .map_err(|_sanitized| ReplayFailure::Permanent)?;
+                let url = format!("{}/replay", url.trim_end_matches('/'));
+                let built = authed_request(self.0, &url, client.post(&url))
+                    .map_err(|_sanitized| ReplayFailure::Permanent)?
+                    .timeout(timeout)
+                    .json(&agent_bus_core::outbox_hub::ReplayEnvelope {
+                        hub_identity: hub.to_owned(),
+                        request: request.clone(),
+                    })
+                    .build()
+                    .map_err(|_sanitized| ReplayFailure::Permanent)?;
+                let mut response = client.execute(built).await.map_err(|error| {
+                    if error.is_connect() || error.is_timeout() || error.is_request() {
+                        ReplayFailure::Transport
+                    } else {
+                        ReplayFailure::Permanent
+                    }
+                })?;
+                if response.status().as_u16() == 503 {
+                    return Err(ReplayFailure::Transport);
+                }
+                if !response.status().is_success() {
+                    return Err(ReplayFailure::Permanent);
+                }
+                let mut bytes = Vec::new();
+                while let Some(chunk) = response
+                    .chunk()
+                    .await
+                    .map_err(|_sanitized| ReplayFailure::Transport)?
+                {
+                    if bytes.len().saturating_add(chunk.len())
+                        > agent_bus_core::validation::MAX_BODY_LEN + 16_384
+                    {
+                        return Err(ReplayFailure::Permanent);
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                serde_json::from_slice(&bytes).map_err(|error| {
+                    if error.is_eof() {
+                        ReplayFailure::Transport
+                    } else {
+                        ReplayFailure::Permanent
+                    }
+                })
+            }
+            .await)
+        })
+        .map_err(|_sanitized| ReplayFailure::Permanent)?
+    }
+}
+
+#[cfg(feature = "server-mode")]
+pub(crate) fn durable_flush(settings: &Settings) -> Result<serde_json::Value> {
+    agent_bus_core::outbox_client::flush_pending(settings, &DurableReplayTransport(settings), None)
+        .map_err(anyhow::Error::from)
 }

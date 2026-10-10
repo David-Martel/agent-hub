@@ -570,6 +570,18 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
         let fitted_body = auto_fit_schema(body, effective_schema);
         validate_message_schema(&fitted_body, effective_schema)?;
 
+        let durable = serde_json::json!({"sender":from,"recipient":to,"topic":topic,
+            "body":body,"priority":args.priority,"request_ack":args.request_ack,
+            "tags":args.tags,"metadata":meta,"schema":args.schema,
+            "thread_id":args.thread_id,"reply_to":args.reply_to});
+        if let Some(value) = crate::server_mode::durable_write(
+            settings,
+            "post_message",
+            durable.as_object().context("durable send shape")?.clone(),
+        )? {
+            output(&value, args.encoding);
+            return Ok(());
+        }
         let base = resolve_hub_url(settings, "send")?;
         let url = format!("{base}/messages");
         let mut payload = serde_json::json!({
@@ -781,6 +793,15 @@ pub(crate) fn cmd_ack(
     // but unreachable (an offline ack is a lost ack, not a local one).
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
+        let durable = serde_json::json!({"agent":agent,"message_id":message_id,"body":body});
+        if let Some(value) = crate::server_mode::durable_write(
+            settings,
+            "ack_message",
+            durable.as_object().context("durable ack shape")?.clone(),
+        )? {
+            output(&value, encoding);
+            return Ok(());
+        }
         return match active_hub_backend(settings) {
             agent_bus_core::hub::HubBackend::Remote { url, .. } => {
                 let mut ack_url = reqwest::Url::parse(&url).context("invalid hub URL")?;
@@ -859,6 +880,20 @@ pub(crate) fn cmd_presence(settings: &Settings, args: &PresenceArgs<'_>) -> Resu
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
+        let durable = serde_json::json!({"agent":agent,"status":args.status,
+            "ttl_seconds":args.ttl_seconds,"capabilities":args.capabilities,
+            "metadata":meta,"session_id":args.session_id});
+        if let Some(value) = crate::server_mode::durable_write(
+            settings,
+            "set_presence",
+            durable
+                .as_object()
+                .context("durable presence shape")?
+                .clone(),
+        )? {
+            output(&value, args.encoding);
+            return Ok(());
+        }
         let base = resolve_hub_url(settings, "presence")?;
         let url = format!("{base}/presence/{agent}");
         let mut payload = serde_json::json!({
@@ -1616,6 +1651,18 @@ pub(crate) fn cmd_claim(
         // either, since a second hub tier (e.g. a future Cloudflare-hosted
         // candidate) must never let two different hubs believe they can both
         // grant the same claim.
+        let durable = serde_json::json!({"resource":resource,"agent":agent,"reason":reason,
+            "mode":mode,"namespace":namespace,"scope_kind":scope_kind,"scope_path":scope_path,
+            "repo_scopes":repo_scopes,"thread_id":thread_id,
+            "lease_ttl_seconds":lease_ttl_seconds,"scope":scope});
+        if let Some(value) = crate::server_mode::durable_write(
+            settings,
+            "claim_resource",
+            durable.as_object().context("durable claim shape")?.clone(),
+        )? {
+            output(&value, encoding);
+            return Ok(());
+        }
         let base = resolve_authoritative_claim_url(settings, "claim")?;
         let request_url = build_server_resource_url(&base, resource, None)?;
         let val = http_post(
