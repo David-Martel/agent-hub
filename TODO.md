@@ -11,17 +11,40 @@ Current Warp integration and deployment queue: [fleet completion ledger](docs/fl
   passes with invalid inherited candidate configuration and proxy settings.
   The reviewed token toolkit is included in the current consolidation;
   production-map replacement and fleet rollout retain separate acceptance.
-- [ ] Merge a validated PR and install hash-verified binaries on DTM-P1GEN7,
-  ASUS and the Sparks; validate each fresh CLI/MCP source path separately.
+- [x] Merge reviewed PR #118 as 1233662bd4537bd2b2f7e1cfc034c40419ed4d21;
+  exact-main run 38046540678 passed all 16 required checks. Task #119 is
+  included and closed, with its signed tip and ignored artifacts preserved.
+- [x] Publish hash-verified CLI/HTTP/MCP binaries on DTM-P1GEN7, ASUS,
+  both Sparks and Carbon, preserving originals and active clients. P1 and
+  Carbon native Windows DLL loading and fresh MCP17 checks pass; Carbon's
+  installed ASUS and actor-specific Cloud routes pass separately.
+- [x] Qualify P1 managed HTTP health with the accepted shipping revision
+  and preserved supervisor configuration.
+- [x] Qualify ASUS on-site Cloud sync push/pull, no duplicate or origin
+  rewrite, no-offsite exclusion and monotonic cursors through managed restart.
+  No-echo is proven by the source-bound disposable backend test; live stats
+  alone do not prove absence of an outbound echo request.
+- [x] Qualify installed native outbox reconnect through an owned artificial
+  transport interruption: two stable request IDs across separate CLI processes,
+  reconnect applies two, repeat applies zero, and exact reads return two.
+  The production hub was never taken offline.
+- [ ] Complete remaining network-location checks.
+- [x] Reconcile the fleet desired-state manifest with immutable accepted
+  shipping revision 1233662 and Carbon's actual client-only topology.
+- [x] Implement and qualify the fleet doctor's remote-Windows adapter.
+  Actual read-only qualification passes all 64 checks across ASUS, P1,
+  Carbon and both Sparks, with no failed, skipped or warning checks.
 - [x] Correct DTM-P1GEN7 SessionStart routing so it respects the candidate
   list; validate bounded calls and distinct host/session identities. Fleet
   deployment and future client-process qualification remain separate gates.
 - [x] Make Cloudflare retention scheduling awaitable and validate both
   fresh historical ingestion and expired-ingest pruning against real
-  Durable Object SQLite. Reviewed Worker source 9e307f0, including cloud MCP
-  and pagination, has verified source-only deployment/source parity with
-  existing opaque secrets preserved. This does not qualify final installed
-  clients, on-site sync or actual historical ingestion.
+  Durable Object SQLite. Deployed Worker source 0d4e4c5 has exact whole-subtree
+  parity with accepted main; all 57 live contract checks pass, including Cloud
+  claim-mutation refusal and the exact complete six-entry token-map binding.
+  No secret replacement follows from source deployment. These checks do not
+  qualify on-site sync or actual historical ingestion. Installed clients need
+  separate source-bound native runtime receipts.
 - [x] Isolate the standalone functional harness from inherited routing
   tiers and require disposable loopback backend inputs before it can publish
   probes; 40 regression cases validate rejection, isolation, forced degraded
@@ -33,26 +56,36 @@ Current Warp integration and deployment queue: [fleet completion ledger](docs/fl
   four-entry map after retaining the first immediate ValueError. Rotation,
   private activation and targeted revocation passed: fresh final readback
   proves replacement 200, retired 401 and all original three entries 200.
-  First failed immediate checks are retained; installed consumers remain
-  unchanged and still require final shipping qualification.
+  First failed immediate checks are retained. Subsequent six-entry production
+  map equality is independently verified. Installed Carbon native CLI/MCP
+  and P1 own actor-specific Cloud CLI/MCP health and exact send/read/ACK
+  pass. Remaining network-location checks stay separate.
 - [x] Implement and independently review durable client outbox (#80):
   protected journal, stable request IDs, honest terminal dispositions,
   current claim authority checks and lazy replay. Disposable Redis/PG
-  replay and shipping-crate tests pass; final source CI and installed
-  offline/reconnect qualification are still pending.
-- [ ] Qualify on-site sync and final installed cloud MCP/CLI routes, then
-  verify the Cloud mutation refusal while retaining ASUS claims authority,
-  and complete scoped historical import. Claims forwarding is superseded
-  by this conservative implementation default; it is not a claim of an
-  explicit operator-selected global migration. Import dry-run/resume tooling
-  is repaired; actual ingestion remains unperformed.
-  Backfill disabled does not complete the history requirement. Do not add
-  the cloud fleet candidate before runtime acceptance passes.
+  replay and shipping-crate tests pass; final main CI now passes, including
+  the real durable recovery integration tests. Installed native offline/reconnect
+  qualification also passes with an owned artificial transport interruption.
+- [x] Qualify installed on-site sync and both owned Cloud MCP/CLI routes;
+  verify Cloud mutation refusal while retaining ASUS claims authority.
+  Claims forwarding is superseded by this conservative implementation
+  default; it is not an explicit operator-selected global migration.
+- [ ] Complete scoped historical coordinator messages/presence import.
+  Read-only dry-run and content-bound resume tooling is repaired. Actual
+  first ASUS ingestion retained a failure after storing 27,259 messages and
+  75,261 presence events; four legacy over-length records remain on-site.
+  Remaining source validation and island ingestion are pending.
+  Backfill disabled does not complete the history requirement. Cloud use
+  remains actor-specific; normal profiles retain ordered ASUS authority.
 - [ ] Finish role-specific cloud/fleet acceptance for the final consolidated
-  shipping revision. Worker 9e307f0 source-only deployment/source parity,
-  original complete-map authority and the owned Agent's fresh live readback
-  are verified. Final PR/main CI, native artifacts, installed clients,
-  on-site federation and off-LAN CLI/MCP checks remain pending.
+  shipping revision. Accepted main 1233662 passed all 16 required checks, and
+  its three authenticated artifact ZIPs and nine binaries are verified. P1
+  native closed acceptance proves the full revision, System32 DLL loading
+  and MCP17. Deployed Worker subtree parity, all 57 live contract checks and
+  exact six-entry map binding pass. Five-host binary installation and native
+  Carbon CLI/MCP acceptance pass, including both owned Cloud profiles and
+  both P1/Carbon ASUS nonce/ACK directions. On-site sync and managed restart
+  pass, as does installed native outbox reconnect. Off-LAN checks remain.
 - [ ] Validate remaining network locations individually; current P1 public
   health/auth checks pass and are not a geographic-policy approval hold.
 - [ ] Reconcile DTM-WORK/DTM-SUPER-NUC client/MCP configuration and tooling

@@ -19,6 +19,18 @@ if (Test-BuildRevisionMatch -VersionText "agent-bus 0.5.0 (v0.5.0-20-gfd70c8d-ex
 }
 
 $fullRevision = "53292d9d706217994d1791227d60be6ed1f7f79f"
+$installedRevision = '1233662bd4537bd2b2f7e1cfc034c40419ed4d21'
+if (-not (Test-BuildRevisionMatch -VersionText "agent-bus 0.5.0 ($installedRevision 2026-10-10)" -Revision $installedRevision)) {
+    throw 'Fleet doctor rejected the installed full-revision version format'
+}
+foreach ($version in @(
+        "agent-bus 0.5.0 ($installedRevision-dirty 2026-10-10)",
+        "agent-bus 0.5.0 ($installedRevision 2026-10-10) trailing",
+        'agent-bus 0.5.0 (2233662bd4537bd2b2f7e1cfc034c40419ed4d21 2026-10-10)')) {
+    if (Test-BuildRevisionMatch -VersionText $version -Revision $installedRevision) {
+        throw 'Fleet doctor accepted dirty, trailing or wrong installed provenance'
+    }
+}
 foreach ($version in @(
         "agent-bus 0.5.0 ($fullRevision 2026-10-08)",
         "0.5.0 ($fullRevision 2026-10-08)",
@@ -222,7 +234,81 @@ foreach ($hardCodedPath in @('$HOME/.local/bin/agent-bus', '$HOME/.config/agent-
         throw "Fleet doctor accepted duplicate machine IDs."
     }
 
-    Write-Output "Fleet doctor fixtures passed."
+    $routeControls = @(
+        @{ config = @{ server_urls = @(' ', 'http://first.invalid:8400', 'http://second.invalid:8400'); server_url = 'http://legacy.invalid:8400' }; expected = 'http://first.invalid:8400' },
+        @{ config = @{ server_urls = @(@{ url = '' }, @{ url = 'http://object.invalid:8400' }); server_url = 'http://legacy.invalid:8400' }; expected = 'http://object.invalid:8400' },
+        @{ config = @{ server_urls = @('', @{ url = ' ' }); server_url = 'http://legacy.invalid:8400' }; expected = 'http://legacy.invalid:8400' },
+        @{ config = @{ server_url = 'http://legacy.invalid:8400' }; expected = 'http://legacy.invalid:8400' }
+    )
+    foreach ($control in $routeControls) {
+        if ((Get-FleetConfigRoute ([pscustomobject]$control.config)) -cne $control.expected) {
+            throw 'Ordered route priority or blank fallback failed'
+        }
+    }
+    $windowsMachine = [pscustomobject]@{
+        id = 'carbon-fixture'; connection = 'ssh-windows'; os = 'windows'; architecture = 'x86_64'; role = 'client'
+        ssh_host = 'dtm-carbon-two.vpn.dtmventures.com'; ssh_user = 'david'; ssh_port = 22; ssh_host_key_alias = 'dtm-carbon-two'
+        canonical_repo = 'C:/codedev/agent-hub'; cli_path = 'C:/Users/david/bin/agent-bus.exe'
+        config_path = 'C:/Users/david/.config/agent-bus/config.json'; client_server_url = 'http://localhost:18480'
+        auth_source = 'client-config'; required_active_services = @(); required_inactive_services = @()
+    }
+    $windowsManifestPath = Join-Path $fixtureRoot 'windows-manifest.json'
+    $windowsManifest = @{ schema_version = 1; authority_machine = 'authority-a'; expected_protocol_version = '1.0';
+        expected_build_revision = $fullRevision; machines = @(
+            @{ id = 'authority-a'; connection = 'ssh-linux'; ssh_host = 'authority-a'; os = 'linux'; architecture = 'x86_64';
+                role = 'authority'; canonical_repo = '/repo'; cli_path = '/bin/agent-bus'; config_path = '/config.json';
+                auth_source = 'hub-env'; client_server_url = 'http://localhost:8400' }, $windowsMachine) }
+    $windowsManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $windowsManifestPath -Encoding utf8
+    & $doctor -ManifestPath $windowsManifestPath -SkipLive -Strict | Out-Null
+    $command = Get-FleetWindowsCommand $windowsMachine
+    $remoteScript = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($command -split ' ')[-1]))
+    $remoteTokens = $null; $remoteErrors = $null
+    $null = [Management.Automation.Language.Parser]::ParseInput($remoteScript, [ref]$remoteTokens, [ref]$remoteErrors)
+    if ($remoteErrors.Count -or $remoteScript.Contains('fixture-only') -or $command -notmatch '^powershell\.exe .* -EncodedCommand [A-Za-z0-9+/=]+$') {
+        throw 'Remote Windows projection was not safe encoded source'
+    }
+    $windowsMachine.cli_path = $cliPath
+    $windowsMachine.config_path = $configPath
+    $windowsMachine.client_server_url = 'http://authority.invalid:8400'
+    $fixtureCommand = Get-FleetWindowsCommand $windowsMachine
+    $fixtureScript = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(($fixtureCommand -split ' ')[-1]))
+    $previousUrl = $env:AGENT_BUS_SERVER_URL
+    try {
+        $env:AGENT_BUS_SERVER_URL = 'http://caller-route.invalid:8400'
+        $projectionText = & ([scriptblock]::Create($fixtureScript)) | Out-String
+        $projection = $projectionText | ConvertFrom-Json
+        if ($projection.config.server_url -cne 'http://authority.invalid:8400' -or
+            $projection.config.auth_token_present -ne $true -or $projection.health.ok -ne $true -or
+            $projectionText.Contains('fixture-only') -or $projectionText.Contains('token_file')) {
+            throw 'Actual encoded Windows projection failed its redaction or route control'
+        }
+    } finally {
+        if ($null -eq $previousUrl) { Remove-Item Env:AGENT_BUS_SERVER_URL -ErrorAction SilentlyContinue }
+        else { $env:AGENT_BUS_SERVER_URL = $previousUrl }
+    }
+    foreach ($path in @('C:/bad;echo injected', 'C:/bad$(echo injected)', 'C:/../config.json', "C:/bad`npath")) {
+        if (Test-FleetWindowsPath $path) { throw 'Unsafe Windows path accepted' }
+    }
+    foreach ($hostValue in @('-oProxyCommand=bad', 'host;echo-bad', "host`nother", 'user@host')) {
+        $refused = $false
+        try { Invoke-RemoteFleetCommand -HostName $hostValue -CommandText 'unused' | Out-Null }
+        catch { if ($_.Exception.Message -notlike 'Unsafe SSH host*') { throw }; $refused = $true }
+        if (-not $refused) { throw 'SSH host injection was accepted' }
+    }
+    $windowsMachine.ssh_host = 'host;echo-bad'
+    $windowsManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $windowsManifestPath -Encoding utf8
+    $refused = $false
+    try { & $doctor -ManifestPath $windowsManifestPath -SkipLive -Strict | Out-Null }
+    catch { if ($_.Exception.Message -ne 'Unsafe SSH host in fleet manifest') { throw }; $refused = $true }
+    if (-not $refused) { throw 'Manifest SSH host injection was accepted' }
+    $windowsMachine.ssh_host = 'dtm-carbon-two.vpn.dtmventures.com'
+    $windowsMachine.cli_path = 'C:/bad;injection.exe'
+    $refused = $false
+    try { Get-FleetWindowsCommand $windowsMachine | Out-Null }
+    catch { if ($_.Exception.Message -ne 'Unsafe Windows fleet path') { throw }; $refused = $true }
+    if (-not $refused) { throw 'Encoded payload accepted an unsafe Windows path' }
+
+    Write-Output "Fleet doctor fixtures passed, including ordered routes and Windows SSH safety."
 }
 finally {
     $resolvedFixture = (Resolve-Path -LiteralPath $fixtureRoot).Path

@@ -43,17 +43,144 @@ function ConvertTo-PosixShellLiteral {
 function Invoke-RemoteFleetCommand {
     param(
         [Parameter(Mandatory = $true)][string]$HostName,
-        [Parameter(Mandatory = $true)][string]$CommandText
+        [Parameter(Mandatory = $true)][string]$CommandText,
+        [string]$UserName,
+        [int]$Port = 22,
+        [string]$HostKeyAlias
     )
 
-    if (-not (Test-SafeFleetIdentifier -Value $HostName)) {
+    if ($HostName -cnotmatch '\A[0-9A-Za-z](?:[0-9A-Za-z.-]*[0-9A-Za-z])?\z') {
         throw "Unsafe SSH host in fleet manifest: $HostName"
     }
-    $output = & ssh -o BatchMode=yes -o ConnectTimeout=10 -o ConnectionAttempts=1 $HostName $CommandText 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "SSH command failed on ${HostName}: $($output -join ' ')"
+    if ($Port -lt 1 -or $Port -gt 65535 -or
+        ($UserName -and $UserName -cnotmatch '\A[0-9A-Za-z_][0-9A-Za-z_.-]*\z') -or
+        ($HostKeyAlias -and $HostKeyAlias -cnotmatch '\A[0-9A-Za-z][0-9A-Za-z.-]*\z')) {
+        throw "Unsafe SSH identity or port in fleet manifest"
     }
-    return ($output -join "`n").Trim()
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = (Get-Command ssh -CommandType Application -TotalCount 1).Source
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $arguments = @('-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=yes', '-o', 'SendEnv=-*',
+        '-o', 'UpdateHostKeys=no', '-o', 'ConnectTimeout=5', '-o', 'ConnectionAttempts=1',
+        '-o', 'ControlMaster=no', '-o', 'ControlPath=none')
+    if ($UserName) { $arguments += @('-l', $UserName) }
+    if ($HostKeyAlias) { $arguments += @('-o', "HostKeyAlias=$HostKeyAlias") }
+    # Keep saved Linux alias ports; the explicit port is for the Windows projection.
+    if ($PSBoundParameters.ContainsKey('Port')) { $arguments += @('-p', [string]$Port) }
+    foreach ($argument in ($arguments + @($HostName, $CommandText))) { $start.ArgumentList.Add($argument) }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $start
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    $stdout = $null; $stderr = $null; $settled = $false; $deadlineHit = $false
+    if (-not $process.Start()) { throw 'SSH client failed to start' }
+    try {
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $deadlineHit = -not $process.WaitForExit([int][Math]::Max(0, 45000 - $clock.ElapsedMilliseconds))
+    }
+    finally {
+        $settlement = [Diagnostics.Stopwatch]::StartNew()
+        if (-not $process.HasExited) {
+            $process.Kill($false) # Only this original SSH client; never a process tree.
+            $null = $process.WaitForExit(2000)
+        }
+        if ($stdout -and $stderr) {
+            $null = [Threading.Tasks.Task]::WhenAll([Threading.Tasks.Task[]]@($stdout, $stderr)).Wait(
+                [int][Math]::Max(0, 2000 - $settlement.ElapsedMilliseconds))
+            $settled = $process.HasExited -and $stdout.IsCompletedSuccessfully -and $stderr.IsCompletedSuccessfully
+        }
+        if (-not $settled) {
+            $script:RetainedFleetSshClient = @{ Process = $process; Stdout = $stdout; Stderr = $stderr }
+        }
+    }
+    $deadlineHit = $deadlineHit -or $clock.ElapsedMilliseconds -ge 45000
+    if (-not $settled) { throw 'SSH original client or capture remains unsettled' }
+    try {
+        if ($deadlineHit -or $process.ExitCode -ne 0) {
+            throw "SSH read-only projection failed on $HostName (exit=$($process.ExitCode), deadline=$deadlineHit)"
+        }
+        return $stdout.GetAwaiter().GetResult().Trim()
+    }
+    finally { $process.Dispose() }
+}
+
+function Get-FleetConfigRoute {
+    param([Parameter(Mandatory)]$Config)
+
+    foreach ($candidate in @($Config.server_urls)) {
+        $url = if ($candidate -is [string]) { $candidate } else { [string]$candidate.url }
+        if (-not [string]::IsNullOrWhiteSpace($url)) { return $url.Trim() }
+    }
+    return ([string]$Config.server_url).Trim()
+}
+
+function Test-FleetConfigRoute {
+    param([Parameter(Mandatory)]$Machine, [Parameter(Mandatory)]$Config)
+
+    $route = Get-FleetConfigRoute $Config
+    $defaultAuthority = $Machine.role -eq 'authority' -and $Machine.allow_default_server_url -eq $true -and
+        -not $route -and $Machine.client_server_url -ceq 'http://localhost:8400'
+    if ($route -ceq $Machine.client_server_url -or $defaultAuthority) {
+        Add-FleetCheck -Machine $Machine.id -Check 'config-route' -Status 'ok' -Detail 'Ordered configuration route matches'
+    } else {
+        Add-FleetCheck -Machine $Machine.id -Check 'config-route' -Status 'fail' -Detail 'Ordered configuration route differs'
+    }
+}
+
+function Test-FleetWindowsPath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    return $Path -cmatch '\A[A-Za-z]:[\\/][0-9A-Za-z ._\\/-]+\z' -and
+        $Path -notmatch '(^|[\\/])\.\.([\\/]|$)'
+}
+
+function Get-FleetWindowsCommand {
+    param([Parameter(Mandatory)]$Machine)
+
+    foreach ($path in @($Machine.cli_path, $Machine.config_path, $Machine.canonical_repo)) {
+        if (-not (Test-FleetWindowsPath -Path ([string]$path))) { throw 'Unsafe Windows fleet path' }
+    }
+    $payload = @{ cli = [string]$Machine.cli_path; config = [string]$Machine.config_path;
+        route = [string]$Machine.client_server_url;
+        services = @(@($Machine.required_active_services) + @($Machine.required_inactive_services) | Where-Object { $null -ne $_ }) }
+    $encodedPayload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($payload | ConvertTo-Json -Compress)))
+    $routeFunction = 'function Get-FleetConfigRoute {' + (Get-Command Get-FleetConfigRoute).ScriptBlock.ToString() + '}'
+    $authFunction = 'function Test-FleetConfigAuthSource {' + (Get-Command Test-FleetConfigAuthSource).ScriptBlock.ToString() + '}'
+    $remote = @'
+$ErrorActionPreference = 'Stop'
+try {
+    $inputData = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
+    __ROUTE_FUNCTION__
+    __AUTH_FUNCTION__
+    $config = Get-Content -LiteralPath $inputData.config -Raw | ConvertFrom-Json
+    $version = (& $inputData.cli --version | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'CLI version failed' }
+    $health = (& $inputData.cli health --encoding json | Out-String) | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0) { throw 'CLI health failed' }
+    $serviceStates = @{}
+    foreach ($name in $inputData.services) {
+        $service = Get-Service -Name $name -ErrorAction SilentlyContinue
+        $serviceStates[$name] = if ($service) { [string]$service.Status } else { 'not-found' }
+    }
+    @{ version = $version; config = @{ server_url = (Get-FleetConfigRoute $config);
+            auth_token_present = [bool](Test-FleetConfigAuthSource $config $inputData.route) };
+        health = @{ ok = $health.ok; storage_ready = $health.storage_ready; protocol_version = $health.protocol_version;
+            build_version = $health.build_version; hub_identity = $health.hub_identity;
+            pg_dropped_writes = $health.pg_dropped_writes; pg_write_errors = $health.pg_write_errors;
+            backend = @{ mode = $health.backend.mode; url = $health.backend.url;
+                authoritative = $health.backend.authoritative; hub_build = $health.backend.hub_build } };
+        services = $serviceStates } | ConvertTo-Json -Depth 8 -Compress
+} catch {
+    [Console]::Error.WriteLine('Fleet Windows projection failed: ' + $_.Exception.GetType().FullName)
+    exit 1
+}
+'@
+    $remote = $remote.Replace('__PAYLOAD__', $encodedPayload).Replace('__ROUTE_FUNCTION__', $routeFunction).Replace('__AUTH_FUNCTION__', $authFunction)
+    return 'powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ' +
+        [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($remote))
 }
 
 function Test-BuildRevisionMatch {
@@ -232,7 +359,7 @@ foreach ($machine in $machines) {
     if (-not (Test-SafeFleetIdentifier -Value $machineId)) {
         throw "Unsafe fleet machine ID: $machineId"
     }
-    if ($machine.connection -notin @("local-windows", "ssh-linux")) {
+    if ($machine.connection -notin @("local-windows", "ssh-linux", "ssh-windows")) {
         throw "Unsupported connection '$($machine.connection)' for $machineId."
     }
     if ($machine.architecture -notin @("x86_64", "aarch64")) {
@@ -250,6 +377,20 @@ foreach ($machine in $machines) {
     if ($machine.connection -eq "ssh-linux") {
         ConvertTo-PosixShellLiteral -Path ([string]$machine.cli_path) | Out-Null
         ConvertTo-PosixShellLiteral -Path ([string]$machine.config_path) | Out-Null
+    }
+    if ($machine.connection -in @('ssh-linux', 'ssh-windows') -and
+        [string]$machine.ssh_host -cnotmatch '\A[0-9A-Za-z](?:[0-9A-Za-z.-]*[0-9A-Za-z])?\z') {
+        throw 'Unsafe SSH host in fleet manifest'
+    }
+    if ($machine.connection -eq 'ssh-windows') {
+        if ($machine.os -cne 'windows' -or [string]$machine.ssh_user -cnotmatch '\A[0-9A-Za-z_][0-9A-Za-z_.-]*\z' -or
+            [string]$machine.ssh_host_key_alias -cnotmatch '\A[0-9A-Za-z][0-9A-Za-z.-]*\z' -or
+            ($machine.ssh_port -isnot [long] -and $machine.ssh_port -isnot [int]) -or
+            $machine.ssh_port -lt 1 -or $machine.ssh_port -gt 65535) { throw 'Invalid Windows SSH manifest identity' }
+        Get-FleetWindowsCommand $machine | Out-Null
+    }
+    foreach ($serviceName in @(@($machine.required_active_services) + @($machine.required_inactive_services) | Where-Object { $null -ne $_ })) {
+        if (-not (Test-SafeFleetIdentifier -Value ([string]$serviceName))) { throw 'Unsafe fleet service name' }
     }
     if ([string]$machine.client_server_url -notmatch '^http://[0-9A-Za-z._-]+:[0-9]+$') {
         throw "client_server_url must be a stable HTTP hostname and port for $machineId."
@@ -278,6 +419,7 @@ else {
                 Test-BuildRevision -Machine $machineId -VersionText $versionText -Revision $revision
 
                 $config = Get-Content -LiteralPath $machine.config_path -Raw | ConvertFrom-Json
+                Test-FleetConfigRoute -Machine $machine -Config $config
                 # Observe the host's real configuration and inherited overrides.
                 # Forcing the manifest URL would conceal actual routing drift.
                 $healthText = (& $machine.cli_path health --encoding json | Out-String)
@@ -314,6 +456,27 @@ else {
                     }
                 }
             }
+            elseif ($machine.connection -eq 'ssh-windows') {
+                $command = Get-FleetWindowsCommand $machine
+                $projection = Invoke-RemoteFleetCommand -HostName $machine.ssh_host -UserName $machine.ssh_user `
+                    -Port $machine.ssh_port -HostKeyAlias $machine.ssh_host_key_alias -CommandText $command | ConvertFrom-Json
+                Test-BuildRevision -Machine $machineId -VersionText $projection.version -Revision $revision
+                Test-FleetConfigRoute -Machine $machine -Config $projection.config
+                $authStatus = if ($projection.config.auth_token_present -eq $true) { 'ok' } else { 'fail' }
+                Add-FleetCheck -Machine $machineId -Check 'auth-source' -Status $authStatus -Detail 'Projected bearer source availability (redacted)'
+                Test-FleetHealthRoute -Machine $machine -Health $projection.health -AuthorityMachine $manifest.authority_machine
+                Test-HealthDocument -Machine $machineId -Health $projection.health -ProtocolVersion $manifest.expected_protocol_version -Revision $revision
+                foreach ($name in @($machine.required_active_services)) {
+                    $state = [string]$projection.services.$name
+                    $status = if ($state -eq 'Running') { 'ok' } else { 'fail' }
+                    Add-FleetCheck -Machine $machineId -Check "service:$name" -Status $status -Detail $state
+                }
+                foreach ($name in @($machine.required_inactive_services)) {
+                    $state = [string]$projection.services.$name
+                    $status = if ($state -ne 'Running') { 'ok' } else { 'fail' }
+                    Add-FleetCheck -Machine $machineId -Check "service:$name" -Status $status -Detail $state
+                }
+            }
             else {
                 $hostName = [string]$machine.ssh_host
                 $cliShell = ConvertTo-PosixShellLiteral -Path ([string]$machine.cli_path)
@@ -324,8 +487,9 @@ else {
                 $versionText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "$cliShell --version"
                 Test-BuildRevision -Machine $machineId -VersionText $versionText -Revision $revision
 
-                $configSummaryText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "jq -c '{server_url,auth_token_present:((.auth_token|type)==`"string`" and (.auth_token|length)>0),server_urls:[.server_urls[]? | if type==`"string`" then {url:.} else {url,role,hub,token_file,token_env} end]}' $configShell"
+                $configSummaryText = Invoke-RemoteFleetCommand -HostName $hostName -CommandText "jq -c '{server_url:(([.server_urls[]? | if type==`"string`" then . else .url end | select(type==`"string`" and test(`"\\S`"))][0]) // .server_url // `"`"),auth_token_present:((.auth_token|type)==`"string`" and (.auth_token|length)>0),server_urls:[.server_urls[]? | if type==`"string`" then {url:.} else {url,role,hub,token_file,token_env} end]}' $configShell"
                 $configSummary = $configSummaryText | ConvertFrom-Json
+                Test-FleetConfigRoute -Machine $machine -Config $configSummary
                 $tokenFilePresent = {
                     param($Path)
                     if ($Path -match '^~/[0-9A-Za-z._/+-]+$') {
