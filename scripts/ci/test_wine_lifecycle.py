@@ -288,7 +288,7 @@ class WineControls(unittest.TestCase):
             self.assertIn(
                 "Z:\\owned", provider.guest_environment(env)["AGENT_BUS_CONFIG"]
             )
-            self.assertEqual(provider.guest_environment(env)["TMPDIR"], str(root))
+            self.assertNotIn("TMPDIR", provider.guest_environment(env))
             provider.command = lambda argv, **kwargs: (
                 "Z:\\wrong" if argv[1] == "-w" else str(root)
             )
@@ -301,6 +301,17 @@ class WineControls(unittest.TestCase):
             )
             with self.assertRaisesRegex(RuntimeError, "private empty configuration"):
                 provider.guest_environment(env)
+
+    def test_custom_tmpdir_is_excluded_without_changing_owned_prefix_or_home(self):
+        provider = NativeWineProvider.__new__(NativeWineProvider)
+        provider.prefix = Path("owned-prefix")
+        provider.directory = Path("owned-harness")
+        provider.home = provider.directory / "wine-home"
+        for key in ("TMPDIR", "tmpdir", "TmPdIr"):
+            actual = provider.private_environment({key: "foreign-temp"})
+            self.assertFalse(any(name.upper() == "TMPDIR" for name in actual))
+            self.assertEqual(actual["HOME"], str(provider.home))
+            self.assertEqual(actual["WINEPREFIX"], str(provider.prefix))
 
     def test_inherited_home_profile_credentials_and_loader_overrides_are_removed(self):
         provider = NativeWineProvider.__new__(NativeWineProvider)
@@ -335,7 +346,7 @@ class WineControls(unittest.TestCase):
         )
         actual = provider.private_environment(inherited)
         self.assertEqual(actual["HOME"], str(provider.home))
-        self.assertEqual(actual["TMPDIR"], str(provider.directory))
+        self.assertNotIn("TMPDIR", actual)
         self.assertEqual(actual["AGENT_BUS_CONFIG"], "owned-config")
         self.assertEqual(
             actual["AGENT_BUS_TEST_DATABASE_URL"], "closed-disposable-endpoint"

@@ -271,7 +271,6 @@ class NativeWineProvider:
             "TZ",
             "DISPLAY",
             "TERM",
-            "TMPDIR",
             "TEMP",
             "TMP",
         }
@@ -282,13 +281,16 @@ class NativeWineProvider:
         }
         result.update(
             HOME=str(self.home),
-            TMPDIR=str(self.directory),
             WINEPREFIX=str(self.prefix),
             WINEDEBUG="-all",
             XDG_CONFIG_HOME=str(self.home / ".config"),
             XDG_CACHE_HOME=str(self.home / ".cache"),
             XDG_DATA_HOME=str(self.home / ".local/share"),
         )
+        # Ubuntu Wine 9's server_tmpdir frees the borrowed TMPDIR environment
+        # pointer. Leave it unset: Wine creates its own mode-0700 random server
+        # directory while this run's fixed prefix, HOME and guest TEMP/TMP remain
+        # private. Passing even our owned TMPDIR aborts before wineboot starts.
         return result
 
     def command(self, args, *, env=None, timeout=10):
@@ -325,7 +327,7 @@ class NativeWineProvider:
 
     def guest_environment(self, env):
         result = self.private_environment(env)
-        # HOME/TMPDIR remain POSIX paths for Wine's Unix launcher and server.
+        # HOME stays POSIX; TMPDIR stays absent for the Wine server workaround.
         # Windows guest-facing configuration/TEMP/TMP need drive mappings.
         for key in ("AGENT_BUS_CONFIG", "TEMP", "TMP"):
             path = Path(result[key]).resolve(strict=True)
