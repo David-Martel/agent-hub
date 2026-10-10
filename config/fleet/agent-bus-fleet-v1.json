@@ -2,7 +2,7 @@
   "schema_version": 1,
   "authority_machine": "asuspro13",
   "expected_protocol_version": "1.0",
-  "expected_build_revision": "fd70c8d",
+  "expected_build_revision": "1233662bd4537bd2b2f7e1cfc034c40419ed4d21",
   "expected_mcp_tool_count": 17,
   "machines": [
     {
@@ -14,7 +14,7 @@
       "canonical_repo": "C:\\codedev\\agent-bus",
       "cli_path": "C:\\Users\\david\\bin\\agent-bus.exe",
       "config_path": "C:\\Users\\david\\.config\\agent-bus\\config.json",
-      "client_server_url": "http://asuspro13:8400",
+      "client_server_url": "http://agent-bus-hub.vigil.lan:8400",
       "auth_source": "client-config",
       "required_active_services": [
         "AgentHub"
@@ -52,7 +52,7 @@
       "canonical_repo": "/home/damartel/dev/repos/agent-hub",
       "cli_path": "/home/damartel/.local/bin/agent-bus",
       "config_path": "/home/damartel/.config/agent-bus/config.json",
-      "client_server_url": "http://asuspro13-p2p-spark-0060:8400",
+      "client_server_url": "http://agent-bus-hub:8400",
       "auth_source": "client-config",
       "required_config_mode": "600",
       "required_active_services": [],
@@ -70,7 +70,7 @@
       "canonical_repo": "/home/damartel/dev/repos/agent-hub",
       "cli_path": "/home/damartel/.local/bin/agent-bus",
       "config_path": "/home/damartel/.config/agent-bus/config.json",
-      "client_server_url": "http://asuspro13-p2p-spark-3066:8400",
+      "client_server_url": "http://agent-bus-hub:8400",
       "auth_source": "client-config",
       "required_config_mode": "600",
       "required_active_services": [],
@@ -78,6 +78,24 @@
         "agenthub.service",
         "agent-bus-relay.service"
       ]
+    },
+    {
+      "id": "dtm-carbon-two",
+      "connection": "ssh-windows",
+      "ssh_host": "dtm-carbon-two.vpn.dtmventures.com",
+      "ssh_user": "david",
+      "ssh_host_key_alias": "dtm-carbon-two",
+      "ssh_port": 22,
+      "os": "windows",
+      "architecture": "x86_64",
+      "role": "client-only",
+      "canonical_repo": "C:/codedev/agent-hub",
+      "cli_path": "C:/Users/david/bin/agent-bus.exe",
+      "config_path": "C:/Users/david/.config/agent-bus/config.json",
+      "client_server_url": "http://127.0.0.1:18480",
+      "auth_source": "client-config",
+      "required_active_services": [],
+      "required_inactive_services": []
     }
   ]
 }
