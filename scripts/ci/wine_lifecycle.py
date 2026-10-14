@@ -32,6 +32,31 @@ class WineCommandFailure(RuntimeError):
         self.stderr = stderr
 
 
+def finite_failure_summary(metadata):
+    """Expose typed finite-client evidence without argument or stream values."""
+    result = {}
+    reason = metadata.get("reason")
+    if type(reason) is str and reason in {
+        "launch-failed",
+        "direct-child-kill-failed",
+        "deadline",
+        "nonzero-exit",
+    }:
+        result["reason"] = reason
+    for key in ("pid", "exit", "stdout_bytes", "stderr_bytes"):
+        value = metadata.get(key)
+        if type(value) is int:
+            result[key] = value
+    for key in ("direct_child_killed", "pipes_and_child_settled"):
+        value = metadata.get(key)
+        if type(value) is bool:
+            result[key] = value
+    value = metadata.get("elapsed_seconds")
+    if type(value) in (int, float) and 0 <= value < float("inf"):
+        result["elapsed_seconds"] = value
+    return result
+
+
 def bounded_client(args, env, timeout):
     """Bound finite clients and settlement without killing a process tree."""
     started = time.monotonic()
@@ -351,8 +376,16 @@ class NativeWineProvider:
                     stream.flush()
                     os.fsync(stream.fileno())
                 failure.metadata = metadata
-            except OSError as retention_failure:
+            except (OSError, RuntimeError) as retention_failure:
                 failure.metadata["retention_failure_type"] = type(
+                    retention_failure
+                ).__name__
+            try:
+                self.retain_failure_summary(failure)
+            except (OSError, RuntimeError) as retention_failure:
+                # The failed helper remains authoritative even when custody or
+                # storage prevents retaining its independent safe summary.
+                failure.metadata["summary_retention_failure_type"] = type(
                     retention_failure
                 ).__name__
             raise
@@ -370,7 +403,38 @@ class NativeWineProvider:
 
     def retire_prefix(self):
         self.assert_owner()
+        # Settlement remains the caller's prerequisite. Keep real failed-client
+        # evidence after exact settlement instead of erasing its first cause.
+        if any(self.prefix.glob("finite-client-failure-*")):
+            return
         shutil.rmtree(self.prefix)
+
+    def retain_failure_summary(self, failure):
+        self.assert_owner()
+        self.assert_home()
+        current = self.directory.lstat()
+        if (
+            self.directory.is_symlink()
+            or not stat.S_ISDIR(current.st_mode)
+            or current.st_uid != os.getuid()
+            or stat.S_IMODE(current.st_mode) != 0o700
+            or self.home.parent != self.directory
+        ):
+            raise RuntimeError("Private Wine fixture directory ownership changed")
+        summary = {
+            "profile": "wine-finite-client-failure-v1",
+            "failure": finite_failure_summary(failure.metadata),
+            "prefix_identity": self.identity,
+            "home_identity": self.home_identity,
+        }
+        leaf = self.directory / (
+            "wine-finite-client-failure-" + uuid.uuid4().hex + ".json"
+        )
+        descriptor = os.open(leaf, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(summary, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
 
     def guest_environment(self, env):
         result = self.private_environment(env)
