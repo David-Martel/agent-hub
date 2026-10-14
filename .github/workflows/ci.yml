@@ -307,6 +307,10 @@ jobs:
       - name: Strict native Windows Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: All isolated native Windows tests including ACL controls
+        # Unoptimized Clap generates a ~2 MiB parser frame. Match the measured
+        # CargoTools test-thread capacity; keep release/runtime settings intact.
+        env:
+          RUST_MIN_STACK: '8388608'
         shell: bash
         run: bash scripts/test-agent-bus-isolated.sh
       - name: Release native Windows binaries
