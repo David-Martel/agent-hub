@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { apiJson, CLAUDE_TOKEN, CODEX_TOKEN, HUB_A_TOKEN, postJson } from "./helpers";
+import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
+import { describe, expect, it, vi } from "vitest";
+import app from "../src/index";
+import type { ReadMessagesQuery } from "../src/do-buslog";
+import { apiJson, CLAUDE_TOKEN, CODEX_TOKEN, HUB_A, HUB_A_TOKEN, HUB_B, HUB_B_TOKEN, postJson } from "./helpers";
 
 describe("POST /messages", () => {
   it("sends a message and returns the stored Message shape", async () => {
@@ -362,6 +366,109 @@ describe("POST /messages/:id/ack", () => {
 });
 
 describe("POST /read/batch and POST /ack/batch", () => {
+  it("returns complete multi-agent pages above the RPC value-size limit", async () => {
+    const agents = [crypto.randomUUID(), crypto.randomUUID()];
+    const payload = "x".repeat(225 * 1024);
+    const ids: string[] = [];
+    const now = Date.now();
+    await runInDurableObject(env.BUS_LOG.get(env.BUS_LOG.idFromName("global")), async (instance) => {
+      for (let index = 0; index < 160; index++) {
+        const id = crypto.randomUUID();
+        ids.push(id);
+        instance.insertMessage({
+          id, origin_hub: "large-page-origin",
+          timestamp_utc: new Date(now + index).toISOString(),
+          protocol_version: "1.0", from: "claude", to: agents[index % 2]!,
+          topic: "status", body: payload, tags: [], priority: "normal",
+          request_ack: false, metadata: {},
+        });
+      }
+    });
+    const response = await app.request("/read/batch", {
+      method: "POST",
+      headers: { authorization: `Bearer ${CLAUDE_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ agents, limit: 80, broadcast: false }),
+    }, env);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const messages = await response.json() as Array<{ id: string; body: string; to: string }>;
+    expect(messages.map((message) => message.id)).toEqual(ids);
+    expect(messages.filter((message) => message.to === agents[0])).toHaveLength(80);
+    expect(messages.filter((message) => message.to === agents[1])).toHaveLength(80);
+    expect(messages.every((message) => message.body.length === payload.length)).toBe(true);
+  }, 30_000);
+
+  it("uses one rate-limit RPC and one read RPC for a multi-agent batch", async () => {
+    const stub = {
+      checkRateLimit: vi.fn(() => true),
+      listMessagesBatch: vi.fn((_queries: ReadMessagesQuery[]) => new Response("[]", {
+        headers: { "content-type": "application/json" },
+      })),
+      listMessages: vi.fn(() => []),
+    };
+    const bindings = {
+      ...env,
+      BUS_LOG: { idFromName: () => "global", get: () => stub } as unknown as typeof env.BUS_LOG,
+    };
+    const response = await app.request("/read/batch", {
+      method: "POST",
+      headers: { authorization: `Bearer ${CLAUDE_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["batch-rpc-a", "batch-rpc-b"], limit: 3, broadcast: false }),
+    }, bindings);
+    expect(response.status).toBe(200);
+    expect(stub.checkRateLimit).toHaveBeenCalledTimes(1);
+    expect(stub.listMessagesBatch).toHaveBeenCalledTimes(1);
+    expect(stub.listMessages).not.toHaveBeenCalled();
+    expect(stub.listMessagesBatch.mock.calls[0]?.[0]).toMatchObject([
+      { agent: "batch-rpc-a", limit: 3, include_broadcast: false },
+      { agent: "batch-rpc-b", limit: 3, include_broadcast: false },
+    ]);
+  });
+
+  it("retains distinct origins sharing an id and deduplicates each broadcast once", async () => {
+    const sharedId = crypto.randomUUID();
+    const agent = `batch-origin-${crypto.randomUUID()}`;
+    for (const [origin, token] of [[HUB_A, HUB_A_TOKEN], [HUB_B, HUB_B_TOKEN]]) {
+      const sent = await postJson("/sync/push", {
+        origin_hub: origin,
+        messages: [{ id: sharedId, sender: "claude", recipient: "all", topic: "status", body: `from ${origin}` }],
+      }, token);
+      expect(sent.status).toBe(200);
+    }
+
+    const read = await postJson<Array<{ id: string; origin_hub: string }>>("/read/batch", {
+      agents: [agent, `${agent}-other`, agent],
+      broadcast: true,
+    });
+    expect(read.status).toBe(200);
+    expect(read.body.filter((message) => message.id === sharedId).map((message) => message.origin_hub).sort())
+      .toEqual([HUB_A, HUB_B].sort());
+  });
+
+  it("preserves each agent's newest-message limit and broadcast filter", async () => {
+    const agents = [crypto.randomUUID(), crypto.randomUUID()];
+    const latestIds = [];
+    for (const recipient of agents) {
+      await postJson("/messages", { sender: "claude", recipient, topic: "status", body: "older" });
+      const latest = await postJson<{ id: string }>("/messages", {
+        sender: "claude", recipient, topic: "status", body: "latest",
+      });
+      expect(latest.status).toBe(200);
+      latestIds.push(latest.body.id);
+    }
+    await postJson("/messages", { sender: "claude", recipient: "all", topic: "status", body: "broadcast" });
+
+    const read = await postJson<Array<{ id: string; timestamp_utc: string }>>("/read/batch", {
+      agents, limit: 1, broadcast: false,
+    });
+    expect(read.status).toBe(200);
+    expect(read.body.map((message) => message.id)).toEqual(latestIds);
+    expect(read.body.map((message) => message.timestamp_utc)).toEqual(
+      read.body.map((message) => message.timestamp_utc).sort(),
+    );
+  });
+
   it("reads across multiple agents, deduping broadcast messages", async () => {
     await postJson("/messages", {
       sender: "claude",

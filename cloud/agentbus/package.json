@@ -4,6 +4,10 @@
   "private": true,
   "description": "Off-site Cloudflare tier of agent-bus (agent-hub#79) — Worker + Durable Objects, no D1/R2 required.",
   "type": "module",
+  "engines": {
+    "node": ">=26.12.0 <27",
+    "npm": ">=11.20.0 <12"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -11,17 +15,17 @@
     "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "@cloudflare/vitest-plugin": "^1.4.0",
-    "@cloudflare/workers-types": "^5.20260927.1",
-    "typescript": "^5.9.3",
+    "@cloudflare/vitest-plugin": "^1.4.2",
+    "@cloudflare/workers-types": "^5.20261014.1",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.11",
-    "wrangler": "^4.149.0"
+    "wrangler": "^4.151.0"
   },
   "dependencies": {
-    "hono": "^4.13.9"
+    "hono": "^4.13.13"
   },
   "allowScripts": {
     "esbuild@0.28.2": true,
-    "workerd@1.20261006.1": true
+    "workerd@1.20261012.1": true
   }
 }

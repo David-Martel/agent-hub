@@ -154,6 +154,7 @@ CREATE TABLE IF NOT EXISTS rate_limit_counters (
   count INTEGER NOT NULL,
   PRIMARY KEY (identity_key, window_start_ms)
 );
+CREATE INDEX IF NOT EXISTS idx_rate_limit_window ON rate_limit_counters(window_start_ms);
 `;
 
 interface MessageRow {
@@ -576,6 +577,45 @@ export class BusLog extends DurableObject<Env> {
     // first), matching `bus_list_messages_from_redis_with_filters`.
     out.reverse();
     return out;
+  }
+
+  /** Streams per-agent pages in one RPC, retaining each origin's message identity. */
+  listMessagesBatch(queries: ReadMessagesQuery[]): Response {
+    const messages = new Map<string, Message>();
+    for (const query of queries) {
+      for (const message of this.listMessages(query)) {
+        const key = JSON.stringify([message.origin_hub, message.id]);
+        if (!messages.has(key)) messages.set(key, message);
+      }
+    }
+    const ordered = [...messages.values()].sort((a, b) => a.timestamp_utc.localeCompare(b.timestamp_utc));
+    const encoder = new TextEncoder();
+    let index = 0;
+    // RPC values are capped at 32 MiB, while byte-stream Response bodies are
+    // flow-controlled. Serialize one record per pull, without constructing a
+    // second full JSON copy of the sorted pages in either isolate.
+    const body = new ReadableStream({
+      type: "bytes",
+      pull(controller) {
+        if (ordered.length === 0) {
+          controller.enqueue(encoder.encode("[]"));
+          controller.close();
+          return;
+        }
+        const last = index === ordered.length - 1;
+        const chunk = `${index === 0 ? "[" : ","}${JSON.stringify(ordered[index])}${last ? "]" : ""}`;
+        controller.enqueue(encoder.encode(chunk));
+        delete ordered[index++];
+        if (last) {
+          ordered.length = 0;
+          controller.close();
+        }
+      },
+      cancel() {
+        ordered.length = 0;
+      },
+    });
+    return new Response(body, { headers: { "content-type": "application/json" } });
   }
 
   /** Inbox approximation: messages addressed to `agent`. Initial snapshots
