@@ -78,7 +78,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Successful JSON-RPC responses without an optional error field.
         Detects: StrictMode property lookup regressions.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: Get-McpProperty and initialize/tools list validation.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        Get-McpProperty and initialize/tools list validation..
         """
         self.success("success")
 
@@ -87,7 +88,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Notifications before an expected response.
         Detects: Missing notification id aborting the handshake.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: Read-McpResponse.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        Read-McpResponse..
         """
         self.success("notification")
 
@@ -96,7 +98,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Explicit null error success compatibility.
         Detects: Treating null error as a failure.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: Get-McpProperty error checks.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        Get-McpProperty error checks..
         """
         self.success("null_error")
 
@@ -105,7 +108,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Server initialization error rejection.
         Detects: Accepting a JSON-RPC error as successful initialization.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: initialize error contract.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        initialize error contract..
         """
         self.failure("initialize_error", "initialize returned a JSON-RPC error")
 
@@ -114,7 +118,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Tool-list error rejection.
         Detects: Accepting a failed tools/list reply.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: tools/list error contract.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        tools/list error contract..
         """
         self.failure("tools_error", "tools/list returned a JSON-RPC error")
 
@@ -123,7 +128,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Required server identity.
         Detects: Missing nested fields raising incidental property exceptions.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: server name contract.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        server name contract..
         """
         self.failure("missing_server_info", "Unexpected MCP server name")
 
@@ -132,7 +138,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Required server version.
         Detects: Missing version passing or raising incidental property exceptions.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: server version contract.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        server version contract..
         """
         self.failure("missing_server_version", "MCP server version is missing")
 
@@ -141,7 +148,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Seventeen-tool registration requirement.
         Detects: Missing tools passing or raising incidental property exceptions.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: tool-count contract.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        tool-count contract..
         """
         self.failure("missing_tools", "Unexpected MCP tool count")
 
@@ -150,7 +158,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Nonempty registered tool names.
         Detects: Empty-string pipeline results failing to trigger rejection.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: tool-name contract.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        tool-name contract..
         """
         self.failure("missing_tool_name", "One or more MCP tools have a missing name")
 
@@ -159,7 +168,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Required initialization result.
         Detects: Null result raising incidental property exceptions.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: protocol version contract.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        protocol version contract..
         """
         self.failure("null_result", "Unexpected MCP protocol version")
 
@@ -168,7 +178,8 @@ class McpSmokeTests(unittest.TestCase):
         Protects: Valid JSON response requirement.
         Detects: Malformed stdio output being silently accepted.
         Needs: PowerShell 7 and an owned synthetic stdio child; no services.
-        Breadcrumb: Read-McpResponse parse contract.
+        Breadcrumb: scripts/test-agent-bus-mcp-smoke.ps1
+        Read-McpResponse parse contract..
         """
         self.failure("invalid_json", "initialize returned invalid JSON")
 
