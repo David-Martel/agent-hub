@@ -104,6 +104,23 @@ pub(crate) fn open(path: &Path) -> Result<File> {
     Ok(file)
 }
 
+/// Check that the active path still names the locked private source file.
+pub(crate) fn validate_identity(file: &File, path: &Path) -> Result<()> {
+    plain_path(path)?;
+    platform::validate_file(file)?;
+    platform::validate_identity(file, path)
+}
+
+/// Move the held source beside itself without overwriting an archive.
+pub(crate) fn retire(file: &File, path: &Path, retired: &Path) -> Result<()> {
+    if path.parent() != retired.parent() {
+        bail!("outbox retirement must stay in the private directory");
+    }
+    plain_path(retired)?;
+    validate_identity(file, path)?;
+    platform::retire(file, path, retired)
+}
+
 #[cfg(unix)]
 mod platform {
     use super::{Context, File, OpenOptions, Path, Result, bail, fs};
@@ -161,6 +178,48 @@ mod platform {
             bail!("outbox file identity changed");
         }
         Ok(file)
+    }
+
+    pub(super) fn validate_identity(file: &File, path: &Path) -> Result<()> {
+        let expected = fs::symlink_metadata(path)?;
+        let observed = file.metadata()?;
+        if !expected.is_file()
+            || expected.dev() != observed.dev()
+            || expected.ino() != observed.ino()
+        {
+            bail!("outbox active file identity changed");
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn retire(_file: &File, path: &Path, retired: &Path) -> Result<()> {
+        use std::ffi::{CString, c_char, c_int, c_uint};
+        use std::os::unix::ffi::OsStrExt;
+        unsafe extern "C" {
+            fn renameat2(
+                old_dir: c_int,
+                old_path: *const c_char,
+                new_dir: c_int,
+                new_path: *const c_char,
+                flags: c_uint,
+            ) -> c_int;
+        }
+        let old = CString::new(path.as_os_str().as_bytes())?;
+        let new = CString::new(retired.as_os_str().as_bytes())?;
+        // SAFETY: Both absolute, NUL-terminated paths live through the call.
+        // AT_FDCWD=-100 and RENAME_NOREPLACE=1 prohibit replacing an archive.
+        // The caller retains the source lock; there is no exists+rename fallback.
+        if unsafe { renameat2(-100, old.as_ptr(), -100, new.as_ptr(), 1) } != 0 {
+            return Err(std::io::Error::last_os_error())
+                .context("retire Unix outbox without replace");
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn retire(_file: &File, _path: &Path, _retired: &Path) -> Result<()> {
+        bail!("atomic no-replace outbox retirement is unsupported on this Unix platform")
     }
 }
 
@@ -327,6 +386,14 @@ mod platform {
         index_high: u32,
         index_low: u32,
     }
+
+    #[repr(C)]
+    struct RenameInformation {
+        replace_or_flags: u32,
+        root: *mut c_void,
+        name_bytes: u32,
+        name: [u16; 1],
+    }
     #[repr(C)]
     struct AclSizeInformation {
         count: u32,
@@ -375,6 +442,12 @@ mod platform {
         fn GetFileInformationByHandle(handle: *mut c_void, info: *mut FileInformation) -> i32;
         fn GetFileType(handle: *mut c_void) -> u32;
         fn CreateDirectoryW(path: *const u16, attributes: *const SecurityAttributes) -> i32;
+        fn SetFileInformationByHandle(
+            handle: *mut c_void,
+            class: u32,
+            information: *const c_void,
+            size: u32,
+        ) -> i32;
     }
 
     fn wide(path: &Path) -> Result<Vec<u16>> {
@@ -512,16 +585,18 @@ mod platform {
         let security = attributes
             .as_ref()
             .map_or(std::ptr::null(), |(_, value)| &raw const *value);
-        // File read/write permits journal reads and locks; READ|WRITE sharing permits
-        // competing writers, while omitting DELETE prevents namespace replacement.
-        let access = if directory { 0x0002_0080 } else { 0xc000_0000 };
+        // Journal handles need DELETE access and sharing for retirement while the
+        // source lock remains held. Directory handles still deny namespace moves.
+        // Source identity is revalidated after locking and before every append.
+        let access = if directory { 0x0002_0080 } else { 0xc001_0000 };
+        let share = if directory { 3 } else { 7 };
         let flags = if directory { 0x0220_0000 } else { 0x0020_0080 };
         // SAFETY: NUL-terminated name and optional owned descriptor live through call.
         let handle = unsafe {
             CreateFileW(
                 name.as_ptr(),
                 access,
-                3,
+                share,
                 security,
                 if create { 1 } else { 3 },
                 flags,
@@ -557,6 +632,56 @@ mod platform {
             bail!("outbox file identity changed");
         }
         Ok(file)
+    }
+
+    pub(super) fn validate_identity(file: &File, path: &Path) -> Result<()> {
+        let active = open_handle(path, false, false)?;
+        let held = information(file)?;
+        let active = information(&active)?;
+        if (held.volume, held.index_high, held.index_low)
+            != (active.volume, active.index_high, active.index_low)
+        {
+            bail!("outbox active file identity changed");
+        }
+        Ok(())
+    }
+
+    pub(super) fn retire(file: &File, _path: &Path, retired: &Path) -> Result<()> {
+        let name = wide(retired)?;
+        let name_bytes = u32::try_from((name.len() - 1) * std::mem::size_of::<u16>())?;
+        let size =
+            std::mem::offset_of!(RenameInformation, name) + name.len() * std::mem::size_of::<u16>();
+        // usize storage provides the alignment of every FILE_RENAME_INFO field.
+        let words = size
+            .max(std::mem::size_of::<RenameInformation>())
+            .div_ceil(std::mem::size_of::<usize>());
+        let mut storage = vec![0_usize; words];
+        let info = storage.as_mut_ptr().cast::<RenameInformation>();
+        // SAFETY: The aligned allocation fits the header and complete UTF-16 name.
+        // No reference to its flexible name member is formed outside its size.
+        unsafe {
+            info.write(RenameInformation {
+                replace_or_flags: 0,
+                root: std::ptr::null_mut(),
+                name_bytes,
+                name: [0],
+            });
+            std::ptr::copy_nonoverlapping(
+                name.as_ptr(),
+                std::ptr::addr_of_mut!((*info).name).cast::<u16>(),
+                name.len(),
+            );
+        };
+        // SAFETY: File owns the source handle with DELETE access; the correctly
+        // sized buffer lives through FileRenameInfo=3. ReplaceIfExists=false
+        // atomically refuses archive collisions, and renames this exact handle.
+        if unsafe {
+            SetFileInformationByHandle(file.as_raw_handle(), 3, info.cast(), u32::try_from(size)?)
+        } == 0
+        {
+            return Err(std::io::Error::last_os_error()).context("retire held Windows outbox");
+        }
+        Ok(())
     }
 
     pub(super) fn create_directory(path: &Path) -> Result<()> {
