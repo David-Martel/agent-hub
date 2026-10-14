@@ -2,7 +2,7 @@
   "schema_version": 1,
   "normalization": "Decode each source as UTF-8 accepting and removing an initial BOM; replace CRLF and lone CR with LF; encode UTF-8 without BOM. Preserve every other character, indentation, whitespace and terminal newline. Selector slices include complete ast.FunctionDef lineno..end_lineno physical lines, including each rationale docstring and original terminal newline. Full shared-file and code hashes use the same normalization.",
   "hash_algorithm": "SHA256",
-  "review_invalidation": "Any selector, code-under-test or shared-source canonical hash change makes this recorded disposition unreviewed until a new independent review. These rows certify only the named 11 selectors, not the repository test inventory.",
+  "review_invalidation": "Any selector, code-under-test or shared-source canonical hash change makes this recorded disposition unreviewed until a new independent review. Current rows certify only the named 14 selectors, not the repository test inventory. Historical rows and original controls retain their original source provenance.",
   "review_standard": "https://github.com/David-Martel/dtm-claude/blob/main/docs/reference/DOCUMENTATION_AND_TEST_STANDARD.md",
   "controls": {
     "failing_first": {
@@ -28,9 +28,745 @@
       "scope": "Only the 11 new synthetic stdio selectors; no live backend, deployment or general inventory certification",
       "external_receipt": "agent-bus/windows/independent-smoke-review.json in the deployment evidence package",
       "receipt_sha256": "142cb0a45d961bed29003762eb18d7f3e841dbc669e4dc5ff33910d428fc718d"
+    },
+    "diagnostic_independent_replay": {
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "completed_utc": "2026-10-14T17:44:52.783800+00:00",
+      "native_stdio_passed": 11,
+      "linux_diagnostics_passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "external_receipt": ".Codex/state/fleet-reconciliation/review/pr128-diagnostic-review.json",
+      "receipt_sha256": "412b658105ce133221095d029615feda34aeda07b0528805f5bd44095b508acc",
+      "original_controls_preserved": true,
+      "scope": "Synthetic stdio and failure-diagnostic controls; no current-head binary or real Wine acceptance."
+    },
+    "diagnostic_failing_first": {
+      "baseline_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "baseline_code_sources": [
+        {
+          "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+          "sha256": "a9549d94d7d9ce7ccdec59d1b75ea554d01238fc0dcdb9803b2c7b05a4dcbb96"
+        },
+        {
+          "path": "scripts/test-agent-client-config-validator.ps1",
+          "sha256": "f1962fde1efe819519fb506daf0945ca5bb5a7f4e02bd51e12f81c1ca173b1ec"
+        },
+        {
+          "path": "scripts/validate-agent-client-configs.ps1",
+          "sha256": "10995cba836467293f046ad46b3250277ba0dbcde454f79f51a4603d0472ce44"
+        }
+      ],
+      "selected": 3,
+      "expected_failed": 3,
+      "errors": 0,
+      "same_final_selector_source_sha256": "351ede4fa45253627daaf0a387ba55a2cb684196105cf8f363a001bf7e7adc81",
+      "external_receipt": ".Codex/state/fleet-reconciliation/ci/pr128-diagnostics/validation-receipt.json",
+      "failure_log_sha256": "e8e198d2c3c872f0d6b27615664436d3ce79b78aea0850e651d2a125191fea80",
+      "observed_failures": [
+        "Smoke finally overwrote initialization failure",
+        "Successful finalize deleted failed fixture",
+        "Failed outer finalize overwrote validator failure"
+      ],
+      "control_owner": "codex-p1-agenthub-ci"
     }
   },
   "reviews": [
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_success_without_error",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 76,
+        "last_line": 84,
+        "sha256": "2a116aaa8daf118c2f1d273c86062a76a679aad26369f9ef26ef4887f0eb8110"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "success",
+        "failing_input_or_control": "Absent optional error previously aborts a valid successful handshake under StrictMode.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_notification_without_id",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 86,
+        "last_line": 94,
+        "sha256": "5aa9212b10da539af8c3d5dc88aa5d3a92429ff114a74ba64ab7a1746cf15fcc"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "notification",
+        "failing_input_or_control": "Notification without id must be ignored while waiting for the matching response.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_null_error_is_success",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 96,
+        "last_line": 104,
+        "sha256": "2cbaf3f007a246f3179659f72a2ec0719ac2533b833360ab840c2a3901dbf1c2"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "null_error",
+        "failing_input_or_control": "Explicit null optional error must retain compatibility with a valid success response.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_initialize_error",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 106,
+        "last_line": 114,
+        "sha256": "065a42e57ebb1d7918b0c0d6361894bced789f17ee1c0f08ea27ff0630ed0eeb"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "initialize_error",
+        "failing_input_or_control": "Non-null initialize error must fail the original explicit JSON-RPC error contract.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_tools_error",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 116,
+        "last_line": 124,
+        "sha256": "08286f9b24a3ebfa32a5cf30ebef3e0c722989e9e57a9583571b435a80b2a1bb"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "tools_error",
+        "failing_input_or_control": "Non-null tools/list error must fail the original explicit JSON-RPC error contract.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_missing_server_info",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 126,
+        "last_line": 134,
+        "sha256": "e4f27d9fd75f67fc52d4c37c3820ab139690da39788cdeafa1592466e57fac10"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "missing_server_info",
+        "failing_input_or_control": "Missing identity must fail the required server name contract.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_missing_server_version",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 136,
+        "last_line": 144,
+        "sha256": "8cb99e8b6b56915c013018bb9485e5f8b9a7423233960a4e6f8ded2603ed42fe"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "missing_server_version",
+        "failing_input_or_control": "Missing version must fail the nonempty server version contract.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_missing_tools",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 146,
+        "last_line": 154,
+        "sha256": "bb4589a2109e7206a2942c62e1d68b97ca702686aacf708832f547edc955ff3b"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "missing_tools",
+        "failing_input_or_control": "Missing registration list must fail the required 17-tool count contract.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_missing_tool_name",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 156,
+        "last_line": 164,
+        "sha256": "00f6d1949e1ff1d1db85b77bddaf22d7799cf1edcdbdc5b03f2f025d351ac244"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "missing_tool_name",
+        "failing_input_or_control": "A registered tool without a name must fail the required nonempty name contract.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_null_result",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 166,
+        "last_line": 174,
+        "sha256": "c26d0e765902bfd381c100244dcde0b9e0a6365f8ddab78155b1f8297a817516"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "null_result",
+        "failing_input_or_control": "A null result must fail the required protocol version contract.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_invalid_json",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "scope": "Synthetic PowerShell stdio smoke response validation and owned child lifecycle; this selector and its shared fixture/helper sources only.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_smoke.py",
+        "first_line": 176,
+        "last_line": 184,
+        "sha256": "83048678ebc91ff1c2b6a782061ce83ea65c9b87dc1d012dd892d1aea22887da"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_smoke.py",
+          "sha256": "83202f908cb256f33771a60294d35433ec4ad5e3fc6d7bd2b28ff6f8a85a3d0b"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_smoke_server.py",
+          "sha256": "e4b122c2ba28a3fb811ae7d472b31fdb462c5fa18c83c3fe6408e0e3e07ba709"
+        },
+        {
+          "path": "scripts/ci/fixtures/invoke-mcp-smoke.ps1",
+          "sha256": "06185c9f17be7e0ee126d1f8e532940296d5de2277406510406efd1b371110f9"
+        }
+      ],
+      "relevance": "The maintained smoke script validates the shipping dedicated MCP executable and CLI stdio serve mode.",
+      "coverage": {
+        "fixture_case": "invalid_json",
+        "failing_input_or_control": "Malformed response bytes must fail the existing parse contract.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Failure helpers require a nonzero exit, the intended contract diagnostic and no incidental StrictMode missing-property error; success helpers assert exact protocol, identity, version and 17 names."
+      },
+      "breaking_behavior": "Accept absent/null optional error fields and id-less notifications; reject non-null error replies and missing required result fields. Required protocol/name/version/tool-count/nonempty-name assertions, deadlines and owned process cleanup remain.",
+      "additional_coverage_boundary": "Wine launcher readiness branch reviewed by code inspection only; these 11 selectors do not execute or certify Wine guest settlement.",
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00"
+    },
+    {
+      "selector": "scripts/ci/test_mcp_failure_diagnostics.py::McpFailureDiagnosticsTests.test_first_protocol_error_survives_failed_launcher_cleanup",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00",
+      "scope": "Synthetic Linux PowerShell diagnostic failure and owned fixture custody; no Wine or live stores.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_failure_diagnostics.py",
+        "first_line": 66,
+        "last_line": 93,
+        "sha256": "2e98c031c68b2e7b424c0e921082a8b4e48e64d675e2e7fbe5a96ffe5d872ffc"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+        "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_failure_diagnostics.py",
+          "sha256": "351ede4fa45253627daaf0a387ba55a2cb684196105cf8f363a001bf7e7adc81"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_failure_adapter.py",
+          "sha256": "b7169668312dd2329a1a29168845ae1f3ded23832465ca184d96ccf414f4e499"
+        },
+        {
+          "path": "scripts/install-mcp-clients.ps1",
+          "sha256": "c595c1d9ee9e0214dd504589d0b5fe60348d38cf45e7f65a8abc8563d99da3d7"
+        },
+        {
+          "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+          "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+        },
+        {
+          "path": "scripts/test-agent-client-config-validator.ps1",
+          "sha256": "1f646cba818acf37a8d6d3267ea500357886e1d0d0696abf867c9de77fbc2c67"
+        },
+        {
+          "path": "scripts/validate-agent-client-configs.ps1",
+          "sha256": "6d1a3e2df817f03075b59facde8db6af2120006f865bedcf7b77137404d72f2a"
+        }
+      ],
+      "relevance": "Shipping MCP smoke and config-validator failures must retain first-cause and cleanup evidence.",
+      "coverage": {
+        "failing_input_or_control": "A JSON-RPC initialization error followed by a nonzero synthetic launcher exit.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Exact primary error and separate McpCleanupFailure metadata; nonzero subprocess exit."
+      },
+      "breaking_behavior": "Preserve first errors and failure fixtures without accepting protocol or managed cleanup failure.",
+      "additional_coverage_boundary": "Synthetic adapter only; no real Wine guest, changed binary, deployed service or fleet acceptance."
+    },
+    {
+      "selector": "scripts/ci/test_mcp_failure_diagnostics.py::McpFailureDiagnosticsTests.test_failed_validator_keeps_fixture_after_successful_finalization",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00",
+      "scope": "Synthetic Linux PowerShell diagnostic failure and owned fixture custody; no Wine or live stores.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_failure_diagnostics.py",
+        "first_line": 95,
+        "last_line": 122,
+        "sha256": "15317a33e3fc90f03cae75135252e48e0e3029f25a798449c8dd0fe236fef0fe"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-client-config-validator.ps1",
+        "sha256": "1f646cba818acf37a8d6d3267ea500357886e1d0d0696abf867c9de77fbc2c67"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_failure_diagnostics.py",
+          "sha256": "351ede4fa45253627daaf0a387ba55a2cb684196105cf8f363a001bf7e7adc81"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_failure_adapter.py",
+          "sha256": "b7169668312dd2329a1a29168845ae1f3ded23832465ca184d96ccf414f4e499"
+        },
+        {
+          "path": "scripts/install-mcp-clients.ps1",
+          "sha256": "c595c1d9ee9e0214dd504589d0b5fe60348d38cf45e7f65a8abc8563d99da3d7"
+        },
+        {
+          "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+          "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+        },
+        {
+          "path": "scripts/test-agent-client-config-validator.ps1",
+          "sha256": "1f646cba818acf37a8d6d3267ea500357886e1d0d0696abf867c9de77fbc2c67"
+        },
+        {
+          "path": "scripts/validate-agent-client-configs.ps1",
+          "sha256": "6d1a3e2df817f03075b59facde8db6af2120006f865bedcf7b77137404d72f2a"
+        }
+      ],
+      "relevance": "Shipping MCP smoke and config-validator failures must retain first-cause and cleanup evidence.",
+      "coverage": {
+        "failing_input_or_control": "A failed config smoke followed by successful synthetic finalize.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Complete first-cause text after ANSI/whitespace-only normalization; retained fixture, TOML and receipt; nonzero exit."
+      },
+      "breaking_behavior": "Preserve first errors and failure fixtures without accepting protocol or managed cleanup failure.",
+      "additional_coverage_boundary": "Synthetic adapter only; no real Wine guest, changed binary, deployed service or fleet acceptance."
+    },
+    {
+      "selector": "scripts/ci/test_mcp_failure_diagnostics.py::McpFailureDiagnosticsTests.test_first_validator_failure_survives_failed_finalization",
+      "reviewer": "codex-p1-agenthub-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-14",
+      "commit_reviewed": null,
+      "base_commit": "ea3f53762b3d53d5126d9ce69268c218f31bd0ba",
+      "reviewed_source_state": "Uncommitted diagnostics correction bound by canonical hashes and source archive",
+      "reviewed_source_archive_sha256": "1bbc98ac9f55df6db7ea722c1b3a3bbaa974fa8befd8f864386b65d12811bd5c",
+      "review_completed_utc": "2026-10-14T17:44:52.783800+00:00",
+      "scope": "Synthetic Linux PowerShell diagnostic failure and owned fixture custody; no Wine or live stores.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/ci/test_mcp_failure_diagnostics.py",
+        "first_line": 124,
+        "last_line": 171,
+        "sha256": "a65e770f92671b5d2c0ef70d79a82e6a139f3fc325cae2b8847402ed8b8d23e6"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-client-config-validator.ps1",
+        "sha256": "1f646cba818acf37a8d6d3267ea500357886e1d0d0696abf867c9de77fbc2c67"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_mcp_failure_diagnostics.py",
+          "sha256": "351ede4fa45253627daaf0a387ba55a2cb684196105cf8f363a001bf7e7adc81"
+        },
+        {
+          "path": "scripts/ci/fixtures/mcp_failure_adapter.py",
+          "sha256": "b7169668312dd2329a1a29168845ae1f3ded23832465ca184d96ccf414f4e499"
+        },
+        {
+          "path": "scripts/install-mcp-clients.ps1",
+          "sha256": "c595c1d9ee9e0214dd504589d0b5fe60348d38cf45e7f65a8abc8563d99da3d7"
+        },
+        {
+          "path": "scripts/test-agent-bus-mcp-smoke.ps1",
+          "sha256": "e7e33e4cc3f25ddd2bbc6b51fe5e794bce0f00b8754ffec428390111b996934f"
+        },
+        {
+          "path": "scripts/test-agent-client-config-validator.ps1",
+          "sha256": "1f646cba818acf37a8d6d3267ea500357886e1d0d0696abf867c9de77fbc2c67"
+        },
+        {
+          "path": "scripts/validate-agent-client-configs.ps1",
+          "sha256": "6d1a3e2df817f03075b59facde8db6af2120006f865bedcf7b77137404d72f2a"
+        }
+      ],
+      "relevance": "Shipping MCP smoke and config-validator failures must retain first-cause and cleanup evidence.",
+      "coverage": {
+        "failing_input_or_control": "A validator failure followed by finalize exit code nine.",
+        "fresh_independent_selector_pass": true,
+        "false_positive_guard": "Exact original error, separate finalize error/client operation/exit identity, retained fixture and nonzero exit."
+      },
+      "breaking_behavior": "Preserve first errors and failure fixtures without accepting protocol or managed cleanup failure.",
+      "additional_coverage_boundary": "Synthetic adapter only; no real Wine guest, changed binary, deployed service or fleet acceptance."
+    }
+  ],
+  "historical_reviews": [
     {
       "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_success_without_error",
       "reviewer": "codex-fleet-discovery",

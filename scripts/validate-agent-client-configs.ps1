@@ -745,7 +745,7 @@ if (-not $CodexOnly) {
     Add-CheckResult -Name "defaults:server-url" -Status "ok" -Detail "Expected MCP HTTP URL is $ExpectedServerUrl"
 }
 
-$results | Format-Table -AutoSize
+$results | Format-Table -AutoSize -Wrap
 
 $failures = @($results | Where-Object { $_.status -eq "fail" })
 $warnings = @($results | Where-Object { $_.status -eq "warn" })

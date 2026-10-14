@@ -140,6 +140,7 @@ $process.StartInfo = $processInfo
 $processStarted = $false
 $stderrTask = $null
 $wineSuccess = $null
+$primaryFailure = $null
 
 try {
     if (-not $process.Start()) {
@@ -268,7 +269,12 @@ try {
         $success | ConvertTo-Json -Depth 5 -Compress
     }
 }
+catch {
+    $primaryFailure = $_
+    throw
+}
 finally {
+    try {
     if ($processStarted -and -not $process.HasExited) {
         try {
             $process.StandardInput.Close()
@@ -305,6 +311,16 @@ finally {
         [void]$stderrTask.Result
     }
     $process.Dispose()
+    }
+    catch {
+        if ($null -ne $primaryFailure) {
+            # Cleanup remains mandatory, but its error must not replace the first
+            # readiness/protocol failure. Preserve both without exposing stderr.
+            $primaryFailure.Exception.Data['McpCleanupFailure'] = $_.Exception.Message
+            throw $primaryFailure
+        }
+        throw
+    }
 }
 if ($WineTestLauncher -and $wineSuccess) {
     $wineSuccess | ConvertTo-Json -Depth 5 -Compress
