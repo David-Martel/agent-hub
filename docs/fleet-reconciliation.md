@@ -38,13 +38,23 @@ the hosted runner's default test profile.
   Configured MCP, CLI, HTTP/SSE and database nonce checks passed. Old binaries,
   file metadata and runtime configuration are preserved.
 - These are source-bound client canaries. Their Git checkouts remain at the
-  accepted `2fbca7e` baseline; maintenance snapshot publication and main CI are
-  separate open gates. No ASUS hub, live HIL, active NUC MCP or shared runner
+  initial `2fbca7e` baseline; maintenance snapshot publication and clone source
+  reconciliation remain separate open gates. No ASUS hub, live HIL, active NUC MCP or shared runner
   service was restarted.
-- PR #128 is published at signed `a4900cf8a21f3beb6041890cce7a26788571941e`.
+- Both Sparks now have the three native Linux ARM64 binaries from the same
+  maintenance snapshot. Actual native builds used Rust 1.99, Clang/LLD 23.1.3
+  and sccache 0.18. The installed files require at most glibc 2.39, matching
+  both hosts. Configured MCP returned 17 tools; authenticated presence and
+  independently read-back CLI nonces passed. Old executable inodes, hashes,
+  configuration and metadata remain preserved. Disposable backend tests and
+  actor cleanup passed; locked worktrees and shared runners were untouched.
+- PR #128 is merged. Reviewed signed head
+  `a4900cf8a21f3beb6041890cce7a26788571941e` and accepted main
+  `53123384cb665d155f449f6130430c4049086c60` have the same tree.
   Its Rust changes passed normal pre-push: 1,218 tests, zero failures,
   107 ignored, plus blocking audit. CI-only follow-ups retain that Rust source.
-  Current-head run `38649227723` remains in progress. The prior run passed
+  PR run `38649227723` and fresh main run `38653049979` both passed all sixteen
+  required checks, with one intentional manual-validation skip. The prior run passed
   native units, release compilation, configured MCP and Python, then failed
   a stale assertion requiring the removed GNU Clippy declaration. The reviewed
   replacement checks the hosted Windows runner and exact locked, strict native
@@ -61,15 +71,28 @@ the hosted runner's default test profile.
   `serve` delegates to another binary by name. Its hashes bind the selected MCP
   executable; an older installed MCP cannot qualify a new artifact pair.
 - The independent ephemeral Windows smoke runner accepts only the reviewed
-  source head, synthetic merge SHA, run, attempt and job. Its hook is single-use
-  and fails closed. This is trusted-job admission, not OS or Docker isolation.
+  source head, runtime SHA, event, ref, run, attempt and job. Its hook is
+  single-use and fails closed. Separate admissions passed for the PR and main;
+  both listeners exited and deregistered after their jobs. This is trusted-job
+  admission, not OS or Docker isolation.
 - ASUS hub/client rollout still needs the live runtime scheduler's custody
   window; current publishing/HIL requires continuity. NUC MCP remains active
   under an operator terminal. P1's generic CLI watcher belongs to an active
   Hyperacusis lane; its command, old binary and metadata are preserved pending
   handoff. The separate P1 maintenance service still runs its older pinned
-  executable. ARM artifact preparation is complete locally; a bounded host
-  window remains open. Locked Spark worktrees and running jobs are protected.
+  executable. Locked Spark worktrees and running jobs are protected.
+- Duplicate PRs #125 and #127 are closed after accepted-source inclusion and
+  verified private Git-bundle preservation. New PRs #131 and #132 are active
+  review lanes; their heads must be refreshed before disposition. PRs #126,
+  #130 and Dependabot #124 remain open. Owned worktree retirement requires
+  preservation of ignored artifacts and fresh writer checks.
+- Cloudflare provider authentication now succeeds through the existing
+  credential backend; account, Worker and domain reads return HTTP 200. Valid
+  ASUS actor requests still return HTTP 500 while invalid tokens return 401.
+  Observed daily SQLite reads are 5,115,274, above the Free allowance of
+  5,000,000. Quota exhaustion is a supported inference, not a captured exception.
+  The reviewed batching/index deployment and authenticated check after the
+  midnight UTC reset are in progress; no billing or token rotation was performed.
 
 Private receipts include `carbon-native-canary.json`, `vigil-native-canary.json`,
 `native-windows-source-review.json`, `runner-admission-review.json` and the Linux
