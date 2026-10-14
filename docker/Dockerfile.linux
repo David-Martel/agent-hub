@@ -67,10 +67,12 @@ RUN --mount=type=cache,id=agent-hub-cargo-registry,target=/usr/local/cargo/regis
 
 # Run the library unit tests. These are pure unit tests that do not require a
 # live Redis or PostgreSQL instance (integration tests are excluded by --lib).
+# Match the maintained unit job's worker limit on shared fleet builders. This
+# limits test concurrency while preserving every deadline and test selection.
 RUN --mount=type=cache,id=agent-hub-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,id=agent-hub-cargo-git,target=/usr/local/cargo/git,sharing=locked \
     --mount=type=cache,id=agent-hub-target-glibc,target=/workspace/target,sharing=locked \
-    cargo test --workspace --lib
+    cargo test --workspace --lib -- --test-threads=4
 
 # ---------------------------------------------------------------------------
 # Stage 2 (optional): musl static build for x86_64-unknown-linux-musl
