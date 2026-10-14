@@ -24,6 +24,7 @@ from wine_lifecycle import (
     prove_runner_namespace,
     bounded_client,
     WineCommandFailure,
+    finite_failure_summary,
     UNSETTLED_CLIENTS,
     run_guest,
 )
@@ -739,6 +740,7 @@ class RetentionFaults(unittest.TestCase):
         provider.assert_owner = MagicMock()
         provider.assert_home = MagicMock()
         provider.prefix = Path("synthetic-prefix")
+        provider.directory = Path("synthetic-directory")
         provider.env = {}
         failure = WineCommandFailure(
             {"reason": "nonzero-exit", "exit": 7}, b"private", b""
@@ -750,6 +752,182 @@ class RetentionFaults(unittest.TestCase):
         self.assertIs(caught.exception, failure)
         self.assertEqual(failure.metadata["retention_failure_type"], "OSError")
         self.assertNotIn("SECRET", json.dumps(wine_job.failure_summary(failure)))
+
+    def test_safe_finite_summary_refuses_untyped_and_private_metadata(self):
+        """
+        Protects: Useful finite-client facts without streams, argv or environment.
+        Detects: Untrusted metadata fields or types leaking into public receipts.
+        Needs: Synthetic metadata only; no Wine or services.
+        Breadcrumb: wine_lifecycle.py finite_failure_summary allowlist.
+        """
+        actual = finite_failure_summary(
+            {
+                "reason": "deadline",
+                "exit": -9,
+                "elapsed_seconds": 10.1,
+                "direct_child_killed": True,
+                "pipes_and_child_settled": False,
+                "stdout_bytes": 4,
+                "pid": "private",
+                "stderr_bytes": True,
+                "stderr": "private",
+                "environment": "private",
+                "arguments": "private",
+            }
+        )
+        self.assertEqual(actual["reason"], "deadline")
+        self.assertEqual(actual["exit"], -9)
+        self.assertNotIn("pid", actual)
+        self.assertNotIn("stderr_bytes", actual)
+        self.assertNotIn("private", json.dumps(actual))
+        for reason in ([], {}, None, 7, True, "private"):
+            with self.subTest(reason=reason):
+                self.assertEqual(finite_failure_summary({"reason": reason}), {})
+
+    def summary_provider(self, root):
+        provider = NativeWineProvider.__new__(NativeWineProvider)
+        provider.directory = root
+        provider.prefix = root / "prefix"
+        provider.prefix.mkdir()
+        provider.home = root / "wine-home"
+        provider.home.mkdir()
+        provider.identity = (1, 2, 0)
+        provider.home_identity = (1, 3, 0)
+        provider.assert_owner = MagicMock()
+        provider.assert_home = MagicMock()
+        provider.env = {}
+        return provider
+
+    def test_failure_summary_survives_prefix_cleanup_and_retains_first_raw_receipts(
+        self,
+    ):
+        """
+        Protects: First finite failure evidence after exact-prefix settlement.
+        Detects: Cleanup deleting private streams or safe fixture metadata.
+        Needs: Mocked command failure and temporary files; no Wine or services.
+        Breadcrumb: wine_lifecycle.py command, retain_failure_summary, retire_prefix.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            provider = self.summary_provider(root)
+            failure = WineCommandFailure(
+                {"reason": "deadline", "exit": -9}, b"private-stdout", b"private-stderr"
+            )
+            status = SimpleNamespace(st_uid=0, st_mode=stat.S_IFDIR | 0o700)
+            with (
+                patch("wine_lifecycle.bounded_client", side_effect=failure),
+                patch("wine_lifecycle.os.getuid", return_value=0, create=True),
+                patch.object(Path, "lstat", return_value=status),
+            ):
+                with self.assertRaises(WineCommandFailure) as caught:
+                    provider.command(["synthetic-private-argument"])
+            self.assertIs(caught.exception, failure)
+            receipt = next(root.glob("wine-finite-client-failure-*.json"))
+            data = json.loads(receipt.read_text())
+            self.assertEqual(data["failure"]["reason"], "deadline")
+            self.assertNotIn("private-", receipt.read_text())
+            self.assertEqual(data["prefix_identity"], [1, 2, 0])
+            if sys.platform != "win32":
+                self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
+            prefix_bytes = {
+                path.name: path.read_bytes() for path in provider.prefix.iterdir()
+            }
+            provider.wait_prefix = MagicMock()
+            provider.wait_prefix(10)
+            provider.retire_prefix()
+            self.assertEqual(
+                {path.name: path.read_bytes() for path in provider.prefix.iterdir()},
+                prefix_bytes,
+            )
+            self.assertTrue(receipt.exists())
+
+    def test_summary_revalidates_root_and_refuses_uuid_collision(self):
+        """
+        Protects: Owned fixture writes and immutable earlier diagnostic records.
+        Detects: Writing into replaced ownership or overwriting a UUID collision.
+        Needs: Mocked ownership metadata and temporary files; no Wine or services.
+        Breadcrumb: wine_lifecycle.py retain_failure_summary private exclusive write.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            provider = self.summary_provider(root)
+            failure = WineCommandFailure({"reason": "nonzero-exit", "exit": 7})
+            status = SimpleNamespace(st_uid=0, st_mode=stat.S_IFDIR | 0o700)
+            with (
+                patch("wine_lifecycle.os.getuid", return_value=0, create=True),
+                patch.object(Path, "lstat", return_value=status),
+                patch(
+                    "wine_lifecycle.uuid.uuid4",
+                    return_value=SimpleNamespace(hex="fixed"),
+                ),
+            ):
+                provider.retain_failure_summary(failure)
+                receipt = next(root.glob("wine-finite-client-failure-*.json"))
+                before = receipt.read_bytes()
+                with self.assertRaises(FileExistsError):
+                    provider.retain_failure_summary(failure)
+                self.assertEqual(receipt.read_bytes(), before)
+                status.st_uid = 99
+                with self.assertRaisesRegex(
+                    RuntimeError, "directory ownership changed"
+                ):
+                    provider.retain_failure_summary(failure)
+                self.assertEqual(
+                    len(list(root.glob("wine-finite-client-failure-*.json"))), 1
+                )
+
+    def test_summary_write_fault_keeps_original_command_failure(self):
+        """
+        Protects: Primary helper failure when its independent safe receipt fails.
+        Detects: Storage or ownership faults masking the original helper failure.
+        Needs: Mocked command and receipt faults; no Wine or services.
+        Breadcrumb: wine_lifecycle.py command safe-summary retention exception path.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            provider = self.summary_provider(Path(temporary))
+            failure = WineCommandFailure({"reason": "nonzero-exit", "exit": 7})
+            with (
+                patch("wine_lifecycle.bounded_client", side_effect=failure),
+                patch.object(
+                    provider, "retain_failure_summary", side_effect=OSError("private")
+                ),
+            ):
+                with self.assertRaises(WineCommandFailure) as caught:
+                    provider.command(["synthetic"])
+            self.assertIs(caught.exception, failure)
+            self.assertEqual(
+                failure.metadata["summary_retention_failure_type"], "OSError"
+            )
+            self.assertNotIn(
+                "private", json.dumps(finite_failure_summary(failure.metadata))
+            )
+
+    def test_partial_finite_stream_retention_prevents_prefix_deletion(self):
+        """
+        Protects: Partial first-failure bytes when metadata persistence failed.
+        Detects: Cleanup preserving only complete JSON receipts and losing streams.
+        Needs: Owned synthetic prefix files and mocked custody; no Wine or services.
+        Breadcrumb: wine_lifecycle.py retire_prefix finite-client evidence check.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            provider = self.summary_provider(Path(temporary))
+            raw = provider.prefix / "finite-client-failure-partial.stdout"
+            raw.write_bytes(b"private")
+            provider.retire_prefix()
+            self.assertEqual(raw.read_bytes(), b"private")
+
+    def test_prefix_without_finite_failure_still_retires_after_custody_check(self):
+        """
+        Protects: Ordinary exact owned-prefix retirement after settlement.
+        Detects: Diagnostic preservation accidentally preventing all retirement.
+        Needs: An empty synthetic prefix and mocked custody; no Wine or services.
+        Breadcrumb: wine_lifecycle.py retire_prefix successful cleanup path.
+        """
+        with tempfile.TemporaryDirectory() as temporary:
+            provider = self.summary_provider(Path(temporary))
+            provider.retire_prefix()
+            provider.assert_owner.assert_called_once()
+            self.assertFalse(provider.prefix.exists())
 
 
 if __name__ == "__main__":

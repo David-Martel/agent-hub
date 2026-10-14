@@ -12,6 +12,8 @@ support; keep the cloud tier out of fleet configuration until its separate
 route, credential and replication gates pass. The hub-side sync task is off by
 default; see [cloud sync](docs/cloud-sync.md).
 
+Test selector review: [review register](docs/test-review-register.json).
+
 ## Crate Map
 
 The workspace contains exactly four crates. `rust-cli` has been removed.

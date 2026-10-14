@@ -187,11 +187,13 @@ function Invoke-OwnedWineFixtureOperation {
 }
 
 $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) "agent-bus-validator-$([guid]::NewGuid().ToString('N'))"
+$fixturePassed = $false
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 $wineRootBefore = [Environment]::GetEnvironmentVariable('AGENT_BUS_TEST_MCP_WINE_ROOT', 'Process')
 $wineAdapter = Join-Path $PSScriptRoot 'ci/mcp_wine_adapter.py'
 $winePrepared = $false
 $wineSettled = $false
+$fixtureFailure = $null
 
 try {
     if ($WineTestLauncher) {
@@ -515,6 +517,11 @@ status_line = ["model"]
     if (-not $WineTestLauncher) {
         Write-Output "Agent client config validator fixtures passed."
     }
+    $fixturePassed = $true
+}
+catch {
+    $fixtureFailure = $_
+    throw
 }
 finally {
     try {
@@ -522,9 +529,25 @@ finally {
             Invoke-OwnedWineFixtureOperation -Operation finalize
             $wineSettled = $true
         }
-        if (-not $WineTestLauncher -or $wineSettled) {
+        if ($fixturePassed -and (-not $WineTestLauncher -or $wineSettled)) {
             Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
+        elseif (-not $fixturePassed) {
+            Write-Output "Failed validator fixture retained: $fixtureRoot"
+        }
+    }
+    catch {
+        Write-Output "Failed validator fixture retained: $fixtureRoot"
+        if ($null -ne $fixtureFailure) {
+            # Settlement is still required. Preserve its witness separately from
+            # the original config/protocol failure instead of replacing that error.
+            $fixtureFailure.Exception.Data['ValidatorCleanupFailure'] = $_.Exception.Message
+            if ($_.Exception.Data.Contains('OwnedWineFixtureClient')) {
+                $fixtureFailure.Exception.Data['ValidatorCleanupClient'] = $_.Exception.Data['OwnedWineFixtureClient']
+            }
+            throw $fixtureFailure
+        }
+        throw
     }
     finally {
         [Environment]::SetEnvironmentVariable('AGENT_BUS_TEST_MCP_WINE_ROOT', $wineRootBefore, 'Process')
