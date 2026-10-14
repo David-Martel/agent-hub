@@ -5,6 +5,42 @@ use std::fs::OpenOptions;
 use std::fs::{self, File};
 use std::path::{Component, Path};
 
+#[cfg(any(windows, test))]
+fn validate_windows_dacl_header(
+    control_readback: i32,
+    control: u16,
+    owner_present: bool,
+    dacl_present: bool,
+) -> Result<()> {
+    if control_readback == 0 {
+        bail!("outbox DACL control readback failed");
+    }
+    if control & 0x0004 == 0 {
+        bail!("present outbox DACL required");
+    }
+    if control & 0x1000 == 0 {
+        bail!("protected outbox DACL required");
+    }
+    if !owner_present {
+        bail!("outbox descriptor owner missing");
+    }
+    if !dacl_present {
+        bail!("nonnull outbox DACL required");
+    }
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn validate_windows_acl_inventory(readback: i32, count: u32) -> Result<()> {
+    if readback == 0 {
+        bail!("outbox ACE inventory readback failed");
+    }
+    if count != 1 {
+        bail!("sole current-user outbox ACE required");
+    }
+    Ok(())
+}
+
 pub(crate) fn plain_path(path: &Path) -> Result<()> {
     if !path.is_absolute() {
         bail!("absolute outbox path required");
@@ -502,15 +538,15 @@ mod platform {
         let mut control = 0;
         let mut revision = 0;
         // SAFETY: Descriptor is live LocalAlloc-backed output; typed fields writable.
-        if unsafe {
+        let control_readback = unsafe {
             GetSecurityDescriptorControl(descriptor.0, &raw mut control, &raw mut revision)
-        } == 0
-            || control & 0x1004 != 0x1004
-            || owner.is_null()
-            || dacl.is_null()
-        {
-            bail!("protected present outbox DACL required");
-        }
+        };
+        super::validate_windows_dacl_header(
+            control_readback,
+            control,
+            !owner.is_null(),
+            !dacl.is_null(),
+        )?;
         // SAFETY: Owner/DACL refer to the still-owned Win32 security descriptor.
         if unsafe { IsValidSid(owner) } == 0 || unsafe { IsValidAcl(dacl) } == 0 {
             bail!("valid outbox owner and DACL required");
@@ -532,18 +568,15 @@ mod platform {
             free: 0,
         };
         // SAFETY: Valid ACL and correctly sized aligned output.
-        if unsafe {
+        let acl_readback = unsafe {
             GetAclInformation(
                 dacl,
                 (&raw mut acl).cast(),
                 u32::try_from(std::mem::size_of::<AclSizeInformation>())?,
                 2,
             )
-        } == 0
-            || acl.count != 1
-        {
-            bail!("sole current-user outbox ACE required");
-        }
+        };
+        super::validate_windows_acl_inventory(acl_readback, acl.count)?;
         let mut raw = std::ptr::null_mut();
         // SAFETY: Valid ACL has exactly one ACE; output pointer writable.
         if unsafe { GetAce(dacl, 0, &raw mut raw) } == 0 || raw.is_null() {
@@ -695,6 +728,97 @@ mod platform {
             }
         }
         validate_directory(path).map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod windows_descriptor_controls {
+    use super::{validate_windows_acl_inventory, validate_windows_dacl_header};
+
+    /// Protects: Native protected owner-only descriptor acceptance.
+    /// Detects: Rejecting the observed native Windows readback.
+    /// Needs: Observed scalar control values; no services or user files.
+    /// Breadcrumb: `outbox_private::validate_windows_dacl_header` and ACL inventory.
+    #[test]
+    fn windows_outbox_descriptor_accepts_native_protected_single_ace() {
+        validate_windows_dacl_header(1, 0x9004, true, true).unwrap();
+        validate_windows_acl_inventory(1, 1).unwrap();
+    }
+
+    /// Protects: Refusal before bytes when descriptor protection is lost.
+    /// Detects: Accepting Wine's observed 0x8004 header or hiding the missing bit.
+    /// Needs: Observed Wine scalar control; no Wine process or services.
+    /// Breadcrumb: `outbox_private::validate_windows_dacl_header`.
+    #[test]
+    fn windows_outbox_descriptor_refuses_observed_wine_protection_loss() {
+        let error = validate_windows_dacl_header(1, 0x8004, true, true).unwrap_err();
+        assert_eq!(error.to_string(), "protected outbox DACL required");
+    }
+
+    /// Protects: Visible control API failure without dereferencing its outputs.
+    /// Detects: API failure reported as missing protection instead of readback failure.
+    /// Needs: Synthetic API status; no services or user files.
+    /// Breadcrumb: `outbox_private::validate_windows_dacl_header`.
+    #[test]
+    fn windows_outbox_descriptor_reports_control_readback_failure() {
+        let error = validate_windows_dacl_header(0, 0, false, false).unwrap_err();
+        assert_eq!(error.to_string(), "outbox DACL control readback failed");
+    }
+
+    /// Protects: Present nonnull DACL and owner requirements.
+    /// Detects: Missing ACL, missing owner or null ACL losing their exact diagnosis.
+    /// Needs: Synthetic scalar fields; no services or user files.
+    /// Breadcrumb: `outbox_private::validate_windows_dacl_header`.
+    #[test]
+    fn windows_outbox_descriptor_refuses_missing_dacl_or_owner() {
+        for (control, owner, dacl, expected) in [
+            (0x9000, true, true, "present outbox DACL required"),
+            (0x9004, false, true, "outbox descriptor owner missing"),
+            (0x9004, true, false, "nonnull outbox DACL required"),
+        ] {
+            let error = validate_windows_dacl_header(1, control, owner, dacl).unwrap_err();
+            assert_eq!(error.to_string(), expected);
+        }
+    }
+
+    /// Protects: Exactly one ACE, including refusal of observed Wine expansion.
+    /// Detects: Extra or empty ACE inventories being accepted.
+    /// Needs: Observed Wine count and empty boundary; no services or user files.
+    /// Breadcrumb: `outbox_private::validate_windows_acl_inventory`.
+    #[test]
+    fn windows_outbox_descriptor_refuses_additional_or_missing_aces() {
+        for count in [0, 2] {
+            let error = validate_windows_acl_inventory(1, count).unwrap_err();
+            assert_eq!(error.to_string(), "sole current-user outbox ACE required");
+        }
+    }
+
+    /// Protects: Visible ACE API failure rather than assuming an empty inventory.
+    /// Detects: API readback failure collapsed into the sole-ACE policy diagnostic.
+    /// Needs: Synthetic API status; no services or user files.
+    /// Breadcrumb: `outbox_private::validate_windows_acl_inventory`.
+    #[test]
+    fn windows_outbox_descriptor_reports_acl_inventory_readback_failure() {
+        let error = validate_windows_acl_inventory(0, 0).unwrap_err();
+        assert_eq!(error.to_string(), "outbox ACE inventory readback failed");
+    }
+
+    /// Protects: Native API owner-only directory and file permissions across reopen.
+    /// Detects: Creation accepted only while a descriptor is cached on one handle.
+    /// Needs: Native Windows, an owned temporary directory, no services or user journal.
+    /// Breadcrumb: `outbox_private` platform creation and held-handle readback.
+    #[cfg(windows)]
+    #[test]
+    fn windows_outbox_private_directory_and_file_preserve_acl_after_reopen() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().join("private");
+        super::create_directory(&directory).unwrap();
+        drop(super::platform::validate_directory(&directory).unwrap());
+        drop(super::platform::validate_directory(&directory).unwrap());
+        let path = directory.join("journal.jsonl");
+        drop(super::open(&path).unwrap());
+        drop(super::open(&path).unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), [] as [u8; 0]);
     }
 }
 

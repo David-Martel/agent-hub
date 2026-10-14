@@ -155,6 +155,13 @@ class Services:
         self.env.update(
             {name: str(self.directory) for name in ("TMPDIR", "TEMP", "TMP")}
         )
+        # Native Windows journals use LOCALAPPDATA; Unix journals use HOME.
+        # Smoke subprocesses must never open the operator's durable journal.
+        home = self.directory / "owned-home"
+        home.mkdir(mode=0o700)
+        self.env["LOCALAPPDATA"] = str(home)
+        if mode == "smoke":
+            self.env["HOME"] = str(home)
 
     def create(self, image, port, extra):
         cid_file = self.directory / f"container-{len(self.cid_files)}.cid"
