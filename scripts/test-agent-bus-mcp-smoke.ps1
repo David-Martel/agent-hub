@@ -39,6 +39,20 @@ else {
         Select-Object -First 1
 }
 
+function Get-McpProperty {
+    param(
+        [AllowNull()][object]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    # Successful JSON-RPC responses omit error; notifications omit id. Missing
+    # result fields must reach the contract checks rather than fail StrictMode.
+    if ($null -eq $InputObject) { return $null }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
+
 function Read-McpResponse {
     param(
         [Parameter(Mandatory = $true)]
@@ -73,7 +87,7 @@ function Read-McpResponse {
         catch {
             throw "$Stage returned invalid JSON."
         }
-        if ($response.id -eq $ExpectedId) {
+        if ((Get-McpProperty -InputObject $response -Name 'id') -eq $ExpectedId) {
             return $response
         }
     }
@@ -126,6 +140,7 @@ $process.StartInfo = $processInfo
 $processStarted = $false
 $stderrTask = $null
 $wineSuccess = $null
+$primaryFailure = $null
 
 try {
     if (-not $process.Start()) {
@@ -139,23 +154,27 @@ try {
         # This is private launcher framing, never a shipping MCP protocol request.
         $ready = Read-McpResponse -Process $process -ExpectedId 0 `
             -Stage 'Wine launch preflight' -TimeoutMilliseconds 30000
-        $proof = $ready.result
-        if ($ready.error -or $proof.profile -ne 'configured-mcp-wine-launch-ready-v1' -or
-            $proof.receipt -notmatch '^mcp-launch-[a-f0-9]{32}\.json$' -or
-            $proof.sha256 -notmatch '^[a-f0-9]{64}$') {
+        $proof = Get-McpProperty -InputObject $ready -Name 'result'
+        $proofProfile = Get-McpProperty -InputObject $proof -Name 'profile'
+        $proofReceipt = Get-McpProperty -InputObject $proof -Name 'receipt'
+        $proofHash = Get-McpProperty -InputObject $proof -Name 'sha256'
+        if ($null -ne (Get-McpProperty -InputObject $ready -Name 'error') -or
+            $proofProfile -ne 'configured-mcp-wine-launch-ready-v1' -or
+            $proofReceipt -notmatch '^mcp-launch-[a-f0-9]{32}\.json$' -or
+            $proofHash -notmatch '^[a-f0-9]{64}$') {
             throw 'Wine launch readiness receipt is invalid.'
         }
-        $launchReceiptPath = Join-Path $env:AGENT_BUS_TEST_MCP_WINE_ROOT $proof.receipt
-        if ((Get-FileHash -LiteralPath $launchReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $proof.sha256) {
+        $launchReceiptPath = Join-Path $env:AGENT_BUS_TEST_MCP_WINE_ROOT $proofReceipt
+        if ((Get-FileHash -LiteralPath $launchReceiptPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne $proofHash) {
             throw 'Wine launch readiness receipt hash differs.'
         }
         $launchReceipt = Get-Content -LiteralPath $launchReceiptPath -Raw | ConvertFrom-Json
         $commandHash = (Get-FileHash -LiteralPath $resolvedCommand.Source -Algorithm SHA256).Hash.ToLowerInvariant()
-        if ($launchReceipt.profile -ne $proof.profile -or
-            $launchReceipt.root -ne $env:AGENT_BUS_TEST_MCP_WINE_ROOT -or
-            $launchReceipt.command -ne $resolvedCommand.Source -or
-            $launchReceipt.command_sha256 -ne $commandHash -or
-            $proof.command_sha256 -ne $commandHash) {
+        if ((Get-McpProperty -InputObject $launchReceipt -Name 'profile') -ne $proofProfile -or
+            (Get-McpProperty -InputObject $launchReceipt -Name 'root') -ne $env:AGENT_BUS_TEST_MCP_WINE_ROOT -or
+            (Get-McpProperty -InputObject $launchReceipt -Name 'command') -ne $resolvedCommand.Source -or
+            (Get-McpProperty -InputObject $launchReceipt -Name 'command_sha256') -ne $commandHash -or
+            (Get-McpProperty -InputObject $proof -Name 'command_sha256') -ne $commandHash) {
             throw 'Wine launch readiness does not bind the configured executable.'
         }
     }
@@ -181,13 +200,15 @@ try {
         -ExpectedId 1 `
         -Stage "initialize" `
         -TimeoutMilliseconds ($TimeoutSeconds * 1000)
-    if ($initializeResponse.error) {
+    if ($null -ne (Get-McpProperty -InputObject $initializeResponse -Name 'error')) {
         throw "initialize returned a JSON-RPC error."
     }
 
-    $protocolVersion = [string]$initializeResponse.result.protocolVersion
-    $serverName = [string]$initializeResponse.result.serverInfo.name
-    $serverVersion = [string]$initializeResponse.result.serverInfo.version
+    $initializeResult = Get-McpProperty -InputObject $initializeResponse -Name 'result'
+    $serverInfo = Get-McpProperty -InputObject $initializeResult -Name 'serverInfo'
+    $protocolVersion = [string](Get-McpProperty -InputObject $initializeResult -Name 'protocolVersion')
+    $serverName = [string](Get-McpProperty -InputObject $serverInfo -Name 'name')
+    $serverVersion = [string](Get-McpProperty -InputObject $serverInfo -Name 'version')
     if ($protocolVersion -ne $ExpectedProtocolVersion) {
         throw "Unexpected MCP protocol version '$protocolVersion'."
     }
@@ -218,16 +239,17 @@ try {
         -ExpectedId 2 `
         -Stage "tools/list" `
         -TimeoutMilliseconds ($TimeoutSeconds * 1000)
-    if ($toolsListResponse.error) {
+    if ($null -ne (Get-McpProperty -InputObject $toolsListResponse -Name 'error')) {
         throw "tools/list returned a JSON-RPC error."
     }
 
-    $tools = @($toolsListResponse.result.tools)
+    $toolsResult = Get-McpProperty -InputObject $toolsListResponse -Name 'result'
+    $tools = @(Get-McpProperty -InputObject $toolsResult -Name 'tools')
     if ($tools.Count -ne $ExpectedToolCount) {
         throw "Unexpected MCP tool count '$($tools.Count)'; expected '$ExpectedToolCount'."
     }
-    $toolNames = @($tools | ForEach-Object { [string]$_.name })
-    if ($toolNames | Where-Object { [string]::IsNullOrWhiteSpace($_) }) {
+    $toolNames = @($tools | ForEach-Object { [string](Get-McpProperty -InputObject $_ -Name 'name') })
+    if (@($toolNames | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
         throw "One or more MCP tools have a missing name."
     }
 
@@ -247,7 +269,12 @@ try {
         $success | ConvertTo-Json -Depth 5 -Compress
     }
 }
+catch {
+    $primaryFailure = $_
+    throw
+}
 finally {
+    try {
     if ($processStarted -and -not $process.HasExited) {
         try {
             $process.StandardInput.Close()
@@ -284,6 +311,16 @@ finally {
         [void]$stderrTask.Result
     }
     $process.Dispose()
+    }
+    catch {
+        if ($null -ne $primaryFailure) {
+            # Cleanup remains mandatory, but its error must not replace the first
+            # readiness/protocol failure. Preserve both without exposing stderr.
+            $primaryFailure.Exception.Data['McpCleanupFailure'] = $_.Exception.Message
+            throw $primaryFailure
+        }
+        throw
+    }
 }
 if ($WineTestLauncher -and $wineSuccess) {
     $wineSuccess | ConvertTo-Json -Depth 5 -Compress
