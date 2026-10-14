@@ -327,6 +327,17 @@ pub struct FlushReport {
     pub dispositions: BTreeMap<Uuid, Disposition>,
 }
 
+/// Read-only view of a journal for disposition decisions after config moves.
+#[derive(Debug)]
+pub struct JournalInspection {
+    /// Stored destination scope; `None` for an empty, never-bound file.
+    pub destination: Option<String>,
+    /// Journal origin from the header, when bound.
+    pub origin_id: Option<Uuid>,
+    /// Retained requests in durable order.
+    pub pending: Vec<ReplayRequest>,
+}
+
 /// Exclusive journal guard held through persistence and bounded transport calls.
 ///
 /// The supplied file must have been opened by the platform custody helper
@@ -392,8 +403,6 @@ impl Journal {
     ///
     /// # Errors
     /// Corrupt/truncated journal, foreign destination, lock contention or I/O.
-    // One bounded parser validates the complete sequence before accepting state.
-    #[allow(clippy::too_many_lines)]
     pub(crate) fn from_private_file(file: File, destination: &str) -> Result<Self, OutboxError> {
         if destination.is_empty()
             || destination.len() > 256
@@ -401,6 +410,40 @@ impl Journal {
         {
             return Err(OutboxError::ScopeChanged);
         }
+        Self::load(file, Some(destination)).map(|(journal, _)| journal)
+    }
+
+    /// Report an existing journal's bound destination and retained requests.
+    ///
+    /// Read-only: an absent header is reported as `None` and never written,
+    /// and a destination differing from current configuration is not an
+    /// error here, so an operator can decide its disposition.
+    ///
+    /// # Errors
+    /// Custody failure, corrupt journal, lock contention or I/O.
+    pub fn inspect(path: &Path) -> Result<JournalInspection, OutboxError> {
+        let file = crate::outbox_private::open(path).map_err(|_sanitized| OutboxError::Custody)?;
+        Self::inspect_private_file(file)
+    }
+
+    /// [`Self::inspect`] on an already opened private file.
+    ///
+    /// # Errors
+    /// Corrupt journal, lock contention or I/O.
+    pub(crate) fn inspect_private_file(file: File) -> Result<JournalInspection, OutboxError> {
+        let (journal, destination) = Self::load(file, None)?;
+        Ok(JournalInspection {
+            origin_id: destination.as_ref().map(|_| journal.origin_id),
+            destination,
+            pending: journal.pending.values().cloned().collect(),
+        })
+    }
+
+    /// Validate the complete sequence; `expected` binds (and initializes) the
+    /// destination, while `None` only reports the stored one.
+    // One bounded parser validates the complete sequence before accepting state.
+    #[allow(clippy::too_many_lines)]
+    fn load(file: File, expected: Option<&str>) -> Result<(Self, Option<String>), OutboxError> {
         let mut file = LockedFile::acquire(file)?;
         if file.metadata()?.len() > JOURNAL_LIMIT {
             return Err(OutboxError::Capacity);
@@ -420,6 +463,7 @@ impl Journal {
             attempted: HashSet::new(),
         };
         let mut header_seen = false;
+        let mut bound: Option<String> = None;
         let mut all_ids = HashSet::new();
         for line in bytes
             .strip_suffix(b"\n")
@@ -446,11 +490,12 @@ impl Journal {
                     if header_seen || !all_ids.is_empty() {
                         return Err(OutboxError::Corrupt);
                     }
-                    if stored != destination {
+                    if expected.is_some_and(|destination| stored != destination) {
                         return Err(OutboxError::ScopeChanged);
                     }
                     journal.origin_id = origin_id;
                     header_seen = true;
+                    bound = Some(stored);
                 }
                 Event::Queued { request } => {
                     request
@@ -498,15 +543,18 @@ impl Journal {
             if !bytes.is_empty() {
                 return Err(OutboxError::Corrupt);
             }
-            journal.append(&Event::Header {
-                origin_id: journal.origin_id,
-                destination: destination.to_owned(),
-            })?;
+            if let Some(destination) = expected {
+                journal.append(&Event::Header {
+                    origin_id: journal.origin_id,
+                    destination: destination.to_owned(),
+                })?;
+                bound = Some(destination.to_owned());
+            }
         }
         if journal.pending.len() > REQUEST_LIMIT {
             return Err(OutboxError::Capacity);
         }
-        Ok(journal)
+        Ok((journal, bound))
     }
 
     fn append(&mut self, event: &Event) -> Result<(), OutboxError> {
@@ -933,6 +981,49 @@ mod tests {
             Err(OutboxError::ScopeChanged)
         ));
         assert_eq!(std::fs::read(temp.path()).unwrap(), original);
+    }
+
+    // A changed candidate list must be diagnosable: the operator needs the
+    // bound destination and the retained IDs before choosing a disposition,
+    // and looking must neither rewrite the header nor append records.
+    #[test]
+    fn inspection_reports_bound_destination_and_pending_without_mutation() {
+        let temp = NamedTempFile::new().unwrap();
+        let mut journal = open(&temp);
+        let retained = journal
+            .enqueue(Operation::Send, ClientSurface::Cli, send("retained"), 100)
+            .unwrap();
+        drop(journal);
+        let original = std::fs::read(temp.path()).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(temp.path())
+            .unwrap();
+        let inspection = Journal::inspect_private_file(file).unwrap();
+        assert_eq!(inspection.destination.as_deref(), Some("onsite-hub-scope"));
+        assert!(inspection.origin_id.is_some());
+        assert_eq!(
+            inspection
+                .pending
+                .iter()
+                .map(|request| request.request_id)
+                .collect::<Vec<_>>(),
+            vec![retained.request_id]
+        );
+        assert_eq!(std::fs::read(temp.path()).unwrap(), original);
+
+        // An empty file has no binding yet and inspection must not create one.
+        let empty = NamedTempFile::new().unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(empty.path())
+            .unwrap();
+        let inspection = Journal::inspect_private_file(file).unwrap();
+        assert!(inspection.destination.is_none());
+        assert!(inspection.pending.is_empty());
+        assert_eq!(std::fs::read(empty.path()).unwrap(), b"");
     }
 
     #[test]

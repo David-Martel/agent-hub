@@ -3,11 +3,19 @@
 set -eu
 
 fixture_config="$(mktemp "${TMPDIR:-/tmp}/agent-bus-hooks.XXXXXXXX.json")"
-trap 'rm -f -- "$fixture_config"' EXIT
+# The durable outbox journal lives under the per-user LOCALAPPDATA on Windows.
+# Tests that resolve the default journal path must not read (or lock) the
+# operator's live journal, so Windows runs get an empty private root.
+outbox_root="$(mktemp -d "${TMPDIR:-/tmp}/agent-bus-hooks-outbox.XXXXXXXX")"
+trap 'rm -f -- "$fixture_config"; rm -rf -- "$outbox_root"' EXIT
 printf '{}' > "$fixture_config"
 native_config="$fixture_config"
 case "$(uname -s)" in
-  MINGW*|MSYS*|CYGWIN*) native_config="$(cygpath -m "$fixture_config")" ;;
+  MINGW*|MSYS*|CYGWIN*)
+    native_config="$(cygpath -m "$fixture_config")"
+    LOCALAPPDATA="$(cygpath -w "$outbox_root")"
+    export LOCALAPPDATA
+    ;;
 esac
 
 env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_SERVER_URLS -u AGENT_BUS_SERVER_CANDIDATES \

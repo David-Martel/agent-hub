@@ -11,7 +11,7 @@ use crate::error::{AgentBusError, Result};
 use crate::hub_cache::candidates_fingerprint;
 use crate::hub_candidates::{HubAuth, HubRole, SystemEnv};
 use crate::outbox::{
-    ClientSurface, Journal, Operation, ReplayFailure, ReplayRequest, ReplayResponse,
+    ClientSurface, Journal, Operation, OutboxError, ReplayFailure, ReplayRequest, ReplayResponse,
     ReplayTransport,
 };
 use crate::settings::Settings;
@@ -190,7 +190,16 @@ pub fn submit<T: NativeReplayTransport>(
         })?;
         path
     };
-    let mut journal = Journal::open(&path, &scope).map_err(|_sanitized| {
+    let mut journal = match Journal::open(&path, &scope) {
+        // Editing the candidate list rebinds a journal that owes nothing to
+        // its previous destination; retained requests still refuse below.
+        Err(OutboxError::ScopeChanged) => {
+            retire_previous_scope(&path, &scope, now_ms()?, RetirePolicy::SettledOnly)?;
+            Journal::open(&path, &scope)
+        }
+        opened => opened,
+    }
+    .map_err(|_sanitized| {
         AgentBusError::Internal("private durable outbox could not be opened".to_owned())
     })?;
     submit_journal(
@@ -274,15 +283,150 @@ pub fn status(settings: &Settings, path_override: Option<&Path>) -> Result<Value
     if !journal_present(&path)? {
         return Ok(json!({"pending":0,"requests":[]}));
     }
-    let journal = Journal::open(&path, &scope).map_err(|_sanitized| {
+    let inspection = Journal::inspect(&path).map_err(|_sanitized| {
         AgentBusError::Internal(
             "private durable outbox status unavailable; preserve journal".to_owned(),
         )
     })?;
+    let mut report = json!({"pending":inspection.pending.len(),
+        "requests":inspection.pending.iter().map(request_summary).collect::<Vec<_>>()});
+    if let Some(stored) = inspection
+        .destination
+        .as_deref()
+        .filter(|stored| *stored != scope)
+    {
+        // Scope fingerprints hash configuration metadata, never token bytes.
+        let now = now_ms()?;
+        let rotation = if inspection.pending.is_empty() {
+            "automatic"
+        } else if inspection
+            .pending
+            .iter()
+            .all(|request| expired(request, now))
+        {
+            "explicit"
+        } else {
+            "blocked"
+        };
+        report["scope_mismatch"] = json!(true);
+        report["bound_scope_prefix"] = json!(scope_prefix(stored));
+        report["current_scope_prefix"] = json!(scope_prefix(&scope));
+        report["rotation"] = json!(rotation);
+    }
+    Ok(report)
+}
+
+fn request_summary(request: &ReplayRequest) -> Value {
+    json!({"request_id":request.request_id,"operation":request.operation,
+        "created_ms":request.created_ms,"expires_ms":request.expires_ms})
+}
+
+fn scope_prefix(scope: &str) -> &str {
+    scope.get(..16).unwrap_or(scope)
+}
+
+/// Time-bounded requests (presence, claims) past their own expiry; sends and
+/// ACKs carry no expiry and never qualify.
+fn expired(request: &ReplayRequest, now: u64) -> bool {
+    request.expires_ms != 0 && now >= request.expires_ms
+}
+
+#[derive(Clone, Copy)]
+enum RetirePolicy {
+    /// Only a journal with no retained requests (automatic, on write).
+    SettledOnly,
+    /// Also retained requests that have all expired (explicit operator action).
+    ExpiredOnly,
+}
+
+/// Retire a journal bound to a previous candidate list so a new one can bind.
+///
+/// The old file is renamed beside the new one, never rewritten or deleted.
+/// Retained requests that could still matter refuse the move.
+fn retire_previous_scope(
+    path: &Path,
+    scope: &str,
+    now: u64,
+    policy: RetirePolicy,
+) -> Result<Value> {
+    let inspection = Journal::inspect(path).map_err(|_sanitized| {
+        AgentBusError::Internal("durable outbox inspection failed; preserve journal".to_owned())
+    })?;
+    let (Some(stored), Some(origin_id)) = (inspection.destination.as_deref(), inspection.origin_id)
+    else {
+        return Ok(json!({"rotated":false,"reason":"journal has no bound destination"}));
+    };
+    if stored == scope {
+        return Ok(
+            json!({"rotated":false,"reason":"journal already bound to current candidates",
+            "pending":inspection.pending.len()}),
+        );
+    }
+    let blocking = inspection
+        .pending
+        .iter()
+        .filter(|request| match policy {
+            RetirePolicy::SettledOnly => true,
+            RetirePolicy::ExpiredOnly => !expired(request, now),
+        })
+        .map(|request| request.request_id.to_string())
+        .collect::<Vec<_>>();
+    if !blocking.is_empty() {
+        return Err(AgentBusError::InvalidParams(format!(
+            "outbox journal is bound to a previous hub candidate list (scope {}) and retains {} \
+             request(s) that are not expired: {}; replay them with the previous configuration \
+             (`agent-bus outbox flush`) or preserve the journal",
+            scope_prefix(stored),
+            blocking.len(),
+            blocking.join(", ")
+        )));
+    }
+    let retired = path.with_file_name(format!("journal.retired-{origin_id}.jsonl"));
+    crate::outbox_private::plain_path(&retired).map_err(|_sanitized| {
+        AgentBusError::Internal("retired outbox path unavailable; preserve journal".to_owned())
+    })?;
+    if std::fs::symlink_metadata(&retired).is_ok() {
+        return Err(AgentBusError::Internal(
+            "retired outbox journal already exists; preserve both journals".to_owned(),
+        ));
+    }
+    std::fs::rename(path, &retired).map_err(|_sanitized| {
+        AgentBusError::Internal(
+            "outbox journal could not be retired (in use?); preserve journal".to_owned(),
+        )
+    })?;
     Ok(
-        json!({"pending":journal.pending().count(),"requests":journal.pending().map(|request|
-        json!({"request_id":request.request_id,"operation":request.operation,"created_ms":request.created_ms,"expires_ms":request.expires_ms})).collect::<Vec<_>>()}),
+        json!({"rotated":true,"retired_path":retired.display().to_string(),
+        "bound_scope_prefix":scope_prefix(stored),"current_scope_prefix":scope_prefix(scope),
+        "retired_requests":inspection.pending.iter().map(request_summary).collect::<Vec<_>>()}),
     )
+}
+
+/// Explicitly retire a journal bound to a previous candidate list.
+///
+/// Allowed when every retained request has expired; sends, ACKs and live
+/// leases refuse. A matching or absent journal is left untouched.
+///
+/// # Errors
+/// Unexpired retained requests, custody/corruption, contention or rename failure.
+pub fn rotate(settings: &Settings, path_override: Option<&Path>, now: u64) -> Result<Value> {
+    let scope = candidates_fingerprint(&settings.effective_hub_candidates());
+    let path = match path_override {
+        Some(path) => path.to_owned(),
+        None => journal_path(&scope)?,
+    };
+    if !journal_present(&path)? {
+        return Ok(json!({"rotated":false,"reason":"no journal"}));
+    }
+    retire_previous_scope(&path, &scope, now, RetirePolicy::ExpiredOnly)
+}
+
+/// [`rotate`] at the current time.
+///
+/// # Errors
+/// As [`rotate`], or a clock outside the durable range.
+pub fn rotate_now(settings: &Settings) -> Result<Value> {
+    rotate(settings, None, now_ms()?)
 }
 
 /// Drain existing requests only, preserving order and each original ID.
@@ -303,7 +447,16 @@ pub fn flush_pending<T: NativeReplayTransport>(
         return Ok(json!({"remaining":0,"applied":0,"requests_submitted":0}));
     }
     let (scope, route) = replay_context(settings, transport)?;
-    let mut journal = Journal::open(&path, &scope).map_err(|_sanitized| {
+    let mut journal = match Journal::open(&path, &scope) {
+        // Nothing owed to the previous destination: retire it and report an
+        // empty queue rather than a recovery state.
+        Err(OutboxError::ScopeChanged) => {
+            retire_previous_scope(&path, &scope, now_ms()?, RetirePolicy::SettledOnly)?;
+            return Ok(json!({"remaining":0,"applied":0,"requests_submitted":0}));
+        }
+        opened => opened,
+    }
+    .map_err(|_sanitized| {
         AgentBusError::Internal("private durable outbox unavailable; preserve journal".to_owned())
     })?;
     let report = journal.flush(&route, now_ms()?, 16).map_err(|_sanitized| {
@@ -445,6 +598,190 @@ mod tests {
             vec![original.request_id]
         );
         assert!(legacy_write_guard(&settings, Some(&temp.path().with_extension("absent"))).is_ok());
+    }
+
+    /// Settings naming one authority reachable at each URL, in order.
+    fn authority_settings(urls: &[&str]) -> Settings {
+        use crate::hub_candidates::{CandidateAuth, HubCandidate};
+        let mut settings = Settings::for_test();
+        settings.server_urls = urls.iter().map(|url| (*url).to_owned()).collect();
+        settings.hub_candidates = urls
+            .iter()
+            .map(|url| HubCandidate {
+                url: (*url).to_owned(),
+                role: HubRole::Authoritative,
+                auth: CandidateAuth::Global,
+                hub: Some("fixture-authority".to_owned()),
+                sites: Vec::new(),
+            })
+            .collect();
+        settings.auth_token = Some("synthetic-fixture-token".to_owned());
+        settings
+    }
+
+    /// A private outbox directory, as `submit` would establish it.
+    fn private_journal_path(root: &tempfile::TempDir) -> PathBuf {
+        let path = journal_path_in(root.path());
+        crate::outbox_private::create_directory(path.parent().unwrap()).unwrap();
+        path
+    }
+
+    fn retired_siblings(path: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|candidate| candidate != path)
+            .collect()
+    }
+
+    struct Applied;
+    impl NativeReplayTransport for Applied {
+        fn replay(
+            &self,
+            _url: &str,
+            _hub_identity: &str,
+            request: &ReplayRequest,
+            _timeout: Duration,
+        ) -> std::result::Result<ReplayResponse, ReplayFailure> {
+            Ok(ReplayResponse::Applied {
+                result: json!({"id":request.request_id}),
+            })
+        }
+    }
+
+    // dtm-p1gen7, 2026-10-14: adding one tailnet URL to the same hub's
+    // candidate list changed the fingerprint, and every later write failed
+    // with "could not be opened" although the journal held no pending debt.
+    // A fully settled journal carries no obligation to the old destination.
+    #[test]
+    fn candidate_edit_retires_a_settled_journal_and_the_write_succeeds() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let before_edit = authority_settings(&["http://localhost:8484"]);
+        let response = submit(
+            &before_edit,
+            &Applied,
+            Operation::Send,
+            ClientSurface::Cli,
+            args("before edit"),
+            Some(&path),
+        )
+        .unwrap();
+        assert_eq!(response["id"].as_str().map(str::is_empty), Some(false));
+        let settled_bytes = std::fs::read(&path).unwrap();
+
+        let after_edit = authority_settings(&["http://localhost:8484", "http://127.0.0.1:8485"]);
+        let response = submit(
+            &after_edit,
+            &Applied,
+            Operation::Send,
+            ClientSurface::Cli,
+            args("after edit"),
+            Some(&path),
+        )
+        .unwrap();
+        assert_eq!(response["id"].as_str().map(str::is_empty), Some(false));
+
+        // The previous journal is preserved byte for byte beside the new one.
+        let retired = retired_siblings(&path);
+        assert_eq!(retired.len(), 1);
+        assert_eq!(std::fs::read(&retired[0]).unwrap(), settled_bytes);
+        let current = status(&after_edit, Some(&path)).unwrap();
+        assert_eq!(current["pending"], 0);
+        assert!(current.get("scope_mismatch").is_none());
+    }
+
+    // Retained work stays bound to the authority it was queued for. Status
+    // must still describe it (a read must not fail), and neither a new write
+    // nor an explicit rotation may move or rewrite it.
+    #[test]
+    fn unexpired_retained_requests_block_retirement_but_status_reports_them() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let before_edit = authority_settings(&["http://localhost:8484"]);
+        let scope = candidates_fingerprint(&before_edit.effective_hub_candidates());
+        let mut journal = Journal::open(&path, &scope).unwrap();
+        let retained = journal
+            .enqueue(Operation::Send, ClientSurface::Cli, args("retained"), 100)
+            .unwrap();
+        drop(journal);
+        let original = std::fs::read(&path).unwrap();
+
+        let after_edit = authority_settings(&["http://localhost:8484", "http://127.0.0.1:8485"]);
+        let report = status(&after_edit, Some(&path)).unwrap();
+        assert_eq!(report["pending"], 1);
+        assert_eq!(report["scope_mismatch"], true);
+        assert_eq!(
+            report["requests"][0]["request_id"],
+            retained.request_id.to_string()
+        );
+        assert_eq!(report["rotation"], "blocked");
+
+        assert!(rotate(&after_edit, Some(&path), u64::MAX / 2).is_err());
+        assert!(
+            submit(
+                &after_edit,
+                &Applied,
+                Operation::Send,
+                ClientSurface::Cli,
+                args("new"),
+                Some(&path),
+            )
+            .is_err()
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(retired_siblings(&path).is_empty());
+    }
+
+    // Presence heartbeats and claim requests are time-bounded; once expired
+    // they have no remaining effect, so an operator may retire them
+    // explicitly. The journal is renamed, never rewritten or deleted.
+    #[test]
+    fn explicit_rotation_retires_expired_only_requests_preserving_bytes() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let before_edit = authority_settings(&["http://localhost:8484"]);
+        let scope = candidates_fingerprint(&before_edit.effective_hub_candidates());
+        let mut journal = Journal::open(&path, &scope).unwrap();
+        let presence = journal
+            .enqueue(
+                Operation::Presence,
+                ClientSurface::Cli,
+                json!({"agent":"fixture","ttl_seconds":1})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                100,
+            )
+            .unwrap();
+        drop(journal);
+        let original = std::fs::read(&path).unwrap();
+
+        let after_edit = authority_settings(&["http://127.0.0.1:8485"]);
+        assert_eq!(
+            status(&after_edit, Some(&path)).unwrap()["rotation"],
+            "explicit"
+        );
+        // Not yet expired at the request's own clock: refused.
+        assert!(rotate(&after_edit, Some(&path), presence.created_ms).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+
+        let report = rotate(&after_edit, Some(&path), presence.expires_ms).unwrap();
+        assert_eq!(report["rotated"], true);
+        assert_eq!(
+            report["retired_requests"][0]["request_id"],
+            presence.request_id.to_string()
+        );
+        let retired = retired_siblings(&path);
+        assert_eq!(retired.len(), 1);
+        assert_eq!(std::fs::read(&retired[0]).unwrap(), original);
+        assert!(!path.exists());
+        assert_eq!(status(&after_edit, Some(&path)).unwrap()["pending"], 0);
+        // A second rotation finds nothing left to retire.
+        assert_eq!(
+            rotate(&after_edit, Some(&path), presence.expires_ms).unwrap()["rotated"],
+            false
+        );
     }
 
     #[test]

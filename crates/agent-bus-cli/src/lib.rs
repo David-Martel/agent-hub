@@ -469,6 +469,10 @@ fn run(args: Vec<OsString>) -> Result<()> {
                     anyhow::bail!("outbox flush requires native HTTP transport support");
                 }
             }
+            OutboxCmd::Rotate { encoding } => {
+                let value = agent_bus_core::outbox_client::rotate_now(&settings)?;
+                crate::output::output(&value, encoding);
+            }
         },
         Cmd::SpoolSend {
             ref from_agent,
