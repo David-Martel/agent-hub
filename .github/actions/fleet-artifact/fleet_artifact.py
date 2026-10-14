@@ -35,15 +35,26 @@ import sys
 import tarfile
 import tempfile
 import urllib.parse
+import xml.etree.ElementTree as ElementTree  # noqa: S405
 from collections.abc import Iterator
 from pathlib import Path, PurePosixPath
 
 RETENTION = ("short", "ci", "release")
-NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
-PART_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+# Every object-key component: [A-Za-z0-9._-], 1..128 chars, no leading dot, no "..", no "/".
+COMPONENT_RE = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9._-]{0,127}$")
+
+
+def safe_component(value: str, what: str) -> str:
+    if not COMPONENT_RE.match(value) or ".." in value:
+        raise ConfigError(f"unsafe {what} {value!r}")
+    return value
+
+
 REGION = "us-east-1"
 CHUNK = 1 << 20
-MAX_UNPACKED = int(os.environ.get("FA_MAX_UNPACKED_BYTES", str(8 << 30)))
+DEFAULT_MAX_OBJECT = 2 << 30  # per packed object
+DEFAULT_MAX_RUN = 8 << 30  # per run, per bucket
+DEFAULT_MAX_UNPACKED = 4 << 30  # extraction (decompression-bomb guard)
 MAX_MEMBERS = 200_000
 
 
@@ -63,6 +74,19 @@ class StoreError(FleetError):
     """The store or the inputs could not deliver. Fails when required, warns otherwise."""
 
 
+class LimitError(FleetError):
+    """A custody bound (object, run or extraction size) was exceeded. Always fails."""
+
+
+def limit(env: dict[str, str], key: str, default: int) -> int:
+    raw = env.get(key, "").strip()
+    if not raw:
+        return default
+    if not raw.isdigit() or int(raw) <= 0:
+        raise ConfigError(f"{key} must be a positive integer, got {raw!r}")
+    return int(raw)
+
+
 def _hmac(key: bytes, msg: str) -> bytes:
     return hmac.new(key, msg.encode(), hashlib.sha256).digest()
 
@@ -79,7 +103,7 @@ class Store:
             raise ConfigError("key must be ACCESS:SECRET")
         self.access, self.secret = access, secret
 
-    def _sign(self, method: str, path: str, headers: dict[str, str]) -> dict[str, str]:
+    def _sign(self, method: str, path: str, headers: dict[str, str], query: str = "") -> dict[str, str]:
         now = datetime.datetime.now(datetime.timezone.utc)
         amz, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
         headers = {**headers, "host": self.host, "x-amz-date": amz, "x-amz-content-sha256": "UNSIGNED-PAYLOAD"}
@@ -87,7 +111,7 @@ class Store:
         canon_headers = "".join(f"{n}:{headers[n].strip()}\n" for n in names)
         signed = ";".join(names)
         canon = "\n".join(
-            [method, urllib.parse.quote(path, safe="/-_.~"), "", canon_headers, signed, "UNSIGNED-PAYLOAD"]
+            [method, urllib.parse.quote(path, safe="/-_.~"), query, canon_headers, signed, "UNSIGNED-PAYLOAD"]
         )
         scope = f"{day}/{REGION}/s3/aws4_request"
         to_sign = "\n".join(["AWS4-HMAC-SHA256", amz, scope, hashlib.sha256(canon.encode()).hexdigest()])
@@ -144,6 +168,44 @@ class Store:
     def get_bytes(self, path: str) -> bytes:
         return b"".join(self.get(path))
 
+    def list_size(self, bucket: str, prefix: str) -> int:
+        """Sum the sizes of the objects under bucket/prefix (ListObjectsV2, paginated)."""
+        total, token = 0, ""
+        while True:
+            params = {"list-type": "2", "prefix": prefix}
+            if token:
+                params["continuation-token"] = token
+            query = "&".join(
+                f"{urllib.parse.quote(k, safe='-_.~')}={urllib.parse.quote(v, safe='-_.~')}"
+                for k, v in sorted(params.items())
+            )
+            headers = self._sign("GET", f"/{bucket}", {}, query)
+            conn = self._conn()
+            try:
+                conn.request("GET", f"/{bucket}?{query}", headers=headers)
+                resp = conn.getresponse()
+                body = resp.read(8 << 20)
+            except (OSError, http.client.HTTPException) as exc:
+                raise StoreError(f"LIST {bucket}/{prefix}: {exc}") from exc
+            finally:
+                conn.close()
+            if resp.status == 404:
+                return total
+            if resp.status != 200:
+                raise StoreError(f"LIST {bucket}/{prefix}: HTTP {resp.status} {body[:200]!r}")
+            try:
+                root = ElementTree.fromstring(body)  # noqa: S314  fleet-internal store, size-bounded read
+            except ElementTree.ParseError as exc:
+                raise StoreError(f"LIST {bucket}/{prefix}: unreadable listing") from exc
+            for node in root.iter():
+                if node.tag.rsplit("}", 1)[-1] == "Size" and node.text and node.text.isdigit():
+                    total += int(node.text)
+            truncated = next((n.text for n in root.iter() if n.tag.rsplit("}", 1)[-1] == "IsTruncated"), "false")
+            nxt = next((n.text for n in root.iter() if n.tag.rsplit("}", 1)[-1] == "NextContinuationToken"), None)
+            if str(truncated).lower() != "true" or not nxt:
+                return total
+            token = nxt
+
     def seal(self, digest: str, object_path: str) -> str:
         """HMAC binding the digest to the object path under the store secret."""
         return hmac.new(self.secret.encode(), f"{digest} {object_path}".encode(), hashlib.sha256).hexdigest()
@@ -167,9 +229,8 @@ def object_prefix(env: dict[str, str], download: bool) -> tuple[str, str]:
         (env.get("FA_ATTEMPT") if download else "") or env["FA_CTX_ATTEMPT"],
         (env.get("FA_JOB") if download else "") or env["FA_CTX_JOB"],
     ]
-    for part in parts:
-        if not PART_RE.match(part):
-            raise ConfigError(f"unsafe key component {part!r}")
+    for label, part in zip(("owner", "repo", "run id", "attempt", "job"), parts, strict=True):
+        safe_component(part, f"key component ({label})")
     return env["FA_RETENTION"], "/".join(parts)
 
 
@@ -232,22 +293,25 @@ def _inside(base: Path, candidate: Path) -> bool:
     return candidate == base or base in candidate.parents
 
 
-def validate_members(tar: tarfile.TarFile, dest: Path) -> list[tarfile.TarInfo]:
+def validate_members(
+    tar: tarfile.TarFile, dest: Path, max_unpacked: int = DEFAULT_MAX_UNPACKED
+) -> list[tarfile.TarInfo]:
     """Reject absolute paths, traversal, special files and any link that leaves `dest`."""
-    members = tar.getmembers()
-    if len(members) > MAX_MEMBERS:
-        raise IntegrityError(f"archive has {len(members)} members (limit {MAX_MEMBERS})")
+    members: list[tarfile.TarInfo] = []
     total = 0
     base = dest.resolve()
-    for m in members:
+    for m in tar:  # streaming: a bomb is refused at the header that crosses the limit
+        members.append(m)
+        if len(members) > MAX_MEMBERS:
+            raise LimitError(f"archive has more than {MAX_MEMBERS} members")
         name = PurePosixPath(m.name)
         if name.is_absolute() or ".." in name.parts or m.name.startswith("/") or ("\\" in m.name and ":" in m.name[:3]):
             raise IntegrityError(f"unsafe member name {m.name!r}")
         if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
             raise IntegrityError(f"unsupported member type for {m.name!r}")
         total += m.size if m.isfile() else 0
-        if total > MAX_UNPACKED:
-            raise IntegrityError(f"archive unpacks to more than {MAX_UNPACKED} bytes")
+        if total > max_unpacked:
+            raise LimitError(f"archive unpacks to more than {max_unpacked} bytes")
         target = (base / m.name).resolve()
         if not _inside(base, target):
             raise IntegrityError(f"member {m.name!r} resolves outside the destination")
@@ -262,7 +326,7 @@ def validate_members(tar: tarfile.TarFile, dest: Path) -> list[tarfile.TarInfo]:
     return members
 
 
-def unpack(archive: Path, out: Path, suffix: str) -> None:
+def unpack(archive: Path, out: Path, suffix: str, max_unpacked: int = DEFAULT_MAX_UNPACKED) -> None:
     """Validate every member, extract into a private temp dir, re-check, then move into `out`."""
     tmp_tar: Path | None = None
     source = archive
@@ -272,14 +336,26 @@ def unpack(archive: Path, out: Path, suffix: str) -> None:
             if not zstd:
                 raise StoreError("zstd is required to read a .tar.zst object")
             tmp_tar = archive.with_suffix(".tar")
-            with tmp_tar.open("wb") as fh:
-                subprocess.run([zstd, "-d", "-c", str(archive)], check=True, stdout=fh)
+            written = 0
+            with (
+                subprocess.Popen([zstd, "-d", "-c", str(archive)], stdout=subprocess.PIPE) as proc,
+                tmp_tar.open("wb") as fh,
+            ):
+                assert proc.stdout is not None  # noqa: S101
+                while chunk := proc.stdout.read(CHUNK):
+                    written += len(chunk)
+                    if written > max_unpacked + (64 << 20):  # members total plus tar headers and padding
+                        proc.kill()
+                        raise LimitError(f"decompressed archive is larger than {max_unpacked} bytes")
+                    fh.write(chunk)
+            if proc.returncode:
+                raise IntegrityError(f"zstd could not decompress the archive ({proc.returncode})")
             source = tmp_tar
         out.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix=".fleet-artifact-", dir=out))
         try:
             with tarfile.open(source, "r:*") as tar:
-                members = validate_members(tar, staging)
+                members = validate_members(tar, staging, max_unpacked)
                 for m in members:
                     m.mode &= ~(stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX)
                     m.uid = m.gid = 0
@@ -318,8 +394,7 @@ def run(env: dict[str, str]) -> None:
         raise ConfigError(f"mode must be upload or download, got {mode!r}")
     if retention not in RETENTION:
         raise ConfigError(f"retention must be one of {RETENTION}")
-    if not NAME_RE.match(name):
-        raise ConfigError(f"bad name {name!r}")
+    safe_component(name, "name")
     if not env.get("FA_ENDPOINT") or not env.get("FA_KEY"):
         if is_fork(env):
             msg = f"fleet-artifact {mode} {name} SKIPPED: fork pull request has no secrets by design"
@@ -333,6 +408,9 @@ def run(env: dict[str, str]) -> None:
     store = Store(env["FA_ENDPOINT"], env["FA_KEY"])
     bucket, prefix = object_prefix(env, mode == "download")
     required = env.get("FA_REQUIRED", "true").lower() == "true"
+    max_object = limit(env, "FA_MAX_OBJECT_BYTES", DEFAULT_MAX_OBJECT)
+    max_run = limit(env, "FA_MAX_RUN_BYTES", DEFAULT_MAX_RUN)
+    max_unpacked = limit(env, "FA_MAX_UNPACKED_BYTES", DEFAULT_MAX_UNPACKED)
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
         archive = tmp / "payload"
@@ -341,6 +419,15 @@ def run(env: dict[str, str]) -> None:
             if not paths:
                 raise StoreError(f"nothing matched {env['FA_PATH']!r}; no upload")
             suffix = pack(paths, archive)
+            packed = archive.stat().st_size
+            if packed > max_object:
+                raise LimitError(f"packed object is {packed} bytes; the per-object limit is {max_object}")
+            run_prefix = "/".join(prefix.split("/")[:3]) + "/"  # owner/repo/run_id/
+            used = store.list_size(bucket, run_prefix)
+            if used + packed > max_run:
+                raise LimitError(
+                    f"run already holds {used} bytes in {bucket}; adding {packed} exceeds the per-run limit {max_run}"
+                )
             digest = sha256_file(archive)
             key = f"{prefix}/{name}{suffix}"
             object_path = f"/{bucket}/{key}"
@@ -360,13 +447,17 @@ def run(env: dict[str, str]) -> None:
             object_path = f"/{bucket}/{key}"
             if not hmac.compare_digest(seal, store.seal(want, object_path)):
                 raise IntegrityError("sidecar HMAC mismatch: object or sidecar was altered")
+            got = 0
             with archive.open("wb") as fh:
                 for chunk in store.get(object_path):
+                    got += len(chunk)
+                    if got > max_object:
+                        raise LimitError(f"object exceeds the per-object limit {max_object}")
                     fh.write(chunk)
             digest = sha256_file(archive)
             if digest != want:
                 raise IntegrityError(f"sha256 mismatch: sidecar {want}, downloaded {digest}")
-            unpack(archive, Path(env["FA_PATH"].strip()), suffix)
+            unpack(archive, Path(env["FA_PATH"].strip()), suffix, max_unpacked)
         size = archive.stat().st_size
     if required and not digest:
         raise IntegrityError("empty digest")
@@ -393,7 +484,7 @@ def main() -> int:
         run(env)
     except FleetError as exc:
         message = f"fleet-artifact {env.get('FA_MODE')} {env.get('FA_NAME')} failed: {exc}"
-        fatal = required or not isinstance(exc, StoreError)
+        fatal = required or not isinstance(exc, StoreError)  # Config, Integrity and Limit errors are never downgraded
         print(f"::{'error' if fatal else 'warning'}::{message}")
         summary([f"### Fleet artifact {'FAILED' if fatal else 'WARNING'}: `{env.get('FA_NAME')}`", f"- {exc}"])
         return 1 if fatal else 0

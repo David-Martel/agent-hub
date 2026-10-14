@@ -36,6 +36,15 @@ inputs:
   repository:
     description: "download: owner/repo to fetch from (default: this repository)"
     default: ""
+  max-object-bytes:
+    description: "Per packed object limit in bytes (default 2147483648). Exceeding it always fails."
+    default: ""
+  max-run-bytes:
+    description: "Limit for everything this run already stored in the bucket plus this object (default 8589934592). Exceeding it always fails."
+    default: ""
+  max-unpacked-bytes:
+    description: "Download extraction limit in bytes (default 4294967296): decompression-bomb guard. Exceeding it always fails."
+    default: ""
   required:
     description: "true (default) fails the step on any store error; false only warns for store errors on pure diagnostics. Integrity violations always fail."
     default: "true"
@@ -66,6 +75,9 @@ runs:
         FA_JOB: ${{ inputs.job }}
         FA_REPOSITORY: ${{ inputs.repository }}
         FA_REQUIRED: ${{ inputs.required }}
+        FA_MAX_OBJECT_BYTES: ${{ inputs.max-object-bytes }}
+        FA_MAX_RUN_BYTES: ${{ inputs.max-run-bytes }}
+        FA_MAX_UNPACKED_BYTES: ${{ inputs.max-unpacked-bytes }}
         FA_CTX_FORK: ${{ github.event.pull_request.head.repo.fork }}
         FA_CTX_REPOSITORY: ${{ github.repository }}
         FA_CTX_RUN_ID: ${{ github.run_id }}

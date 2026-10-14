@@ -25,6 +25,7 @@ import tarfile
 import tempfile
 import threading
 import unittest
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from unittest import mock
@@ -43,11 +44,12 @@ def expected_signature(handler: BaseHTTPRequestHandler, secret: str) -> str:
     fields = dict(part.strip().split("=", 1) for part in auth.split(" ", 1)[1].split(","))
     signed = fields["SignedHeaders"].split(";")
     canon_headers = "".join(f"{n}:{handler.headers[n].strip()}\n" for n in signed)
+    path, _, query = handler.path.partition("?")
     canon = "\n".join(
         [
             handler.command,
-            handler.path,
-            "",
+            path,
+            query,
             canon_headers,
             fields["SignedHeaders"],
             handler.headers["x-amz-content-sha256"],
@@ -102,7 +104,19 @@ class FakeStore:
             def do_GET(self) -> None:
                 if not self._authorized():
                     return
-                body = outer.objects.get(self.path)
+                path, _, query = self.path.partition("?")
+                if "list-type=2" in query:
+                    bucket = path.strip("/")
+                    prefix = urllib.parse.unquote(dict(p.split("=", 1) for p in query.split("&")).get("prefix", ""))
+                    items = "".join(
+                        f"<Contents><Key>{k}</Key><Size>{len(v)}</Size></Contents>"
+                        for k, v in outer.objects.items()
+                        if k.startswith(f"/{bucket}/{prefix}")
+                    )
+                    xml = f"<ListBucketResult><IsTruncated>false</IsTruncated>{items}</ListBucketResult>"
+                    self._reply(200, xml.encode())
+                    return
+                body = outer.objects.get(path)
                 self._reply(200 if body is not None else 404, body or b"")
 
         self.server = HTTPServer(("127.0.0.1", 0), Handler)
@@ -318,6 +332,70 @@ class FailClosed(Base):
         for job in ("../escape", "a b", "", "x/y"):
             code, _out = self.main(self.env("upload", "out", FA_CTX_JOB=job))
             self.assertEqual(code, 1, job)
+
+
+class KeysAndLimits(Base):
+    def test_hostile_key_components_are_refused_on_upload_and_download(self) -> None:
+        self.populate()
+        hostile = ["..", "a..b", ".hidden", "-lead/slash", "x/y", "a b", "", "a" * 129, "\u00e9"]
+        for value in hostile:
+            for var in ("FA_CTX_JOB", "FA_CTX_RUN_ID", "FA_CTX_ATTEMPT"):
+                code, _out = self.main(self.env("upload", "out", FA_REQUIRED="false", **{var: value}))
+                self.assertEqual(code, 1, (var, value))
+            code, _out = self.main(self.env("upload", "out", FA_REQUIRED="false", FA_NAME=value))
+            self.assertEqual(code, 1, ("FA_NAME", value))
+            for var in ("FA_RUN_ID", "FA_ATTEMPT", "FA_JOB"):
+                code, _out = self.main(self.env("download", str(self.tmp / "r"), FA_REQUIRED="false", **{var: value}))
+                if value:  # empty download overrides fall back to the current run
+                    self.assertEqual(code, 1, (var, value))
+        for repo in ("../victim/repo", "owner/..", ".github/x", "owner/.hidden"):
+            code, _out = self.main(self.env("download", str(self.tmp / "r"), FA_REPOSITORY=repo))
+            self.assertEqual(code, 1, repo)
+        self.assertEqual(self.store.objects, {})
+
+    def test_object_size_limit_fails_even_when_not_required(self) -> None:
+        (self.work / "big.bin").write_bytes(os.urandom(200_000))
+        for required in ("true", "false"):
+            code, out = self.main(self.env("upload", "big.bin", FA_MAX_OBJECT_BYTES="50000", FA_REQUIRED=required))
+            self.assertEqual(code, 1, required)
+            self.assertIn("per-object limit", out)
+        self.assertEqual(self.store.objects, {})
+
+    def test_per_run_limit_counts_what_the_run_already_stored(self) -> None:
+        (self.work / "a.bin").write_bytes(os.urandom(60_000))
+        (self.work / "b.bin").write_bytes(os.urandom(60_000))
+        self.assertEqual(self.main(self.env("upload", "a.bin", FA_MAX_RUN_BYTES="100000"))[0], 0)
+        code, out = self.main(
+            self.env("upload", "b.bin", FA_NAME="second", FA_MAX_RUN_BYTES="100000", FA_REQUIRED="false")
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("per-run limit", out)
+        self.assertFalse(any("second" in k for k in self.store.objects))
+        self.assertEqual(self.main(self.env("upload", "b.bin", FA_NAME="second", FA_MAX_RUN_BYTES="1000000"))[0], 0)
+
+    def test_download_stops_at_the_object_limit(self) -> None:
+        (self.work / "big.bin").write_bytes(os.urandom(200_000))
+        self.assertEqual(self.main(self.env("upload", "big.bin"))[0], 0)
+        code, out = self.main(self.env("download", str(self.tmp / "r"), FA_MAX_OBJECT_BYTES="50000"))
+        self.assertEqual(code, 1)
+        self.assertIn("per-object limit", out)
+        self.assertFalse((self.tmp / "r" / "big.bin").exists())
+
+    def test_decompression_bomb_is_refused_before_extraction(self) -> None:
+        def build(tar: tarfile.TarFile) -> None:
+            info = tarfile.TarInfo("zeros.bin")
+            info.size = 40 << 20
+            tar.addfile(info, io.BytesIO(bytes(40 << 20)))
+
+        dest = self.plant_archive(build)
+        code, out = self.main(self.env("download", str(dest), FA_MAX_UNPACKED_BYTES="1000000", FA_REQUIRED="false"))
+        self.assertEqual(code, 1)
+        self.assertIn("unpacks to more than", out)
+        self.assertFalse((dest / "zeros.bin").exists())
+
+    def test_invalid_limit_value_is_a_configuration_error(self) -> None:
+        self.populate()
+        self.assertEqual(self.main(self.env("upload", "out", FA_MAX_OBJECT_BYTES="lots", FA_REQUIRED="false"))[0], 1)
 
 
 class HostileArchives(Base):
