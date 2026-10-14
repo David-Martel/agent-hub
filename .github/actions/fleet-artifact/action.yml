@@ -1,0 +1,69 @@
+# Vendored from David-Martel/vigil-utils .github/actions/fleet-artifact (PR 511). Keep in sync; see docs/ci/FLEET_ARTIFACT_STORE.md there.
+name: Fleet artifact
+description: >-
+  Upload or download a CI artifact on the fleet artifact store (S3-compatible, served by
+  asuspro13). Replaces actions/upload-artifact for diagnostics and large outputs, which
+  count against the exhausted GitHub artifact quota. Docs: docs/ci/FLEET_ARTIFACT_STORE.md.
+inputs:
+  mode:
+    description: "upload or download"
+    required: true
+  name:
+    description: Artifact name; also the object name <name>.tar.zst
+    required: true
+  path:
+    description: "upload: files/dirs to pack (newline separated, relative to the workspace). download: directory to extract into"
+    required: true
+  retention:
+    description: "Retention class: short (3 days), ci (30 days), release (kept; pruned only by the owner)"
+    default: ci
+  endpoint:
+    description: Store endpoint URL. Defaults to the FLEET_ARTIFACT_ENDPOINT repo/org variable.
+    default: ""
+  key:
+    description: "ACCESS:SECRET, normally secrets.FLEET_ARTIFACT_KEY"
+    default: ""
+  run-id:
+    description: "download: run id to fetch from (default: this run)"
+    default: ""
+  attempt:
+    description: "download: run attempt (default: this attempt)"
+    default: ""
+  job:
+    description: "download: job id to fetch from (default: this job)"
+    default: ""
+  repository:
+    description: "download: owner/repo to fetch from (default: this repository)"
+    default: ""
+  required:
+    description: "true makes a store failure fail the step; false (default) only warns, so a full or unreachable store never fails CI"
+    default: "false"
+outputs:
+  sha256:
+    description: sha256 of the packed object
+    value: ${{ steps.run.outputs.sha256 }}
+  location:
+    description: Fleet URL of the object
+    value: ${{ steps.run.outputs.location }}
+runs:
+  using: composite
+  steps:
+    - id: run
+      shell: bash
+      env:
+        FA_MODE: ${{ inputs.mode }}
+        FA_NAME: ${{ inputs.name }}
+        FA_PATH: ${{ inputs.path }}
+        FA_RETENTION: ${{ inputs.retention }}
+        FA_ENDPOINT: ${{ inputs.endpoint }}
+        FA_KEY: ${{ inputs.key }}
+        FA_RUN_ID: ${{ inputs.run-id }}
+        FA_ATTEMPT: ${{ inputs.attempt }}
+        FA_JOB: ${{ inputs.job }}
+        FA_REPOSITORY: ${{ inputs.repository }}
+        FA_REQUIRED: ${{ inputs.required }}
+        FA_CTX_REPOSITORY: ${{ github.repository }}
+        FA_CTX_RUN_ID: ${{ github.run_id }}
+        FA_CTX_ATTEMPT: ${{ github.run_attempt }}
+        FA_CTX_JOB: ${{ github.job }}
+      run: python3 "${{ github.action_path }}/fleet_artifact.py"

@@ -222,17 +222,41 @@ jobs:
           fi
           sha256sum agent-bus agent-bus-http agent-bus-mcp | tee artifact-sha256.txt
           cat build-provenance.txt artifact-sha256.txt >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v7
+      # Stored on the fleet artifact store (GitHub artifact quota is exhausted); see
+      # .github/actions/fleet-artifact. Nothing downloads these through download-artifact.
+      - name: Store release binaries on the fleet artifact store
+        id: fleet_release
+        uses: ./.github/actions/fleet-artifact
         with:
+          mode: upload
           name: agent-bus-${{ matrix.name }}
-          if-no-files-found: error
-          retention-days: 7
+          retention: short
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-mcp
             ${{ env.CARGO_TARGET_DIR }}/release/build-provenance.txt
             ${{ env.CARGO_TARGET_DIR }}/release/artifact-sha256.txt
+          endpoint: ${{ vars.FLEET_ARTIFACT_ENDPOINT }}
+          key: ${{ secrets.FLEET_ARTIFACT_KEY }}
+      - name: Verify the stored binaries by downloading them back
+        id: fleet_verify
+        if: steps.fleet_release.outputs.sha256 != ''
+        uses: ./.github/actions/fleet-artifact
+        with:
+          mode: download
+          name: agent-bus-${{ matrix.name }}
+          retention: short
+          path: ${{ runner.temp }}/fleet-artifact-verify
+          endpoint: ${{ vars.FLEET_ARTIFACT_ENDPOINT }}
+          key: ${{ secrets.FLEET_ARTIFACT_KEY }}
+          required: "true"
+      - name: Compare uploaded and downloaded digests
+        if: steps.fleet_release.outputs.sha256 != ''
+        env:
+          UPLOADED: ${{ steps.fleet_release.outputs.sha256 }}
+          DOWNLOADED: ${{ steps.fleet_verify.outputs.sha256 }}
+        run: test "$UPLOADED" = "$DOWNLOADED"
 
   smoke-functional:
     name: CLI And HTTP Smoke
