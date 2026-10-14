@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -327,7 +327,9 @@ pub struct FlushReport {
     pub dispositions: BTreeMap<Uuid, Disposition>,
 }
 
-/// Read-only view of a journal for disposition decisions after config moves.
+/// Locked read-only view for disposition decisions after configuration moves.
+///
+/// The exclusive file guard survives until this inspection is dropped.
 #[derive(Debug)]
 pub struct JournalInspection {
     /// Stored destination scope; `None` for an empty, never-bound file.
@@ -336,6 +338,23 @@ pub struct JournalInspection {
     pub origin_id: Option<Uuid>,
     /// Retained requests in durable order.
     pub pending: Vec<ReplayRequest>,
+    attempted: HashSet<Uuid>,
+    guard: LockedFile,
+}
+
+impl JournalInspection {
+    /// Only never-attempted expired requests have no unresolved replay effects.
+    pub(crate) fn can_retire_expired(&self, request: &ReplayRequest, now: u64) -> bool {
+        request.expires_ms != 0
+            && now >= request.expires_ms
+            && !self.attempted.contains(&request.request_id)
+    }
+
+    /// Retire the exact locked source without replacing an existing archive.
+    pub(crate) fn retire_to(&self, path: &Path, retired: &Path) -> Result<(), OutboxError> {
+        crate::outbox_private::retire(&self.guard, path, retired)
+            .map_err(|_sanitized| OutboxError::Custody)
+    }
 }
 
 /// Exclusive journal guard held through persistence and bounded transport calls.
@@ -349,6 +368,7 @@ pub struct Journal {
     pending: BTreeMap<u64, ReplayRequest>,
     poisoned: bool,
     attempted: HashSet<Uuid>,
+    source_path: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Journal {
@@ -361,6 +381,7 @@ impl std::fmt::Debug for Journal {
 }
 
 /// Unlock explicitly even if a cloned file/descriptor survives this owner.
+#[derive(Debug)]
 struct LockedFile(File);
 impl LockedFile {
     fn acquire(file: File) -> Result<Self, OutboxError> {
@@ -396,21 +417,28 @@ impl Journal {
     /// Custody failure, contention, corrupt journal or changed destination.
     pub fn open(path: &Path, destination: &str) -> Result<Self, OutboxError> {
         let file = crate::outbox_private::open(path).map_err(|_sanitized| OutboxError::Custody)?;
-        Self::from_private_file(file, destination)
+        Self::validate_destination(destination)?;
+        Self::load(file, Some(destination), Some(path)).map(|(journal, _)| journal)
     }
 
     /// Read or initialize an exclusively locked private append-only journal.
     ///
     /// # Errors
     /// Corrupt/truncated journal, foreign destination, lock contention or I/O.
+    #[cfg(test)]
     pub(crate) fn from_private_file(file: File, destination: &str) -> Result<Self, OutboxError> {
+        Self::validate_destination(destination)?;
+        Self::load(file, Some(destination), None).map(|(journal, _)| journal)
+    }
+
+    fn validate_destination(destination: &str) -> Result<(), OutboxError> {
         if destination.is_empty()
             || destination.len() > 256
             || destination.chars().any(char::is_control)
         {
             return Err(OutboxError::ScopeChanged);
         }
-        Self::load(file, Some(destination)).map(|(journal, _)| journal)
+        Ok(())
     }
 
     /// Report an existing journal's bound destination and retained requests.
@@ -418,33 +446,52 @@ impl Journal {
     /// Read-only: an absent header is reported as `None` and never written,
     /// and a destination differing from current configuration is not an
     /// error here, so an operator can decide its disposition.
+    /// The returned inspection retains the exclusive file lock until dropped.
     ///
     /// # Errors
     /// Custody failure, corrupt journal, lock contention or I/O.
     pub fn inspect(path: &Path) -> Result<JournalInspection, OutboxError> {
         let file = crate::outbox_private::open(path).map_err(|_sanitized| OutboxError::Custody)?;
-        Self::inspect_private_file(file)
+        let (journal, destination) = Self::load(file, None, Some(path))?;
+        Ok(Self::inspection(journal, destination))
     }
 
     /// [`Self::inspect`] on an already opened private file.
     ///
     /// # Errors
     /// Corrupt journal, lock contention or I/O.
+    #[cfg(test)]
     pub(crate) fn inspect_private_file(file: File) -> Result<JournalInspection, OutboxError> {
-        let (journal, destination) = Self::load(file, None)?;
-        Ok(JournalInspection {
+        let (journal, destination) = Self::load(file, None, None)?;
+        Ok(Self::inspection(journal, destination))
+    }
+
+    fn inspection(journal: Self, destination: Option<String>) -> JournalInspection {
+        JournalInspection {
             origin_id: destination.as_ref().map(|_| journal.origin_id),
             destination,
-            pending: journal.pending.values().cloned().collect(),
-        })
+            pending: journal.pending.into_values().collect(),
+            attempted: journal.attempted,
+            guard: journal.file,
+        }
     }
 
     /// Validate the complete sequence; `expected` binds (and initializes) the
     /// destination, while `None` only reports the stored one.
     // One bounded parser validates the complete sequence before accepting state.
     #[allow(clippy::too_many_lines)]
-    fn load(file: File, expected: Option<&str>) -> Result<(Self, Option<String>), OutboxError> {
+    fn load(
+        file: File,
+        expected: Option<&str>,
+        source_path: Option<&Path>,
+    ) -> Result<(Self, Option<String>), OutboxError> {
         let mut file = LockedFile::acquire(file)?;
+        // A descriptor opened before retirement can now refer to the archive.
+        // Validate only after locking, before even initializing an empty file.
+        if let Some(path) = source_path {
+            crate::outbox_private::validate_identity(&file, path)
+                .map_err(|_sanitized| OutboxError::Custody)?;
+        }
         if file.metadata()?.len() > JOURNAL_LIMIT {
             return Err(OutboxError::Capacity);
         }
@@ -461,6 +508,7 @@ impl Journal {
             pending: BTreeMap::new(),
             poisoned: false,
             attempted: HashSet::new(),
+            source_path: source_path.map(Path::to_owned),
         };
         let mut header_seen = false;
         let mut bound: Option<String> = None;
@@ -560,6 +608,10 @@ impl Journal {
     fn append(&mut self, event: &Event) -> Result<(), OutboxError> {
         if self.poisoned {
             return Err(OutboxError::Corrupt);
+        }
+        if let Some(path) = &self.source_path {
+            crate::outbox_private::validate_identity(&self.file, path)
+                .map_err(|_sanitized| OutboxError::Custody)?;
         }
         let sha256 = digest_hex(&serde_json::to_vec(event)?);
         let mut encoded =
@@ -1011,6 +1063,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![retained.request_id]
         );
+        drop(inspection);
         assert_eq!(std::fs::read(temp.path()).unwrap(), original);
 
         // An empty file has no binding yet and inspection must not create one.
@@ -1023,7 +1076,55 @@ mod tests {
         let inspection = Journal::inspect_private_file(file).unwrap();
         assert!(inspection.destination.is_none());
         assert!(inspection.pending.is_empty());
+        drop(inspection);
         assert_eq!(std::fs::read(empty.path()).unwrap(), b"");
+    }
+
+    #[test]
+    fn descriptor_opened_before_retirement_cannot_load_a_detached_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("private");
+        crate::outbox_private::create_directory(&parent).unwrap();
+        let path = parent.join("journal.jsonl");
+        drop(Journal::open(&path, "old-scope").unwrap());
+        let original = std::fs::read(&path).unwrap();
+        let stale = crate::outbox_private::open(&path).unwrap();
+        let inspection = Journal::inspect(&path).unwrap();
+        let retired = parent.join(format!(
+            "journal.retired-{}.jsonl",
+            inspection.origin_id.unwrap()
+        ));
+        inspection.retire_to(&path, &retired).unwrap();
+        drop(inspection);
+        drop(Journal::open(&path, "new-scope").unwrap());
+        let active = std::fs::read(&path).unwrap();
+        assert!(matches!(
+            Journal::load(stale, Some("old-scope"), Some(&path)),
+            Err(OutboxError::Custody)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), active);
+        assert_eq!(std::fs::read(&retired).unwrap(), original);
+        drop(crate::outbox_private::open(&retired).unwrap());
+    }
+
+    #[test]
+    fn detached_open_journal_cannot_append_into_an_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let parent = root.path().join("private");
+        crate::outbox_private::create_directory(&parent).unwrap();
+        let path = parent.join("journal.jsonl");
+        let archived = parent.join("moved-original.jsonl");
+        drop(Journal::open(&path, "old-scope").unwrap());
+        let original = std::fs::read(&path).unwrap();
+        let mut journal = Journal::open(&path, "old-scope").unwrap();
+        std::fs::rename(&path, &archived).unwrap();
+        assert!(matches!(
+            journal.enqueue(Operation::Send, ClientSurface::Cli, send("detached"), 100),
+            Err(OutboxError::Custody)
+        ));
+        drop(journal);
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&archived).unwrap(), original);
     }
 
     #[test]

@@ -302,7 +302,7 @@ pub fn status(settings: &Settings, path_override: Option<&Path>) -> Result<Value
         } else if inspection
             .pending
             .iter()
-            .all(|request| expired(request, now))
+            .all(|request| inspection.can_retire_expired(request, now))
         {
             "explicit"
         } else {
@@ -325,17 +325,11 @@ fn scope_prefix(scope: &str) -> &str {
     scope.get(..16).unwrap_or(scope)
 }
 
-/// Time-bounded requests (presence, claims) past their own expiry; sends and
-/// ACKs carry no expiry and never qualify.
-fn expired(request: &ReplayRequest, now: u64) -> bool {
-    request.expires_ms != 0 && now >= request.expires_ms
-}
-
 #[derive(Clone, Copy)]
 enum RetirePolicy {
     /// Only a journal with no retained requests (automatic, on write).
     SettledOnly,
-    /// Also retained requests that have all expired (explicit operator action).
+    /// Also requests that expired without an attempted replay (explicit action).
     ExpiredOnly,
 }
 
@@ -348,6 +342,16 @@ fn retire_previous_scope(
     scope: &str,
     now: u64,
     policy: RetirePolicy,
+) -> Result<Value> {
+    retire_previous_scope_with_hook(path, scope, now, policy, |_| {})
+}
+
+fn retire_previous_scope_with_hook(
+    path: &Path,
+    scope: &str,
+    now: u64,
+    policy: RetirePolicy,
+    before_move: impl FnOnce(&Path),
 ) -> Result<Value> {
     let inspection = Journal::inspect(path).map_err(|_sanitized| {
         AgentBusError::Internal("durable outbox inspection failed; preserve journal".to_owned())
@@ -367,14 +371,14 @@ fn retire_previous_scope(
         .iter()
         .filter(|request| match policy {
             RetirePolicy::SettledOnly => true,
-            RetirePolicy::ExpiredOnly => !expired(request, now),
+            RetirePolicy::ExpiredOnly => !inspection.can_retire_expired(request, now),
         })
         .map(|request| request.request_id.to_string())
         .collect::<Vec<_>>();
     if !blocking.is_empty() {
         return Err(AgentBusError::InvalidParams(format!(
             "outbox journal is bound to a previous hub candidate list (scope {}) and retains {} \
-             request(s) that are not expired: {}; replay them with the previous configuration \
+             request(s) that are unexpired or await replay settlement: {}; replay them with the previous configuration \
              (`agent-bus outbox flush`) or preserve the journal",
             scope_prefix(stored),
             blocking.len(),
@@ -390,7 +394,8 @@ fn retire_previous_scope(
             "retired outbox journal already exists; preserve both journals".to_owned(),
         ));
     }
-    std::fs::rename(path, &retired).map_err(|_sanitized| {
+    before_move(&retired);
+    inspection.retire_to(path, &retired).map_err(|_sanitized| {
         AgentBusError::Internal(
             "outbox journal could not be retired (in use?); preserve journal".to_owned(),
         )
@@ -404,11 +409,11 @@ fn retire_previous_scope(
 
 /// Explicitly retire a journal bound to a previous candidate list.
 ///
-/// Allowed when every retained request has expired; sends, ACKs and live
-/// leases refuse. A matching or absent journal is left untouched.
+/// Allowed when every retained request expired without attempted replay.
+/// Sends, ACKs and unresolved attempted requests refuse; matching scopes stay.
 ///
 /// # Errors
-/// Unexpired retained requests, custody/corruption, contention or rename failure.
+/// Unexpired/attempted requests, custody/corruption, contention or rename failure.
 pub fn rotate(settings: &Settings, path_override: Option<&Path>, now: u64) -> Result<Value> {
     let scope = candidates_fingerprint(&settings.effective_hub_candidates());
     let path = match path_override {
@@ -438,6 +443,15 @@ pub fn flush_pending<T: NativeReplayTransport>(
     transport: &T,
     path_override: Option<&Path>,
 ) -> Result<Value> {
+    flush_pending_with_hook(settings, transport, path_override, || {})
+}
+
+fn flush_pending_with_hook<T: NativeReplayTransport>(
+    settings: &Settings,
+    transport: &T,
+    path_override: Option<&Path>,
+    before_disposition: impl FnOnce(),
+) -> Result<Value> {
     let scope = candidates_fingerprint(&settings.effective_hub_candidates());
     let path = match path_override {
         Some(path) => path.to_owned(),
@@ -451,8 +465,16 @@ pub fn flush_pending<T: NativeReplayTransport>(
         // Nothing owed to the previous destination: retire it and report an
         // empty queue rather than a recovery state.
         Err(OutboxError::ScopeChanged) => {
-            retire_previous_scope(&path, &scope, now_ms()?, RetirePolicy::SettledOnly)?;
-            return Ok(json!({"remaining":0,"applied":0,"requests_submitted":0}));
+            before_disposition();
+            let disposition =
+                retire_previous_scope(&path, &scope, now_ms()?, RetirePolicy::SettledOnly)?;
+            if disposition["rotated"] == true {
+                return Ok(json!({"remaining":0,"applied":0,"requests_submitted":0}));
+            }
+            // Another caller can already have rebound the active journal and
+            // enqueued current-scope debt. Reopen once under custody and drain;
+            // contention or another scope move fails visibly rather than looping.
+            Journal::open(&path, &scope)
         }
         opened => opened,
     }
@@ -782,6 +804,254 @@ mod tests {
             rotate(&after_edit, Some(&path), presence.expires_ms).unwrap()["rotated"],
             false
         );
+    }
+
+    // Force the old-scope writer into the inspection-to-retirement interval.
+    // Losing that writer's newly queued request would strand durable debt.
+    #[test]
+    fn retirement_holds_inspection_custody_against_old_scope_enqueue() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        drop(Journal::open(&path, "old-scope").unwrap());
+        let original = std::fs::read(&path).unwrap();
+        let report = retire_previous_scope_with_hook(
+            &path,
+            "new-scope",
+            100,
+            RetirePolicy::SettledOnly,
+            |retired| {
+                assert!(!retired.exists());
+                let writer = Journal::open(&path, "old-scope").and_then(|mut journal| {
+                    journal.enqueue(
+                        Operation::Send,
+                        ClientSurface::Cli,
+                        args("intervening"),
+                        100,
+                    )
+                });
+                assert!(
+                    matches!(writer, Err(OutboxError::Busy)),
+                    "old-scope writer must not enqueue after retirement inspection"
+                );
+            },
+        )
+        .unwrap();
+        assert_eq!(report["rotated"], true);
+        let retired = retired_siblings(&path);
+        assert_eq!(retired.len(), 1);
+        assert_eq!(std::fs::read(&retired[0]).unwrap(), original);
+    }
+
+    #[test]
+    fn retirement_blocks_concurrent_rotation_before_new_active_can_be_moved() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        drop(Journal::open(&path, "old-scope").unwrap());
+        let original = std::fs::read(&path).unwrap();
+        retire_previous_scope_with_hook(&path, "new-scope", 100, RetirePolicy::SettledOnly, |_| {
+            assert!(
+                retire_previous_scope(&path, "competing-scope", 100, RetirePolicy::SettledOnly,)
+                    .is_err(),
+                "competing retirement must not move the inspected source"
+            );
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().len(),
+                original.len() as u64
+            );
+        })
+        .unwrap();
+        let mut new_active = Journal::open(&path, "new-scope").unwrap();
+        let pending = new_active
+            .enqueue(Operation::Send, ClientSurface::Cli, args("new active"), 101)
+            .unwrap();
+        drop(new_active);
+        let active = Journal::inspect(&path).unwrap();
+        assert_eq!(active.pending[0].request_id, pending.request_id);
+        let retired = retired_siblings(&path);
+        assert_eq!(retired.len(), 1);
+        assert_eq!(std::fs::read(&retired[0]).unwrap(), original);
+    }
+
+    #[test]
+    fn retirement_archive_collision_at_move_preserves_both_journals() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        drop(Journal::open(&path, "old-scope").unwrap());
+        let original = std::fs::read(&path).unwrap();
+        let collision = b"existing archive must survive";
+        let outcome = retire_previous_scope_with_hook(
+            &path,
+            "new-scope",
+            100,
+            RetirePolicy::SettledOnly,
+            |retired| {
+                let mut file = crate::outbox_private::open(retired).unwrap();
+                std::io::Write::write_all(&mut file, collision).unwrap();
+                file.sync_all().unwrap();
+            },
+        );
+        assert!(
+            outcome.is_err(),
+            "archive publication must never replace a collision"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        let retired = retired_siblings(&path);
+        assert_eq!(retired.len(), 1);
+        assert_eq!(std::fs::read(&retired[0]).unwrap(), collision);
+    }
+
+    #[test]
+    fn attempted_expired_presence_blocks_retirement_and_keeps_cached_repair_identity() {
+        struct Pending;
+        impl ReplayTransport for Pending {
+            fn replay(
+                &self,
+                _: &ReplayRequest,
+            ) -> std::result::Result<ReplayResponse, ReplayFailure> {
+                Ok(ReplayResponse::Pending)
+            }
+        }
+        struct Cached {
+            expected: uuid::Uuid,
+            calls: RefCell<Vec<uuid::Uuid>>,
+        }
+        impl ReplayTransport for Cached {
+            fn replay(
+                &self,
+                request: &ReplayRequest,
+            ) -> std::result::Result<ReplayResponse, ReplayFailure> {
+                assert_eq!(request.request_id, self.expected);
+                self.calls.borrow_mut().push(request.request_id);
+                Ok(ReplayResponse::Applied {
+                    result: json!({"cached_history_repair":true}),
+                })
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let before = authority_settings(&["http://localhost:8484"]);
+        let scope = candidates_fingerprint(&before.effective_hub_candidates());
+        let mut journal = Journal::open(&path, &scope).unwrap();
+        let request = journal
+            .enqueue(
+                Operation::Presence,
+                ClientSurface::Cli,
+                json!({"agent":"fixture","ttl_seconds":1})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                100,
+            )
+            .unwrap();
+        assert_eq!(journal.flush(&Pending, 100, 1).unwrap().remaining, 1);
+        drop(journal);
+        let original = std::fs::read(&path).unwrap();
+        let after = authority_settings(&["http://localhost:8485"]);
+        assert!(rotate(&after, Some(&path), request.expires_ms).is_err());
+        assert_eq!(status(&after, Some(&path)).unwrap()["rotation"], "blocked");
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert!(retired_siblings(&path).is_empty());
+        let mut journal = Journal::open(&path, &scope).unwrap();
+        let cached = Cached {
+            expected: request.request_id,
+            calls: RefCell::new(Vec::new()),
+        };
+        let repaired = journal.flush(&cached, request.expires_ms, 1).unwrap();
+        assert_eq!(
+            (repaired.applied, repaired.expired, repaired.remaining),
+            (1, 0, 0)
+        );
+        assert_eq!(*cached.calls.borrow(), vec![request.request_id]);
+    }
+
+    #[test]
+    fn retirement_source_replacement_preserves_original_and_new_active_debt() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        drop(Journal::open(&path, "old-scope").unwrap());
+        let original = std::fs::read(&path).unwrap();
+        let displaced = path.with_file_name("displaced-original.jsonl");
+        let retained_id = RefCell::new(None);
+        let outcome = retire_previous_scope_with_hook(
+            &path,
+            "new-scope",
+            100,
+            RetirePolicy::SettledOnly,
+            |_| {
+                std::fs::rename(&path, &displaced).unwrap();
+                let mut replacement = Journal::open(&path, "replacement-scope").unwrap();
+                let request = replacement
+                    .enqueue(
+                        Operation::Send,
+                        ClientSurface::Cli,
+                        args("replacement debt"),
+                        101,
+                    )
+                    .unwrap();
+                *retained_id.borrow_mut() = Some(request.request_id);
+            },
+        );
+        assert!(outcome.is_err(), "retirement must refuse a replaced source");
+        assert_eq!(std::fs::read(&displaced).unwrap(), original);
+        let active = Journal::inspect(&path).unwrap();
+        assert_eq!(active.destination.as_deref(), Some("replacement-scope"));
+        assert_eq!(active.pending[0].request_id, retained_id.borrow().unwrap());
+        assert_eq!(
+            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+            2
+        );
+    }
+
+    #[test]
+    fn flush_reopens_debt_created_after_scope_change_before_disposition() {
+        struct TrackedApplied(RefCell<Vec<uuid::Uuid>>);
+        impl NativeReplayTransport for TrackedApplied {
+            fn replay(
+                &self,
+                _url: &str,
+                _hub: &str,
+                request: &ReplayRequest,
+                _timeout: Duration,
+            ) -> std::result::Result<ReplayResponse, ReplayFailure> {
+                self.0.borrow_mut().push(request.request_id);
+                Ok(ReplayResponse::Applied {
+                    result: json!({"id":request.request_id}),
+                })
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        drop(Journal::open(&path, "old-scope").unwrap());
+        let settings = authority_settings(&["http://localhost:8485"]);
+        let scope = candidates_fingerprint(&settings.effective_hub_candidates());
+        let transport = TrackedApplied(RefCell::new(Vec::new()));
+        let retained_id = RefCell::new(None);
+        let report =
+            flush_pending_with_hook(&settings, &transport, Some(&path), || {
+                assert_eq!(
+                    retire_previous_scope(&path, &scope, 100, RetirePolicy::SettledOnly,).unwrap()
+                        ["rotated"],
+                    true
+                );
+                let mut current = Journal::open(&path, &scope).unwrap();
+                let request = current
+                    .enqueue(
+                        Operation::Send,
+                        ClientSurface::Cli,
+                        args("current-scope debt"),
+                        101,
+                    )
+                    .unwrap();
+                *retained_id.borrow_mut() = Some(request.request_id);
+            })
+            .unwrap();
+        assert_eq!(
+            report["applied"], 1,
+            "current-scope debt must be flushed before reporting empty"
+        );
+        assert_eq!(report["remaining"], 0);
+        assert_eq!(*transport.0.borrow(), vec![retained_id.borrow().unwrap()]);
+        assert!(Journal::inspect(&path).unwrap().pending.is_empty());
     }
 
     #[test]
