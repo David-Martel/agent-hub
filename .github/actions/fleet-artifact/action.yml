@@ -1,4 +1,5 @@
-# Vendored from David-Martel/vigil-utils .github/actions/fleet-artifact (PR 511). Keep in sync; see docs/ci/FLEET_ARTIFACT_STORE.md there.
+# Canonical source: David-Martel/vigil-utils .github/actions/fleet-artifact. Other repositories vendor this directory byte-identically;
+# compare with ci-runners/artifact-store/action-dir-sha.sh (recorded in each consumer PR). See docs/ci/FLEET_ARTIFACT_STORE.md.
 name: Fleet artifact
 description: >-
   Upload or download a CI artifact on the fleet artifact store (S3-compatible, served by
@@ -36,8 +37,8 @@ inputs:
     description: "download: owner/repo to fetch from (default: this repository)"
     default: ""
   required:
-    description: "true makes a store failure fail the step; false (default) only warns, so a full or unreachable store never fails CI"
-    default: "false"
+    description: "true (default) fails the step on any store error; false only warns for store errors on pure diagnostics. Integrity violations always fail."
+    default: "true"
 outputs:
   sha256:
     description: sha256 of the packed object
@@ -45,6 +46,9 @@ outputs:
   location:
     description: Fleet URL of the object
     value: ${{ steps.run.outputs.location }}
+  skipped:
+    description: '"true" only for the explicit fork-pull-request skip (no secrets by design); empty otherwise'
+    value: ${{ steps.run.outputs.skipped }}
 runs:
   using: composite
   steps:
@@ -62,6 +66,7 @@ runs:
         FA_JOB: ${{ inputs.job }}
         FA_REPOSITORY: ${{ inputs.repository }}
         FA_REQUIRED: ${{ inputs.required }}
+        FA_CTX_FORK: ${{ github.event.pull_request.head.repo.fork }}
         FA_CTX_REPOSITORY: ${{ github.repository }}
         FA_CTX_RUN_ID: ${{ github.run_id }}
         FA_CTX_ATTEMPT: ${{ github.run_attempt }}

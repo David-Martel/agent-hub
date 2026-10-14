@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
+# ruff: noqa: E501, RUF100  (formatted to the vigil-utils 120-column style; vendored copies must stay identical)
 """Upload/download a CI artifact on the fleet S3 store using only the standard library.
 
 The runner images carry python3, tar and curl but no aws CLI or rclone, so requests are
 signed here (AWS Signature V4, path style, UNSIGNED-PAYLOAD over the fleet-internal HTTP
 endpoint). Objects are <bucket>/<owner>/<repo>/<run_id>/<attempt>/<job>/<name>.tar.zst
 (.tar.gz when the runner has no zstd), plus a <name>.sha256 sidecar that download verifies.
+The sidecar carries an HMAC of the digest and object key under the store secret, so a payload
+or sidecar altered on the plain-HTTP channel is rejected by anyone who holds the key.
 Configuration arrives in FA_* environment variables; the key never appears in argv.
-"""
 
-# ruff: noqa: E501, RUF100  (formatted to the vigil-utils 120-column style; vendored copies must stay identical)
+Failure policy (fail closed):
+  * ConfigError and IntegrityError always fail the step: a bad name or key component, a digest or
+    HMAC mismatch, a hostile archive. Required or not.
+  * StoreError (endpoint unset, connection, PUT/GET error, missing object, nothing matched the
+    upload paths) fails the step when FA_REQUIRED is "true" and only warns (::warning::) otherwise.
+  * Missing credentials on a fork pull request (no secrets by design) is the one explicit skip:
+    a ::warning:: annotation, a step-summary entry and the output skipped=true.
+"""
 
 from __future__ import annotations
 
@@ -20,18 +29,38 @@ import http.client
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.parse
 from collections.abc import Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 RETENTION = ("short", "ci", "release")
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 PART_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 REGION = "us-east-1"
 CHUNK = 1 << 20
+MAX_UNPACKED = int(os.environ.get("FA_MAX_UNPACKED_BYTES", str(8 << 30)))
+MAX_MEMBERS = 200_000
+
+
+class FleetError(Exception):
+    """Base class; the subclasses decide whether `required: false` may downgrade the failure."""
+
+
+class ConfigError(FleetError):
+    """Bad input. Always fails."""
+
+
+class IntegrityError(FleetError):
+    """Digest, HMAC or archive-content violation. Always fails."""
+
+
+class StoreError(FleetError):
+    """The store or the inputs could not deliver. Fails when required, warns otherwise."""
 
 
 def _hmac(key: bytes, msg: str) -> bytes:
@@ -42,24 +71,18 @@ class Store:
     def __init__(self, endpoint: str, key: str) -> None:
         url = urllib.parse.urlsplit(endpoint)
         if url.scheme not in ("http", "https") or not url.hostname:
-            raise SystemExit(f"fleet-artifact: bad endpoint {endpoint!r}")
+            raise ConfigError(f"bad endpoint {endpoint!r}")
         self.tls = url.scheme == "https"
         self.host = url.netloc
-        self.base = endpoint.rstrip("/")
         access, sep, secret = key.partition(":")
         if not sep or not access or not secret:
-            raise SystemExit("fleet-artifact: key must be ACCESS:SECRET")
+            raise ConfigError("key must be ACCESS:SECRET")
         self.access, self.secret = access, secret
 
     def _sign(self, method: str, path: str, headers: dict[str, str]) -> dict[str, str]:
         now = datetime.datetime.now(datetime.timezone.utc)
         amz, day = now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
-        headers = {
-            **headers,
-            "host": self.host,
-            "x-amz-date": amz,
-            "x-amz-content-sha256": "UNSIGNED-PAYLOAD",
-        }
+        headers = {**headers, "host": self.host, "x-amz-date": amz, "x-amz-content-sha256": "UNSIGNED-PAYLOAD"}
         names = sorted(headers)
         canon_headers = "".join(f"{n}:{headers[n].strip()}\n" for n in names)
         signed = ";".join(names)
@@ -82,16 +105,19 @@ class Store:
         return cls(self.host, timeout=300)
 
     def put(self, path: str, src: Path) -> None:
-        size = src.stat().st_size
-        headers = self._sign("PUT", path, {"content-length": str(size)})
+        headers = self._sign("PUT", path, {"content-length": str(src.stat().st_size)})
         conn = self._conn()
-        with src.open("rb") as fh:
-            conn.request("PUT", urllib.parse.quote(path, safe="/-_.~"), body=fh, headers=headers)
-            resp = conn.getresponse()
-            body = resp.read(512)
-        conn.close()
+        try:
+            with src.open("rb") as fh:
+                conn.request("PUT", urllib.parse.quote(path, safe="/-_.~"), body=fh, headers=headers)
+                resp = conn.getresponse()
+                body = resp.read(512)
+        except (OSError, http.client.HTTPException) as exc:
+            raise StoreError(f"PUT {path}: {exc}") from exc
+        finally:
+            conn.close()
         if resp.status not in (200, 201):
-            raise OSError(f"PUT {path}: HTTP {resp.status} {body[:200]!r}")
+            raise StoreError(f"PUT {path}: HTTP {resp.status} {body[:200]!r}")
 
     def put_bytes(self, path: str, data: bytes) -> None:
         with tempfile.NamedTemporaryFile() as tmp:
@@ -102,18 +128,25 @@ class Store:
     def get(self, path: str) -> Iterator[bytes]:
         headers = self._sign("GET", path, {})
         conn = self._conn()
-        conn.request("GET", urllib.parse.quote(path, safe="/-_.~"), headers=headers)
-        resp = conn.getresponse()
-        if resp.status != 200:
-            body = resp.read(512)
+        try:
+            conn.request("GET", urllib.parse.quote(path, safe="/-_.~"), headers=headers)
+            resp = conn.getresponse()
+            if resp.status != 200:
+                body = resp.read(512)
+                raise StoreError(f"GET {path}: HTTP {resp.status} {body[:200]!r}")
+            while chunk := resp.read(CHUNK):
+                yield chunk
+        except (OSError, http.client.HTTPException) as exc:
+            raise StoreError(f"GET {path}: {exc}") from exc
+        finally:
             conn.close()
-            raise OSError(f"GET {path}: HTTP {resp.status} {body[:200]!r}")
-        while chunk := resp.read(CHUNK):
-            yield chunk
-        conn.close()
 
     def get_bytes(self, path: str) -> bytes:
         return b"".join(self.get(path))
+
+    def seal(self, digest: str, object_path: str) -> str:
+        """HMAC binding the digest to the object path under the store secret."""
+        return hmac.new(self.secret.encode(), f"{digest} {object_path}".encode(), hashlib.sha256).hexdigest()
 
 
 def sha256_file(path: Path) -> str:
@@ -136,11 +169,11 @@ def object_prefix(env: dict[str, str], download: bool) -> tuple[str, str]:
     ]
     for part in parts:
         if not PART_RE.match(part):
-            raise SystemExit(f"fleet-artifact: unsafe key component {part!r}")
+            raise ConfigError(f"unsafe key component {part!r}")
     return env["FA_RETENTION"], "/".join(parts)
 
 
-def summary(env: dict[str, str], lines: list[str]) -> None:
+def summary(lines: list[str]) -> None:
     target = os.environ.get("GITHUB_STEP_SUMMARY")
     if target:
         with open(target, "a", encoding="utf-8") as fh:
@@ -154,8 +187,17 @@ def emit_output(key: str, value: str) -> None:
             fh.write(f"{key}={value}\n")
 
 
+def allowed_roots() -> list[Path]:
+    roots = [Path.cwd()]
+    for var in ("GITHUB_WORKSPACE", "RUNNER_TEMP"):
+        if os.environ.get(var):
+            roots.append(Path(os.environ[var]))
+    return [r.resolve() for r in roots]
+
+
 def expand(patterns: list[str]) -> list[str]:
-    """Resolve upload patterns. `dir/**` packs the whole directory (hidden files included)."""
+    """Resolve upload patterns inside the workspace. `dir/**` packs the whole directory (hidden files included)."""
+    roots = allowed_roots()
     found: list[str] = []
     for raw in patterns:
         pattern = raw.strip()
@@ -164,7 +206,13 @@ def expand(patterns: list[str]) -> list[str]:
         matches = glob.glob(pattern, recursive=True)
         if not matches and os.path.lexists(pattern):
             matches = [pattern]
-        found.extend(m for m in matches if m not in found)
+        for match in matches:
+            # Resolve the parent only: a symlink member itself is stored as a link and checked on download.
+            resolved = (Path(match).parent.resolve() / Path(match).name) if Path(match).name else Path(match).resolve()
+            if not any(resolved == r or r in resolved.parents for r in roots):
+                raise ConfigError(f"path {match!r} resolves outside the workspace and runner temp directory")
+            if match not in found:
+                found.append(match)
     return found
 
 
@@ -173,71 +221,159 @@ def pack(paths: list[str], dest: Path) -> str:
     zstd = shutil.which("zstd")
     suffix = ".tar.zst" if zstd else ".tar.gz"
     comp = ["--use-compress-program", f"{zstd} -T0 -3"] if zstd else ["-z"]
-    subprocess.run(["tar", *comp, "-cf", str(dest), "--", *paths], check=True)
+    try:
+        subprocess.run(["tar", *comp, "-cf", str(dest), "--", *paths], check=True)
+    except subprocess.CalledProcessError as exc:
+        raise StoreError(f"tar failed ({exc.returncode})") from exc
     return suffix
 
 
+def _inside(base: Path, candidate: Path) -> bool:
+    return candidate == base or base in candidate.parents
+
+
+def validate_members(tar: tarfile.TarFile, dest: Path) -> list[tarfile.TarInfo]:
+    """Reject absolute paths, traversal, special files and any link that leaves `dest`."""
+    members = tar.getmembers()
+    if len(members) > MAX_MEMBERS:
+        raise IntegrityError(f"archive has {len(members)} members (limit {MAX_MEMBERS})")
+    total = 0
+    base = dest.resolve()
+    for m in members:
+        name = PurePosixPath(m.name)
+        if name.is_absolute() or ".." in name.parts or m.name.startswith("/") or ("\\" in m.name and ":" in m.name[:3]):
+            raise IntegrityError(f"unsafe member name {m.name!r}")
+        if not (m.isfile() or m.isdir() or m.issym() or m.islnk()):
+            raise IntegrityError(f"unsupported member type for {m.name!r}")
+        total += m.size if m.isfile() else 0
+        if total > MAX_UNPACKED:
+            raise IntegrityError(f"archive unpacks to more than {MAX_UNPACKED} bytes")
+        target = (base / m.name).resolve()
+        if not _inside(base, target):
+            raise IntegrityError(f"member {m.name!r} resolves outside the destination")
+        if m.issym():
+            link = PurePosixPath(m.linkname)
+            if link.is_absolute() or not _inside(base, ((base / m.name).parent / m.linkname).resolve()):
+                raise IntegrityError(f"symlink {m.name!r} -> {m.linkname!r} escapes the destination")
+        if m.islnk():
+            link = PurePosixPath(m.linkname)
+            if link.is_absolute() or ".." in link.parts or not _inside(base, (base / m.linkname).resolve()):
+                raise IntegrityError(f"hardlink {m.name!r} -> {m.linkname!r} escapes the destination")
+    return members
+
+
 def unpack(archive: Path, out: Path, suffix: str) -> None:
-    out.mkdir(parents=True, exist_ok=True)
-    comp = ["--use-compress-program", "zstd -d"] if suffix == ".tar.zst" else ["-z"]
-    subprocess.run(["tar", *comp, "-xf", str(archive), "-C", str(out)], check=True)
+    """Validate every member, extract into a private temp dir, re-check, then move into `out`."""
+    tmp_tar: Path | None = None
+    source = archive
+    try:
+        if suffix == ".tar.zst":
+            zstd = shutil.which("zstd")
+            if not zstd:
+                raise StoreError("zstd is required to read a .tar.zst object")
+            tmp_tar = archive.with_suffix(".tar")
+            with tmp_tar.open("wb") as fh:
+                subprocess.run([zstd, "-d", "-c", str(archive)], check=True, stdout=fh)
+            source = tmp_tar
+        out.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=".fleet-artifact-", dir=out))
+        try:
+            with tarfile.open(source, "r:*") as tar:
+                members = validate_members(tar, staging)
+                for m in members:
+                    m.mode &= ~(stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX)
+                    m.uid = m.gid = 0
+                    m.uname = m.gname = ""
+                try:
+                    tar.extractall(staging, members=members, filter="data")  # noqa: S202  members validated above
+                except TypeError:  # Python before the tarfile filter backport
+                    tar.extractall(staging, members=members)  # noqa: S202
+            base = staging.resolve()
+            for path in staging.rglob("*"):
+                if path.is_symlink() and not _inside(base, path.resolve()):
+                    raise IntegrityError(f"extracted link {path.name!r} escapes the destination")
+            for entry in sorted(staging.iterdir()):
+                target = out / entry.name
+                if target.is_symlink() or target.is_file():
+                    target.unlink()
+                elif target.is_dir():
+                    shutil.rmtree(target)
+                shutil.move(str(entry), str(target))
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    except (tarfile.TarError, subprocess.CalledProcessError, EOFError) as exc:
+        raise IntegrityError(f"archive unreadable: {exc}") from exc
+    finally:
+        if tmp_tar is not None:
+            tmp_tar.unlink(missing_ok=True)
+
+
+def is_fork(env: dict[str, str]) -> bool:
+    return env.get("FA_CTX_FORK", "").lower() == "true"
 
 
 def run(env: dict[str, str]) -> None:
     mode, name, retention = env["FA_MODE"], env["FA_NAME"], env["FA_RETENTION"]
     if mode not in ("upload", "download"):
-        raise SystemExit(f"fleet-artifact: mode must be upload or download, got {mode!r}")
+        raise ConfigError(f"mode must be upload or download, got {mode!r}")
     if retention not in RETENTION:
-        raise SystemExit(f"fleet-artifact: retention must be one of {RETENTION}")
+        raise ConfigError(f"retention must be one of {RETENTION}")
     if not NAME_RE.match(name):
-        raise SystemExit(f"fleet-artifact: bad name {name!r}")
+        raise ConfigError(f"bad name {name!r}")
     if not env.get("FA_ENDPOINT") or not env.get("FA_KEY"):
-        raise OSError("endpoint or key not configured (FLEET_ARTIFACT_ENDPOINT / FLEET_ARTIFACT_KEY)")
+        if is_fork(env):
+            msg = f"fleet-artifact {mode} {name} SKIPPED: fork pull request has no secrets by design"
+            print(f"::warning::{msg}")
+            summary(
+                [f"### Fleet artifact SKIPPED: `{name}`", "- fork pull request: no FLEET_ARTIFACT_KEY, nothing stored"]
+            )
+            emit_output("skipped", "true")
+            return
+        raise StoreError("endpoint or key not configured (FLEET_ARTIFACT_ENDPOINT / FLEET_ARTIFACT_KEY)")
     store = Store(env["FA_ENDPOINT"], env["FA_KEY"])
     bucket, prefix = object_prefix(env, mode == "download")
+    required = env.get("FA_REQUIRED", "true").lower() == "true"
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp = Path(tmpdir)
+        archive = tmp / "payload"
         if mode == "upload":
             paths = expand([p for p in env["FA_PATH"].splitlines() if p.strip()])
             if not paths:
-                print(f"::warning::fleet-artifact: nothing matched {env['FA_PATH']!r}; no upload")
-                return
-            archive = tmp / "payload"
+                raise StoreError(f"nothing matched {env['FA_PATH']!r}; no upload")
             suffix = pack(paths, archive)
             digest = sha256_file(archive)
             key = f"{prefix}/{name}{suffix}"
-            store.put(f"/{bucket}/{key}", archive)
-            store.put_bytes(f"/{bucket}/{prefix}/{name}.sha256", f"{digest}  {name}{suffix}\n".encode())
-            size = archive.stat().st_size
+            object_path = f"/{bucket}/{key}"
+            store.put(object_path, archive)
+            sidecar = f"{digest}  {name}{suffix}\nhmac {store.seal(digest, object_path)}\n"
+            store.put_bytes(f"/{bucket}/{prefix}/{name}.sha256", sidecar.encode())
         else:
-            found = None
-            for suffix in (".tar.zst", ".tar.gz"):
-                try:
-                    sidecar = store.get_bytes(f"/{bucket}/{prefix}/{name}.sha256").decode()
-                    want = sidecar.split()[0]
-                    if sidecar.split()[1] != f"{name}{suffix}":
-                        continue
-                    found = suffix
-                    break
-                except OSError:
-                    break
-            if found is None:
-                raise OSError(f"no object {bucket}/{prefix}/{name}.tar.* (or sidecar mismatch)")
-            suffix, key = found, f"{prefix}/{name}{found}"
-            archive = tmp / "payload"
+            lines = store.get_bytes(f"/{bucket}/{prefix}/{name}.sha256").decode(errors="replace").splitlines()
+            try:
+                want, fname = lines[0].split()
+                seal = lines[1].split()[1]
+            except (IndexError, ValueError) as exc:
+                raise IntegrityError("malformed sidecar") from exc
+            if fname not in (f"{name}.tar.zst", f"{name}.tar.gz"):
+                raise IntegrityError(f"sidecar names unexpected object {fname!r}")
+            suffix, key = fname[len(name) :], f"{prefix}/{fname}"
+            object_path = f"/{bucket}/{key}"
+            if not hmac.compare_digest(seal, store.seal(want, object_path)):
+                raise IntegrityError("sidecar HMAC mismatch: object or sidecar was altered")
             with archive.open("wb") as fh:
-                for chunk in store.get(f"/{bucket}/{key}"):
+                for chunk in store.get(object_path):
                     fh.write(chunk)
             digest = sha256_file(archive)
             if digest != want:
-                raise OSError(f"sha256 mismatch: sidecar {want}, downloaded {digest}")
+                raise IntegrityError(f"sha256 mismatch: sidecar {want}, downloaded {digest}")
             unpack(archive, Path(env["FA_PATH"].strip()), suffix)
-            size = archive.stat().st_size
+        size = archive.stat().st_size
+    if required and not digest:
+        raise IntegrityError("empty digest")
     location = f"{env['FA_ENDPOINT'].rstrip('/')}/{bucket}/{key}"
     emit_output("sha256", digest)
     emit_output("location", location)
     summary(
-        env,
         [
             f"### Fleet artifact ({mode}): `{name}`",
             f"- sha256: `{digest}`",
@@ -245,21 +381,25 @@ def run(env: dict[str, str]) -> None:
             f"- fleet path: `/srv/vigil-share/artifacts/ci/{bucket}/{key}` on asuspro13",
             f"- url: `{location}`",
             f"- retention: {retention}",
-        ],
+        ]
     )
     print(f"fleet-artifact {mode} ok: {name} sha256={digest} {location}")
 
 
 def main() -> int:
     env = dict(os.environ)
-    required = env.get("FA_REQUIRED", "false").lower() == "true"
+    required = env.get("FA_REQUIRED", "true").lower() == "true"
     try:
         run(env)
-    except (OSError, subprocess.CalledProcessError, http.client.HTTPException) as exc:
+    except FleetError as exc:
         message = f"fleet-artifact {env.get('FA_MODE')} {env.get('FA_NAME')} failed: {exc}"
-        print(f"::{'error' if required else 'warning'}::{message}")
-        summary(env, [f"### Fleet artifact FAILED: `{env.get('FA_NAME')}`", f"- {exc}"])
-        return 1 if required else 0
+        fatal = required or not isinstance(exc, StoreError)
+        print(f"::{'error' if fatal else 'warning'}::{message}")
+        summary([f"### Fleet artifact {'FAILED' if fatal else 'WARNING'}: `{env.get('FA_NAME')}`", f"- {exc}"])
+        return 1 if fatal else 0
+    except KeyError as exc:
+        print(f"::error::fleet-artifact missing input {exc}")
+        return 1
     return 0
 
 
