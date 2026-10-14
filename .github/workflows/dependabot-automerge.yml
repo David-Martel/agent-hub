@@ -116,12 +116,12 @@ jobs:
             raise SystemExit("PR metadata snapshot changed during inspection")
         emit("changed-files-json",json.dumps(files,separators=(",",":")))
         entries={}
-        subjects=[]
+        messages=[]
         for commit in commits:
             if commit.get("author",{}).get("login") != "dependabot[bot]":
                 raise SystemExit("non-Dependabot commit cannot supply merge metadata")
             message=commit.get("commit",{}).get("message","")
-            subjects.append(message.splitlines()[0] if message else "")
+            messages.append(message)
             block=re.search(r"(?m)^updated-dependencies:\n(.*?)(?:^\.\.\.$|\Z)",message,re.S)
             if block is None: raise SystemExit("commit lacks Dependabot dependency metadata")
             names=re.findall(r"(?m)^- dependency-name: ([A-Za-z0-9_./@:+-]+)$",block[1])
@@ -134,17 +134,30 @@ jobs:
         title=p.get("title","")
         # Versions only come from the verified single-dependency Dependabot title. Group titles
         # lack previous versions, so the existing policy holds them rather than guessing.
-        match=re.fullmatch(r"(?:[A-Za-z0-9_(): /-]+: )?[Bb]ump ([A-Za-z0-9_./@:+-]+) from (v?[0-9][0-9A-Za-z.+-]*) to (v?[0-9][0-9A-Za-z.+-]*)",title)
+        # A manifest outside the repository root adds " in /<directory>" to the title, and the
+        # commit subject then drops the versions ("bump uuid in /rust/x"); the versions are
+        # witnessed instead by the bot-authored body line "Bumps [uuid](<url>) from A to B.".
+        version=r"(v?[0-9][0-9A-Za-z.+-]*)"
+        directory=r"(?: in (/[A-Za-z0-9_./-]*))?"
+        match=re.fullmatch(r"(?:[A-Za-z0-9_(): /-]+: )?[Bb]ump ([A-Za-z0-9_./@:+-]+) from "+version+" to "+version+directory,title)
         if len(entries)==1 and (match is None or match[1] not in entries):
             raise SystemExit("single dependency title does not match commit metadata")
         group=re.search(r"\bbump(?:s)? (?:the )?(\S+) group\b",title,re.I)
         if len(entries)>1 and not group:
             raise SystemExit("group title does not match grouped metadata")
         if match and len(entries)==1:
-            for subject in subjects:
-                witness=re.fullmatch(r"(?:[A-Za-z0-9_(): /-]+: )?[Bb]ump ([A-Za-z0-9_./@:+-]+) from (v?[0-9][0-9A-Za-z.+-]*) to (v?[0-9][0-9A-Za-z.+-]*)",subject)
-                if witness is None or witness.groups()!=match.groups():
-                    raise SystemExit("PR title versions do not match bot-authored commit subject")
+            for message in messages:
+                subject=message.splitlines()[0] if message else ""
+                witness=re.fullmatch(r"(?:[A-Za-z0-9_(): /-]+: )?[Bb]ump ([A-Za-z0-9_./@:+-]+)(?: from "+version+" to "+version+")?"+directory,subject)
+                if witness is None or (witness[1],witness[4])!=(match[1],match[4]):
+                    raise SystemExit("PR title dependency or directory does not match bot-authored commit subject")
+                if witness[2] is not None:
+                    if (witness[2],witness[3])!=(match[2],match[3]):
+                        raise SystemExit("PR title versions do not match bot-authored commit subject")
+                    continue
+                bumps=re.findall(r"(?m)^Bumps (?:\[([A-Za-z0-9_./@:+-]+)\]\([^()\s]+\)|([A-Za-z0-9_./@:+-]+)) from "+version+" to "+version+r"\.$",message)
+                if [(linked or plain,prev,new) for linked,plain,prev,new in bumps]!=[(match[1],match[2],match[3])]:
+                    raise SystemExit("PR title versions do not match bot-authored commit body")
         emit("dependency-group",group[1] if len(entries)>1 else "")
         verified=[]
         if match and len(entries)==1:
@@ -258,9 +271,22 @@ jobs:
           group_unverified=true
         fi
         denied=false
-        # fetch-metadata joins names with ", "; split so every name meets the anchors.
-        if [[ -n "$DEP_NAMES" ]] && printf '%s\n' "$DEP_NAMES" | tr ',' '\n' | tr -d ' ' | grep -Eiq -- "$DENY_LIST_REGEX"; then
-          denied=true
+        # A caller's extra_deny_regex (EXTRA_DENY_REGEX) is ORed with the shared list.
+        extra_deny="${EXTRA_DENY_REGEX:-}"
+        deny_regex="$DENY_LIST_REGEX${extra_deny:+|$extra_deny}"
+        if [[ -n "$DEP_NAMES" ]]; then
+          # fetch-metadata joins names with ", "; split so every name meets the anchors. grep reads
+          # a here-string, not a pipe, and only status 1 means "no match": an invalid pattern
+          # (status 2) fails the job rather than silently admitting every dependency.
+          names=$(printf '%s\n' "$DEP_NAMES" | tr ',' '\n' | tr -d ' ')
+          deny_status=0
+          grep -Eiq -- "$deny_regex" <<< "$names" || deny_status=$?
+          if [[ "$deny_status" -eq 0 ]]; then
+            denied=true
+          elif [[ "$deny_status" -ne 1 ]]; then
+            echo "::error::deny-list pattern is not a valid extended regex; refusing to decide"
+            exit 1
+          fi
         fi
         decision=automerge
         reason=""
@@ -281,7 +307,7 @@ jobs:
           reason="grouped update ($DEP_GROUP) without per-dependency versions"
         elif [[ "$denied" == true ]]; then
           decision=hold
-          reason="deny-listed dependency ($DEP_NAMES matched $DENY_LIST_REGEX)"
+          reason="deny-listed dependency ($DEP_NAMES matched $deny_regex)"
         fi
         {
           echo "is_major=$is_major"
