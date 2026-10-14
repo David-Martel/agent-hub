@@ -6,9 +6,11 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${RUNNER_TEMP:-$PWD/.tmp}/agent-hub-target}"
-export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache/agent-hub}"
-export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4227}"
-export SCCACHE_REDIS_KEY_PREFIX="${SCCACHE_REDIS_KEY_PREFIX:-agent-hub:${RUNNER_ARCH:-unknown}:v1:}"
+export CARGO_INCREMENTAL=0
+# New version has a separate daemon endpoint and cache; leave old serving daemons alone.
+export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache/agent-hub/native-0.18}"
+export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4230}"
+export SCCACHE_REDIS_KEY_PREFIX="${SCCACHE_REDIS_KEY_PREFIX:-agent-hub:${RUNNER_ARCH:-unknown}:v2:}"
 export SCCACHE_REDIS_EXPIRATION="${SCCACHE_REDIS_EXPIRATION:-1209600}"
 
 # The Spark pair exposes an unauthenticated Redis cache only on its private
@@ -50,12 +52,18 @@ fi
 
 mkdir -p "$CARGO_TARGET_DIR" "$SCCACHE_DIR"
 
-expected_sccache_version="0.16.0"
+expected_sccache_version="0.18.0"
 install_sccache() {
   local target_triple archive_name release_url temp_dir expected actual result
   case "${RUNNER_ARCH:-}" in
-    X64) target_triple="x86_64-unknown-linux-musl" ;;
-    ARM64) target_triple="aarch64-unknown-linux-musl" ;;
+    X64)
+      target_triple="x86_64-unknown-linux-musl"
+      expected="45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
+      ;;
+    ARM64)
+      target_triple="aarch64-unknown-linux-musl"
+      expected="2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a"
+      ;;
     *)
       echo "warning: no pinned sccache artifact for RUNNER_ARCH=${RUNNER_ARCH:-unset}" >&2
       return 1
@@ -65,18 +73,22 @@ install_sccache() {
   release_url="https://github.com/mozilla/sccache/releases/download/v${expected_sccache_version}"
   temp_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/sccache-install.XXXXXX")"
   result=0
-  curl -fsSLo "$temp_dir/$archive_name" "$release_url/$archive_name" &&
-    curl -fsSLo "$temp_dir/$archive_name.sha256" "$release_url/$archive_name.sha256" &&
-    expected="$(tr -d '[:space:]' < "$temp_dir/$archive_name.sha256")" &&
+  curl --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 60 \
+    -fsSLo "$temp_dir/$archive_name" "$release_url/$archive_name" &&
     actual="$(sha256sum "$temp_dir/$archive_name" | awk '{print $1}')" &&
     [[ "$actual" == "$expected" ]] &&
     tar -xzf "$temp_dir/$archive_name" --strip-components=1 -C "$temp_dir" &&
-    install -m 0755 "$temp_dir/sccache" "$HOME/.local/bin/sccache" ||
+    install -m 0755 "$temp_dir/sccache" "$sccache_tools/sccache" ||
     result=$?
   rm -rf -- "$temp_dir"
   return "$result"
 }
 
+# Install only into this runner job's private tool directory. An upgrade must not
+# replace a serving cache executable in a host-wide .cargo/bin or .local/bin.
+sccache_tools="${RUNNER_TEMP:-$PWD/.tmp}/agent-hub-native-tools"
+mkdir -p "$sccache_tools"
+export PATH="$sccache_tools:$PATH"
 installed_sccache_version="$(
   sccache --version 2>/dev/null | awk '{print $2}' || true
 )"
@@ -85,35 +97,47 @@ if [[ "$installed_sccache_version" != "$expected_sccache_version" ]]; then
     echo "Installed pinned sccache $expected_sccache_version"
     hash -r
   else
-    echo "warning: unable to install pinned sccache $expected_sccache_version" >&2
+    echo "error: unable to install pinned sccache $expected_sccache_version" >&2
+    exit 1
   fi
 fi
 
+installed_sccache_version="$(sccache --version | awk '{print $2}')"
+if [[ "$installed_sccache_version" != "$expected_sccache_version" ]]; then
+  echo "error: sccache version differs from pinned $expected_sccache_version" >&2
+  exit 1
+fi
 if command -v sccache >/dev/null 2>&1; then
   # Remote/object-store settings, when used, belong in the runner service
   # environment. Do not place credentials in the workflow or repository.
-  # This repository uses a dedicated server port, so restarting cannot disrupt
-  # caches used by other repositories on the same fleet host.
-  sccache --stop-server >/dev/null 2>&1 || true
-  if sccache --start-server >/dev/null 2>&1 && sccache --show-stats >/dev/null 2>&1; then
+  # This repository uses a dedicated endpoint. Attach/start only: never stop a
+  # serving daemon because another job or owner may still be using it.
+  if python3 -B scripts/ci/native_cache_preflight.py \
+      --sccache "$(command -v sccache)" --rustc "$(rustup which rustc)" \
+      --directory "$CARGO_TARGET_DIR" --cache-directory "$SCCACHE_DIR" \
+      --version "$expected_sccache_version"; then
     RUSTC_WRAPPER="$(command -v sccache)"
     export RUSTC_WRAPPER
     echo "sccache enabled ($RUSTC_WRAPPER; cache directory $SCCACHE_DIR)"
   else
-    unset RUSTC_WRAPPER
-    echo "warning: sccache is unhealthy; continuing without a compiler wrapper" >&2
+    echo "error: pinned sccache is unhealthy; refusing uncached CI fallback" >&2
+    exit 1
   fi
 else
-  unset RUSTC_WRAPPER
-  echo "warning: sccache is not installed; continuing without a compiler wrapper" >&2
+  echo "error: required pinned sccache is unavailable" >&2
+  exit 1
 fi
 
 if [[ -n "${GITHUB_PATH:-}" ]]; then
+  # Actions prepends collected entries in reverse order on the next step.
+  # Publish the private qualified client last so inherited clients cannot win.
   printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+  printf '%s\n' "$HOME/.local/bin" "$sccache_tools" >> "$GITHUB_PATH"
 fi
 if [[ -n "${GITHUB_ENV:-}" ]]; then
   {
     printf 'CARGO_HOME=%s\n' "$CARGO_HOME"
+    printf 'CARGO_INCREMENTAL=%s\n' "$CARGO_INCREMENTAL"
     printf 'CARGO_TARGET_DIR=%s\n' "$CARGO_TARGET_DIR"
     printf 'SCCACHE_DIR=%s\n' "$SCCACHE_DIR"
     printf 'SCCACHE_SERVER_PORT=%s\n' "$SCCACHE_SERVER_PORT"

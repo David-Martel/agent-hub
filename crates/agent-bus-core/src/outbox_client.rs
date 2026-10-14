@@ -537,7 +537,7 @@ mod tests {
         let id = response["request_id"].as_str().unwrap().to_owned();
         drop(journal);
         assert_eq!(open_journal(&temp).pending().count(), 0);
-        assert!(!id.is_empty());
+        assert_ne!(id, "");
     }
 
     #[test]

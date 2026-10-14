@@ -40,15 +40,17 @@ env:
 jobs:
   format:
     name: Format Check
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, vigil1]
     steps:
       - uses: actions/checkout@v7
+      - run: python3 -B scripts/ci/toolchain_policy.py --verify-sources
       - run: bash scripts/ci/setup-rust.sh
+      - run: python3 -B scripts/ci/toolchain_policy.py --installed rust sccache
       - run: cargo fmt --all --check
 
   cloud-agentbus:
     name: Cloud Agentbus (TypeScript)
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, vigil1]
     # agent-hub#82: cloud/agentbus (the agentbus.dtmventures.com Cloudflare
     # Worker) had ZERO CI coverage before this — verified by grep, the
     # checks on 3aad635 were Rust-only. No `paths:` filter exists anywhere in
@@ -66,20 +68,22 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: "24"
+          node-version: "26.12.0"
+      - run: node --version
+      - run: bash ../../scripts/ci/setup-npm.sh
       - run: npm ci
       - run: npx tsc --noEmit
       - run: npm test
 
   lefthook-gates:
     name: Lefthook Gates Run
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, vigil1]
     # Fails if any lefthook command is skipped on a commit/push that changed
     # files it matches -- the "no files for inspection" dead gate that kept
     # fmt/clippy/test/audit from ever running here under `root: "."`.
     env:
-      LEFTHOOK_VERSION: "2.1.9"
-      LEFTHOOK_SHA256: e938f34bd05bafe1155888879a045ef4ee8cf5b4a56c9e5e9b0c2649f295636e
+      LEFTHOOK_VERSION: "2.2.2"
+      LEFTHOOK_SHA256: 2b8d7fd52771f26d7a50260ef10cd6fe704d66f60102e566362b84da09884ab7
     steps:
       - uses: actions/checkout@v7
       - name: Install pinned lefthook
@@ -100,7 +104,7 @@ jobs:
 
   clippy:
     name: Clippy Lint
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, vigil1]
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
@@ -110,7 +114,7 @@ jobs:
 
   test-unit:
     name: Unit Tests
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, vigil1]
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
@@ -180,7 +184,7 @@ jobs:
       matrix:
         include:
           - name: linux-x64
-            runner: '["self-hosted","Linux","X64"]'
+            runner: '["self-hosted","Linux","X64","vigil1"]'
           - name: linux-arm64-1
             runner: '["self-hosted","Linux","ARM64","fleet-build"]'
           - name: linux-arm64-2
@@ -203,6 +207,8 @@ jobs:
             printf 'rustc_wrapper=%s\n' "${RUSTC_WRAPPER:-disabled}"
             cargo --version
             rustc --version
+            printf '\nnative_cache_proof:\n'
+            cat "$CARGO_TARGET_DIR/native-cache-proof.json"
             if command -v sccache >/dev/null 2>&1; then
               command -v sccache
               sccache --version
@@ -265,7 +271,7 @@ jobs:
 
   audit:
     name: Security Audit
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, vigil1]
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
@@ -415,7 +421,7 @@ jobs:
 
   bench:
     name: Benchmark Compile
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: [self-hosted, Linux, X64, vigil1]
     needs: [test-unit]
     steps:
       - uses: actions/checkout@v7

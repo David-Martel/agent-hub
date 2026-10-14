@@ -1166,8 +1166,8 @@ mod tests {
         with_server_url_env(None, None, || {
             let s = Settings::from_env();
             assert!(s.redis_url.starts_with("redis://"));
-            assert!(!s.stream_key.is_empty());
-            assert!(!s.channel_key.is_empty());
+            assert_ne!(s.stream_key, "");
+            assert_ne!(s.channel_key, "");
             assert!(s.stream_maxlen > 0);
         });
     }
@@ -1503,8 +1503,11 @@ mod tests {
         with_server_url_env(None, None, || {
             let s = Settings::from_env();
             assert_eq!(s.server_url, None);
-            assert!(s.server_urls.is_empty());
-            assert!(s.hub_candidates.is_empty());
+            assert_eq!(s.server_urls, [] as [std::string::String; 0]);
+            assert_eq!(
+                s.hub_candidates,
+                [] as [crate::hub_candidates::HubCandidate; 0]
+            );
             assert_eq!(s.hub_config_error, None);
         });
     }
@@ -1692,7 +1695,7 @@ mod tests {
     fn server_urls_empty_means_local_only() {
         with_server_url_env(None, None, || {
             let s = Settings::from_env();
-            assert!(s.server_urls.is_empty());
+            assert_eq!(s.server_urls, [] as [std::string::String; 0]);
             assert!(s.server_url.is_none());
         });
     }
@@ -1732,7 +1735,7 @@ mod tests {
         };
         for raw in ["[]", "[\"\", \" \"]", "not-json"] {
             let (candidates, error) = resolve_candidate_tiers(&cfg, Some(raw), None, None);
-            assert!(candidates.is_empty());
+            assert_eq!(candidates, [] as [crate::hub_candidates::HubCandidate; 0]);
             assert!(
                 error.is_some(),
                 "{raw} must block local I/O rather than override the configured hub"
@@ -1771,7 +1774,7 @@ mod tests {
                     ..ConfigFile::default()
                 };
                 let (candidates, error) = resolve_candidate_settings(&cfg);
-                assert!(candidates.is_empty());
+                assert_eq!(candidates, [] as [crate::hub_candidates::HubCandidate; 0]);
                 assert!(error.is_some());
             }
         });

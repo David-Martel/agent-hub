@@ -1,5 +1,9 @@
 # Agent Bus - Active Roadmap
 
+Current cross-host reconciliation: [fleet reconciliation plan](docs/fleet-reconciliation.md).
+This plan records fresh clone, PR, runner and Cloudflare evidence separately from
+historical fleet acceptance below.
+
 Current Warp integration and deployment queue: [fleet completion ledger](docs/fleet-completion.md). Historical checkboxes below are not current rollout receipts.
 
 ## October 4 fleet handoff

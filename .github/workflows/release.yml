@@ -132,13 +132,15 @@ jobs:
       matrix:
         include:
           - name: linux-x64
-            runner: '["self-hosted","Linux","X64"]'
+            runner: '["self-hosted","Linux","X64","vigil1"]'
           - name: linux-arm64
             runner: '["self-hosted","Linux","ARM64","fleet-build"]'
     runs-on: ${{ fromJSON(matrix.runner) }}
     steps:
       - uses: actions/checkout@v7
+      - run: python3 -B scripts/ci/toolchain_policy.py --verify-sources
       - run: bash scripts/ci/setup-rust.sh
+      - run: python3 -B scripts/ci/toolchain_policy.py --installed rust sccache
 
       - name: Verify Cargo version matches tag
         shell: bash
@@ -174,6 +176,14 @@ jobs:
           for binary in agent-bus agent-bus-http agent-bus-mcp; do
             cp "$CARGO_TARGET_DIR/release/$binary" "dist/$binary-${{ matrix.name }}"
           done
+          {
+            printf 'commit=%s\nrunner=%s\nos=%s\narch=%s\n' \
+              "$GITHUB_SHA" "$RUNNER_NAME" "$RUNNER_OS" "$RUNNER_ARCH"
+            cargo --version
+            rustc --version
+            printf '\nnative_cache_proof:\n'
+            cat "$CARGO_TARGET_DIR/native-cache-proof.json"
+          } > "dist/BUILD-${{ matrix.name }}.txt"
           cd dist
           sha256sum ./* > "SHA256SUMS-${{ matrix.name }}"
 

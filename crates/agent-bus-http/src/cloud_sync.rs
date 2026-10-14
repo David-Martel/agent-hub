@@ -2005,7 +2005,10 @@ mod tests {
         // Applying pulled presence does not create local presence history, so
         // it can never be pushed back.
         e.tick().await.unwrap();
-        assert!(cloud.inner.lock().unwrap().pushed_presence.is_empty());
+        assert_eq!(
+            cloud.inner.lock().unwrap().pushed_presence,
+            Vec::<Vec<i64>>::new()
+        );
     }
 
     // ----- health ----------------------------------------------------------

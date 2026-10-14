@@ -1568,7 +1568,7 @@ mod tests {
             assert!(!exclude_broadcast);
             assert!(repo.is_none());
             assert!(session.is_none());
-            assert!(tag.is_empty());
+            assert_eq!(tag, [] as [std::string::String; 0]);
             assert!(thread_id.is_none());
             assert!(topic.is_none());
         } else {
@@ -2173,7 +2173,7 @@ mod tests {
             assert!(agent.is_none());
             assert!(repo.is_none());
             assert!(session.is_none());
-            assert!(tag.is_empty());
+            assert_eq!(tag, [] as [std::string::String; 0]);
             assert!(thread_id.is_none());
             assert_eq!(since_minutes, 60);
             assert_eq!(max_tokens, 4000);
@@ -2452,8 +2452,8 @@ mod tests {
             assert_eq!(priority, "normal");
             assert_eq!(created_by, "cli");
             assert!(repo.is_none());
-            assert!(tags.is_empty());
-            assert!(depends_on.is_empty());
+            assert_eq!(tags, [] as [std::string::String; 0]);
+            assert_eq!(depends_on, [] as [std::string::String; 0]);
             assert!(reply_to.is_none());
         } else {
             panic!("expected Cmd::PushTask");
@@ -2754,13 +2754,13 @@ mod tests {
         } = cli.command
         {
             assert_eq!(agent, "claude");
-            assert!(repo.is_empty());
-            assert!(session.is_empty());
-            assert!(thread.is_empty());
-            assert!(tag.is_empty());
-            assert!(topic.is_empty());
+            assert_eq!(repo, [] as [std::string::String; 0]);
+            assert_eq!(session, [] as [std::string::String; 0]);
+            assert_eq!(thread, [] as [std::string::String; 0]);
+            assert_eq!(tag, [] as [std::string::String; 0]);
+            assert_eq!(topic, [] as [std::string::String; 0]);
             assert!(priority_min.is_none());
-            assert!(resource.is_empty());
+            assert_eq!(resource, [] as [std::string::String; 0]);
             assert!(ttl.is_none());
         } else {
             panic!("expected Cmd::Subscribe");

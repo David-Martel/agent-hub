@@ -1120,7 +1120,7 @@ mod tests {
         let result = super::check_inbox_with_store(&mut store, &inbox_request(None, 1)).unwrap();
         assert_eq!(result.cursor_now, "2-0");
         assert_eq!(result.messages.len(), 1);
-        assert!(!result.messages[0].id.is_empty());
+        assert_ne!(result.messages[0].id, "");
     }
 
     #[test]
@@ -1203,11 +1203,14 @@ mod tests {
         let summary = aggregate_messages(&[]);
         assert_eq!(summary.agent_count, 0);
         assert_eq!(summary.message_count, 0);
-        assert!(summary.topic_histogram.is_empty());
-        assert!(summary.active_agents.is_empty());
+        assert_eq!(
+            summary.topic_histogram,
+            [] as [(std::string::String, usize); 0]
+        );
+        assert_eq!(summary.active_agents, [] as [std::string::String; 0]);
         assert!(summary.time_range.is_none());
         assert!(summary.severity_counts.is_empty());
-        assert!(summary.open_threads.is_empty());
+        assert_eq!(summary.open_threads, [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -1422,8 +1425,8 @@ mod tests {
         assert_eq!(summary.new_findings, 0);
         assert_eq!(summary.new_acks, 0);
         assert_eq!(summary.new_knocks, 0);
-        assert!(summary.presence_changes.is_empty());
-        assert!(summary.claim_changes.is_empty());
+        assert_eq!(summary.presence_changes, [] as [std::string::String; 0]);
+        assert_eq!(summary.claim_changes, [] as [std::string::String; 0]);
         assert_eq!(summary.since_cursor, Some("0-0".to_owned()));
         assert_eq!(summary.next_cursor, "0-0");
     }

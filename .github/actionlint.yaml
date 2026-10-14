@@ -6,3 +6,4 @@ self-hosted-runner:
     - local-build
     - docker-x64
     - windows-cross
+    - vigil1

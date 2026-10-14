@@ -462,7 +462,7 @@ mod tests {
     #[test]
     fn compact_context_empty_messages_returns_empty() {
         let result = compact_context(&[], 1000);
-        assert!(result.is_empty());
+        assert_eq!(result, [] as [serde_json::Value; 0]);
     }
 
     #[test]
