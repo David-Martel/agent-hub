@@ -8,7 +8,7 @@ endpoint). Objects are <bucket>/<owner>/<repo>/<run_id>/<attempt>/<job>/<name>.t
 Configuration arrives in FA_* environment variables; the key never appears in argv.
 """
 
-# ruff: noqa: E501  (formatted to the vigil-utils 120-column style; vendored copies must stay identical)
+# ruff: noqa: E501, RUF100  (formatted to the vigil-utils 120-column style; vendored copies must stay identical)
 
 from __future__ import annotations
 
