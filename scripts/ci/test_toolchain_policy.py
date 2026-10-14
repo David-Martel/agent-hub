@@ -52,18 +52,22 @@ class ToolchainPolicyTests(unittest.TestCase):
         )
         self.assertTrue(POLICY_MODULE.verify_sources(self.root, self.policy))
 
-    def test_unqualified_vigil1_cross_routing_fails(self):
+    def test_unqualified_vigil1_docker_or_windows_routing_fails(self):
         path = self.root / ".github/workflows/ci.yml"
-        path.write_text(
-            path.read_text().replace(
-                "Linux, X64, docker, windows-cross]",
-                "Linux, X64, docker, windows-cross, vigil1]",
-            )
-        )
-        self.assertIn(
-            "vigil1 cannot receive unqualified Docker or Windows jobs",
-            POLICY_MODULE.verify_sources(self.root, self.policy),
-        )
+        source = path.read_text()
+        for labels in (
+            "Windows, X64, agent-hub-native-smoke]",
+            "Linux, X64, docker]",
+        ):
+            with self.subTest(labels=labels):
+                self.assertIn(
+                    labels, source, "routing mutation must change the fixture"
+                )
+                path.write_text(source.replace(labels, labels[:-1] + ", vigil1]", 1))
+                self.assertIn(
+                    "vigil1 cannot receive unqualified Docker or Windows jobs",
+                    POLICY_MODULE.verify_sources(self.root, self.policy),
+                )
 
     def test_release_build_cannot_drift_back_to_generic_linux(self):
         path = self.root / ".github/workflows/release.yml"
