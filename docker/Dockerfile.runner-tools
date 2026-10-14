@@ -1,0 +1,83 @@
+# Source-controlled tools overlay on the qualified ASUS Windows cross image.
+# Building this image is not runner qualification or deployment.
+ARG QUALIFIED_BASE=sha256:78b794ebcd3287c8ce7a2dcf25ceb57b9a4a3846e9b78c59ab7e849a7271f740
+FROM ${QUALIFIED_BASE}
+ENV PATH="/home/runner/.cargo/bin:${PATH}"
+
+USER root
+RUN curl --fail --location --proto '=https' --tlsv1.2 \
+      --connect-timeout 10 --max-time 120 \
+      https://github.com/PowerShell/PowerShell/releases/download/v7.6.7/powershell-7.6.7-linux-x64.tar.gz \
+      --output /tmp/agent-hub-pwsh.tar.gz && \
+    echo '6896f9e3a6b0a354bf470835a96da76d2f801cd50dcf047ad7c4563bf93bf431  /tmp/agent-hub-pwsh.tar.gz' | sha256sum -c - && \
+    tar -xzf /tmp/agent-hub-pwsh.tar.gz -C /opt/microsoft/powershell/7 && \
+    chmod +x /opt/microsoft/powershell/7/pwsh && \
+    rm /tmp/agent-hub-pwsh.tar.gz
+
+RUN curl --fail --location --proto '=https' --tlsv1.2 \
+      --connect-timeout 10 --max-time 120 \
+      https://nodejs.org/dist/v26.12.0/node-v26.12.0-linux-x64.tar.xz \
+      --output /tmp/agent-hub-node.tar.xz && \
+    echo 'fd47865ecd6391ebb431fc815e01b9135bf83ded5cf373247e9331e196b7aded  /tmp/agent-hub-node.tar.xz' | sha256sum -c - && \
+    tar --no-same-owner -xJf /tmp/agent-hub-node.tar.xz --strip-components=1 -C /usr/local && \
+    rm /tmp/agent-hub-node.tar.xz && \
+    test "$(node --version)" = v26.12.0 && \
+    test "$(npm --version)" = 11.20.0
+
+# npm's stable release is newer than the bundled copy. Integrity binds its
+# registry archive; installation changes only this immutable image layer.
+RUN curl --fail --location --proto '=https' --tlsv1.2 \
+      --connect-timeout 10 --max-time 120 \
+      https://registry.npmjs.org/npm/-/npm-12.2.0.tgz --output /tmp/agent-hub-npm.tgz && \
+    node -e 'const fs=require("node:fs"),c=require("node:crypto"); const h="sha512-"+c.createHash("sha512").update(fs.readFileSync("/tmp/agent-hub-npm.tgz")).digest("base64"); if(h!=="sha512-ZsJjKpTnlmSXOLLXiU1xDCzC4Wlok4IwZmh/aw2KUuXytU7q6qMv/cUT7MoeSf95Slwuw/lRXYefGzGCspHPNQ==") process.exit(1)' && \
+    npm install --global --ignore-scripts --no-audit --no-fund /tmp/agent-hub-npm.tgz && \
+    rm /tmp/agent-hub-npm.tgz && test "$(npm --version)" = 12.2.0
+
+USER runner
+WORKDIR /home/runner
+RUN curl --fail --location --proto '=https' --tlsv1.2 \
+      --connect-timeout 10 --max-time 120 \
+      https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init \
+      --output /tmp/agent-hub-rustup-init && \
+    echo 'dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71  /tmp/agent-hub-rustup-init' | sha256sum -c - && \
+    chmod +x /tmp/agent-hub-rustup-init && \
+    /tmp/agent-hub-rustup-init -y --no-modify-path --default-toolchain none && \
+    rm /tmp/agent-hub-rustup-init && \
+    rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy \
+      --target x86_64-pc-windows-gnu --no-self-update && \
+    rustup default 1.99.0
+
+RUN curl --fail --location --proto '=https' --tlsv1.2 \
+      --connect-timeout 10 --max-time 120 \
+      https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz \
+      --output /tmp/agent-hub-sccache.tar.gz && \
+    echo '45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89  /tmp/agent-hub-sccache.tar.gz' | sha256sum -c - && \
+    mkdir -p /tmp/agent-hub-sccache && \
+    tar -xzf /tmp/agent-hub-sccache.tar.gz --strip-components=1 -C /tmp/agent-hub-sccache && \
+    install -m 0755 /tmp/agent-hub-sccache/sccache /home/runner/.cargo/bin/sccache && \
+    rm -rf /tmp/agent-hub-sccache /tmp/agent-hub-sccache.tar.gz
+
+WORKDIR /home/runner/actions-runner
+RUN curl --fail --location --proto '=https' --tlsv1.2 \
+      --connect-timeout 10 --max-time 120 \
+      https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz \
+      --output /tmp/agent-hub-runner.tar.gz && \
+    echo 'af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32  /tmp/agent-hub-runner.tar.gz' | sha256sum -c - && \
+    tar -xzf /tmp/agent-hub-runner.tar.gz -C /home/runner/actions-runner && \
+    rm /tmp/agent-hub-runner.tar.gz && \
+    test "$(rustc --version | cut -d ' ' -f 2)" = 1.99.0 && \
+    test "$(sccache --version)" = 'sccache 0.18.0' && \
+    test "$(pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()')" = 7.6.7 && \
+    test "$(./bin/Runner.Listener --version)" = 2.338.0
+
+# Provenance labels come after the tool layers so a new source label alone does
+# not download/reinstall the same checksum-bound tools. The base entrypoint
+# expects root and drops to runner after initialization; preserve that contract.
+USER root
+ARG SOURCE_REVISION
+ARG DOCKERFILE_SHA256
+RUN test "${#SOURCE_REVISION}" -eq 40 && \
+    printf '%s' "$SOURCE_REVISION" | grep -Eq '^[a-f0-9]{40}$' && \
+    printf '%s' "$DOCKERFILE_SHA256" | grep -Eq '^[a-f0-9]{64}$'
+LABEL org.opencontainers.image.revision="$SOURCE_REVISION" \
+      com.dtm.source.dockerfile-sha256="$DOCKERFILE_SHA256"
