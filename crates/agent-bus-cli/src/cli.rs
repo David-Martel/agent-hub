@@ -89,6 +89,12 @@ pub(crate) enum OutboxCmd {
         #[arg(long, default_value = "compact", value_enum)]
         encoding: Encoding,
     },
+    /// Retire a journal bound to a previous hub candidate list (renamed, never
+    /// deleted) when all of its retained requests have expired.
+    Rotate {
+        #[arg(long, default_value = "compact", value_enum)]
+        encoding: Encoding,
+    },
 }
 #[derive(Subcommand)]
 pub(crate) enum HistoryCmd {
