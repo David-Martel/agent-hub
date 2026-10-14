@@ -3019,11 +3019,11 @@ mod tests {
             &["-c", "printf dummy-private-output; while :; do :; done"],
             None,
             None,
-            std::time::Duration::from_millis(50),
-            std::time::Duration::from_millis(100),
+            deadline_scale::scaled(std::time::Duration::from_millis(50)),
+            deadline_scale::scaled(std::time::Duration::from_millis(100)),
         )
         .unwrap_err();
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(start.elapsed() < deadline_scale::scaled(std::time::Duration::from_secs(2)));
         let rendered = format!("{error:#}");
         assert!(rendered.contains("deadline"));
         assert!(rendered.contains("NOT_ESTABLISHED"));
@@ -3060,14 +3060,20 @@ mod tests {
         // no descendant lookup/kill or live service is involved.
         let error = run_external_with_budgets(
             "sh",
-            &["-c", "sleep 0.3 & printf dummy-private-output"],
+            &[
+                "-c",
+                &format!(
+                    "sleep {} & printf dummy-private-output",
+                    0.3 * f64::from(deadline_scale::scale())
+                ),
+            ],
             None,
             None,
-            std::time::Duration::from_millis(50),
-            std::time::Duration::from_millis(50),
+            deadline_scale::scaled(std::time::Duration::from_millis(50)),
+            deadline_scale::scaled(std::time::Duration::from_millis(50)),
         )
         .unwrap_err();
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(start.elapsed() < deadline_scale::scaled(std::time::Duration::from_secs(2)));
         let rendered = format!("{error:#}");
         assert!(rendered.contains("NOT_ESTABLISHED"));
         assert!(!rendered.contains("dummy-private-output"));
