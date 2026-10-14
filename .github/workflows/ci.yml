@@ -236,32 +236,34 @@ jobs:
 
   smoke-functional:
     name: CLI And HTTP Smoke
-    # Wine run of the GNU-target Windows artifacts on the Linux windows-cross lane. It proves
-    # the .exe starts and talks to owned Redis/PostgreSQL fixtures under Wine, not native
-    # Windows behaviour; the native check is the manual windows-native job below.
-    runs-on: [self-hosted, Linux, X64, docker, windows-cross]
+    # The strict private outbox ACL contract requires native Windows. This
+    # fleet runner owns a local Linux-container Docker daemon for fixtures.
+    runs-on: [self-hosted, Windows, X64, agent-hub-native-smoke]
     needs: [windows]
     timeout-minutes: 30
-    env:
-      WINEDEBUG: "-all"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
           name: agent-bus-windows-x64
           path: ci-artifacts/windows-x64
-      - name: Verify qualified cross runner and strict cache
+      - name: Verify downloaded native artifact hashes
         shell: pwsh
-        run: ./scripts/ci/setup-windows-cross.ps1
-      - name: Run functional smoke harness under Wine
         run: |
-          set -euo pipefail
-          : "${AGENT_BUS_CI_RUNNER_CONTAINER_ID:?qualified full runner container ID required}"
-          python3 -B scripts/ci/isolated-services.py smoke --wine \
-            --fixture-network runner-container \
-            --network-container "$AGENT_BUS_CI_RUNNER_CONTAINER_ID" \
-            --cli "$PWD/ci-artifacts/windows-x64/agent-bus.exe" \
+          $root = Join-Path $PWD 'ci-artifacts/windows-x64'
+          $manifest = Get-Content (Join-Path $root 'artifact-sha256.json') -Raw | ConvertFrom-Json
+          if ($manifest.revision -cne $env:GITHUB_SHA -or $manifest.target -cne 'x86_64-pc-windows-msvc') { throw 'Native artifact provenance mismatch' }
+          foreach ($name in @('agent-bus.exe', 'agent-bus-http.exe', 'agent-bus-mcp.exe')) {
+            $actual = (Get-FileHash (Join-Path $root $name)).Hash.ToLowerInvariant()
+            if ($actual -cne $manifest.binaries.$name) { throw "Native artifact hash mismatch: $name" }
+          }
+      - name: Native CLI and HTTP against owned disposable fixtures
+        shell: pwsh
+        run: |
+          python -B scripts/ci/isolated-services.py smoke `
+            --cli "$PWD/ci-artifacts/windows-x64/agent-bus.exe" `
             --http "$PWD/ci-artifacts/windows-x64/agent-bus-http.exe"
+          if ($LASTEXITCODE -ne 0) { throw 'Owned native functional smoke failed' }
 
   audit:
     name: Security Audit
@@ -275,119 +277,94 @@ jobs:
 
   windows:
     name: Windows Build And Unit Tests
-    # Cross-compiled on Linux for x86_64-pc-windows-gnu (mingw-w64) and tested under Wine on
-    # the windows-cross lane. This is GNU-ABI cross-target evidence, not native Windows
-    # acceptance; native validation is the manual windows-native job.
-    runs-on: [self-hosted, Linux, X64, docker, windows-cross]
+    # Wine 11 drops SE_DACL_PROTECTED and adds a SYSTEM ACE when reopening a
+    # directory. Run the unchanged strict ACL controls on actual Windows.
+    runs-on: windows-latest
     timeout-minutes: 60
     env:
-      WINDOWS_TARGET: x86_64-pc-windows-gnu
-      CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUNNER: wine
-      WINEDEBUG: "-all"
+      CARGO_BUILD_JOBS: '2'
     steps:
       - uses: actions/checkout@v7
-      - name: Validate cross setup refusal and client deadlines
-        timeout-minutes: 4
+      - name: Install hash-verified hosted sccache
         shell: pwsh
-        run: ./scripts/ci/test-setup-windows-cross.ps1
-      - name: Verify qualified cross runner, pinned compiler and strict cache
-        shell: pwsh
-        run: ./scripts/ci/setup-windows-cross.ps1
-      - run: cargo fmt --all --check
-      # Same strictness as the Linux clippy job: cfg(windows) code is only
-      # linted here, so a warning in it must fail this job.
-      - name: Strict Windows Clippy without shared cache
-        timeout-minutes: 25
-        env:
-          RUSTC_WRAPPER: ""
-        run: cargo clippy --target "$WINDOWS_TARGET" --workspace --all-targets -- -D warnings
-      # The per-step limits bound a Wine hang (an unexplained one was seen once on a
-      # paused-time tokio test); a stuck step fails instead of consuming the job budget.
-      - name: Unit tests under Wine
-        timeout-minutes: 15
-        run: python3 scripts/ci/wine_job.py units
-      - name: Release build
-        timeout-minutes: 25
-        run: cargo build --target "$WINDOWS_TARGET" --release --workspace --bins
-      - name: Executables run under Wine at the expected revision
-        timeout-minutes: 5
-        run: |
-          python3 scripts/ci/wine_job.py versions \
-            --binary "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus.exe" \
-            --binary "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus-http.exe" \
-            --wine-version-file "$RUNNER_TEMP/wine-version.txt"
-      - name: Validate configured shipping GNU MCP executable
-        timeout-minutes: 10
+        run: ./scripts/ci/install-hosted-windows-sccache.ps1
+      - name: Initialize MSVC compiler environment
         shell: pwsh
         run: |
-          $release = Join-Path $env:CARGO_TARGET_DIR "$env:WINDOWS_TARGET/release"
-          ./scripts/test-agent-client-config-validator.ps1 -WineTestLauncher `
-            -CliPath (Join-Path $release 'agent-bus.exe') `
-            -McpBinaryPath (Join-Path $release 'agent-bus-mcp.exe')
-      - run: python3 -B -m unittest discover -s scripts/ci -p "test_*.py"
-      - name: Validate concurrent build helper behavior
-        timeout-minutes: 10
+          $vswhere = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
+          $installation = (& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+          if (-not $installation) { throw 'MSVC build tools unavailable' }
+          & (Join-Path $installation 'Common7/Tools/Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+          foreach ($name in @('PATH', 'INCLUDE', 'LIB', 'LIBPATH')) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ([string]::IsNullOrWhiteSpace($value)) { throw "MSVC environment missing: $name" }
+            "$name=$value" | Add-Content $env:GITHUB_ENV -Encoding utf8
+          }
+      - name: Verify pinned Rust and strict native compiler cache
+        shell: pwsh
+        run: ./scripts/ci/setup-rust.ps1
+      - name: Isolation harness regressions
+        run: python -B -m unittest discover -s scripts/ci -p 'test_*.py'
+      - name: Native concurrent build helper controls
         shell: pwsh
         run: ./scripts/test-rust-build-common.ps1
-      - name: Validate fleet manifest and doctor fixtures
-        timeout-minutes: 10
+      - name: Native fleet manifest and doctor controls
         shell: pwsh
         run: ./scripts/test-agent-bus-fleet-fixtures.ps1
-      - name: Validate functional smoke isolation and cleanup
-        timeout-minutes: 10
+      - name: Native functional isolation controls
         shell: pwsh
         run: ./scripts/test-agent-bus-functional-isolation.ps1
-      - name: Validate published Redis readiness behavior
-        timeout-minutes: 10
+      - name: Native disposable Redis readiness controls
         shell: pwsh
         run: ./scripts/test-disposable-redis-ready.ps1
-      - name: Record Wine-validated release provenance
+      - run: cargo fmt --all --check
+      - name: Strict native Windows Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: All isolated native Windows tests including ACL controls
+        # Unoptimized Clap generates a ~2 MiB parser frame. Match the measured
+        # CargoTools test-thread capacity; keep release/runtime settings intact.
+        env:
+          RUST_MIN_STACK: '8388608'
+        shell: bash
+        run: bash scripts/test-agent-bus-isolated.sh
+      - name: Release native Windows binaries
+        run: cargo build --locked --release --workspace --bins
+      - name: Validate configured shipping native MCP executable
+        shell: pwsh
         run: |
-          set -euo pipefail
-          release="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release"
-          {
-            echo "commit=$GITHUB_SHA"
-            echo "runner=$RUNNER_NAME"
-            echo "host_os=$RUNNER_OS"
-            echo "host_arch=$RUNNER_ARCH"
-            echo "target=$WINDOWS_TARGET"
-            echo "abi=gnu"
-            echo "validation=wine"
-            cat "$RUNNER_TEMP/wine-version.txt"
-            echo "native_windows_validated=false"
-            echo "cargo_target_dir=$CARGO_TARGET_DIR"
-            echo "rustc_wrapper=${RUSTC_WRAPPER:-}"
-            echo "runner_container_id=$AGENT_BUS_CI_RUNNER_CONTAINER_ID"
-            echo "runner_image_id=$AGENT_HUB_WINDOWS_CROSS_IMAGE_ID"
-            echo "runner_image_source_revision=$AGENT_HUB_WINDOWS_CROSS_IMAGE_SOURCE_REVISION"
-            echo "runner_dockerfile_sha256=$AGENT_HUB_WINDOWS_CROSS_IMAGE_DOCKERFILE_SHA256"
-            echo "configured_shipping_mcp_validation=wine-17-tools"
-            echo "native_windows_dll_validation=not-tested"
-            cargo --version
-            rustc --version
-            x86_64-w64-mingw32-gcc --version | head -1
-            echo "cross_toolchain_and_cache_proof:"
-            cat "$CARGO_TARGET_DIR/cross-toolchain-proof.json"
-            echo "post_build_cache_stats:"
-            "$RUSTC_WRAPPER" --show-stats --stats-format=json
-            for binary in agent-bus agent-bus-http agent-bus-mcp; do
-              echo "pe_imports_binary=$binary.exe"
-              x86_64-w64-mingw32-objdump -p "$release/$binary.exe" | sed -n 's/^[[:space:]]*DLL Name: /dll=/p'
-            done
-          } > "$release/build-provenance.txt"
-          (cd "$release" && sha256sum agent-bus.exe agent-bus-http.exe agent-bus-mcp.exe) > "$release/artifact-sha256.txt"
-          cat "$release/build-provenance.txt" "$release/artifact-sha256.txt" >> "$GITHUB_STEP_SUMMARY"
+          # CLI `serve` delegates through PATH. Bind it to this artifact pair,
+          # never another installed MCP executable on the runner.
+          $release = Join-Path $env:CARGO_TARGET_DIR 'release'
+          $env:PATH = "$release$([IO.Path]::PathSeparator)$env:PATH"
+          ./scripts/test-agent-client-config-validator.ps1 `
+            -CliPath (Join-Path $env:CARGO_TARGET_DIR 'release/agent-bus.exe') `
+            -McpBinaryPath (Join-Path $env:CARGO_TARGET_DIR 'release/agent-bus-mcp.exe')
+      - name: Record native release identity and hashes
+        shell: pwsh
+        run: |
+          $release = Join-Path $env:CARGO_TARGET_DIR 'release'
+          $hashes = [ordered]@{}
+          foreach ($name in @('agent-bus.exe', 'agent-bus-http.exe', 'agent-bus-mcp.exe')) {
+            $hashes[$name] = (Get-FileHash (Join-Path $release $name)).Hash.ToLowerInvariant()
+          }
+          foreach ($name in @('agent-bus.exe', 'agent-bus-http.exe')) {
+            $version = (& (Join-Path $release $name) --version | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or $version -notmatch [regex]::Escape($env:GITHUB_SHA.Substring(0, 12))) { throw "Native revision mismatch: $name" }
+          }
+          [ordered]@{ revision = $env:GITHUB_SHA; target = 'x86_64-pc-windows-msvc'; validation = 'native-windows'; runner = $env:RUNNER_NAME; binaries = $hashes } |
+            ConvertTo-Json -Depth 4 | Set-Content (Join-Path $release 'artifact-sha256.json') -Encoding utf8NoBOM
+          & $env:RUSTC_WRAPPER --show-stats --stats-format=json
+          if ($LASTEXITCODE -ne 0) { throw 'Native cache counters unavailable' }
       - uses: actions/upload-artifact@v7
         with:
           name: agent-bus-windows-x64
           if-no-files-found: error
           retention-days: 7
           path: |
-            ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-gnu/release/agent-bus.exe
-            ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-gnu/release/agent-bus-http.exe
-            ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-gnu/release/agent-bus-mcp.exe
-            ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-gnu/release/build-provenance.txt
-            ${{ env.CARGO_TARGET_DIR }}/x86_64-pc-windows-gnu/release/artifact-sha256.txt
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-mcp.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/artifact-sha256.json
 
   windows-native:
     name: Windows Native Validation (manual)

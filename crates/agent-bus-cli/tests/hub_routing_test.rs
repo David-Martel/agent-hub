@@ -332,6 +332,8 @@ fn isolated_config_path(label: &str) -> std::path::PathBuf {
 /// config file. Never touches a real backend of any kind.
 fn isolated_agent_bus(label: &str) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
+    // Parallel fixtures need bounded child pools, not one pool per host CPU.
+    cmd.env("TOKIO_WORKER_THREADS", "2");
     cmd.env("AGENT_BUS_CONFIG", isolated_config_path(label));
     cmd.env_remove("AGENT_BUS_SERVER_URL");
     cmd.env_remove("AGENT_BUS_SERVER_URLS");

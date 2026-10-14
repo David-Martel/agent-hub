@@ -78,34 +78,43 @@ foreach ($forbiddenDaemonMutation in @("--stop-server", "--start-server", "--zer
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $workflowText = Get-Content -LiteralPath (Join-Path $repoRoot ".github/workflows/ci.yml") -Raw
-function Assert-AgentBusCrossClippyStep {
+function Assert-AgentBusNativeWindowsClippyStep {
     param([Parameter(Mandatory)][string]$Workflow)
-    $step = [regex]::Match($Workflow,
-        '(?m)^      - name: Strict Windows Clippy without shared cache\r?\n        timeout-minutes: 25\r?\n        env:\r?\n          RUSTC_WRAPPER: "(?<wrapper>[^"\r\n]*)"\r?\n        run: (?<command>[^\r\n]+)\r?\n')
-    if (-not $step.Success) { throw 'Expected strict GNU Windows Clippy step was not found.' }
-    if ($step.Groups['wrapper'].Value -cne '') { throw 'GNU Windows Clippy must disable the cache wrapper.' }
-    if ($step.Groups['command'].Value -cne 'cargo clippy --target "$WINDOWS_TARGET" --workspace --all-targets -- -D warnings') {
-        throw 'GNU Windows Clippy target or strict warning flags differ.'
+    $job = [regex]::Match($Workflow,
+        '(?ms)^  windows:\r?\n(?<body>.*?)(?=^  [A-Za-z0-9_-]+:\r?$|\z)')
+    if (-not $job.Success) { throw 'Native Windows Clippy job was not found.' }
+    $runner = [regex]::Matches($job.Groups['body'].Value,
+        '(?m)^    runs-on: (?<runner>[^\r\n]+)\r?$')
+    if ($runner.Count -ne 1 -or $runner[0].Groups['runner'].Value -cne 'windows-latest') {
+        throw 'Native Windows Clippy requires the hosted Windows runner.'
+    }
+    $steps = [regex]::Matches($job.Groups['body'].Value,
+        '(?m)^      - name: Strict native Windows Clippy\r?\n        run: (?<command>[^\r\n]+)\r?\n')
+    if ($steps.Count -ne 1) { throw 'Native Windows Clippy step was not found exactly once.' }
+    if ($steps[0].Groups['command'].Value -cne 'cargo clippy --locked --workspace --all-targets -- -D warnings') {
+        throw 'Native Windows Clippy locked workspace command or strict warning flags differ.'
     }
 }
-Assert-AgentBusCrossClippyStep $workflowText
-Write-Output 'Current GNU Windows Clippy declaration passed: target, wrapper and strictness'
+Assert-AgentBusNativeWindowsClippyStep $workflowText
+Write-Output 'Current native Windows Clippy declaration passed: hosted runner, locked workspace and strictness'
 foreach ($case in @(
-    @{ name = 'wrong target'; text = $workflowText.Replace('--target "$WINDOWS_TARGET"', '--target x86_64-pc-windows-msvc') },
-    @{ name = 'nonempty wrapper'; text = $workflowText.Replace('RUSTC_WRAPPER: ""', 'RUSTC_WRAPPER: "fixture-cache"') },
-    @{ name = 'missing strict warnings'; text = $workflowText.Replace('-- -D warnings', '--') }
+    @{ name = 'wrong runner'; text = $workflowText.Replace('    runs-on: windows-latest', '    runs-on: ubuntu-latest') },
+    @{ name = 'wrong target'; text = $workflowText.Replace('cargo clippy --locked --workspace --all-targets -- -D warnings', 'cargo clippy --locked --target x86_64-pc-windows-gnu --workspace --all-targets -- -D warnings') },
+    @{ name = 'unlocked resolution'; text = $workflowText.Replace('cargo clippy --locked --workspace --all-targets -- -D warnings', 'cargo clippy --workspace --all-targets -- -D warnings') },
+    @{ name = 'missing strict warnings'; text = $workflowText.Replace('-- -D warnings', '--') },
+    @{ name = 'wrong job'; text = $workflowText.Replace('  windows:', '  other-windows:') }
 )) {
     $refused = $false
-    try { Assert-AgentBusCrossClippyStep $case.text } catch {
-        if ($_.Exception.Message -notlike 'GNU Windows Clippy*') { throw }
+    try { Assert-AgentBusNativeWindowsClippyStep $case.text } catch {
+        if ($_.Exception.Message -notlike 'Native Windows Clippy*') { throw }
         $refused = $true
     }
-    if (-not $refused) { throw "GNU Clippy declaration defect admitted: $($case.name)" }
-    Write-Output "GNU Windows Clippy declaration refused: $($case.name)"
+    if (-not $refused) { throw "Native Clippy declaration defect admitted: $($case.name)" }
+    Write-Output "Native Windows Clippy declaration refused: $($case.name)"
 }
 
-# Retain native helper regressions independently of the GNU job's Bash command.
-# The real target-specific GNU command runs earlier in CI; these fixtures exercise
+# Retain uncached native helper regressions independently of the CI job command.
+# The real locked native command runs separately in CI; these fixtures exercise
 # explicit uncached helper behaviour with native disposable Cargo applications.
 $clippyScript = [scriptblock]::Create(@'
 . ./scripts/rust-build-common.ps1

@@ -20,6 +20,35 @@ SPEC.loader.exec_module(services)
 
 
 class IsolationTests(unittest.TestCase):
+    def test_native_smoke_cannot_resolve_the_operator_journal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            operator = Path(directory) / "operator"
+            operator.mkdir()
+            journal = operator / "agent-bus-outbox" / "journal.jsonl"
+            journal.parent.mkdir()
+            journal.write_bytes(b"operator custody sentinel")
+            owned = Path(directory) / "fixture"
+            owned.mkdir()
+            with patch.dict(
+                services.os.environ,
+                {"HOME": str(operator), "LOCALAPPDATA": str(operator)},
+            ):
+                fixture = services.Services(owned, "smoke")
+            for variable in ("HOME", "LOCALAPPDATA"):
+                root = Path(fixture.env[variable])
+                self.assertTrue(root.is_relative_to(owned))
+                self.assertTrue(root.is_dir())
+                self.assertFalse((root / "agent-bus-outbox" / "journal.jsonl").exists())
+            self.assertEqual(journal.read_bytes(), b"operator custody sentinel")
+
+    def test_native_backend_tests_have_a_private_windows_journal_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict(services.os.environ, {"LOCALAPPDATA": "operator"}):
+                fixture = services.Services(directory, "integration")
+            self.assertEqual(
+                Path(fixture.env["LOCALAPPDATA"]), Path(directory) / "owned-home"
+            )
+
     def test_main_preserves_first_failure_when_owned_cleanup_also_fails(self):
         owned = MagicMock()
         owned.start.side_effect = RuntimeError("first readiness failure")
