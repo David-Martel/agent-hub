@@ -156,7 +156,7 @@ runner lane and price the whole chain. [Runner tutorial](https://docs.cloud.goog
 
 ## Tool version qualification
 
-Registry checks on the audit cutoff found: Node 26.12.0 / npm 11.20.0,
+Registry checks on the audit cutoff found: Node 26.12.0 / npm 12.2.0,
 Wrangler 4.151.0, Cloudflare Vitest plugin 1.4.2, workers-types
 5.20261014.1, TypeScript 7.0.2, Vitest 5.0.4 and Hono 4.13.13.
 The plugin declares Vitest `^4.1.0 || ^5.0.0`; Wrangler's current types peer
@@ -184,11 +184,20 @@ and a 20-minute deadline; cleanup removed its exact captured ID. The Node
 26.12.0 Docker image tag was not yet published, so the official checksum-checked
 binary supplied the test runtime. These controls do not qualify the live Worker.
 
-The package now requires Node `>=26.12.0 <27` and npm `>=11.20.0 <12`,
-with project-local `engine-strict=true`. A bounded admission control rejected
-Node 24.21.0 with `EBADENGINE` and left the lock unchanged; the admitted
-Node 26.12.0/npm 11.20.0 pair passed lock resolution and type checking. This
-subsequent change affects tool admission metadata, not the tested runtime graph.
+Node 26.12.0 bundles npm 11.20.0, while the current official npm release is
+12.2.0. The latter was installed privately after verifying its registry SHA-512
+integrity; no global npm installation changed. The package now requires Node
+`>=26.12.0 <27` and npm `>=12.2.0 <13`, with project-local
+`engine-strict=true`. Admission controls reject both Node 24 with npm 12 and
+Node 26 with npm 11 using `EBADENGINE`, without changing the lock.
+
+Clean npm 12 installs, TypeScript checking and all 228 tests pass on Windows
+and Linux against snapshot
+`be7d6e9a15e57e98cda7c9023c462f27d79fd9a3f439182967220ba9ef9a9544`.
+The runtime dependency graph is unchanged from the previously qualified set.
+The exact owned Linux container exited successfully and was removed. These
+controls qualify the newer installer and admission metadata; they do not
+establish authenticated production storage or deployment.
 
 Context7 was attempted first but returned a monthly-quota error. Official
 provider documentation and registry/release metadata supplied the fallback.
