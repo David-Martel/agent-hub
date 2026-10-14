@@ -17,7 +17,57 @@ live under `.Codex/state/fleet-reconciliation/`. Credentials and message bodies
 must stay out of reports. An unreachable host or missing reply is not proof
 that its owner is inactive.
 
-## Current findings
+## Current execution checkpoint
+
+The code-qualified maintenance snapshot is signed
+`60f8c76285ab4f6be9d609a26787ecbdf46f699e`. Native Windows workspace tests passed
+1,211 tests with 107 ignored; its three release binaries passed configured
+MCP and owned Redis/PostgreSQL CLI/HTTP smoke. Local CargoTools supplies optimized
+test dependencies and an 8 MiB thread stack; this is recorded separately from
+the hosted runner's default test profile.
+
+- Carbon now has all three native Windows binaries from that snapshot. Exact
+  ACLs and NTFS identities were preserved with exclusive held-handle byte
+  replacement after an atomic-replacement attempt changed an inherited ACE.
+  The first attempt was rolled back to the original object. Installed MCP
+  returned 17 tools and authenticated presence; an isolated-journal CLI nonce
+  roundtrip passed. Existing clients, credentials and configurations remain intact.
+- vigil1 now has the three native Linux x64 binaries from the same snapshot.
+  Rust 1.99, Clang/LLD 23.1.3 and sccache 0.18 were verified; all three actual ELF
+  files require at most glibc 2.34, compatible with vigil1's observed 2.35.
+  Configured MCP, CLI, HTTP/SSE and database nonce checks passed. Old binaries,
+  file metadata and runtime configuration are preserved.
+- These are source-bound client canaries. Their Git checkouts remain at the
+  accepted `2fbca7e` baseline; maintenance snapshot publication and main CI are
+  separate open gates. No ASUS hub, live HIL, active NUC MCP or shared runner
+  service was restarted.
+- PR #128 is published at signed `ff2729b5a62ba774dd7279b8732094086d8928d0`.
+  Its Rust changes passed normal pre-push: 1,218 tests, zero failures,
+  107 ignored, plus blocking audit. CI-only follow-ups retain that Rust source.
+  Current-head run `38645783027` remains in progress.
+- An identical SDK probe proves Wine 11 loses protected DACLs and adds a second
+  ACE on reopen; native Windows retains the required sole-owner descriptor.
+  The guard remains strict. Required Windows tests now run on native Windows.
+  A separate unoptimized parser control reproduces a 2 MiB stack overflow and
+  passes all 69 parser tests at 8 MiB. Only the native unit step receives that
+  measured capacity; release settings, deadlines and test selection are unchanged.
+- Native validation prepends the exact release directory to PATH because CLI
+  `serve` delegates to another binary by name. Its hashes bind the selected MCP
+  executable; an older installed MCP cannot qualify a new artifact pair.
+- The independent ephemeral Windows smoke runner accepts only the reviewed
+  source head, synthetic merge SHA, run, attempt and job. Its hook is single-use
+  and fails closed. This is trusted-job admission, not OS or Docker isolation.
+- ASUS hub/client rollout still needs the live runtime scheduler's custody
+  window; current publishing/HIL requires continuity. NUC MCP remains active
+  under an operator terminal. ARM artifact qualification is in progress; locked
+  Spark worktrees and their running jobs remain protected.
+
+Private receipts include `carbon-native-canary.json`, `vigil-native-canary.json`,
+`native-windows-source-review.json`, `runner-admission-review.json` and the Linux
+`artifact-packet-qualified.json` under `.Codex/state/fleet-reconciliation/`.
+Prior failure evidence and narrower historical controls are preserved.
+
+## Earlier audit findings
 
 - Initial local `main` matched fetched `origin/main`; signed maintenance head
   `b8c300f1abff930e45b3056fd77756ef7b631314` includes PR #128 head `861e7a7`.
@@ -194,10 +244,10 @@ Complete current-head CI remains required before merge or duplicate PR dispositi
 | F1 | Inventory every reachable clone, registered worktree, owner, service and binary/config identity | fleet audit | SCOPED_AUDIT_COMPLETE; sanitized host receipt; DTM-WORK remains unreachable |
 | F2 | Review PR stack, resolve duplicate dependency work, repair first failing checks and integrate current heads | coordinator / CI audit | IN_PROGRESS; 16 required checks, review and exact merge SHA |
 | F3 | Bind vigil1 Linux scheduling and qualify Docker/Windows build lanes | CI audit | IN_PROGRESS; actual runner labels, owned fixtures, immutable image and smoke/cache receipts |
-| F4 | Verify latest stable tool releases and update coordinated compiler/image/cache pins | CI audit | OPEN_COMPILER_FLOOR; built tools overlay/cache/x64 console controls pass, GCC 13 remains below Rust 1.99 baseline; fleet engines unchanged |
+| F4 | Verify latest stable tool releases and update coordinated compiler/image/cache pins | CI audit | PARTIAL_QUALIFICATION; latest Rust/LLVM/sccache native Linux artifacts qualified; experimental Windows GNU floor, NASM and cache-probe attribution remain separate gaps; shared fleet engines unchanged |
 | F5 | Reduce Cloudflare request/SQL work and preserve batch identity | cloud audit | SOURCE_VERIFIED / DEPLOYMENT_BLOCKED; signed fixes, 228 tests on each platform, account access unresolved |
-| F6 | Repair local outbox/config custody without losing historical pending requests | coordinator | SOURCE_APPROVED / INTEGRATION_IN_PROGRESS; signed repair `2e556d2b` handed back with validation and both preservation bundles; exact authority reconciliation and fresh native CLI/MCP mutations remain OPEN |
-| F7 | Install accepted artifacts/configuration only where required; qualify each installed process | fleet / coordinator | OPEN; preserved prior bytes, hashes, embedded revisions, fresh CLI/MCP and scoped nonce |
+| F6 | Repair local outbox/config custody without losing historical pending requests | coordinator | SOURCE_APPROVED / CURRENT_HEAD_CI_PENDING; strict native permission contract retained; Carbon/ASUS future-launch configs corrected; operator journals remain preserved |
+| F7 | Install accepted artifacts/configuration only where required; qualify each installed process | fleet / coordinator | CARBON_AND_VIGIL_CLIENT_CANARIES_PASS; exact hashes, preserved preimages/metadata, configured MCP and isolated nonce; ASUS/NUC runtime custody and ARM artifacts remain open |
 | F8 | Retire proven redundant PRs, branches and worktrees | coordinator | OPEN; fresh writer checks, preservation and exact-tip deletion guards |
 | F9 | Compare Cloudflare/GitHub/gcloud cost and capacity options | cloud audit | RESEARCH_COMPLETE / ACCOUNT_VALIDATION_OPEN; official prices, measured fixture budget and explicit access gaps in cloud-efficiency.md |
 
