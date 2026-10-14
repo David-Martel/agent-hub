@@ -39,8 +39,8 @@ jobs:
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
       EXPECTED_WORKFLOWS_JSON: '["CI"]'
       CONDITIONAL_WORKFLOWS_JSON: '{}'
-      REVIEWED_JOB_INVENTORY_JSON: '{"CI":{"path":".github/workflows/ci.yml","source_sha256":"74297e4d6adca906918d0891f358f2846041af1b72fdc635291868cd8f9746d0","required_jobs":["Format Check","Cloud Agentbus (TypeScript)","Lefthook Gates Run","Clippy Lint","Unit Tests","Integration Tests","History Catalog Migration","Release Build (linux-x64)","Release Build (linux-arm64-1)","Release Build (linux-arm64-2)","CLI And HTTP Smoke","Security Audit","Windows Build And Unit Tests","Benchmark Compile","Docker Build (linux-x64)","Docker Build (linux-arm64)"],"auxiliary_sources":{}}}'
-      REVIEWED_SKIP_JOBS_JSON: '{"CI":{"path":".github/workflows/ci.yml","source_sha256":"74297e4d6adca906918d0891f358f2846041af1b72fdc635291868cd8f9746d0","job_name":"Windows Native Validation (manual)","if_expression":"github.event_name == ''workflow_dispatch''","event":"pull_request"}}'
+      REVIEWED_JOB_INVENTORY_JSON: '{"CI":{"path":".github/workflows/ci.yml","source_sha256":"15e08f80a7411cc2fd809f92072154c8998361ad612e81a872e7b9f186c8f152","required_jobs":["Format Check","Cloud Agentbus (TypeScript)","Lefthook Gates Run","Clippy Lint","Unit Tests","Integration Tests","History Catalog Migration","Release Build (linux-x64)","Release Build (linux-arm64-1)","Release Build (linux-arm64-2)","CLI And HTTP Smoke","Security Audit","Windows Build And Unit Tests","Benchmark Compile","Docker Build (linux-x64)","Docker Build (linux-arm64)"],"auxiliary_sources":{}}}'
+      REVIEWED_SKIP_JOBS_JSON: '{"CI":{"path":".github/workflows/ci.yml","source_sha256":"15e08f80a7411cc2fd809f92072154c8998361ad612e81a872e7b9f186c8f152","job_name":"Windows Native Validation (manual)","if_expression":"github.event_name == ''workflow_dispatch''","event":"pull_request"}}'
     steps:
     - name: Resolve the PR, its exact head SHA and Dependabot metadata
       id: meta
