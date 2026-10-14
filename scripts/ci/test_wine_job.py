@@ -331,6 +331,7 @@ class ProofControls(unittest.TestCase):
         ):
             self.assertNotIn(key, env)
         self.assertEqual(env["AGENT_BUS_REDIS_URL"], "redis://localhost:1/0")
+        self.assertEqual(env["AGENT_BUS_TEST_DEADLINE_SCALE"], "5")
         self.assertEqual(
             env["AGENT_BUS_CONFIG"], str(self.root / "agent-bus-config.json")
         )

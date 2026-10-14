@@ -135,6 +135,12 @@ def closed_environment(directory, source):
         "AGENT_BUS_REDIS_URL": "redis://localhost:1/0",
         "AGENT_BUS_DATABASE_URL": "postgresql://postgres@localhost:1/none",
         "AGENT_BUS_HUB_CACHE_TTL_SECONDS": "0",
+        # Deadline-bound unit tests wait on real time; under Wine on the shared runner
+        # (load average 31 to 39 measured) start-up alone overran their unloaded
+        # deadlines. Tests multiply those waits by this factor and never change what
+        # they assert (crates/agent-bus-core/tests/support/deadline_scale.rs). The
+        # AGENT_BUS_ prefix is what the Wine guest environment forwards.
+        "AGENT_BUS_TEST_DEADLINE_SCALE": "5",
         "RUST_LOG": "error",
     }
 

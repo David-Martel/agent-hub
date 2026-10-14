@@ -2225,6 +2225,12 @@ pub fn run_cloud_tokens(
     }
 }
 
+// Wall-clock scaling for deadline-bound tests under Wine; see the module docs.
+#[cfg(test)]
+#[allow(dead_code)] // only the Windows tests use it
+#[path = "../../agent-bus-core/tests/support/deadline_scale.rs"]
+mod deadline_scale;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3165,7 +3171,7 @@ mod tests {
             &args,
             input,
             None,
-            std::time::Duration::from_secs(5),
+            deadline_scale::scaled(std::time::Duration::from_secs(5)),
             std::time::Duration::from_millis(250),
         )?;
         // Exact one-test libtest preamble; reject unexpected or missing bytes.
@@ -3235,7 +3241,7 @@ mod tests {
             std::time::Duration::from_millis(250),
         )
         .unwrap_err();
-        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        assert!(started.elapsed() < deadline_scale::scaled(std::time::Duration::from_secs(3)));
         assert!(format!("{error:#}").contains("NOT_ESTABLISHED"));
     }
 
@@ -3253,11 +3259,11 @@ mod tests {
             &args,
             None,
             None,
-            std::time::Duration::from_secs(2),
+            deadline_scale::scaled(std::time::Duration::from_secs(2)),
             std::time::Duration::from_millis(100),
         )
         .unwrap_err();
-        assert!(started.elapsed() < std::time::Duration::from_secs(4));
+        assert!(started.elapsed() < deadline_scale::scaled(std::time::Duration::from_secs(4)));
         let rendered = format!("{error:#}");
         assert!(
             rendered.contains("already exited"),
@@ -3265,7 +3271,7 @@ mod tests {
         );
         assert!(rendered.contains("pipes settled=false"));
         assert!(!rendered.contains("dummy-private-output"));
-        let natural_deadline = started + std::time::Duration::from_secs(9);
+        let natural_deadline = started + deadline_scale::scaled(std::time::Duration::from_secs(9));
         while !marker.is_file() && std::time::Instant::now() < natural_deadline {
             std::thread::sleep(std::time::Duration::from_millis(25));
         }

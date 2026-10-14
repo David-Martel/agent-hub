@@ -391,6 +391,11 @@ fn redact_json_body(body: &Value, sent_token: Option<&str>) -> Value {
     }
 }
 
+// Wall-clock scaling for deadline-bound tests under Wine; see the module docs.
+#[cfg(test)]
+#[path = "../../agent-bus-core/tests/support/deadline_scale.rs"]
+mod deadline_scale;
+
 #[cfg(test)]
 mod tests {
     //! Exercises the REAL reqwest client and REAL JSON-RPC request/response
@@ -410,7 +415,7 @@ mod tests {
         listener
             .set_nonblocking(true)
             .expect("nonblocking fixture listener");
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let deadline = std::time::Instant::now() + deadline_scale::scaled(Duration::from_secs(3));
         loop {
             match listener.accept() {
                 Ok((stream, _)) => {
@@ -418,10 +423,10 @@ mod tests {
                         .set_nonblocking(false)
                         .expect("blocking fixture stream");
                     stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .set_read_timeout(Some(deadline_scale::scaled(Duration::from_secs(2))))
                         .expect("fixture read timeout");
                     stream
-                        .set_write_timeout(Some(Duration::from_secs(2)))
+                        .set_write_timeout(Some(deadline_scale::scaled(Duration::from_secs(2))))
                         .expect("fixture write timeout");
                     return stream;
                 }
@@ -464,7 +469,8 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let mut captured = Vec::new();
             for _ in 0..count {
-                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                let deadline =
+                    std::time::Instant::now() + deadline_scale::scaled(Duration::from_secs(3));
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
@@ -482,7 +488,7 @@ mod tests {
                     .set_nonblocking(false)
                     .expect("blocking capture stream");
                 stream
-                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .set_read_timeout(Some(deadline_scale::scaled(Duration::from_secs(2))))
                     .expect("read timeout");
                 let mut reader = BufReader::new(stream.try_clone().expect("clone fixture stream"));
                 let mut headers = String::new();
@@ -546,7 +552,7 @@ mod tests {
                 &url,
                 "fixture-hub",
                 &request,
-                Duration::from_secs(2),
+                deadline_scale::scaled(Duration::from_secs(2)),
             );
             match classification {
                 "applied" => assert_eq!(
@@ -926,7 +932,7 @@ mod tests {
                 Ok::<_, std::io::Error>(hello)
             };
 
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(deadline_scale::scaled(Duration::from_secs(5)), async {
                 tokio::join!(
                     transport
                         .client()
