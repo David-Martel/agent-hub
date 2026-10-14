@@ -41,10 +41,16 @@ the hosted runner's default test profile.
   accepted `2fbca7e` baseline; maintenance snapshot publication and main CI are
   separate open gates. No ASUS hub, live HIL, active NUC MCP or shared runner
   service was restarted.
-- PR #128 is published at signed `ff2729b5a62ba774dd7279b8732094086d8928d0`.
+- PR #128 is published at signed `a4900cf8a21f3beb6041890cce7a26788571941e`.
   Its Rust changes passed normal pre-push: 1,218 tests, zero failures,
   107 ignored, plus blocking audit. CI-only follow-ups retain that Rust source.
-  Current-head run `38645783027` remains in progress.
+  Current-head run `38649227723` remains in progress. The prior run passed
+  native units, release compilation, configured MCP and Python, then failed
+  a stale assertion requiring the removed GNU Clippy declaration. The reviewed
+  replacement checks the hosted Windows runner and exact locked, strict native
+  command with five detecting mutations. Existing cache, timeout and foreign
+  process controls remain intact. Python and the four native helper checks now
+  run before compilation; all five passed in the current hosted run.
 - An identical SDK probe proves Wine 11 loses protected DACLs and adds a second
   ACE on reopen; native Windows retains the required sole-owner descriptor.
   The guard remains strict. Required Windows tests now run on native Windows.
@@ -59,8 +65,11 @@ the hosted runner's default test profile.
   and fails closed. This is trusted-job admission, not OS or Docker isolation.
 - ASUS hub/client rollout still needs the live runtime scheduler's custody
   window; current publishing/HIL requires continuity. NUC MCP remains active
-  under an operator terminal. ARM artifact qualification is in progress; locked
-  Spark worktrees and their running jobs remain protected.
+  under an operator terminal. P1's generic CLI watcher belongs to an active
+  Hyperacusis lane; its command, old binary and metadata are preserved pending
+  handoff. The separate P1 maintenance service still runs its older pinned
+  executable. ARM artifact preparation is complete locally; a bounded host
+  window remains open. Locked Spark worktrees and running jobs are protected.
 
 Private receipts include `carbon-native-canary.json`, `vigil-native-canary.json`,
 `native-windows-source-review.json`, `runner-admission-review.json` and the Linux
