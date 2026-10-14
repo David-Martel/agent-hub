@@ -1,0 +1,43 @@
+# Experimental LLVM/UCRT target; this does not replace shipping GNU CI.
+# The parent already qualifies the latest Rust/runner/Node/cache tool overlay.
+ARG QUALIFIED_TOOLS_BASE=sha256:6c7afb35b1df3e27c333a86560c54371bf876eec0269b5581435d282fe2f513b
+FROM ${QUALIFIED_TOOLS_BASE}
+
+USER root
+RUN install -d -m 0755 /opt/llvm-mingw && \
+    curl --fail --location --proto '=https' --tlsv1.2 \
+      --connect-timeout 10 --max-time 120 \
+      https://github.com/mstorsjo/llvm-mingw/releases/download/20261006/llvm-mingw-20261006-ucrt-ubuntu-22.04-x86_64.tar.xz \
+      --output /tmp/llvm-mingw-ucrt.tar.xz && \
+    echo '5f9c6ed95b2d4bdb2869a488c5fd5857fbdabcf288a0aa3eb1da43f6a08d8ab4  /tmp/llvm-mingw-ucrt.tar.xz' | sha256sum -c - && \
+    tar --no-same-owner -xJf /tmp/llvm-mingw-ucrt.tar.xz --strip-components=1 -C /opt/llvm-mingw && \
+    rm /tmp/llvm-mingw-ucrt.tar.xz && \
+    /opt/llvm-mingw/bin/x86_64-w64-mingw32-clang --version | grep -F 'clang version 23.1.3' && \
+    /opt/llvm-mingw/bin/ld.lld --version | grep -F 'LLD 23.1.3' && \
+    /opt/llvm-mingw/bin/llvm-ar --version | grep -F 'LLVM version 23.1.3'
+
+USER runner
+RUN rustup target add x86_64-pc-windows-gnullvm --toolchain 1.99.0
+
+# Absolute LLVM mappings avoid the archive's GCC-named compatibility aliases.
+# Keep PATH unchanged so an existing GNU job cannot silently consume Clang.
+ENV CARGO_TARGET_X86_64_PC_WINDOWS_GNULLVM_LINKER=/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang \
+    CC_x86_64_pc_windows_gnullvm=/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang \
+    CXX_x86_64_pc_windows_gnullvm=/opt/llvm-mingw/bin/x86_64-w64-mingw32-clang++ \
+    AR_x86_64_pc_windows_gnullvm=/opt/llvm-mingw/bin/llvm-ar
+
+# Preserve the inherited root entrypoint contract and bind this separate recipe.
+USER root
+ARG SOURCE_REVISION
+ARG DOCKERFILE_SHA256
+RUN printf '%s' "$SOURCE_REVISION" | grep -Eq '^[a-f0-9]{40}$' && \
+    printf '%s' "$DOCKERFILE_SHA256" | grep -Eq '^[a-f0-9]{64}$'
+LABEL org.opencontainers.image.revision="$SOURCE_REVISION" \
+      com.dtm.source.dockerfile-sha256="$DOCKERFILE_SHA256" \
+      com.dtm.compiler.parent-tools-index="sha256:6c7afb35b1df3e27c333a86560c54371bf876eec0269b5581435d282fe2f513b" \
+      com.dtm.compiler.family="llvm-mingw" \
+      com.dtm.compiler.version="23.1.3" \
+      com.dtm.compiler.archive-sha256="5f9c6ed95b2d4bdb2869a488c5fd5857fbdabcf288a0aa3eb1da43f6a08d8ab4" \
+      com.dtm.compiler.target="x86_64-pc-windows-gnullvm" \
+      com.dtm.compiler.crt="ucrt" \
+      com.dtm.compiler.admission="experimental-not-deployed"

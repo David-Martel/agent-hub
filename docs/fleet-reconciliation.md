@@ -19,16 +19,23 @@ that its owner is inactive.
 
 ## Current findings
 
-- Initial local `main` matched fetched `origin/main`; the primary maintenance
-  branch includes the dependency correction from PR #128 head `ea3f537`. A separate owned
+- Initial local `main` matched fetched `origin/main`; signed maintenance head
+  `b8c300f1abff930e45b3056fd77756ef7b631314` includes PR #128 head `861e7a7`.
+  A separate owned
   `worktrees/pr-integration` permits PR fixes while CI/cloud writers work in
-  the primary checkout. The active Claude outbox worktree committed `7cc9f73`;
-  preserve it and its separate review HOLD. Warp preservation remains retained.
+  the primary checkout. The outbox worktree is preserved at signed `2e556d2b`;
+  its repair was handed back for current-source review and integration.
+  Warp preservation remains retained.
 - GitHub has six open PRs: #124, #125, #126, #127, #128 and #130. PR #128 now
   targets `main`; `ea3f537` failed configured shipping GNU MCP validation.
   run `38609697669` failed at Wine launch preflight before readiness.
   Independently reviewed batch/diagnostic head `861e7a7` is published and
-  tested by run `38617998425`. All current-head gates remain required.
+  tested by run `38617998425`: Windows build and configured shipping GNU MCP
+  passed; CLI/HTTP smoke is the sole failed required check. Its scalar Wine path
+  helper failed, but later cleanup erased the prefix containing the first failure
+  record. The exact-artifact replay now passes; the original cause remains
+  unknown. Reviewed retention source is being integrated, and all current-head
+  gates remain required.
 - git-guard 0.2.14 hygiene report/dry-run retains the active worktree. The
   open-PR cap is exceeded; do not evade it when publishing a new branch.
 - Local installed CLI reads the ASUS authority, while mutation and MCP calls
@@ -72,7 +79,7 @@ passes `cargo audit` without vulnerabilities. Failed run `38601341865`
 truncated the first GNU MCP failure and removed its fixture. Signed head
 `0a13381fb7de953d1f520d8f48ed5e02e565c2b7` now preserves the first exception,
 retains failed fixtures and wraps full diagnostics; three additional independent
-Linux controls pass. Current-head run `38609697669` has passed Linux, ARM64,
+Linux controls pass. Earlier run `38609697669` passed Linux, ARM64,
 backend and unit gates; Windows failed before Wine launch readiness. The shipping
 guest's MCP protocol and EOF behavior are not established by that failure. Duplicate
 #125/#127 disposition follows accepted integration, never a check override.
@@ -92,11 +99,21 @@ three pending records, all expired presence operations. Its owner-only ACLs
 pass inspection; its header scope differs from current routing. No payloads
 were published and no journal mutation, replay or adoption occurred. The active
 outbox-disposition source `7cc9f73` passed 21 focused core tests in a byte-bound
-snapshot, with nine backend controls ignored. It remains HOLD: inspection drops
+snapshot, with nine backend controls ignored. That checkpoint remained HOLD: inspection drops
 custody before rename, concurrent rotators can overwrite retired evidence on
 Unix, and local expiry omits ambiguous attempted-request retention. Its CLI
 changes were not compiled by that core-only selection. The fresh Claude commit
-proves an active writer; no takeover, journal rotation or deletion occurred.
+proved an active writer; no takeover, journal rotation or deletion occurred.
+The subsequent signed repair `2e556d2b3e95d09ef1faeec7757b173d68bdfb4b` retains
+custody through atomic no-replace retirement, rejects stale source identity and
+preserves attempted expired requests. Its support lane reports 1,211 Windows
+tests passed with 107 ignored, 31 focused Linux tests passed with nine backend
+controls ignored, strict Clippy and six detecting original-source failures.
+Both preservation bundles remain retained. The root accepted integration custody;
+independent current-source verification now approves the exact source,
+signatures, receipt hashes and both bundles. Integration into PR #128 is in
+progress. No push, live journal rotation or installation occurred; concurrent
+older Unix clients must upgrade before rotation.
 
 Cloud batch regressions reproduce two original-source failures and pass 39/39
 after the bounded fix. A 20-agent batch uses two Durable Object RPCs including
@@ -127,8 +144,12 @@ are unchanged; tests retain their predicates. The first isolated workspace run
 stopped at routing coverage: 27 passed and nine failed in that 36-test target.
 The same target then passed all 36 default-parallel selectors with two Tokio
 workers per CLI child, without changing probe or transaction deadlines. The
-fixture now sets that child capacity explicitly; the complete canonical run
-must pass on the frozen source before a full Rust QA claim. CargoTools
+fixture now sets that child capacity explicitly. The complete canonical isolated
+run on frozen clean head `b8c300f` passed 1,199 tests with zero failures and 107
+ignored, including doctests, without an external Tokio worker override. Ignored
+backend tests were not run locally. The separate merged service-free Python
+harness selected 184 tests: 177 passed and seven platform controls skipped.
+Its mocked backend-count output is not a backend qualification. CargoTools
 environment validation passed, but its argument parser consumes native Clippy
 `--fix`; the verified pinned Cargo executable was used for that operation.
 
@@ -158,8 +179,13 @@ settlement pass within unchanged deadlines. This replay uses the prior verified
 binary. Safe exclusive mode-0600 failure receipts retain only static code
 positions, exception classes and stage timings. The original CI early EOF is
 not claimed to share that measured timeout cause. Signed PR #128 commit
-`861e7a700f677389d338de54d683d9c9824daece` carries the fix; current-head CI remains
-required before merge or duplicate PR disposition.
+`861e7a700f677389d338de54d683d9c9824daece` carries the fix; its actual CI shipping
+GNU MCP gate now passes. A full scalar CLI/HTTP replay of that run's
+hash-verified artifacts passed with the preservation-only overlay. The original
+helper cause remains UNKNOWN because its records were deleted. Reviewed retention
+source `28c31224` preserves failed prefix bytes and exclusive typed summaries
+without changing clocks, mapping or settlement guards.
+Complete current-head CI remains required before merge or duplicate PR disposition.
 
 ## Work queue
 
@@ -170,7 +196,7 @@ required before merge or duplicate PR disposition.
 | F3 | Bind vigil1 Linux scheduling and qualify Docker/Windows build lanes | CI audit | IN_PROGRESS; actual runner labels, owned fixtures, immutable image and smoke/cache receipts |
 | F4 | Verify latest stable tool releases and update coordinated compiler/image/cache pins | CI audit | OPEN_COMPILER_FLOOR; built tools overlay/cache/x64 console controls pass, GCC 13 remains below Rust 1.99 baseline; fleet engines unchanged |
 | F5 | Reduce Cloudflare request/SQL work and preserve batch identity | cloud audit | SOURCE_VERIFIED / DEPLOYMENT_BLOCKED; signed fixes, 228 tests on each platform, account access unresolved |
-| F6 | Repair local outbox/config custody without losing historical pending requests | coordinator | OPEN; exact authority reconciliation and fresh native CLI/MCP mutations |
+| F6 | Repair local outbox/config custody without losing historical pending requests | coordinator | SOURCE_APPROVED / INTEGRATION_IN_PROGRESS; signed repair `2e556d2b` handed back with validation and both preservation bundles; exact authority reconciliation and fresh native CLI/MCP mutations remain OPEN |
 | F7 | Install accepted artifacts/configuration only where required; qualify each installed process | fleet / coordinator | OPEN; preserved prior bytes, hashes, embedded revisions, fresh CLI/MCP and scoped nonce |
 | F8 | Retire proven redundant PRs, branches and worktrees | coordinator | OPEN; fresh writer checks, preservation and exact-tip deletion guards |
 | F9 | Compare Cloudflare/GitHub/gcloud cost and capacity options | cloud audit | RESEARCH_COMPLETE / ACCOUNT_VALIDATION_OPEN; official prices, measured fixture budget and explicit access gaps in cloud-efficiency.md |
