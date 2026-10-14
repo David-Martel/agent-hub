@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import contextvars
 import hashlib
 import io
 import json
@@ -14,10 +15,57 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 import uuid
 from pathlib import Path
 
 from wine_lifecycle import NativeWineProvider
+
+STAGES = contextvars.ContextVar("mcp_wine_stages", default=None)
+
+
+def static_failure(error):
+    """Report code locations without exception messages or configured data."""
+    number = getattr(error, "errno", None)
+    return {
+        "class": type(error).__name__,
+        "errno": number if type(number) is int else None,
+        "stack": [
+            {
+                "file": Path(frame.filename).name,
+                "function": frame.name,
+                "line": frame.lineno,
+            }
+            for frame in traceback.extract_tb(error.__traceback__)
+        ],
+    }
+
+
+def stage(name, operation, *args, **kwargs):
+    started = time.monotonic()
+    event = {"stage": name, "status": "PASS"}
+    try:
+        return operation(*args, **kwargs)
+    except BaseException as error:
+        event.update(status="FAIL", failure=static_failure(error))
+        raise
+    finally:
+        event["seconds"] = round(time.monotonic() - started, 6)
+        events = STAGES.get()
+        if events is not None:
+            events.append(event)
+
+
+def retain_failure(root, diagnostic):
+    """Retain safe metadata exclusively in the revalidated private fixture."""
+    root = fixture_root(root)
+    path = root / f"mcp-wine-failure-{uuid.uuid4().hex}.json"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        json.dump(diagnostic, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    return path.name
 
 
 def fixture_root(value):
@@ -117,16 +165,41 @@ def provider_for(root):
     return provider
 
 
-def map_path(provider, path):
+def map_paths(provider, paths):
     import re
 
-    converted = provider.command(["winepath", "-w", str(path)]).strip()
-    if not re.fullmatch(r"[A-Za-z]:\\[^\r\n\x00]+", converted):
+    # Wine 11 winepath processes every operand in order; -0 preserves boundaries.
+    # Batch only these controlled paths, retaining each actual guest round-trip.
+    def records(output):
+        if not output.endswith("\x00"):
+            raise RuntimeError("Wine mapping output is incomplete")
+        result = output[:-1].split("\x00")
+        if len(result) != len(paths) or any(not value for value in result):
+            raise RuntimeError("Wine mapping output cardinality differs")
+        return result
+
+    converted = records(
+        stage(
+            "mapping-forward",
+            provider.command,
+            ["winepath", "-w", "-0", *map(str, paths)],
+        )
+    )
+    if any(not re.fullmatch(r"[A-Za-z]:\\[^\r\n\x00]+", value) for value in converted):
         raise RuntimeError("Wine mapping is unsupported")
-    reverse = provider.command(["winepath", "-u", converted]).strip()
-    if Path(reverse).resolve(strict=True) != path:
+    reverse = records(
+        stage("mapping-reverse", provider.command, ["winepath", "-u", "-0", *converted])
+    )
+    if any(
+        "\r" in value or "\n" in value or Path(value).resolve(strict=True) != path
+        for path, value in zip(paths, reverse, strict=True)
+    ):
         raise RuntimeError("Wine mapping does not round-trip")
     return converted
+
+
+def map_path(provider, path):
+    return map_paths(provider, [path])[0]
 
 
 def guest_environment(provider, configured):
@@ -167,15 +240,19 @@ def guest_environment(provider, configured):
     content = path.read_text(encoding="utf-8-sig")
     if json.loads(content) not in ({}, {"auth_token": "validator-fixture-token"}):
         raise RuntimeError("Only explicit private fixture configuration is admitted")
-    result["AGENT_BUS_CONFIG"] = map_path(provider, path)
+    result["AGENT_BUS_CONFIG"], temporary_path = map_paths(
+        provider, [path, provider.directory]
+    )
     # HOME/TMPDIR are consumed by the Unix Wine launcher. Windows TEMP/TMP and
     # the Rust configuration are guest paths; never feed a drive path to host HOME.
     result["HOME"] = str(provider.home)
-    temporary_path = map_path(provider, provider.directory)
     for key in ("TEMP", "TMP"):
         result[key] = temporary_path
-    observed = provider.command(
-        ["wine", "cmd", "/c", "type", result["AGENT_BUS_CONFIG"]], env=result
+    observed = stage(
+        "config-readback",
+        provider.command,
+        ["wine", "cmd", "/c", "type", result["AGENT_BUS_CONFIG"]],
+        env=result,
     )
     if observed.lstrip("\ufeff").strip() != content.strip():
         raise RuntimeError("Wine guest configuration readback differs")
@@ -303,14 +380,16 @@ def launch_ready(provider, path, digest, arguments, configured, env, child):
 
 
 def bridge(root, command, arguments, configured):
-    provider = provider_for(root)
-    path, digest = executable(command)
-    env = guest_environment(provider, configured)
+    provider = stage("provider", provider_for, root)
+    path, digest = stage("executable", executable, command)
+    env = stage("guest-environment", guest_environment, provider, configured)
     image = path.name
-    if image in provider.processes().values():
+    if image in stage("preflight-inventory", provider.processes).values():
         raise RuntimeError("Another same-image guest already exists in this prefix")
     provider.assert_home()
-    child = subprocess.Popen(
+    child = stage(
+        "guest-launch",
+        subprocess.Popen,
         ["wine", str(path), *arguments],
         env=env,
         stdin=subprocess.PIPE,
@@ -320,6 +399,7 @@ def bridge(root, command, arguments, configured):
     failed = threading.Event()
     ended = threading.Event()
     guest_pid = None
+    first_error = None
 
     def input_loop():
         try:
@@ -347,8 +427,16 @@ def bridge(root, command, arguments, configured):
     try:
         # This private adapter frame is consumed before PS sends initialize.
         # No Wine path/tasklist preflight consumes an MCP response deadline.
-        verify_launch = launch_ready(
-            provider, path, digest, arguments, configured, env, child
+        verify_launch = stage(
+            "launch-ready",
+            launch_ready,
+            provider,
+            path,
+            digest,
+            arguments,
+            configured,
+            env,
+            child,
         )
         for line in child.stdout:
             response = json.loads(line)
@@ -358,7 +446,7 @@ def bridge(root, command, arguments, configured):
                 verify_launch()
                 # PS remains the protocol/count authority. Bind its response
                 # to the actual guest in the fresh prefix before forwarding it.
-                guest_pid = corroborate(provider, child, image)
+                guest_pid = stage("guest-identity", corroborate, provider, child, image)
             sys.stdout.buffer.write(line)
             sys.stdout.buffer.flush()
             if response.get("id") == 2:
@@ -372,20 +460,30 @@ def bridge(root, command, arguments, configured):
             or hashlib.sha256(path.read_bytes()).hexdigest() != digest
         ):
             raise RuntimeError("Configured MCP executable/protocol proof is incomplete")
+    except BaseException as error:
+        first_error = error
+        raise
     finally:
         # Intentional rejected-config/runtime assertions still fail, while exact cleanup
         # is independently attempted. Only incomplete cleanup poisons later fixtures.
         try:
-            settle(provider, child, image, guest_pid)
+            stage("settlement", settle, provider, child, image, guest_pid)
             error_thread.join(2)
             if error_thread.is_alive():
                 raise RuntimeError("MCP stderr pipe remains open; prefix retained")
             provider.assert_owner()
             provider.assert_home()
-        except BaseException:
+        except BaseException as cleanup_error:
             # No global/prefix kill: retain both fixture and prefix on incomplete proof.
-            (root / "mcp-wine-HOLD").touch(exist_ok=True)
-            raise
+            cleanup_failure = static_failure(cleanup_error)
+            try:
+                (root / "mcp-wine-HOLD").touch(exist_ok=True)
+            except OSError as hold_error:
+                cleanup_failure["hold_failure"] = static_failure(hold_error)
+            if first_error is None:
+                cleanup_error.mcp_cleanup_failure = cleanup_failure
+                raise
+            first_error.mcp_cleanup_failure = cleanup_failure
     if child.returncode != 0:
         raise RuntimeError("Configured MCP launcher failed")
     verify_launch()
@@ -399,6 +497,8 @@ def main(argv=None):
     parser.add_argument("--command")
     parser.add_argument("--arguments-json", default="[]")
     args = parser.parse_args(argv)
+    token = STAGES.set([])
+    root = None
     try:
         root = fixture_root(args.root)
         if sys.platform != "linux":
@@ -423,11 +523,26 @@ def main(argv=None):
                 raise RuntimeError("Configured MCP arguments are invalid")
             bridge(root, args.command, arguments, configured)
         return 0
-    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+        diagnostic = {
+            "profile": "configured-mcp-wine-failure-v1",
+            "failure": static_failure(error),
+            "stages": STAGES.get(),
+        }
+        if getattr(error, "mcp_cleanup_failure", None) is not None:
+            diagnostic["cleanup_failure"] = error.mcp_cleanup_failure
+        if root is not None:
+            try:
+                diagnostic["receipt"] = retain_failure(root, diagnostic)
+            except (OSError, RuntimeError) as retention_error:
+                diagnostic["retention_failure"] = static_failure(retention_error)
+        print(json.dumps(diagnostic), file=sys.stderr)
         print(
             "Controlled Wine MCP fixture failed; owned prefix retained", file=sys.stderr
         )
         return 1
+    finally:
+        STAGES.reset(token)
 
 
 if __name__ == "__main__":
