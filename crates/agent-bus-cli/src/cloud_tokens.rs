@@ -3144,7 +3144,9 @@ mod tests {
                     .unwrap();
             }
             "held-child" => {
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                // Must outlast the parent's scaled original-exit budget, or the held pipe
+                // would settle inside the budget and the test would stop exercising it.
+                std::thread::sleep(deadline_scale::scaled(std::time::Duration::from_secs(5)));
                 fs::write(
                     marker.expect("owned child marker required"),
                     "naturally-finished",
