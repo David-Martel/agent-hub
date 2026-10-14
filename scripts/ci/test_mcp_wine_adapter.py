@@ -110,9 +110,13 @@ class AdmissionControls(unittest.TestCase):
             def command(arguments, **kwargs):
                 calls.append(arguments)
                 if arguments[:2] == ["winepath", "-w"]:
-                    return paths[arguments[2]]
+                    self.assertEqual(arguments[2], "-0")
+                    return "".join(paths[value] + "\x00" for value in arguments[3:])
                 if arguments[:2] == ["winepath", "-u"]:
-                    return reverse_paths[arguments[2]]
+                    self.assertEqual(arguments[2], "-0")
+                    return "".join(
+                        reverse_paths[value] + "\x00" for value in arguments[3:]
+                    )
                 self.assertEqual(
                     arguments, ["wine", "cmd", "/c", "type", paths[str(config)]]
                 )
@@ -132,9 +136,11 @@ class AdmissionControls(unittest.TestCase):
             self.assertEqual(result["TMP"], result["TEMP"])
             self.assertEqual(result["HOME"], str(provider.home))
             self.assertEqual(result["AGENT_BUS_CONFIG"], paths[str(config)])
-            self.assertEqual(calls.count(["winepath", "-w", str(root)]), 1)
-            self.assertEqual(calls.count(["winepath", "-u", paths[str(root)]]), 1)
-            self.assertEqual(len(calls), 5)
+            self.assertEqual(calls[0], ["winepath", "-w", "-0", str(config), str(root)])
+            self.assertEqual(
+                calls[1], ["winepath", "-u", "-0", paths[str(config)], paths[str(root)]]
+            )
+            self.assertEqual(len(calls), 3)
 
     def test_guest_identity_binds_unique_actual_image(self):
         provider = Provider([{77: "agent-bus-mcp.exe", 1: "services.exe"}])
@@ -233,13 +239,15 @@ class AdmissionControls(unittest.TestCase):
 
     def test_roundtrip_rejects_changed_mapping(self):
         provider = SimpleNamespace(
-            command=lambda args: "Z:\\owned" if args[1] == "-w" else str(Path.cwd())
+            command=lambda args: (
+                "Z:\\owned\x00" if args[1] == "-w" else str(Path.cwd()) + "\x00"
+            )
         )
         with self.assertRaises(RuntimeError):
             adapter.map_path(provider, Path(__file__).resolve())
 
     def test_bad_guest_path_output_is_rejected(self):
-        for value in ("not-windows", "Z:\\owned\nextra", "Z:\\owned\x00"):
+        for value in ("not-windows", "Z:\\owned\nextra\x00", "Z:\\owned\x00extra\x00"):
             with self.assertRaises(RuntimeError):
                 adapter.map_path(
                     SimpleNamespace(command=lambda args, value=value: value), Path.cwd()
@@ -258,8 +266,10 @@ class AdmissionControls(unittest.TestCase):
             patch.object(Path, "read_text", return_value=content),
             patch.object(
                 adapter,
-                "map_path",
-                side_effect=lambda owner, value: "Z:\\private\\" + value.name,
+                "map_paths",
+                side_effect=lambda owner, values: [
+                    "Z:\\private\\" + value.name for value in values
+                ],
             ),
         ):
             result = adapter.guest_environment(
@@ -294,7 +304,9 @@ class AdmissionControls(unittest.TestCase):
                 ),
                 patch.object(Path, "read_text", return_value=content),
                 patch.object(
-                    adapter, "map_path", return_value="Z:\\private\\synthetic.json"
+                    adapter,
+                    "map_paths",
+                    return_value=["Z:\\private\\synthetic.json", "Z:\\private"],
                 ),
             ):
                 with self.assertRaises(RuntimeError):
@@ -343,6 +355,215 @@ class AdmissionControls(unittest.TestCase):
     def test_bridge_executable_rejects_native_python_and_non_exe(self):
         with self.assertRaises(RuntimeError):
             adapter.executable(__file__)
+
+    def test_bridge_preserves_protocol_failure_when_settlement_also_fails(self):
+        """
+        Protects: First protocol failure alongside independent cleanup evidence.
+        Detects: Settlement or HOLD-write errors replacing the runtime failure.
+        Needs: Mocked subprocesses and temporary files; no Wine or services.
+        Breadcrumb: mcp_wine_adapter.py bridge exception and settlement handling.
+        """
+        for hold_fails in (False, True):
+            with self.subTest(hold_fails=hold_fails):
+                self.check_bridge_first_failure(hold_fails)
+
+    def check_bridge_first_failure(self, hold_fails):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = Child(None)
+            child.stdout = [b"[]\n"]
+            child.stderr = io.BytesIO()
+            thread = SimpleNamespace(start=lambda: None)
+            with (
+                patch.object(adapter, "provider_for", return_value=Provider()),
+                patch.object(
+                    adapter, "executable", return_value=(root / "mcp.exe", "digest")
+                ),
+                patch.object(adapter, "guest_environment", return_value={}),
+                patch.object(adapter.subprocess, "Popen", return_value=child),
+                patch.object(adapter.threading, "Thread", return_value=thread),
+                patch.object(adapter, "launch_ready", return_value=lambda: None),
+                patch.object(
+                    adapter, "settle", side_effect=RuntimeError("cleanup failed")
+                ),
+                patch.object(Path, "touch", side_effect=OSError("hold failed"))
+                if hold_fails
+                else patch.object(Path, "touch", wraps=(root / "mcp-wine-HOLD").touch),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "response is not an object"
+                ) as caught:
+                    adapter.bridge(root, "mcp.exe", [], {})
+            self.assertEqual(
+                caught.exception.mcp_cleanup_failure["class"], "RuntimeError"
+            )
+            if hold_fails:
+                self.assertEqual(
+                    caught.exception.mcp_cleanup_failure["hold_failure"]["class"],
+                    "OSError",
+                )
+            else:
+                self.assertTrue((root / "mcp-wine-HOLD").exists())
+
+    def test_batched_mapping_refuses_incomplete_extra_blank_or_reordered_records(self):
+        """
+        Protects: Complete ordered mapping records and every owned-path round-trip.
+        Detects: Missing terminators, extra or blank records, and swapped paths.
+        Needs: Mocked Wine commands and temporary paths; no Wine or services.
+        Breadcrumb: mcp_wine_adapter.py map_paths record and reverse validation.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            config = root / "fixture with spaces.json"
+            config.write_text("{}")
+            forward = "Z:\\owned\\fixture with spaces.json\x00Z:\\owned\x00"
+            reverse = str(config) + "\x00" + str(root) + "\x00"
+            for output, back in (
+                (forward[:-1], reverse),
+                (forward + "Z:\\extra\x00", reverse),
+                ("Z:\\owned\x00\x00", reverse),
+                (forward, str(root) + "\x00" + str(config) + "\x00"),
+                (forward, reverse[:-1]),
+                (forward, reverse + str(root) + "\x00"),
+            ):
+                with self.subTest(output=output, back=back):
+                    provider = SimpleNamespace(
+                        command=lambda args: output if args[1] == "-w" else back
+                    )
+                    with self.assertRaises(RuntimeError):
+                        adapter.map_paths(provider, [config, root])
+
+    def test_stage_failure_reports_static_metadata_without_message_or_environment(self):
+        """
+        Protects: Useful stage timing and static failure evidence without secrets.
+        Detects: Exception messages leaking into recorded diagnostic metadata.
+        Needs: Synthetic exceptions and an isolated context; no Wine or services.
+        Breadcrumb: mcp_wine_adapter.py stage and static_failure.
+        """
+        secret = "synthetic-sensitive-marker"
+        token = adapter.STAGES.set([])
+        try:
+            with self.assertRaises(OSError):
+                adapter.stage(
+                    "mapping-forward", lambda: (_ for _ in ()).throw(OSError(5, secret))
+                )
+            events = adapter.STAGES.get()
+            self.assertEqual(events[0]["stage"], "mapping-forward")
+            self.assertEqual(events[0]["status"], "FAIL")
+            self.assertEqual(events[0]["failure"]["errno"], 5)
+            self.assertGreaterEqual(events[0]["seconds"], 0)
+            self.assertNotIn(secret, json.dumps(events))
+        finally:
+            adapter.STAGES.reset(token)
+
+    def test_main_failure_redacts_exception_messages_and_resets_stage_context(self):
+        """
+        Protects: Safe top-level failure output and per-invocation stage isolation.
+        Detects: Raw exception text or stage state leaking into later invocations.
+        Needs: Mocked fixture admission and bridge; no Wine or services.
+        Breadcrumb: mcp_wine_adapter.py main failure rendering and context reset.
+        """
+        secret = "synthetic-sensitive-marker"
+        root = Path("private-root")
+        output = io.StringIO()
+        outer_events = []
+        token = adapter.STAGES.set(outer_events)
+        try:
+            with (
+                patch.object(adapter, "fixture_root", return_value=root),
+                patch.object(adapter.sys, "platform", "linux"),
+                patch.object(adapter.sys, "stderr", output),
+                patch.object(adapter, "bridge", side_effect=OSError(5, secret)),
+            ):
+                code = adapter.main(
+                    ["bridge", "--root", str(root), "--command", "private.exe"]
+                )
+            self.assertEqual(code, 1)
+            diagnostic = json.loads(output.getvalue().splitlines()[0])
+            self.assertEqual(diagnostic["failure"]["class"], "OSError")
+            self.assertEqual(diagnostic["failure"]["errno"], 5)
+            self.assertNotIn(secret, output.getvalue())
+            self.assertIs(adapter.STAGES.get(), outer_events)
+        finally:
+            adapter.STAGES.reset(token)
+
+    def test_retained_failure_is_private_redacted_and_never_overwrites(self):
+        """
+        Protects: Private redacted failure receipts and preservation of prior bytes.
+        Detects: Reused names overwriting evidence or overly broad file permissions.
+        Needs: Temporary files; POSIX permission checks on POSIX; no services.
+        Breadcrumb: mcp_wine_adapter.py retain_failure exclusive mode-0600 write.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            error = OSError(5, "synthetic-sensitive-marker")
+            diagnostic = {"failure": adapter.static_failure(error), "stages": []}
+            with patch.object(adapter, "fixture_root", return_value=root):
+                first = adapter.retain_failure(root, diagnostic)
+                second = adapter.retain_failure(root, diagnostic)
+                self.assertNotEqual(first, second)
+                payload = (root / first).read_bytes()
+                self.assertNotIn(b"synthetic-sensitive-marker", payload)
+                self.assertEqual(json.loads(payload), diagnostic)
+                if sys.platform != "win32":
+                    self.assertEqual((root / first).stat().st_mode & 0o777, 0o600)
+                # Force a UUID collision; the first receipt must remain byte-identical.
+                identifier = first.removeprefix("mcp-wine-failure-").removesuffix(
+                    ".json"
+                )
+                with patch.object(
+                    adapter.uuid, "uuid4", return_value=SimpleNamespace(hex=identifier)
+                ):
+                    with self.assertRaises(FileExistsError):
+                        adapter.retain_failure(root, {"different": True})
+                self.assertEqual((root / first).read_bytes(), payload)
+
+    def test_failed_receipt_write_does_not_mask_first_failure(self):
+        """
+        Protects: First runtime failure when private receipt retention fails.
+        Detects: Storage faults masking the cause or exposing exception messages.
+        Needs: Mocked runtime and retention exceptions; no Wine or services.
+        Breadcrumb: mcp_wine_adapter.py main retention_failure handling.
+        """
+        output = io.StringIO()
+        with (
+            patch.object(adapter, "fixture_root", return_value=Path("private-root")),
+            patch.object(adapter.sys, "platform", "linux"),
+            patch.object(adapter.sys, "stderr", output),
+            patch.object(
+                adapter, "bridge", side_effect=RuntimeError("private first marker")
+            ),
+            patch.object(
+                adapter,
+                "retain_failure",
+                side_effect=OSError(13, "private write marker"),
+            ),
+        ):
+            code = adapter.main(
+                ["bridge", "--root", "private-root", "--command", "private.exe"]
+            )
+        self.assertEqual(code, 1)
+        diagnostic = json.loads(output.getvalue().splitlines()[0])
+        self.assertEqual(diagnostic["failure"]["class"], "RuntimeError")
+        self.assertEqual(diagnostic["retention_failure"]["class"], "PermissionError")
+        self.assertEqual(diagnostic["retention_failure"]["errno"], 13)
+        self.assertNotIn("private first marker", output.getvalue())
+        self.assertNotIn("private write marker", output.getvalue())
+
+    def test_receipt_requires_revalidated_owned_root(self):
+        """
+        Protects: Diagnostic writes staying inside an admitted private fixture.
+        Detects: Writing evidence after the fixture ownership check rejects it.
+        Needs: Mocked ownership failure and temporary paths; no Wine or services.
+        Breadcrumb: mcp_wine_adapter.py retain_failure fixture_root revalidation.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(
+                adapter, "fixture_root", side_effect=RuntimeError("owner changed")
+            ):
+                with self.assertRaisesRegex(RuntimeError, "owner changed"):
+                    adapter.retain_failure(Path(directory), {})
+            self.assertEqual(list(Path(directory).iterdir()), [])
 
     def launch_fixture(self, directory):
         root = Path(directory)
