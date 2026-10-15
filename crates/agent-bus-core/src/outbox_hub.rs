@@ -994,45 +994,97 @@ mod backend_tests {
     #[test]
     #[ignore = "requires owned disposable Redis and PostgreSQL"]
     fn outbox_cached_claim_success_after_expiry_is_not_an_active_grant() {
+        use redis::Commands as _;
+
         let (mut settings, mut conn) = fixture();
         settings.database_url = None;
-        let mut req = request(
-            &mut conn,
-            Operation::ClaimRequest,
-            json!({"agent":"fixture","resource":format!("fixture-{}",Uuid::new_v4()),"lease_ttl_seconds":4}),
+        let resource = format!("fixture-{}", Uuid::new_v4());
+        let mut env = envelope(
+            &settings,
+            request(
+                &mut conn,
+                Operation::ClaimRequest,
+                json!({"agent":"fixture","resource":resource,"lease_ttl_seconds":60}),
+            ),
         );
-        req.expires_ms = req.created_ms + 4000;
-        let env = envelope(&settings, req);
+        env.request.validate().unwrap();
+        let request_id = env.request.request_id;
         let first = accept(&mut conn, &settings, &env, true).unwrap();
-        assert!(matches!(first, ReplayResponse::Applied { .. }));
-        assert_eq!(accept(&mut conn, &settings, &env, true).unwrap(), first);
         let ReplayResponse::Applied { result } = &first else {
-            unreachable!()
+            panic!("initial authority not established");
         };
-        let lease_expiry = u64::try_from(
-            chrono::DateTime::parse_from_rfc3339(result["expires_at"].as_str().unwrap())
-                .unwrap()
-                .timestamp_millis(),
-        )
-        .unwrap();
-        assert!(
-            lease_expiry < env.request.expires_ms,
-            "flooring TTL creates earlier actual lease expiry"
-        );
-        let (seconds, micros): (u64, u64) = redis::cmd("TIME").query(&mut conn).unwrap();
-        let now = seconds * 1000 + micros / 1000;
-        std::thread::sleep(std::time::Duration::from_millis(
-            lease_expiry.saturating_sub(now) + 50,
-        ));
-        let (seconds, micros): (u64, u64) = redis::cmd("TIME").query(&mut conn).unwrap();
-        assert!(
-            seconds * 1000 + micros / 1000 < env.request.expires_ms,
-            "actual lease expiry must be tested before request expiry"
-        );
+        assert_eq!(result["status"], "granted");
+        assert_eq!(accept(&mut conn, &settings, &env, true).unwrap(), first);
+        let memo = memo_key(&settings, &env.request);
+        let claims = crate::channels::claims_key(&resource);
+        let raw: String = conn.get(&memo).unwrap();
+        let mut record: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(record["state"], "applied");
+        assert_eq!(record["response"], serde_json::to_string(&first).unwrap());
+        let authoritative: String = conn.hget(&claims, "fixture").unwrap();
         assert_eq!(
-            accept(&mut conn, &settings, &env, true).unwrap(),
-            ReplayResponse::Superseded
+            serde_json::from_str::<Value>(&authoritative).unwrap(),
+            *result
         );
+
+        // Fault-inject stored cutoffs using actual Redis TIME, not a wall-clock
+        // sleep or a claim-TTL rounding window. Keep live and cached claims equal
+        // so claim mismatch cannot hide a missing cached-expiry guard.
+        for expired_request in [false, true] {
+            let (seconds, micros): (u64, u64) = redis::cmd("TIME").query(&mut conn).unwrap();
+            let now = seconds * 1000 + micros / 1000;
+            let cutoff = if expired_request {
+                now + 60_000
+            } else {
+                now - 60_000
+            };
+            if expired_request {
+                env.request.created_ms = now - 120_000;
+                env.request.expires_ms = env.request.created_ms + 60_000;
+            }
+            env.request.validate().unwrap();
+            assert_eq!(env.request.request_id, request_id);
+            assert_eq!(env.request.expires_ms <= now, expired_request);
+            let mut claim = result.clone();
+            claim["expires_at"] = json!(timestamp(cutoff).unwrap());
+            record["fingerprint"] = json!(env.request.fingerprint().unwrap());
+            record["claim_expires_ms"] = json!(cutoff);
+            record["response"] = json!(
+                serde_json::to_string(&ReplayResponse::Applied {
+                    result: claim.clone(),
+                })
+                .unwrap()
+            );
+            let cached = record.to_string();
+            let live = claim.to_string();
+            redis::pipe()
+                .atomic()
+                .cmd("SET")
+                .arg(&memo)
+                .arg(&cached)
+                .ignore()
+                .cmd("HSET")
+                .arg(&claims)
+                .arg("fixture")
+                .arg(&live)
+                .ignore()
+                .query::<()>(&mut conn)
+                .unwrap();
+            assert_eq!(
+                accept(&mut conn, &settings, &env, true).unwrap(),
+                ReplayResponse::Superseded,
+                "stored cutoff must supersede cached grant (expired_request={expired_request})"
+            );
+            let after: (String, String) = (
+                conn.get(&memo).unwrap(),
+                conn.hget(&claims, "fixture").unwrap(),
+            );
+            assert_eq!(
+                after,
+                (cached, live),
+                "replay must not renew or mutate authority"
+            );
+        }
     }
 
     #[test]
