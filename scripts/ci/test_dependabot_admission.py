@@ -314,6 +314,81 @@ def evaluate(code: str, scenario: str) -> tuple[str, list[str]]:
         return values["verdict"], json.loads(values["details"])
 
 
+def policy_script(workflow: Path) -> str:
+    """The exact `Decide policy` run block, dedented."""
+    source = workflow.read_text(encoding="utf-8")
+    step = r"(?ms)^    - name: Decide policy\n.*?^      run: \|\n"
+    body = r"((?:(?:        [^\n]*)?\n)*)"
+    matched = re.search(step + body, source)
+    if matched is None:
+        raise AssertionError("Decide policy step missing")
+    return textwrap.dedent(matched[1])
+
+
+def posix_bash() -> tuple[str, str]:
+    """A POSIX bash and the PATH its coreutils need.
+
+    On Windows `bash` resolves to the WSL launcher, which fails when no distribution
+    is installed (hosted Windows runners), so use Git for Windows' bash explicitly.
+    """
+    if os.name == "nt":
+        usr_bin = (
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+            / "Git"
+            / "usr"
+            / "bin"
+        )
+        bash = usr_bin / "bash.exe"
+        if not bash.is_file():
+            raise AssertionError(
+                f"POSIX bash required: install Git for Windows ({bash})"
+            )
+        return str(bash), str(usr_bin) + os.pathsep + os.environ.get("PATH", "")
+    return "bash", "/usr/bin:/bin"
+
+
+def run_policy(script: str, held: str) -> str:
+    """Run Decide policy for an eligible patch bump; return its decision.
+
+    ``held`` is HELD_DIRECTORY as the job env leaves it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp) / "out"
+        out.write_text("", encoding="utf-8")
+        bash, path = posix_bash()
+        env = {
+            "PATH": path,
+            "GITHUB_OUTPUT": str(out),
+            "DENY_LIST_REGEX": "(^|[-_])torch([-_]|$)",
+            "EXTRA_DENY_REGEX": "",
+            "AUTHOR": "dependabot[bot]",
+            "UPDATE_TYPE": "version-update:semver-patch",
+            "DEP_NAMES": "serde",
+            "DEP_GROUP": "",
+            "PREV_VERSION": "1.0.1",
+            "NEW_VERSION": "1.0.2",
+            "UPDATED_DEPS_JSON": "",
+            "HELD_DIRECTORY": held,
+        }
+        if os.name == "nt":  # msys needs these to start; they carry no policy input
+            env.update(
+                {
+                    k: os.environ[k]
+                    for k in ("SYSTEMROOT", "TEMP", "TMP")
+                    if k in os.environ
+                }
+            )
+        result = subprocess.run(
+            [bash, "-c", script], env=env, capture_output=True, text=True, check=False
+        )
+        if result.returncode != 0:
+            raise AssertionError(result.stdout + result.stderr)
+        values = dict(
+            line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines()
+        )
+        return values["decision"]
+
+
 class AdmissionTests(unittest.TestCase):
     code: str
     workflow_text: str
@@ -336,6 +411,23 @@ class AdmissionTests(unittest.TestCase):
             ).read_text(encoding="utf-8")
         if not hasattr(cls, "code"):
             cls.code = gate_source(root / ".github/workflows/dependabot-automerge.yml")
+
+    def test_inherited_held_directory_cannot_hold_an_eligible_update(self) -> None:
+        """Protects: auto-merge from a HELD_DIRECTORY inherited from a runner.
+
+        Detects: the job env no longer pinning HELD_DIRECTORY empty (review of #137).
+        Needs: bash and the exact Decide policy step.
+        Breadcrumb: dependabot-automerge.yml decide job env.
+        """
+        self.assertRegex(self.workflow_text, r'(?m)^      HELD_DIRECTORY: ""$')
+        script = policy_script(
+            Path(__file__).resolve().parents[2]
+            / ".github/workflows/dependabot-automerge.yml"
+        )
+        self.assertEqual(run_policy(script, ""), "automerge")
+        # Positive control, same pass: an inherited value would hold, which is why
+        # the job env pins it empty.
+        self.assertEqual(run_policy(script, "/ambient"), "hold")
 
     def test_trusted_policy_inventory_matches_independent_producer_oracle(self) -> None:
         policy = declared_json(self.workflow_text, "REVIEWED_JOB_INVENTORY_JSON")
