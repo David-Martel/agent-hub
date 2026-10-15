@@ -35,6 +35,10 @@ jobs:
     - X64
     env:
       DENY_LIST_REGEX: (^|[-_])(torch|cuda|cudnn|cublas|tensorrt|nvidia|nvinfer)([-_]|$)|(^|[-_])ros[-_2]|(^|[-_])rclpy([-_]|$)
+      # The vendored Decide policy holds when HELD_DIRECTORY is set (vigil-utils' caller-only directory hold).
+      # agent-hub has no such producer, so pin it empty: a value inherited from a self-hosted runner must never
+      # hold every eligible update (codex review of #137).
+      HELD_DIRECTORY: ""
       PR_NUMBER: ${{ inputs.pr_number || github.event.workflow_run.pull_requests[0].number || 0 }}
       DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
       EXPECTED_WORKFLOWS_JSON: '["CI"]'
