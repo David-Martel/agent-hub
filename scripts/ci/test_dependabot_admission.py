@@ -325,6 +325,28 @@ def policy_script(workflow: Path) -> str:
     return textwrap.dedent(matched[1])
 
 
+def posix_bash() -> tuple[str, str]:
+    """A POSIX bash and the PATH its coreutils need.
+
+    On Windows `bash` resolves to the WSL launcher, which fails when no distribution
+    is installed (hosted Windows runners), so use Git for Windows' bash explicitly.
+    """
+    if os.name == "nt":
+        usr_bin = (
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
+            / "Git"
+            / "usr"
+            / "bin"
+        )
+        bash = usr_bin / "bash.exe"
+        if not bash.is_file():
+            raise AssertionError(
+                f"POSIX bash required: install Git for Windows ({bash})"
+            )
+        return str(bash), str(usr_bin) + os.pathsep + os.environ.get("PATH", "")
+    return "bash", "/usr/bin:/bin"
+
+
 def run_policy(script: str, held: str) -> str:
     """Run Decide policy for an eligible patch bump; return its decision.
 
@@ -333,8 +355,9 @@ def run_policy(script: str, held: str) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "out"
         out.write_text("", encoding="utf-8")
+        bash, path = posix_bash()
         env = {
-            "PATH": "/usr/bin:/bin",
+            "PATH": path,
             "GITHUB_OUTPUT": str(out),
             "DENY_LIST_REGEX": "(^|[-_])torch([-_]|$)",
             "EXTRA_DENY_REGEX": "",
@@ -347,8 +370,16 @@ def run_policy(script: str, held: str) -> str:
             "UPDATED_DEPS_JSON": "",
             "HELD_DIRECTORY": held,
         }
+        if os.name == "nt":  # msys needs these to start; they carry no policy input
+            env.update(
+                {
+                    k: os.environ[k]
+                    for k in ("SYSTEMROOT", "TEMP", "TMP")
+                    if k in os.environ
+                }
+            )
         result = subprocess.run(
-            ["bash", "-c", script], env=env, capture_output=True, text=True, check=False
+            [bash, "-c", script], env=env, capture_output=True, text=True, check=False
         )
         if result.returncode != 0:
             raise AssertionError(result.stdout + result.stderr)
