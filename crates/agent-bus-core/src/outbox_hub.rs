@@ -1001,11 +1001,12 @@ mod backend_tests {
             Operation::ClaimRequest,
             json!({"agent":"fixture","resource":format!("fixture-{}",Uuid::new_v4()),"lease_ttl_seconds":4}),
         );
-        // A deadline 4.5 s out, not 4 s: the hub floors the remaining TTL to whole seconds at ACCEPT time, so with an
-        // integral deadline an accept in the same millisecond as `request()` kept all 4 s and the lease ended exactly
-        // at the deadline (strict `<` below failed on fast runners). The half second keeps the floor strictly below
-        // the deadline for any accept delay under ~450 ms.
-        req.expires_ms = req.created_ms + 4500;
+        // Created 500 ms in the past. The hub floors the remaining TTL to whole seconds at ACCEPT time, so an accept in
+        // the same millisecond as `request()` kept all 4 s and the lease ended exactly at the deadline (the strict `<`
+        // below failed on fast runners). The window must stay exactly lease_ttl_seconds (validate()), so the request is
+        // backdated instead: the floor then always drops to 3 s, for any accept delay under ~450 ms.
+        req.created_ms -= 500;
+        req.expires_ms = req.created_ms + 4000;
         let env = envelope(&settings, req);
         let first = accept(&mut conn, &settings, &env, true).unwrap();
         assert!(matches!(first, ReplayResponse::Applied { .. }));
