@@ -1,6 +1,6 @@
 # Fleet reconciliation and efficiency plan
 
-Observed 2026-10-14. Coordinator: `codex-p1-agenthub-reconcile`.
+Observed through 2026-10-15 UTC. Coordinator: `codex-p1-agenthub-reconcile`.
 Baseline source: `2fbca7ec8812a1158df61027a41c38eb8ad65fa6`.
 Repository: `David-Martel/agent-hub`; local folder names may differ.
 
@@ -37,10 +37,12 @@ the hosted runner's default test profile.
   files require at most glibc 2.34, compatible with vigil1's observed 2.35.
   Configured MCP, CLI, HTTP/SSE and database nonce checks passed. Old binaries,
   file metadata and runtime configuration are preserved.
-- These are source-bound client canaries. Their Git checkouts remain at the
-  initial `2fbca7e` baseline; maintenance snapshot publication and clone source
-  reconciliation remain separate open gates. No ASUS hub, live HIL, active NUC MCP or shared runner
-  service was restarted.
+- These are source-bound client canaries at `60f8c76`. Five primary checkouts
+  (ASUS, NUC, Carbon and both Sparks) now match accepted main
+  `b4af6fd0644d35bb16520534923dbecb60f79744` after normal fast-forwards.
+  Ignored files, configuration and detached/locked worktrees were preserved.
+  Source updates do not establish that an existing process runs that source.
+  No ASUS hub, live HIL, active NUC MCP or shared runner service was restarted.
 - Both Sparks now have the three native Linux ARM64 binaries from the same
   maintenance snapshot. Actual native builds used Rust 1.99, Clang/LLD 23.1.3
   and sccache 0.18. The installed files require at most glibc 2.39, matching
@@ -61,6 +63,20 @@ the hosted runner's default test profile.
   command with five detecting mutations. Existing cache, timeout and foreign
   process controls remain intact. Python and the four native helper checks now
   run before compilation; all five passed in the current hosted run.
+- PR #132 is also merged after all sixteen checks passed at its exact reviewed
+  head. Accepted main is `b4af6fd`; its new run `38657783585` fails the cached
+  claim expiry backend test, so current-main CI acceptance remains OPEN.
+  PR #133's first repair violates the four-second envelope invariant and fails
+  its first acceptance call. The owner received the verified blocker; do not
+  loosen production validation or merge a timing-only repair.
+- The maintenance branch was normally published at signed `3f20fab`, with
+  1,218 passing tests, zero failures, 107 ignored and blocking audit passed.
+  Subsequent local commits integrate accepted main, add a bounded Cloud error
+  diagnostic and replace release-time Windows cross-compilation with admitted
+  native artifacts. The latter passed 44 controls and a live accepted-main
+  download, native revision/MCP check, fresh CI readback and identical-byte
+  staging. These receipts qualify that reuse path against `5312338`; they do
+  not establish current maintenance shipping CI or a published release.
 - An identical SDK probe proves Wine 11 loses protected DACLs and adds a second
   ACE on reopen; native Windows retains the required sole-owner descriptor.
   The guard remains strict. Required Windows tests now run on native Windows.
@@ -73,7 +89,8 @@ the hosted runner's default test profile.
 - The independent ephemeral Windows smoke runner accepts only the reviewed
   source head, runtime SHA, event, ref, run, attempt and job. Its hook is
   single-use and fails closed. Separate admissions passed for the PR and main;
-  both listeners exited and deregistered after their jobs. This is trusted-job
+  all listeners exited and deregistered after their jobs, including PR #132.
+  No listener or approval remains armed. This is trusted-job
   admission, not OS or Docker isolation.
 - ASUS hub/client rollout still needs the live runtime scheduler's custody
   window; current publishing/HIL requires continuity. NUC MCP remains active
@@ -81,18 +98,30 @@ the hosted runner's default test profile.
   Hyperacusis lane; its command, old binary and metadata are preserved pending
   handoff. The separate P1 maintenance service still runs its older pinned
   executable. Locked Spark worktrees and running jobs are protected.
-- Duplicate PRs #125 and #127 are closed after accepted-source inclusion and
-  verified private Git-bundle preservation. New PRs #131 and #132 are active
-  review lanes; their heads must be refreshed before disposition. PRs #126,
-  #130 and Dependabot #124 remain open. Owned worktree retirement requires
-  preservation of ignored artifacts and fresh writer checks.
+- Duplicate PRs #125, #127 and #131 are closed after accepted-source inclusion
+  and verified private Git-bundle preservation. Both owned merged worktrees
+  and their branches were retired normally after fresh custody checks.
+  Fifteen ignored cache files were preserved; only the checked junction was
+  unlinked, retaining its external compiler cache. The primary checkout is
+  the sole local worktree. PRs #126, #130, Dependabot #124 and the new expiry
+  repair #133 remain open; other owners' work remains protected.
 - Cloudflare provider authentication now succeeds through the existing
   credential backend; account, Worker and domain reads return HTTP 200. Valid
   ASUS actor requests still return HTTP 500 while invalid tokens return 401.
   Observed daily SQLite reads are 5,115,274, above the Free allowance of
   5,000,000. Quota exhaustion is a supported inference, not a captured exception.
-  The reviewed batching/index deployment and authenticated check after the
-  midnight UTC reset are in progress; no billing or token rotation was performed.
+  The batching/index build was deployed as version `51d78150` with exact
+  compiled-bundle readback and unchanged bindings/domain. Valid actor requests
+  still returned 500 after midnight UTC; quota exhaustion is not proven as the
+  continuing cause. A reviewed diagnostic passes 232 Windows and 232 Linux
+  tests plus TypeScript checks. Its broad credential-bootstrap launch was
+  rejected by automatic policy before execution. A narrower existing-session
+  read-only preflight returns provider 200 without login, unlock or auth writes.
+  The diagnostic is now deployed as version `85a4bc07`, with exact compiled
+  bundle readback, source annotations and unchanged bindings, domain,
+  compatibility and observability. Authenticated runtime diagnosis continues.
+  No billing, token rotation or Durable Object data mutation was performed by
+  the deployment actor. Vitest 5 remains an explicit vendor compatibility hold.
 
 Private receipts include `carbon-native-canary.json`, `vigil-native-canary.json`,
 `native-windows-source-review.json`, `runner-admission-review.json` and the Linux
