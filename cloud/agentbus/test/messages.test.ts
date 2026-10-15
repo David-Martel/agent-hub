@@ -5,6 +5,112 @@ import app from "../src/index";
 import type { ReadMessagesQuery } from "../src/do-buslog";
 import { apiJson, CLAUDE_TOKEN, CODEX_TOKEN, HUB_A, HUB_A_TOKEN, HUB_B, HUB_B_TOKEN, postJson } from "./helpers";
 
+describe("rate admission exception diagnostics", () => {
+  function failingBindings(failure: unknown) {
+    const stub = { checkRateLimit: vi.fn(() => { throw failure; }) };
+    return {
+      ...env,
+      BUS_LOG: { idFromName: () => "global", get: () => stub } as unknown as typeof env.BUS_LOG,
+    };
+  }
+
+  it("records bounded exception fields without serializing request or error context", async () => {
+    const privateMarker = "private-request-context-must-not-be-serialized";
+    const failure = Object.assign(new Error("controlled storage failure ".repeat(40)), {
+      headers: { authorization: privateMarker },
+      body: privateMarker,
+      config: { AGENT_BUS_TOKENS: privateMarker },
+    });
+    failure.name = `StorageFailure${"x".repeat(80)}`;
+    failure.stack = "controlled storage stack\n".repeat(120);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await app.request("/messages", {
+        method: "POST",
+        headers: { authorization: `Bearer ${CLAUDE_TOKEN}`, "x-private-context": privateMarker },
+        body: privateMarker,
+      }, failingBindings(failure));
+      expect(response.status).toBe(500);
+      expect(response.headers.get("content-type")).toBe("text/plain; charset=UTF-8");
+      expect(await response.text()).toBe("Internal Server Error");
+      const encoded = logged.mock.calls.find(([value]) => typeof value === "string")?.[0];
+      expect(typeof encoded).toBe("string");
+      const metadata = JSON.parse(encoded as string);
+      expect(metadata).toEqual({
+        event: "rate_admission_failure",
+        name: failure.name.slice(0, 64),
+        message: failure.message.slice(0, 512),
+        stack: failure.stack.slice(0, 2048),
+      });
+      expect(encoded).not.toContain(privateMarker);
+      // Hono must receive the SAME rejection, not a diagnostic replacement.
+      expect(logged.mock.calls.find(([value]) => value === failure)?.[0]).toBe(failure);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("rethrows the original error even if the additional diagnostic logger fails", async () => {
+    const failure = new Error("original controlled storage rejection");
+    const logged = vi.spyOn(console, "error")
+      .mockImplementationOnce(() => { throw new Error("controlled diagnostic logger failure"); })
+      .mockImplementation(() => {});
+    try {
+      const response = await app.request("/presence", {
+        headers: { authorization: `Bearer ${CLAUDE_TOKEN}` },
+      }, failingBindings(failure));
+      expect(response.status).toBe(500);
+      expect(await response.text()).toBe("Internal Server Error");
+      expect(logged.mock.calls.at(-1)?.[0]).toBe(failure);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("preserves a non-Error rejection without inspecting or serializing it", async () => {
+    const failure = {
+      body: "private non-Error context",
+      toString: () => { throw new Error("unsafe string conversion"); },
+      toJSON: () => { throw new Error("unsafe JSON conversion"); },
+    };
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(app.request("/presence", {
+        headers: { authorization: `Bearer ${CLAUDE_TOKEN}` },
+      }, failingBindings(failure))).rejects.toBe(failure);
+      expect(JSON.parse(logged.mock.calls[0]?.[0] as string)).toEqual({
+        event: "rate_admission_failure", name: "NonError", message: "non-Error rejection",
+      });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("keeps unauthenticated and rate-denied requests outside diagnostic logging", async () => {
+    const stub = { checkRateLimit: vi.fn(() => false) };
+    const bindings = {
+      ...env,
+      BUS_LOG: { idFromName: () => "global", get: () => stub } as unknown as typeof env.BUS_LOG,
+    };
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const denied = await app.request("/presence", {}, bindings);
+      expect(denied.status).toBe(401);
+      expect(stub.checkRateLimit).not.toHaveBeenCalled();
+      const throttled = await app.request("/presence", {
+        headers: { authorization: `Bearer ${CLAUDE_TOKEN}` },
+      }, bindings);
+      expect(throttled.status).toBe(429);
+      expect(throttled.headers.get("retry-after")).toBe("60");
+      expect(await throttled.json()).toEqual({ error: "rate limit exceeded" });
+      expect(stub.checkRateLimit).toHaveBeenCalledTimes(1);
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
+  });
+});
+
 describe("POST /messages", () => {
   it("sends a message and returns the stored Message shape", async () => {
     const { status, body } = await postJson<Record<string, unknown>>("/messages", {
