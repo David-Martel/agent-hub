@@ -142,6 +142,11 @@ function json(body: unknown, status = 200): Response {
 async function guarded(fn: () => unknown | Promise<unknown>): Promise<Response> {
   try {
     const result = await fn();
+    if (result instanceof Response) {
+      const headers = new Headers(result.headers);
+      for (const [name, value] of Object.entries(SECURITY_HEADERS)) headers.set(name, value);
+      return new Response(result.body, { status: result.status, headers });
+    }
     return json(result);
   } catch (err) {
     if (err instanceof ClaimsAuthorityError) return errorResponse(409, err.message);
@@ -182,7 +187,25 @@ app.use("*", async (c, next) => {
 
   const limit = Number(c.env.RATE_LIMIT_PER_MINUTE) || DEFAULT_RATE_LIMIT_PER_MINUTE;
   const identityKey = `${identity.role}:${identity.agent}:${identity.host ?? ""}`;
-  const withinBudget = await busLogStub(c.env).checkRateLimit(identityKey, limit);
+  let withinBudget: boolean;
+  try {
+    withinBudget = await busLogStub(c.env).checkRateLimit(identityKey, limit);
+  } catch (error) {
+    // Error objects currently reach Workers Logs as stack frames alone. This
+    // RPC runs before parsing a request body; retain only bounded exception
+    // fields, never the identity, request, bindings, cause or error context.
+    try {
+      console.error(JSON.stringify({
+        event: "rate_admission_failure",
+        name: error instanceof Error ? error.name.slice(0, 64) : "NonError",
+        message: error instanceof Error ? error.message.slice(0, 512) : "non-Error rejection",
+        stack: error instanceof Error && typeof error.stack === "string" ? error.stack.slice(0, 2048) : undefined,
+      }));
+    } catch {
+      // A diagnostic failure must not replace the original RPC rejection.
+    }
+    throw error;
+  }
   if (!withinBudget) {
     return new Response(JSON.stringify({ error: "rate limit exceeded" }), {
       status: 429,
@@ -437,25 +460,15 @@ app.post("/read/batch", async (c) => {
     const limit = Math.min(Math.max(coerceOptionalInt(body.limit, "limit", { min: 1 }) ?? DEFAULT_LIMIT, 1), 500);
     const broadcast = body.broadcast ?? true;
 
-    const stub = busLogStub(c.env);
-    const seen = new Set<string>();
-    const all = [];
-    for (const agent of agents) {
-      const msgs = await stub.listMessages({
+    const sinceMs = Date.now() - since * 60_000;
+    return busLogStub(c.env).listMessagesBatch(
+      agents.map((agent) => ({
         agent,
-        since_ms: Date.now() - since * 60_000,
+        since_ms: sinceMs,
         limit,
         include_broadcast: broadcast,
-      });
-      for (const m of msgs) {
-        if (!seen.has(m.id)) {
-          seen.add(m.id);
-          all.push(m);
-        }
-      }
-    }
-    all.sort((a, b) => a.timestamp_utc.localeCompare(b.timestamp_utc));
-    return all;
+      })),
+    );
   });
 });
 

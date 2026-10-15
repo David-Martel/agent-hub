@@ -360,7 +360,7 @@ mod tests {
             topic: None,
         };
         let scoped = scoped_required_tags(&filters);
-        assert!(scoped.is_empty());
+        assert_eq!(scoped, [] as [std::string::String; 0]);
     }
 
     // -------------------------------------------------------------------

@@ -33,7 +33,7 @@ Dated post-split architecture snapshot:
 ## Build, Test, and Development Commands
 
 Run from the repository root with the compiler pinned by
-[`rust-toolchain.toml`](./rust-toolchain.toml) (currently Rust 1.98.1). Linux
+[`rust-toolchain.toml`](./rust-toolchain.toml) (currently Rust 1.99.0). Linux
 uses native Cargo; Windows build automation uses PowerShell. On deployment
 hosts, run ordinary QA in an isolated disposable container with source mounted
 read-only; do not inherit live bus configuration or credentials.

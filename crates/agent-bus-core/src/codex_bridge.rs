@@ -238,7 +238,7 @@ mod tests {
     fn discover_codex_returns_config() {
         // On CI or machines without Codex config, this returns defaults.
         let config = discover_codex().expect("discover should succeed");
-        assert!(!config.effective_agent_id().is_empty());
+        assert_ne!(config.effective_agent_id(), "");
     }
 
     use crate::agent_profile::extract_severity;

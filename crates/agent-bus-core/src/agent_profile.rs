@@ -892,9 +892,9 @@ max_tokens = 8192
     #[test]
     fn parse_codex_toml_returns_defaults_for_empty_input() {
         let cfg = parse_codex_toml("");
-        assert!(cfg.model.is_empty());
-        assert!(cfg.mode.is_empty());
-        assert!(cfg.agent_id.is_empty());
+        assert_eq!(cfg.model, "");
+        assert_eq!(cfg.mode, "");
+        assert_eq!(cfg.agent_id, "");
         assert!(cfg.max_tokens.is_none());
         assert!(cfg.config_found); // parse_codex_toml is called only when file exists
     }

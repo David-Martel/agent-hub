@@ -3063,7 +3063,7 @@ mod tests {
         .unwrap_err();
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
         let rendered = format!("{error:#}");
-        assert!(rendered.contains("NOT_ESTABLISHED"));
+        assert!(rendered.contains("NOT_ESTABLISHED"), "{rendered}");
         assert!(!rendered.contains("dummy-private-output"));
     }
 

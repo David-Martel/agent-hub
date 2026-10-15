@@ -26,103 +26,96 @@ env:
 jobs:
   windows-x64:
     name: Windows x64 release
-    # Cross-compiled on Linux for x86_64-pc-windows-gnu (mingw-w64) on the windows-cross lane
-    # and checked under Wine. Earlier releases were MSVC-ABI builds from a native Windows runner.
-    runs-on: [self-hosted, Linux, X64, docker, windows-cross]
-    timeout-minutes: 60
-    env:
-      WINDOWS_TARGET: x86_64-pc-windows-gnu
-      WINEDEBUG: "-all"
+    # Reuse the same-commit main CI MSVC artifact after all reviewed jobs passed.
+    # No compilation or new fleet smoke admission occurs in the release job.
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v7
-      - name: Validate owned Wine job controls
-        run: python3 -B -m unittest discover -s scripts/ci -p test_wine_job.py -v
-      - name: Verify qualified cross runner, pinned compiler and strict cache
-        shell: pwsh
-        run: ./scripts/ci/setup-windows-cross.ps1
-
+        with:
+          persist-credentials: false
       - name: Verify Cargo version matches tag
-        shell: bash
+        shell: pwsh
         run: |
-          cargo_version="$(sed -nE 's/^version[[:space:]]*=[[:space:]]*"([^"]+)"/\1/p' crates/agent-bus-cli/Cargo.toml | head -1)"
-          tag_version="${GITHUB_REF_NAME#v}"
-          test "$cargo_version" = "$tag_version" || {
-            echo "Cargo version $cargo_version does not match tag $tag_version" >&2
-            exit 1
-          }
-
-      - name: Release build
-        timeout-minutes: 25
-        run: cargo build --locked --release --target "$WINDOWS_TARGET" --workspace --bins
-
-      - name: Verify embedded runtime revision under Wine
-        shell: bash
-        timeout-minutes: 5
+          $versions = @(Select-String -LiteralPath crates/agent-bus-cli/Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"\s*$')
+          if ($versions.Count -ne 1 -or $versions[0].Matches[0].Groups[1].Value -cne $env:GITHUB_REF_NAME.Substring(1)) { throw 'Cargo version does not match release tag' }
+      - name: Reuse exact-commit accepted main CI Windows artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
         run: |
-          python3 scripts/ci/wine_job.py versions \
-            --binary "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus.exe" \
-            --binary "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus-http.exe" \
-            --wine-version-file "$RUNNER_TEMP/wine-version.txt"
-
-      - name: Validate configured shipping GNU MCP executable
+          $release = Join-Path $env:RUNNER_TEMP 'agent-hub-native-release-artifact'
+          python -B scripts/ci/release_windows_artifact.py download `
+            --repo-root "$PWD" --repository "$env:GITHUB_REPOSITORY" `
+            --revision "$env:GITHUB_SHA" --artifact-dir "$release"
+          if ($LASTEXITCODE -ne 0) { throw 'Exact main CI Windows artifact admission failed' }
+      - name: Verify reused native revision and configured MCP before staging
         timeout-minutes: 10
         shell: pwsh
         run: |
-          $release = Join-Path $env:CARGO_TARGET_DIR "$env:WINDOWS_TARGET/release"
-          ./scripts/test-agent-client-config-validator.ps1 -WineTestLauncher `
+          # CLI serve delegates through PATH: bind it to this verified artifact pair.
+          $release = Join-Path $env:RUNNER_TEMP 'agent-hub-native-release-artifact'
+          $env:PATH = "$release$([IO.Path]::PathSeparator)$env:PATH"
+          function Read-ReusedNativeVersion([string]$Executable) {
+            $process = [Diagnostics.Process]::new()
+            $process.StartInfo.FileName = $Executable
+            $process.StartInfo.ArgumentList.Add('--version')
+            $process.StartInfo.UseShellExecute = $false
+            $process.StartInfo.RedirectStandardOutput = $true
+            $process.StartInfo.RedirectStandardError = $true
+            $process.StartInfo.Environment.Clear()
+            foreach ($key in @('SystemRoot', 'WINDIR', 'PATH', 'PATHEXT', 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA')) {
+              $value = [Environment]::GetEnvironmentVariable($key)
+              if ($null -ne $value) { $process.StartInfo.Environment[$key] = $value }
+            }
+            $process.StartInfo.Environment['AGENT_BUS_STARTUP_ENABLED'] = 'false'
+            $started = $false
+            $stdout = $stderr = $null
+            $deadline = [Diagnostics.Stopwatch]::StartNew()
+            try {
+              if (-not $process.Start()) { throw 'Reused native version client did not start' }
+              $started = $true
+              $stdout = $process.StandardOutput.ReadToEndAsync()
+              $stderr = $process.StandardError.ReadToEndAsync()
+              $remaining = [int][Math]::Max(0, 10000 - $deadline.ElapsedMilliseconds)
+              $finished = $process.WaitForExit($remaining) -and $deadline.ElapsedMilliseconds -lt 10000
+              if (-not $finished -and -not $process.HasExited) { $process.Kill($false) }
+              $settlement = [Diagnostics.Stopwatch]::StartNew()
+              if (-not $process.HasExited) { [void]$process.WaitForExit(2000) }
+              $remaining = [int][Math]::Max(0, 2000 - $settlement.ElapsedMilliseconds)
+              [void][Threading.Tasks.Task]::WhenAll([Threading.Tasks.Task[]]@($stdout, $stderr)).Wait($remaining)
+              if (-not $finished -or $deadline.ElapsedMilliseconds -ge 10000 -or -not $process.HasExited -or -not $stdout.IsCompletedSuccessfully -or -not $stderr.IsCompletedSuccessfully -or $process.ExitCode -ne 0) { throw 'Reused native version client deadline/exit/pipe proof failed' }
+              return $stdout.GetAwaiter().GetResult().Trim()
+            } finally {
+              if (-not $started -or ($process.HasExited -and $stdout -and $stderr -and $stdout.IsCompleted -and $stderr.IsCompleted)) { $process.Dispose() }
+              else { $script:UnsettledReleaseVersionClient = $process }
+            }
+          }
+          foreach ($name in @('agent-bus.exe', 'agent-bus-http.exe')) {
+            $version = Read-ReusedNativeVersion (Join-Path $release $name)
+            if ($version -notmatch [regex]::Escape($env:GITHUB_SHA.Substring(0, 12))) { throw "Reused native revision mismatch: $name" }
+          }
+          ./scripts/test-agent-client-config-validator.ps1 `
             -CliPath (Join-Path $release 'agent-bus.exe') `
             -McpBinaryPath (Join-Path $release 'agent-bus-mcp.exe')
-
-      - name: Validate shipping CLI and HTTP against owned Wine fixtures
-        timeout-minutes: 15
-        shell: bash
+      - name: Refresh accepted CI metadata and stage identical artifact bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
         run: |
-          set -euo pipefail
-          python3 -B scripts/ci/isolated-services.py smoke --wine \
-            --fixture-network runner-container \
-            --network-container "$AGENT_BUS_CI_RUNNER_CONTAINER_ID" \
-            --cli "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus.exe" \
-            --http "$CARGO_TARGET_DIR/$WINDOWS_TARGET/release/agent-bus-http.exe"
-
-      - name: Stage artifacts and checksums
-        shell: bash
-        run: |
-          release="$CARGO_TARGET_DIR/$WINDOWS_TARGET/release"
-          mkdir -p dist
-          for binary in agent-bus agent-bus-http agent-bus-mcp; do
-            cp "$release/$binary.exe" "dist/$binary-windows-x64.exe"
-          done
-          {
-            echo "commit=$GITHUB_SHA"
-            echo "target=$WINDOWS_TARGET"
-            echo "abi=gnu"
-            echo "validation=wine"
-            echo "native_windows_validated=false"
-            echo "host_os=$RUNNER_OS"
-            echo "host_arch=$RUNNER_ARCH"
-            echo "runner_container_id=$AGENT_BUS_CI_RUNNER_CONTAINER_ID"
-            echo "runner_image_id=$AGENT_HUB_WINDOWS_CROSS_IMAGE_ID"
-            echo "runner_image_source_revision=$AGENT_HUB_WINDOWS_CROSS_IMAGE_SOURCE_REVISION"
-            echo "runner_dockerfile_sha256=$AGENT_HUB_WINDOWS_CROSS_IMAGE_DOCKERFILE_SHA256"
-            echo "configured_shipping_mcp_validation=wine-17-tools"
-            echo "native_windows_dll_validation=not-tested"
-            cat "$RUNNER_TEMP/wine-version.txt"
-            rustc --version
-            echo "cross_toolchain_and_cache_proof:"
-            cat "$CARGO_TARGET_DIR/cross-toolchain-proof.json"
-            echo "post_build_cache_stats:"
-            "$RUSTC_WRAPPER" --show-stats --stats-format=json
-            for binary in agent-bus agent-bus-http agent-bus-mcp; do
-              echo "pe_imports_binary=$binary.exe"
-              x86_64-w64-mingw32-objdump -p "$release/$binary.exe" | sed -n 's/^[[:space:]]*DLL Name: /dll=/p'
-            done
-          } > dist/BUILD-windows-x64.txt
-          cd dist
-          sha256sum ./*.exe > SHA256SUMS-windows-x64
-
+          # This authenticated step executes only the metadata/staging helper.
+          $release = Join-Path $env:RUNNER_TEMP 'agent-hub-native-release-artifact'
+          python -B scripts/ci/release_windows_artifact.py stage `
+            --repo-root "$PWD" --repository "$env:GITHUB_REPOSITORY" `
+            --revision "$env:GITHUB_SHA" --artifact-dir "$release" --dist "$PWD/dist"
+          if ($LASTEXITCODE -ne 0) { throw 'Reused native artifact staging failed' }
       - uses: actions/upload-artifact@v7
         with:
           name: agent-bus-windows-x64
+          if-no-files-found: error
           path: dist/*
 
   linux:
@@ -132,13 +125,15 @@ jobs:
       matrix:
         include:
           - name: linux-x64
-            runner: '["self-hosted","Linux","X64"]'
+            runner: '["self-hosted","Linux","X64","vigil1"]'
           - name: linux-arm64
             runner: '["self-hosted","Linux","ARM64","fleet-build"]'
     runs-on: ${{ fromJSON(matrix.runner) }}
     steps:
       - uses: actions/checkout@v7
+      - run: python3 -B scripts/ci/toolchain_policy.py --verify-sources
       - run: bash scripts/ci/setup-rust.sh
+      - run: python3 -B scripts/ci/toolchain_policy.py --installed rust sccache
 
       - name: Verify Cargo version matches tag
         shell: bash
@@ -174,6 +169,14 @@ jobs:
           for binary in agent-bus agent-bus-http agent-bus-mcp; do
             cp "$CARGO_TARGET_DIR/release/$binary" "dist/$binary-${{ matrix.name }}"
           done
+          {
+            printf 'commit=%s\nrunner=%s\nos=%s\narch=%s\n' \
+              "$GITHUB_SHA" "$RUNNER_NAME" "$RUNNER_OS" "$RUNNER_ARCH"
+            cargo --version
+            rustc --version
+            printf '\nnative_cache_proof:\n'
+            cat "$CARGO_TARGET_DIR/native-cache-proof.json"
+          } > "dist/BUILD-${{ matrix.name }}.txt"
           cd dist
           sha256sum ./* > "SHA256SUMS-${{ matrix.name }}"
 

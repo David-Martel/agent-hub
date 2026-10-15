@@ -552,7 +552,7 @@ fn direct_commands_refuse_offline_hubs_without_local_store_fallback() {
                 .output()
                 .expect("run offline direct command");
         assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         let diagnostic = stderr_of(&output);
         assert!(
             diagnostic.contains("offline: no authoritative hub reachable"),
@@ -585,7 +585,7 @@ fn direct_commands_surface_http_failures_without_success_output_or_local_fallbac
                 .output()
                 .expect("run rejected direct command");
             assert!(!output.status.success());
-            assert!(output.stdout.is_empty());
+            assert_eq!(output.stdout, [] as [u8; 0]);
             let diagnostic = stderr_of(&output);
             assert!(
                 diagnostic.contains(&format!("HTTP {status}")),
@@ -618,7 +618,7 @@ fn direct_commands_reject_incorrect_response_types() {
             .output()
             .expect("run invalid direct response");
         assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         assert!(stderr_of(&output).contains(if post {
             "post-direct response is not a message"
         } else {
@@ -831,7 +831,7 @@ fn task_commands_refuse_offline_hubs_without_local_store_fallback() {
                 .output()
                 .expect("run offline task command");
         assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         assert!(
             stderr_of(&output).contains("refusing to silently read or write a local store"),
             "{}",
@@ -893,7 +893,7 @@ fn task_commands_surface_http_failures_and_redact_auth_without_retry() {
                     .output()
                     .expect("run rejected task command");
             assert!(!output.status.success());
-            assert!(output.stdout.is_empty());
+            assert_eq!(output.stdout, [] as [u8; 0]);
             let diagnostic = stderr_of(&output);
             assert!(
                 diagnostic.contains(&format!("HTTP {status}")),
@@ -925,7 +925,7 @@ fn task_pull_lost_response_never_retries_or_consumes_on_a_second_hub() {
             .output()
             .expect("run lost task pull response");
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let requests = hub.requests();
     assert_eq!(requests.len(), 2, "one health probe and exactly one DELETE");
     assert_eq!(requests[1]["method"], "DELETE");
@@ -964,7 +964,7 @@ fn task_commands_reject_malformed_json_cards_and_envelopes() {
             .output()
             .expect("run malformed task response");
         assert!(!output.status.success(), "{command} accepted {body}");
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         assert_eq!(hub.requests().len(), 2);
     }
     let mut invalid_status = task_card_fixture();
@@ -983,7 +983,7 @@ fn task_commands_reject_malformed_json_cards_and_envelopes() {
         .output()
         .expect("run invalid card status");
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     assert_eq!(hub.requests().len(), 2);
 }
 
@@ -1022,7 +1022,7 @@ fn task_commands_omit_reflected_bearer_from_typed_http_success_errors() {
                 !output.status.success(),
                 "must reject malformed typed {field}"
             );
-            assert!(output.stdout.is_empty());
+            assert_eq!(output.stdout, [] as [u8; 0]);
             let requests = hub.requests();
             assert_eq!(
                 requests.len(),
@@ -1065,7 +1065,7 @@ fn task_commands_omit_reflected_bearer_from_typed_http_success_errors() {
         .output()
         .expect("run reflected count type error");
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     assert_eq!(hub.requests().len(), 2);
     assert!(!stderr_of(&output).contains(token));
     assert!(stderr_of(&output).contains("category: Data"));
@@ -1129,7 +1129,7 @@ fn task_commands_reject_dot_only_remote_agents_before_health() {
                 .output()
                 .expect("run unsupported remote task identity");
             assert!(!output.status.success());
-            assert!(output.stdout.is_empty());
+            assert_eq!(output.stdout, [] as [u8; 0]);
             assert_eq!(
                 hub.hits(),
                 0,
@@ -1156,7 +1156,7 @@ fn task_commands_keep_dot_only_local_identity_behavior() {
                 .output()
                 .expect("run legacy local dot identity");
             assert!(!output.status.success(), "closed local Redis must fail");
-            assert!(output.stdout.is_empty());
+            assert_eq!(output.stdout, [] as [u8; 0]);
             let diagnostic = stderr_of(&output);
             assert!(
                 diagnostic.contains("Redis connection failed"),
@@ -1188,7 +1188,7 @@ fn task_push_validates_inputs_before_any_http_request() {
             .output()
             .expect("run invalid task input");
         assert!(!output.status.success());
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, [] as [u8; 0]);
         let error_field = match field {
             "--created-by" => "created_by",
             other => other.trim_start_matches('-'),
@@ -1366,7 +1366,7 @@ fn service_status_refuses_rejected_configured_authority_without_base_url_overrid
         .output()
         .expect("run configured-authority service status");
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, [] as [u8; 0]);
     let diagnostic = stderr_of(&output);
     assert!(
         diagnostic.contains("server-mode service status admin fetch failed"),

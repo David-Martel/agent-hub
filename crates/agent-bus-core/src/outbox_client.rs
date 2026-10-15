@@ -752,7 +752,7 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert!(retired_siblings(&path).is_empty());
+        assert_eq!(retired_siblings(&path), [] as [std::path::PathBuf; 0]);
     }
 
     // Presence heartbeats and claim requests are time-bounded; once expired
@@ -950,7 +950,7 @@ mod tests {
         assert!(rotate(&after, Some(&path), request.expires_ms).is_err());
         assert_eq!(status(&after, Some(&path)).unwrap()["rotation"], "blocked");
         assert_eq!(std::fs::read(&path).unwrap(), original);
-        assert!(retired_siblings(&path).is_empty());
+        assert_eq!(retired_siblings(&path), [] as [std::path::PathBuf; 0]);
         let mut journal = Journal::open(&path, &scope).unwrap();
         let cached = Cached {
             expected: request.request_id,
@@ -1051,7 +1051,10 @@ mod tests {
         );
         assert_eq!(report["remaining"], 0);
         assert_eq!(*transport.0.borrow(), vec![retained_id.borrow().unwrap()]);
-        assert!(Journal::inspect(&path).unwrap().pending.is_empty());
+        assert_eq!(
+            Journal::inspect(&path).unwrap().pending,
+            [] as [crate::outbox::ReplayRequest; 0]
+        );
     }
 
     #[test]
@@ -1144,7 +1147,7 @@ mod tests {
         let id = response["request_id"].as_str().unwrap().to_owned();
         drop(journal);
         assert_eq!(open_journal(&temp).pending().count(), 0);
-        assert!(!id.is_empty());
+        assert_ne!(id, "");
     }
 
     #[test]

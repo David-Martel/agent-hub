@@ -2023,7 +2023,7 @@ mod tests {
     #[test]
     fn extract_claimed_files_returns_empty_for_plain_body() {
         let files = extract_claimed_files("no files here, just plain text");
-        assert!(files.is_empty());
+        assert_eq!(files, [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -2043,7 +2043,7 @@ mod tests {
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].file, "src/foo.rs");
         assert_eq!(conflicts[0].claimed_by, "alice");
-        assert!(!conflicts[0].claimed_at.is_empty());
+        assert_ne!(conflicts[0].claimed_at, "");
     }
 
     #[test]
@@ -2851,7 +2851,10 @@ mod tests {
         let json = serde_json::to_value(&summary).unwrap();
         assert_eq!(json["direct_channel_count"], 0);
         assert_eq!(json["contested_count"], 0);
-        assert!(json["groups"].as_array().unwrap().is_empty());
+        assert_eq!(
+            json["groups"].as_array().unwrap(),
+            &Vec::<serde_json::Value>::new()
+        );
     }
 
     #[test]
@@ -2989,7 +2992,7 @@ mod tests {
         // Defaults should be safe values.
         assert_eq!(msg.from, "sender");
         assert_eq!(msg.body, "hi");
-        assert!(msg.id.is_empty()); // missing → empty string
+        assert_eq!(msg.id, ""); // missing → empty string
         assert!(msg.thread_id.is_none()); // missing → None
         assert!(msg.tags.is_empty()); // missing → []
     }
@@ -3058,7 +3061,13 @@ mod tests {
     #[test]
     fn parse_channel_xrange_empty_input() {
         let result = parse_channel_xrange(&[]);
-        assert!(result.is_empty());
+        assert_eq!(
+            result,
+            [] as [(
+                std::string::String,
+                std::collections::HashMap<std::string::String, redis::Value>
+            ); 0]
+        );
     }
 
     /// A well-formed entry is correctly parsed.
@@ -3100,7 +3109,13 @@ mod tests {
     fn parse_channel_xrange_skips_non_array_entries() {
         let bad = redis::Value::BulkString(b"not-an-array".to_vec());
         let result = parse_channel_xrange(&[bad]);
-        assert!(result.is_empty());
+        assert_eq!(
+            result,
+            [] as [(
+                std::string::String,
+                std::collections::HashMap<std::string::String, redis::Value>
+            ); 0]
+        );
     }
 
     /// Multiple entries are all parsed.

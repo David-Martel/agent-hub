@@ -1,5 +1,115 @@
-import { describe, expect, it } from "vitest";
-import { apiJson, CLAUDE_TOKEN, CODEX_TOKEN, HUB_A_TOKEN, postJson } from "./helpers";
+import { env } from "cloudflare:workers";
+import { runInDurableObject } from "cloudflare:test";
+import { describe, expect, it, vi } from "vitest";
+import app from "../src/index";
+import type { ReadMessagesQuery } from "../src/do-buslog";
+import { apiJson, CLAUDE_TOKEN, CODEX_TOKEN, HUB_A, HUB_A_TOKEN, HUB_B, HUB_B_TOKEN, postJson } from "./helpers";
+
+describe("rate admission exception diagnostics", () => {
+  function failingBindings(failure: unknown) {
+    const stub = { checkRateLimit: vi.fn(() => { throw failure; }) };
+    return {
+      ...env,
+      BUS_LOG: { idFromName: () => "global", get: () => stub } as unknown as typeof env.BUS_LOG,
+    };
+  }
+
+  it("records bounded exception fields without serializing request or error context", async () => {
+    const privateMarker = "private-request-context-must-not-be-serialized";
+    const failure = Object.assign(new Error("controlled storage failure ".repeat(40)), {
+      headers: { authorization: privateMarker },
+      body: privateMarker,
+      config: { AGENT_BUS_TOKENS: privateMarker },
+    });
+    failure.name = `StorageFailure${"x".repeat(80)}`;
+    failure.stack = "controlled storage stack\n".repeat(120);
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await app.request("/messages", {
+        method: "POST",
+        headers: { authorization: `Bearer ${CLAUDE_TOKEN}`, "x-private-context": privateMarker },
+        body: privateMarker,
+      }, failingBindings(failure));
+      expect(response.status).toBe(500);
+      expect(response.headers.get("content-type")).toBe("text/plain; charset=UTF-8");
+      expect(await response.text()).toBe("Internal Server Error");
+      const encoded = logged.mock.calls.find(([value]) => typeof value === "string")?.[0];
+      expect(typeof encoded).toBe("string");
+      const metadata = JSON.parse(encoded as string);
+      expect(metadata).toEqual({
+        event: "rate_admission_failure",
+        name: failure.name.slice(0, 64),
+        message: failure.message.slice(0, 512),
+        stack: failure.stack.slice(0, 2048),
+      });
+      expect(encoded).not.toContain(privateMarker);
+      // Hono must receive the SAME rejection, not a diagnostic replacement.
+      expect(logged.mock.calls.find(([value]) => value === failure)?.[0]).toBe(failure);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("rethrows the original error even if the additional diagnostic logger fails", async () => {
+    const failure = new Error("original controlled storage rejection");
+    const logged = vi.spyOn(console, "error")
+      .mockImplementationOnce(() => { throw new Error("controlled diagnostic logger failure"); })
+      .mockImplementation(() => {});
+    try {
+      const response = await app.request("/presence", {
+        headers: { authorization: `Bearer ${CLAUDE_TOKEN}` },
+      }, failingBindings(failure));
+      expect(response.status).toBe(500);
+      expect(await response.text()).toBe("Internal Server Error");
+      expect(logged.mock.calls.at(-1)?.[0]).toBe(failure);
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("preserves a non-Error rejection without inspecting or serializing it", async () => {
+    const failure = {
+      body: "private non-Error context",
+      toString: () => { throw new Error("unsafe string conversion"); },
+      toJSON: () => { throw new Error("unsafe JSON conversion"); },
+    };
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await expect(app.request("/presence", {
+        headers: { authorization: `Bearer ${CLAUDE_TOKEN}` },
+      }, failingBindings(failure))).rejects.toBe(failure);
+      expect(JSON.parse(logged.mock.calls[0]?.[0] as string)).toEqual({
+        event: "rate_admission_failure", name: "NonError", message: "non-Error rejection",
+      });
+    } finally {
+      logged.mockRestore();
+    }
+  });
+
+  it("keeps unauthenticated and rate-denied requests outside diagnostic logging", async () => {
+    const stub = { checkRateLimit: vi.fn(() => false) };
+    const bindings = {
+      ...env,
+      BUS_LOG: { idFromName: () => "global", get: () => stub } as unknown as typeof env.BUS_LOG,
+    };
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const denied = await app.request("/presence", {}, bindings);
+      expect(denied.status).toBe(401);
+      expect(stub.checkRateLimit).not.toHaveBeenCalled();
+      const throttled = await app.request("/presence", {
+        headers: { authorization: `Bearer ${CLAUDE_TOKEN}` },
+      }, bindings);
+      expect(throttled.status).toBe(429);
+      expect(throttled.headers.get("retry-after")).toBe("60");
+      expect(await throttled.json()).toEqual({ error: "rate limit exceeded" });
+      expect(stub.checkRateLimit).toHaveBeenCalledTimes(1);
+      expect(logged).not.toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
+  });
+});
 
 describe("POST /messages", () => {
   it("sends a message and returns the stored Message shape", async () => {
@@ -362,6 +472,109 @@ describe("POST /messages/:id/ack", () => {
 });
 
 describe("POST /read/batch and POST /ack/batch", () => {
+  it("returns complete multi-agent pages above the RPC value-size limit", async () => {
+    const agents = [crypto.randomUUID(), crypto.randomUUID()];
+    const payload = "x".repeat(225 * 1024);
+    const ids: string[] = [];
+    const now = Date.now();
+    await runInDurableObject(env.BUS_LOG.get(env.BUS_LOG.idFromName("global")), async (instance) => {
+      for (let index = 0; index < 160; index++) {
+        const id = crypto.randomUUID();
+        ids.push(id);
+        instance.insertMessage({
+          id, origin_hub: "large-page-origin",
+          timestamp_utc: new Date(now + index).toISOString(),
+          protocol_version: "1.0", from: "claude", to: agents[index % 2]!,
+          topic: "status", body: payload, tags: [], priority: "normal",
+          request_ack: false, metadata: {},
+        });
+      }
+    });
+    const response = await app.request("/read/batch", {
+      method: "POST",
+      headers: { authorization: `Bearer ${CLAUDE_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ agents, limit: 80, broadcast: false }),
+    }, env);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    const messages = await response.json() as Array<{ id: string; body: string; to: string }>;
+    expect(messages.map((message) => message.id)).toEqual(ids);
+    expect(messages.filter((message) => message.to === agents[0])).toHaveLength(80);
+    expect(messages.filter((message) => message.to === agents[1])).toHaveLength(80);
+    expect(messages.every((message) => message.body.length === payload.length)).toBe(true);
+  }, 30_000);
+
+  it("uses one rate-limit RPC and one read RPC for a multi-agent batch", async () => {
+    const stub = {
+      checkRateLimit: vi.fn(() => true),
+      listMessagesBatch: vi.fn((_queries: ReadMessagesQuery[]) => new Response("[]", {
+        headers: { "content-type": "application/json" },
+      })),
+      listMessages: vi.fn(() => []),
+    };
+    const bindings = {
+      ...env,
+      BUS_LOG: { idFromName: () => "global", get: () => stub } as unknown as typeof env.BUS_LOG,
+    };
+    const response = await app.request("/read/batch", {
+      method: "POST",
+      headers: { authorization: `Bearer ${CLAUDE_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ agents: ["batch-rpc-a", "batch-rpc-b"], limit: 3, broadcast: false }),
+    }, bindings);
+    expect(response.status).toBe(200);
+    expect(stub.checkRateLimit).toHaveBeenCalledTimes(1);
+    expect(stub.listMessagesBatch).toHaveBeenCalledTimes(1);
+    expect(stub.listMessages).not.toHaveBeenCalled();
+    expect(stub.listMessagesBatch.mock.calls[0]?.[0]).toMatchObject([
+      { agent: "batch-rpc-a", limit: 3, include_broadcast: false },
+      { agent: "batch-rpc-b", limit: 3, include_broadcast: false },
+    ]);
+  });
+
+  it("retains distinct origins sharing an id and deduplicates each broadcast once", async () => {
+    const sharedId = crypto.randomUUID();
+    const agent = `batch-origin-${crypto.randomUUID()}`;
+    for (const [origin, token] of [[HUB_A, HUB_A_TOKEN], [HUB_B, HUB_B_TOKEN]]) {
+      const sent = await postJson("/sync/push", {
+        origin_hub: origin,
+        messages: [{ id: sharedId, sender: "claude", recipient: "all", topic: "status", body: `from ${origin}` }],
+      }, token);
+      expect(sent.status).toBe(200);
+    }
+
+    const read = await postJson<Array<{ id: string; origin_hub: string }>>("/read/batch", {
+      agents: [agent, `${agent}-other`, agent],
+      broadcast: true,
+    });
+    expect(read.status).toBe(200);
+    expect(read.body.filter((message) => message.id === sharedId).map((message) => message.origin_hub).sort())
+      .toEqual([HUB_A, HUB_B].sort());
+  });
+
+  it("preserves each agent's newest-message limit and broadcast filter", async () => {
+    const agents = [crypto.randomUUID(), crypto.randomUUID()];
+    const latestIds = [];
+    for (const recipient of agents) {
+      await postJson("/messages", { sender: "claude", recipient, topic: "status", body: "older" });
+      const latest = await postJson<{ id: string }>("/messages", {
+        sender: "claude", recipient, topic: "status", body: "latest",
+      });
+      expect(latest.status).toBe(200);
+      latestIds.push(latest.body.id);
+    }
+    await postJson("/messages", { sender: "claude", recipient: "all", topic: "status", body: "broadcast" });
+
+    const read = await postJson<Array<{ id: string; timestamp_utc: string }>>("/read/batch", {
+      agents, limit: 1, broadcast: false,
+    });
+    expect(read.status).toBe(200);
+    expect(read.body.map((message) => message.id)).toEqual(latestIds);
+    expect(read.body.map((message) => message.timestamp_utc)).toEqual(
+      read.body.map((message) => message.timestamp_utc).sort(),
+    );
+  });
+
   it("reads across multiple agents, deduping broadcast messages", async () => {
     await postJson("/messages", {
       sender: "claude",

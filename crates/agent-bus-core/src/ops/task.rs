@@ -612,7 +612,7 @@ mod tests {
         assert_eq!(card.body, raw);
         assert_eq!(card.status, TaskStatus::Pending);
         assert_eq!(card.priority, "normal");
-        assert!(card.created_by.is_empty());
+        assert_eq!(card.created_by, "");
         // id should be a valid UUID
         assert!(
             uuid::Uuid::parse_str(&card.id).is_ok(),

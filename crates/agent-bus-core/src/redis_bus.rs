@@ -89,10 +89,10 @@ impl SseSubscriberCount {
     ///
     /// Uses saturating subtraction to prevent underflow on unexpected drops.
     pub fn dec(&self) {
-        // fetch_update with saturating sub avoids wrapping on unexpected extra decrements.
+        // try_update with saturating sub avoids wrapping on unexpected extra decrements.
         let _ = self
             .0
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             });
     }
@@ -3505,8 +3505,8 @@ mod tests {
     fn decode_stream_entry_handles_empty_fields() {
         let fields: HashMap<String, redis::Value> = HashMap::new();
         let msg = decode_stream_entry(&fields);
-        assert!(msg.id.is_empty());
-        assert!(msg.from.is_empty());
+        assert_eq!(msg.id, "");
+        assert_eq!(msg.from, "");
         assert_eq!(msg.priority, "normal");
         assert!(!msg.request_ack);
     }
@@ -3699,7 +3699,13 @@ mod tests {
     fn parse_xrange_result_handles_empty() {
         let raw: Vec<redis::Value> = vec![];
         let result = parse_xrange_result(&raw);
-        assert!(result.is_empty());
+        assert_eq!(
+            result,
+            [] as [(
+                std::string::String,
+                std::collections::HashMap<std::string::String, redis::Value>
+            ); 0]
+        );
     }
 
     #[test]

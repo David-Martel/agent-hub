@@ -1011,7 +1011,7 @@ mod tests {
     fn fingerprint_is_stable_and_sensitive_to_every_routing_input() {
         let base = candidates_fingerprint(&base_list());
         assert_eq!(base, candidates_fingerprint(&base_list()), "stable");
-        assert!(!base.is_empty());
+        assert_ne!(base, "");
 
         let mut reordered = base_list();
         reordered.reverse();

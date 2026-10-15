@@ -125,6 +125,7 @@ Invoke-AgentBusCargo -Label "Windows Clippy" -Command clippy -AdditionalArgs @("
 # Resolve the repository's native compiler before any fixture changes USERPROFILE
 # or RUSTUP_HOME. Windows rustup otherwise discovers the synthetic empty home.
 $nativeFixtureCargo = Resolve-AgentBusNativeCargo
+$fixtureToolchain = $nativeFixtureCargo.Toolchain
 $nativeFixtureCompiler = Join-Path (Split-Path -Parent $nativeFixtureCargo.Path) $(if ($IsWindows) { 'rustc.exe' } else { 'rustc' })
 if (-not (Test-Path -LiteralPath $nativeFixtureCompiler -PathType Leaf)) { throw 'Fixture native compiler unavailable beside pinned Cargo' }
 
@@ -135,12 +136,12 @@ function New-AgentBusNativeCargoFixture {
     if ($LASTEXITCODE -ne 0 -or $hostLine.Count -ne 1) { throw 'Fixture compiler host unavailable' }
     $hostTriple = $hostLine[0].Substring(6)
     $rustupHome = Join-Path $Directory 'private-rustup'
-    $bin = Join-Path $rustupHome "toolchains/1.98.1-$hostTriple/bin"
+    $bin = Join-Path $rustupHome "toolchains/$fixtureToolchain-$hostTriple/bin"
     New-Item -ItemType Directory -Force -Path $bin | Out-Null
     $cargo = Join-Path $bin $(if ($IsWindows) { 'cargo.exe' } else { 'cargo' })
     $cache = Join-Path $Directory $(if ($IsWindows) { 'fixture-cache.exe' } else { 'fixture-cache' })
     $source = Join-Path $Directory 'fixture-cargo.rs'
-    @'
+    $fixtureCargoSource = @'
 use std::{env, fs::OpenOptions, io::Write, path::Path, process::{Command, exit}};
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -160,9 +161,11 @@ fn main() {
     if mode.trim() == "clippy-failure" && args.iter().any(|arg| arg == "clippy") {
         println!("error: fixture strict Clippy warning"); exit(1);
     }
-    println!("fixture native cargo 1.98.1");
+    println!("fixture native cargo __FIXTURE_TOOLCHAIN__");
 }
-'@ | Set-Content -LiteralPath $source -Encoding utf8
+'@
+    $fixtureCargoSource.Replace('__FIXTURE_TOOLCHAIN__', $fixtureToolchain) |
+        Set-Content -LiteralPath $source -Encoding utf8
     & $rustc --edition=2021 $source -o $cargo
     if ($LASTEXITCODE -ne 0) { throw 'Small standalone native Cargo fixture compilation failed' }
     Copy-Item -LiteralPath $cargo -Destination $cache
@@ -217,7 +220,7 @@ function Test-AgentBusExplicitUncachedFixture {
         }
         $call = Get-Content -LiteralPath $env:AGENT_BUS_FIXTURE_CALLS -Raw | ConvertFrom-Json
         if ($call.wrapper -or $call.workspace_wrapper -or $call.build_wrapper -or $call.build_workspace_wrapper -or
-            $call.toolchain -cne '1.98.1' -or ($call.arguments -join ' ') -cne
+            $call.toolchain -cne $fixtureToolchain -or ($call.arguments -join ' ') -cne
             '--config build.rustc-wrapper="" --config build.rustc-workspace-wrapper="" clippy --workspace --all-targets -- -D warnings') {
             throw 'Native uncached child did not receive pinned compiler and both empty wrapper configs'
         }
@@ -316,7 +319,7 @@ if ($args[0] -eq "which") {
 }
 '@ | Set-Content -LiteralPath (Join-Path $fixtureRoot "rustup.ps1") -Encoding utf8
         foreach ($compiler in @("cargo", "rustc")) {
-            @'
+            $fixtureCompilerScript = @'
 . (Join-Path $PSScriptRoot "fixture-common.ps1")
 Write-FixtureInvocation -Command ([IO.Path]::GetFileNameWithoutExtension($PSCommandPath)) -Arguments $args
 $global:LASTEXITCODE = 0
@@ -325,9 +328,11 @@ if ($mode -eq "clippy-failure" -and $args -contains "clippy") {
     $global:LASTEXITCODE = 1
     Write-Output "error: fixture strict Clippy warning"
 } else {
-    Write-Output "fixture compiler 1.98.1"
+    Write-Output "fixture compiler __FIXTURE_TOOLCHAIN__"
 }
-'@ | Set-Content -LiteralPath (Join-Path $fixtureRoot ($compiler + ".ps1")) -Encoding utf8
+'@
+            $fixtureCompilerScript.Replace('__FIXTURE_TOOLCHAIN__', $fixtureToolchain) |
+                Set-Content -LiteralPath (Join-Path $fixtureRoot ($compiler + ".ps1")) -Encoding utf8
         }
         @'
 . (Join-Path $PSScriptRoot "fixture-common.ps1")

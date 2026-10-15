@@ -706,7 +706,7 @@ mod tests {
     #[test]
     fn shorten_tags_empty() {
         let empty: Vec<String> = vec![];
-        assert!(shorten_tags(&empty).is_empty());
+        assert_eq!(shorten_tags(&empty), [] as [std::string::String; 0]);
     }
 
     #[test]

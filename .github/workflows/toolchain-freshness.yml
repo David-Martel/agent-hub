@@ -1,0 +1,26 @@
+name: Toolchain Freshness
+
+on:
+  schedule:
+    - cron: "23 11 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: toolchain-freshness
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Official Stable Toolchain Drift
+    runs-on: [self-hosted, Linux, X64, vigil1]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # Read-only bounded metadata queries. A new stable release or unavailable
+      # endpoint fails visibly; upgrades require reviewed source/image admission.
+      - run: python3 -B scripts/ci/toolchain_policy.py --verify-sources --latest

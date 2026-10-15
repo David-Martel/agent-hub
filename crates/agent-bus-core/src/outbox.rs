@@ -1075,7 +1075,7 @@ mod tests {
             .unwrap();
         let inspection = Journal::inspect_private_file(file).unwrap();
         assert!(inspection.destination.is_none());
-        assert!(inspection.pending.is_empty());
+        assert_eq!(inspection.pending, [] as [ReplayRequest; 0]);
         drop(inspection);
         assert_eq!(std::fs::read(empty.path()).unwrap(), b"");
     }

@@ -26,6 +26,37 @@ describe("smoke: DO RPC + SQLite storage backend", () => {
 });
 
 describe("smoke: rate limiting (agent-hub#82, checkRateLimit)", () => {
+  it("cleans expired windows without scanning current identities", async () => {
+    const stub = env.BUS_LOG.get(env.BUS_LOG.idFromName(`rate-cleanup-${crypto.randomUUID()}`));
+    await stub.checkRateLimit("initialize", 10);
+    await runInDurableObject(stub, async (_instance, state) => {
+      const windowStart = Math.floor(Date.now() / 60_000) * 60_000;
+      for (let index = 0; index < 256; index++) {
+        state.storage.sql.exec(
+          "INSERT INTO rate_limit_counters (identity_key, window_start_ms, count) VALUES (?, ?, 1)",
+          `current-${index}`, windowStart,
+        );
+      }
+      state.storage.sql.exec(
+        "INSERT INTO rate_limit_counters (identity_key, window_start_ms, count) VALUES (?, ?, 1)",
+        "expired", windowStart - 6 * 60_000,
+      );
+      const cleanup = state.storage.sql.exec(
+        "DELETE FROM rate_limit_counters WHERE window_start_ms < ?", windowStart - 5 * 60_000,
+      );
+      cleanup.toArray();
+      expect(cleanup.rowsWritten).toBeGreaterThanOrEqual(1);
+      expect(cleanup.rowsRead).toBeLessThan(10);
+      const remaining = state.storage.sql.exec("SELECT COUNT(*) AS count FROM rate_limit_counters").one();
+      expect(remaining.count).toBe(257);
+      const current = state.storage.sql.exec(
+        "SELECT count FROM rate_limit_counters WHERE identity_key = ? AND window_start_ms = ?",
+        "current-0", windowStart,
+      ).one();
+      expect(current.count).toBe(1);
+    });
+  });
+
   it("allows up to the limit, then denies within the same 60s window", async () => {
     const id = env.BUS_LOG.idFromName("global");
     const stub = env.BUS_LOG.get(id);

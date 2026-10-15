@@ -1,5 +1,36 @@
 # Agent Bus - Active Roadmap
 
+Current cross-host reconciliation: [fleet reconciliation plan](docs/fleet-reconciliation.md).
+This plan records fresh clone, PR, runner and Cloudflare evidence separately from
+historical fleet acceptance below.
+
+Current reconciliation gates (2026-10-15 UTC; coordinator
+`codex-p1-agenthub-reconcile`):
+
+- [x] Reconcile five primary clones to accepted main with ignored data,
+  configuration and other owners' work preserved; install and qualify native
+  `60f8c76` client canaries on Carbon, vigil1 and both Sparks.
+- [x] Integrate reviewed PRs #128/#132, close preserved duplicates #125/#127/#131
+  and retire both owned merged worktrees and branches normally.
+- [ ] Repair current-main cached-claim expiry CI deterministically; reject
+  PR #133's invalid lifetime fixture. Verify exact-head required CI and native
+  shipping smoke before another main promotion.
+- [ ] Publish and integrate the reviewed maintenance follow-ups, including
+  native Windows release artifact reuse; its 44 controls and live accepted-main
+  byte-identical staging pass, while new-source shipping CI remains open.
+- [x] Publish the scoped Cloudflare diagnostic using only the protected existing
+  session; verify exact bundle readback and retained bindings/domain/settings.
+- [x] Verify bounded Cloudflare recovery: protected presence/pull/batch 200,
+  invalid token 401, unchanged ASUS hub with queue zero and advancing cursors.
+- [ ] Establish the prior Cloud 500 cause and historical delivery completeness;
+  current recovery does not prove either. Keep global operator statistics
+  separate from checks using the existing hub-role token.
+- [ ] Obtain actual runtime custody for ASUS hub/clients, active NUC MCP and
+  P1 watcher/service; reconcile pinned client configurations and install the
+  accepted source without interrupting other agents or HIL.
+- [ ] Resolve PR #126 secret exposure/archive issues, PR #130 budget changes,
+  Dependabot #124 and DTM-WORK connectivity; preserve other owners' work.
+
 Current Warp integration and deployment queue: [fleet completion ledger](docs/fleet-completion.md). Historical checkboxes below are not current rollout receipts.
 
 ## October 4 fleet handoff

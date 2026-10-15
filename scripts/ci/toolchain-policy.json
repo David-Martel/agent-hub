@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "verified_utc": "2026-10-14T16:45:00Z",
+  "rust": "1.99.0",
+  "rustup": "1.29.1",
+  "sccache": "0.18.0",
+  "node": "26.12.0",
+  "npm": "12.2.0",
+  "npm_integrity": "sha512-ZsJjKpTnlmSXOLLXiU1xDCzC4Wlok4IwZmh/aw2KUuXytU7q6qMv/cUT7MoeSf95Slwuw/lRXYefGzGCspHPNQ==",
+  "buildx": "0.38.0",
+  "buildkit": "0.34.0",
+  "powershell": "7.6.7",
+  "actions_runner": "2.338.0",
+  "docker": "29.9.0",
+  "lefthook": "2.2.2",
+  "lefthook_linux_x64_sha256": "2b8d7fd52771f26d7a50260ef10cd6fe704d66f60102e566362b84da09884ab7",
+  "runner_image_admission": "PENDING: rebuild and qualify immutable cross image with Rust 1.99.0 and latest runner/PowerShell; no deployed-image equivalence claimed"
+}

@@ -641,7 +641,10 @@ mod tests {
             );
             assert!(result.unwrap_err().to_string().contains("unknown schema"));
         }
-        assert!(fixture.xadds().is_empty());
+        assert_eq!(
+            fixture.xadds(),
+            [] as [std::vec::Vec<std::string::String>; 0]
+        );
         drop(conn);
     }
 
@@ -721,7 +724,10 @@ mod tests {
             assert!(error.to_string().contains("item 1"));
             assert!(error.to_string().contains("unknown schema"));
         }
-        assert!(fixture.xadds().is_empty());
+        assert_eq!(
+            fixture.xadds(),
+            [] as [std::vec::Vec<std::string::String>; 0]
+        );
         drop(conn);
     }
 

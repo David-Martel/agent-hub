@@ -986,7 +986,7 @@ mod tests {
             "ttl_seconds": 60
         }"#;
         let p: Presence = serde_json::from_str(json).expect("deserialize failed");
-        assert!(p.capabilities.is_empty());
+        assert_eq!(p.capabilities, [] as [std::string::String; 0]);
         assert_eq!(p.metadata, serde_json::Value::Null);
     }
 

@@ -575,12 +575,12 @@ pub fn backfill_dropped_writes(
     let (checked, inserted) = sync_redis_to_postgres(settings, messages)?;
 
     // Clear the backfill-debt gauge by however many rows we actually recovered.
-    // `fetch_update` with a saturating subtraction keeps the counter from
+    // `try_update` with a saturating subtraction keeps the counter from
     // underflowing if `dropped_writes` was a lower bound smaller than the number
     // of rows we re-inserted (e.g. some rows had already been written).
     if inserted > 0 {
         let recovered = inserted as u64;
-        let _ = pg_metrics().dropped_writes.fetch_update(
+        let _ = pg_metrics().dropped_writes.try_update(
             Ordering::Relaxed,
             Ordering::Relaxed,
             |current| Some(current.saturating_sub(recovered)),
@@ -2287,7 +2287,7 @@ mod tests {
         let _ =
             metrics
                 .dropped_writes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                     Some(current.saturating_sub(recovered))
                 });
         let after_backfill = metrics.dropped_writes.load(Ordering::Relaxed);
@@ -2301,7 +2301,7 @@ mod tests {
         let _ =
             metrics
                 .dropped_writes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                     Some(current.saturating_sub(1_000))
                 });
         assert_eq!(

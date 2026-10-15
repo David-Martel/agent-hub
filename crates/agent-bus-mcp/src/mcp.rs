@@ -312,7 +312,7 @@ mod tests {
         );
         let context = RequestContext::new(RequestId::Number(1), running.peer().clone());
         let future = running.service().call_tool(claim_request(), context);
-        assert!(fixture.requests().is_empty());
+        assert_eq!(fixture.requests(), [] as [std::string::String; 0]);
         let response = future.await.expect("valid tool response");
         let CallToolResponse::Complete(result) = response else {
             panic!("expected complete response");
@@ -356,7 +356,7 @@ mod tests {
         ] {
             let context = RequestContext::new(RequestId::Number(1), running.peer().clone());
             let future = running.service().call_tool(request, context);
-            assert!(fixture.requests().is_empty());
+            assert_eq!(fixture.requests(), [] as [std::string::String; 0]);
             let error = future.await.expect_err("invalid tool must fail");
             assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
             assert!(fixture.requests().is_empty(), "validation precedes routing");

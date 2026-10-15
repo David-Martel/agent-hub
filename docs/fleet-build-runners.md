@@ -8,7 +8,7 @@ under Wine). Native Windows validation is a manual dispatch.
 
 | Target | Runner labels | Intended host | Work |
 | --- | --- | --- | --- |
-| Linux x86-64 | `self-hosted`, `Linux`, `X64` | ASUSPRO13 | format, lint, unit, integration, and native builds |
+| Linux x86-64 | `self-hosted`, `Linux`, `X64`, `vigil1` | vigil1 | format, lint, unit, audit, benchmark compilation and native builds |
 | Linux x86-64 Docker | `self-hosted`, `Linux`, `X64`, `docker` | ASUSPRO13 | Linux-container build on the ASUS Docker engine |
 | Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | Spark fleet | native and Docker builds |
 | Windows x86-64 build and smoke (cross) | `self-hosted`, `Linux`, `X64`, `docker`, `windows-cross` | qualified ASUSPRO13 runner; vigil1 only after the same qualification | GNU-target compile, strict clippy, unit tests, configured MCP and CLI/HTTP smoke under Wine, release artifacts |
@@ -21,13 +21,17 @@ target directory under `runner.temp`.
 ## sccache policy
 
 Native Linux runners must have `sccache` installed and reachable from `PATH`.
-`scripts/ci/setup-rust.sh` verifies it before setting `RUSTC_WRAPPER`. An
-unhealthy cache falls back to ordinary Cargo in Linux setup. Windows setup
-instead requires its strict cache proof and fails without an uncached fallback.
+`scripts/ci/setup-rust.sh` verifies the pinned client and serving daemon before
+setting `RUSTC_WRAPPER`. Both native Linux and Windows refuse an unhealthy cache.
+Native Linux runs two actual compiler requests and requires a Rust cache hit,
+identical artifacts, unchanged error counters and the expected daemon version
+and cache directory. The receipt is `native-cache-proof.json` in the target
+directory. Setup never stops, resets or replaces a serving daemon. Native Linux
+uses port 4230 and a separate `native-0.18` cache, retaining the former cache.
 The same bootstrap adds `$HOME/.local/bin` and `$HOME/.cargo/bin` to `PATH` and
 bootstraps rustup without a default toolchain when a runner cache volume contains
 no usable Cargo shim. It then installs the compiler pinned by
-[`rust-toolchain.toml`](../rust-toolchain.toml) (currently Rust 1.98.1, plus
+[`rust-toolchain.toml`](../rust-toolchain.toml) (currently Rust 1.99.0, plus
 rustfmt and clippy), which is the one every job
 actually uses; the Windows `setup-rust.ps1` does the same. Changing the pin
 invalidates each runner's compiled cache once, since sccache keys include the
@@ -60,14 +64,14 @@ fixture network identity. A tag name or the presence of Wine alone does not
 qualify an image. Do not add the label before the receipt is accepted.
 
 The safe L0 is a persistent, runner-local cache at
-`~/.cache/sccache/agent-hub`. Spark jobs add the private-QSFP Redis endpoint at
+`~/.cache/sccache/agent-hub/native-0.18`. Spark jobs add the private-QSFP Redis endpoint at
 `10.55.152.2:6381` as L1 through `SCCACHE_MULTILEVEL_CHAIN=disk,redis`. The
 setup script probes the endpoint and falls back to disk-only caching if it is
 unreachable. Do **not** share `CARGO_TARGET_DIR` between
 machines or architectures. Rust target directories contain architecture- and
 toolchain-specific build state and are not a network cache protocol.
 
-Redis keys use `agent-hub:<runner-arch>:v1:` and expire after 14 days. Bump the
+Redis keys use `agent-hub:<runner-arch>:v2:` and expire after 14 days. Bump the
 version component when compiler trust, cache format, or runner provenance
 changes; retire the previous prefix after active builds finish. Do not flush
 the entire Redis instance because other fleet repositories may have their own
@@ -198,6 +202,77 @@ The two Spark disk-cache directories remain host-local; Redis is the network
 cache protocol. Comments in a host config are not proof of an NFS mount or
 distributed cache. Use `findmnt -T ~/.cache/sccache`, test the Redis endpoint,
 and inspect `sccache --show-stats` as acceptance checks.
+
+## Coordinated stable toolchain admission
+
+The reviewed versions and source consistency checks live in
+[`toolchain-policy.json`](../scripts/ci/toolchain-policy.json) and
+[`toolchain_policy.py`](../scripts/ci/toolchain_policy.py). CI selects exact
+Rust, sccache, Node and lefthook versions. Incremental Rust compilation is off
+for native CI so compiler requests can use sccache. A daily read-only
+[`Toolchain Freshness`](../.github/workflows/toolchain-freshness.yml) workflow
+checks official stable-release metadata; new releases or unavailable evidence
+fail visibly and require a reviewed pin/image update. It never upgrades hosts.
+
+Node 26.12.0 bundles an older npm. Cloud CI therefore runs
+[`setup-npm.sh`](../scripts/ci/setup-npm.sh) before installation. It validates
+the npm 12.2.0 registry archive's exact SHA-512 integrity, publishes npm/npx
+wrappers only in the private job directory and uses an empty private user
+configuration. No host or image npm installation is modified by this bootstrap.
+The source-controlled tools overlay
+[`Dockerfile.runner-tools`](../docker/Dockerfile.runner-tools) installs the
+same Node/npm versions plus Rust, rustup, sccache, PowerShell and the runner.
+
+Build the tools overlay only after its exact Git revision and Dockerfile SHA-256
+are reviewed. Export those committed bytes to an owned build context; pass the
+full commit as `SOURCE_REVISION` and the file digest as `DOCKERFILE_SHA256`.
+Provenance arguments come after the install layers so changing those labels
+does not reinstall identical tools. Building an image does not register a
+runner or alter any existing runner's registration or volumes.
+
+Use a private latest Buildx executable and an independently admitted BuildKit
+builder; the current policy pins Buildx 0.38.0 and BuildKit 0.34.0. Check actual
+resource enforcement with a tiny no-network build before a tools build. With
+support proven, `--resource memory=4g`, `--resource memory-swap=4g`,
+`--resource cpu-period=100000`, `--resource cpu-quota=200000` and
+`--resource cpuset-cpus=8,9` express the admitted per-step bounds. They do not
+bound other jobs or an entire shared daemon. An owned containerized builder
+also needs total daemon limits and an exact OCI import of the qualified base;
+it cannot assume access to the host engine's local image store. Do not update
+a shared Docker daemon or bypass a missing resource capability to build.
+The overlay's `QUALIFIED_BASE` argument defaults to the admitted immutable
+identity. A private builder may override it with a named read-only OCI context
+only after verifying the manifest, configuration and layer digests against the
+exported admitted image. Record manifest and configuration identities separately;
+different image stores do not necessarily report the same identity as `.Id`.
+See [Docker's resource contract](https://docs.docker.com/reference/cli/docker/buildx/build/#set-cpu-and-memory-limits-for-build-containers---resource).
+
+After compilation, record the immutable image ID, source/file labels and exact
+tool versions/hashes. Qualification uses an unregistered disposable container
+with source mounted read-only and closed stores: native cache hit controls,
+strict lint positive/negative controls, actual Windows GNU compile/Wine unit
+tests, configured MCP and CLI/HTTP fixture smoke. Keep native Windows acceptance
+separate. Replace only an idle coordinated runner after its old image, volume
+and registration custody is recorded; compiler volumes can hide image updates.
+Preserve older images/tool volumes for rollback, and restore their exact prior
+IDs/configuration only after rechecking that the affected runner is idle.
+
+Latest-version metadata is a source requirement, separate from deployment:
+the Rust 1.99.0 pin requires rebuilt, independently qualified immutable cross
+images. The policy retains `runner_image_admission` as PENDING until that proof
+is recorded. Cross setup still refuses a mismatched compiler or image; it does
+not download a different compiler into an admitted image. Native runner image
+updates must also supply the reviewed PowerShell version so MCP fixtures run.
+
+GitHub reported both `vigil1-agent-hub-1` and `vigil1-agent-hub-2` online on
+2026-10-14. CI run 38596199748 actually executed cloud tests, unit tests,
+benchmark compilation and the Linux x64 release build there. Their labels
+omit `docker` and `windows-cross`. The dedicated account uses rootless Podman,
+with the source units in vigil-utils `ci-runners/vigil1`; installing a rootful
+Docker daemon can affect fleet forwarding and requires separate admission.
+Preserve the runner account, per-instance volumes and supervisor constraints
+when replacing an idle runner image. Windows cross validation stays on the
+qualified ASUS lane until a vigil1 fixture/network/image receipt is accepted.
 
 ## Runner registration
 
