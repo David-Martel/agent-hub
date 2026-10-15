@@ -123,8 +123,8 @@ Jules (Google's async coding agent) reads this file. It runs in a Google-hosted 
 
 ## Merging: the merge autopilot
 
-The fleet's merge autopilot merges PRs here; do not merge by hand, start a second scheduler, or use `--admin` without a
-written reason.
+The fleet's merge autopilot merges PRs here; do not merge by hand or start a second scheduler, and do not use `--admin`:
+only the operator authorizes a bypass, on agent-bus thread `machine-hygiene`.
 
 - **Open the PR and let it land.** The autopilot reviews each new head, updates `behind` branches, and squash-merges
   when the required checks pass at the exact head and its review gate admits the PR.
