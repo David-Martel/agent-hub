@@ -1001,14 +1001,16 @@ mod backend_tests {
             Operation::ClaimRequest,
             json!({"agent":"fixture","resource":format!("fixture-{}",Uuid::new_v4()),"lease_ttl_seconds":4}),
         );
-        // Created 500 ms in the past. The hub floors the remaining TTL to whole seconds at ACCEPT time, so an accept in
-        // the same millisecond as `request()` kept all 4 s and the lease ended exactly at the deadline (the strict `<`
-        // below failed on fast runners). The window must stay exactly lease_ttl_seconds (validate()), so the request is
-        // backdated instead: the floor then always drops to 3 s, for any accept delay under ~450 ms.
-        req.created_ms -= 500;
+        // Created 1 ms in the past. The hub floors the remaining TTL to whole seconds at ACCEPT time; an accept in the
+        // same millisecond as `request()` would keep all 4 s and end the lease exactly at the deadline. The window must
+        // stay exactly lease_ttl_seconds (validate()), so the request is backdated by the minimum, which keeps the
+        // test's tolerance for accept latency at ~999 ms (a larger backdate would shrink it).
+        req.created_ms -= 1;
         req.expires_ms = req.created_ms + 4000;
         let env = envelope(&settings, req);
         let first = accept(&mut conn, &settings, &env, true).unwrap();
+        let (seconds, micros): (u64, u64) = redis::cmd("TIME").query(&mut conn).unwrap();
+        let accepted = seconds * 1000 + micros / 1000;
         assert!(matches!(first, ReplayResponse::Applied { .. }));
         assert_eq!(accept(&mut conn, &settings, &env, true).unwrap(), first);
         let ReplayResponse::Applied { result } = &first else {
@@ -1022,7 +1024,12 @@ mod backend_tests {
         .unwrap();
         assert!(
             lease_expiry < env.request.expires_ms,
-            "flooring TTL creates earlier actual lease expiry"
+            "flooring TTL creates earlier actual lease expiry: created {} accepted {} (+{} ms) lease {} deadline {}",
+            env.request.created_ms,
+            accepted,
+            accepted.saturating_sub(env.request.created_ms),
+            lease_expiry,
+            env.request.expires_ms
         );
         let (seconds, micros): (u64, u64) = redis::cmd("TIME").query(&mut conn).unwrap();
         let now = seconds * 1000 + micros / 1000;
