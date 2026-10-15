@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use rand::RngCore;
+use rand::TryRng;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -248,7 +248,7 @@ fn onsite_hub_token_fp() -> Result<Option<String>> {
 
 fn new_token_hex(bytes: usize) -> Result<String> {
     let mut buf = vec![0_u8; bytes];
-    rand::rngs::OsRng
+    rand::rngs::SysRng
         .try_fill_bytes(&mut buf)
         .context("OS token entropy unavailable")?;
     Ok(hex_bytes(&buf))
@@ -2229,6 +2229,33 @@ pub fn run_cloud_tokens(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn new_tokens_preserve_lowercase_hex_format_and_fresh_values() {
+        let first = new_token_hex(32).unwrap();
+        let second = new_token_hex(32).unwrap();
+        for token in [&first, &second] {
+            assert_eq!(token.len(), 64);
+            assert!(
+                token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+            );
+        }
+        assert!(
+            first != second,
+            "fresh OS entropy must produce distinct tokens"
+        );
+    }
+
+    #[test]
+    fn token_fingerprints_preserve_standard_sha256_vectors() {
+        assert_eq!(
+            token_sha256("abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(sha256_hex16("abc"), "ba7816bf8f01cfea");
+    }
 
     fn revocation_fixture(
         dir: &Path,
