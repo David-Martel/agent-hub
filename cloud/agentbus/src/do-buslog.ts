@@ -517,10 +517,64 @@ export class BusLog extends DurableObject<Env> {
     // than the window holds — this pages backward by `seq` until either
     // `limit` tag-matches are found or the table is exhausted, mirroring
     // `bus_list_messages_from_redis_with_filters`'s own paging loop.
-    const includeBroadcast = query.include_broadcast ? 1 : 0;
     const requiredTags = [...(query.required_tags ?? [])];
     if (query.repo) requiredTags.push(`repo:${query.repo}`);
     if (query.session) requiredTags.push(`session:${query.session}`);
+
+    // Emit only supplied filters. Optional-filter OR predicates hide the
+    // existing recipient/sender indexes from SQLite, so sparse or empty
+    // inbox reads otherwise walk the message log on every poll.
+    const filters: string[] = [];
+    const filterValues: SqlStorageValue[] = [];
+    if (query.from_agent != null) {
+      filters.push("from_agent = ?");
+      filterValues.push(query.from_agent);
+    }
+    if (query.agent != null) {
+      filters.push(query.include_broadcast ? "to_agent IN (?, ?)" : "to_agent = ?");
+      filterValues.push(query.agent);
+      if (query.include_broadcast) filterValues.push("all");
+    }
+    if (query.topic != null) {
+      filters.push("topic = ?");
+      filterValues.push(query.topic);
+    }
+    if (query.thread_id != null) {
+      filters.push("thread_id = ?");
+      filterValues.push(query.thread_id);
+    }
+    const filterSql = filters.length ? ` AND ${filters.join(" AND ")}` : "";
+
+    // Timestamp indexes can sort every matching row before a seq-ordered
+    // LIMIT, repeatedly for tag pages. Probe only covering key/time ranges,
+    // once per call, without seq (which could scan an old index prefix).
+    // Choose an index only when its entire candidate set is small; otherwise
+    // retain the bounded newest-first rowid scan used before specialization.
+    const sparseLimit = 32;
+    const choices: {
+      index: "idx_messages_to_ts" | "idx_messages_from_ts";
+      clause: string;
+      values: SqlStorageValue[];
+    }[] = [];
+    if (query.agent != null) {
+      choices.push({ index: "idx_messages_to_ts",
+        clause: query.include_broadcast ? "to_agent IN (?, ?)" : "to_agent = ?",
+        values: query.include_broadcast ? [query.agent, "all"] : [query.agent] });
+    }
+    if (query.from_agent != null) {
+      choices.push({ index: "idx_messages_from_ts", clause: "from_agent = ?", values: [query.from_agent] });
+    }
+    let chosen: (typeof choices)[number] | undefined;
+    let smallest = sparseLimit + 1;
+    for (const choice of choices) {
+      const count = this.sql.exec<Row<{ seq: number }>>(
+        `SELECT seq FROM messages INDEXED BY ${choice.index}
+         WHERE timestamp_utc >= ? AND ${choice.clause} LIMIT ?`,
+        cutoffIso, ...choice.values, sparseLimit + 1,
+      ).toArray().length;
+      if (count < smallest) { chosen = choice; smallest = count; }
+    }
+    const accessPath = chosen ? `INDEXED BY ${chosen.index}` : "NOT INDEXED";
 
     const pageSize = Math.max(query.limit * 5, 200);
     const out: Message[] = [];
@@ -536,26 +590,14 @@ export class BusLog extends DurableObject<Env> {
       if (scanned >= MAX_TAG_SCAN_ROWS) break;
       const rows = this.sql
         .exec<MessageRow>(
-          `SELECT * FROM messages
+          `SELECT * FROM messages ${accessPath}
            WHERE timestamp_utc >= ?
-             AND seq < ?
-             AND (? IS NULL OR from_agent = ?)
-             AND (? IS NULL OR to_agent = ? OR (? = 1 AND to_agent = 'all'))
-             AND (? IS NULL OR topic = ?)
-             AND (? IS NULL OR thread_id = ?)
+             AND seq < ?${filterSql}
            ORDER BY seq DESC
            LIMIT ?`,
           cutoffIso,
           beforeSeq,
-          query.from_agent ?? null,
-          query.from_agent ?? null,
-          query.agent ?? null,
-          query.agent ?? null,
-          includeBroadcast,
-          query.topic ?? null,
-          query.topic ?? null,
-          query.thread_id ?? null,
-          query.thread_id ?? null,
+          ...filterValues,
           pageSize,
         )
         .toArray();
