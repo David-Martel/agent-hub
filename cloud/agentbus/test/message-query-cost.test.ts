@@ -85,3 +85,68 @@ describe("message query index admission", () => {
     });
   });
 });
+
+const accessPathCases = [
+  { name: "dense recipient", kind: "recipient", matches: 3000, maxRead: 270 },
+  { name: "dense sender", kind: "sender", matches: 3000, maxRead: 270 },
+  { name: "dense broadcast", kind: "broadcast", matches: 3000, maxRead: 270 },
+  { name: "absent tag across dense pages", kind: "missing-tag", matches: 3000, maxRead: 3070 },
+  { name: "empty inbox", kind: "recipient", matches: 0, maxRead: 10 },
+  { name: "ten matching keys", kind: "recipient", matches: 10, maxRead: 45 },
+  { name: "32 matching keys", kind: "recipient", matches: 32, maxRead: 110 },
+  { name: "33 matching keys", kind: "recipient", matches: 33, maxRead: 3070 },
+  { name: "100 matching keys", kind: "recipient", matches: 100, maxRead: 3070 },
+  { name: "200 matching keys", kind: "recipient", matches: 200, maxRead: 3070 },
+  { name: "dense sender and sparse recipient", kind: "mixed-recipient", matches: 3, maxRead: 50 },
+  { name: "dense recipient and sparse sender", kind: "mixed-sender", matches: 3, maxRead: 50 },
+  { name: "unfiltered rowid order", kind: "unfiltered", matches: 3000, maxRead: 210 },
+  { name: "tag scan budget", kind: "scan-budget", matches: 12000, maxRead: 10070 },
+];
+
+it.each(accessPathCases)("bounds dense and sparse access paths: $name", async ({ name, kind, matches, maxRead }) => {
+  const stub = env.BUS_LOG.get(env.BUS_LOG.idFromName(`query-path-${crypto.randomUUID()}`));
+  await runInDurableObject(stub, (instance, state) => {
+    instance.currentCursor();
+    const fixtureSize = kind === "scan-budget" ? 12000 : 3000;
+    const query: ReadMessagesQuery = { since_ms: 0, limit: 20, include_broadcast: kind === "broadcast" };
+    if (kind !== "sender" && kind !== "unfiltered") query.agent = "recipient";
+    if (kind === "sender" || kind === "mixed-recipient" || kind === "mixed-sender") query.from_agent = "sender";
+    if (kind === "missing-tag" || kind === "scan-budget") query.required_tags = ["missing"];
+    const expected: string[] = [];
+    for (let index = 0; index < fixtureSize; index++) {
+      const recipient = kind === "mixed-sender" ? "recipient" : kind === "broadcast" ? "all" : index < matches ? "recipient" : "other-recipient";
+      const sender = kind === "mixed-sender" && index >= matches ? "other-sender" : "sender";
+      state.storage.sql.exec(
+        "INSERT INTO messages (origin_hub,id,timestamp_utc,protocol_version,from_agent,to_agent,topic,body,tags,priority,request_ack) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        "synthetic", `fixture-${index}`, "2026-10-15T00:00:00.000Z", "1.0", sender, recipient, "status", "synthetic", "[]", "normal", 0);
+      if ((!query.agent || recipient === query.agent || (query.include_broadcast && recipient === "all"))
+        && (!query.from_agent || sender === query.from_agent) && !query.required_tags) expected.push(`fixture-${index}`);
+    }
+    let rowsRead = 0; let rowsWritten = 0; let probes = 0;
+    const target = instance as unknown as {sql: SqlStorage}; const original = target.sql;
+    target.sql = new Proxy(original, { get(sql, key) {
+      if (key !== "exec") return Reflect.get(sql, key, sql);
+      return (statement: string, ...bindings: SqlStorageValue[]) => {
+        const cursor = sql.exec(statement, ...bindings);
+        const isProbe = statement.startsWith("SELECT seq FROM messages INDEXED BY");
+        if (isProbe) {
+          probes++;
+          expect(statement).not.toContain("ORDER BY");
+          expect(statement).not.toContain("seq <");
+          expect(bindings.at(-1)).toBe(33);
+        }
+        return new Proxy(cursor, { get(value, property) {
+          if (property !== "toArray") return Reflect.get(value, property, value);
+          return () => { const result = value.toArray(); rowsRead += value.rowsRead; rowsWritten += value.rowsWritten; return result; };
+        }});
+      };
+    }});
+    let actual;
+    try { actual = instance.listMessages(query); } finally { target.sql = original; }
+    expect(actual.map(row => row.id)).toEqual(expected.slice(-query.limit));
+    expect(rowsRead).toBeLessThanOrEqual(maxRead);
+    expect(rowsWritten).toBe(0);
+    expect(probes).toBeLessThanOrEqual(2);
+    console.log(JSON.stringify({ event: "bounded_message_query_path", name, fixture_rows: fixtureSize, rowsRead, rowsWritten, probes, returned: actual.length }));
+  });
+});
