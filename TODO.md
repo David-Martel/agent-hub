@@ -20,8 +20,11 @@ Current reconciliation gates (2026-10-15 UTC; coordinator
   byte-identical staging pass, while new-source shipping CI remains open.
 - [x] Publish the scoped Cloudflare diagnostic using only the protected existing
   session; verify exact bundle readback and retained bindings/domain/settings.
-- [ ] Verify authenticated Cloudflare storage/sync and fix the captured cause.
-  Valid actor 500 continued after the daily boundary before this diagnostic.
+- [x] Verify bounded Cloudflare recovery: protected presence/pull/batch 200,
+  invalid token 401, unchanged ASUS hub with queue zero and advancing cursors.
+- [ ] Establish the prior Cloud 500 cause and historical delivery completeness;
+  current recovery does not prove either. Keep global operator statistics
+  separate from checks using the existing hub-role token.
 - [ ] Obtain actual runtime custody for ASUS hub/clients, active NUC MCP and
   P1 watcher/service; reconcile pinned client configurations and install the
   accepted source without interrupting other agents or HIL.

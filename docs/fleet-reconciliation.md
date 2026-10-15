@@ -64,11 +64,18 @@ the hosted runner's default test profile.
   process controls remain intact. Python and the four native helper checks now
   run before compilation; all five passed in the current hosted run.
 - PR #132 is also merged after all sixteen checks passed at its exact reviewed
-  head. Accepted main is `b4af6fd`; its new run `38657783585` fails the cached
-  claim expiry backend test, so current-main CI acceptance remains OPEN.
+  head. Accepted main is `b4af6fd`; run `38657783585` passes fifteen required
+  jobs, including separately admitted native smoke, and fails the cached claim
+  expiry backend test, so current-main CI acceptance remains OPEN.
   PR #133's first repair violates the four-second envelope invariant and fails
   its first acceptance call. The owner received the verified blocker; do not
   loosen production validation or merge a timing-only repair.
+  An independent repair in the owned maintenance branch uses a valid request
+  and explicitly pre-aged, matching stored cutoffs with actual Redis TIME.
+  The focused backend case passes; removing only the cached-expiry guard in a
+  separate source/target snapshot makes it fail as required. Production code
+  and Lua remain byte-identical. This is stored-state fault injection, not a
+  natural lease-waiting claim; current-head backend CI remains required.
 - The maintenance branch was normally published at signed `3f20fab`, with
   1,218 passing tests, zero failures, 107 ignored and blocking audit passed.
   Subsequent local commits integrate accepted main, add a bounded Cloud error
@@ -77,6 +84,14 @@ the hosted runner's default test profile.
   download, native revision/MCP check, fresh CI readback and identical-byte
   staging. These receipts qualify that reuse path against `5312338`; they do
   not establish current maintenance shipping CI or a published release.
+- Draft PR #134 publishes the maintenance follow-ups. Its first run passes
+  integration, native Windows, units, lint, Docker and Linux x64 release; both
+  ARM releases stop before compilation because sccache 0.18 reports a multilevel
+  summary instead of a disk directory. The reviewed repair validates the actual
+  disk/Redis levels, exact peer/prefix and per-level write failures. Fifteen
+  focused controls and 280 service-free tests pass, with seven intentional
+  skips. Two owned native compiler requests prove an L0 hit and identical
+  artifacts; no remote cache hit is claimed. New-head shipping CI remains OPEN.
 - An identical SDK probe proves Wine 11 loses protected DACLs and adds a second
   ACE on reopen; native Windows retains the required sole-owner descriptor.
   The guard remains strict. Required Windows tests now run on native Windows.
@@ -90,6 +105,9 @@ the hosted runner's default test profile.
   source head, runtime SHA, event, ref, run, attempt and job. Its hook is
   single-use and fails closed. Separate admissions passed for the PR and main;
   all listeners exited and deregistered after their jobs, including PR #132.
+  The subsequent exact-main `b4af6fd` smoke also passed; runner 65 exited and
+  deregistered. Whole work, private HOME, diagnostics, native artifacts and
+  admission bytes/ACLs are preserved, with a fresh empty work namespace.
   No listener or approval remains armed. This is trusted-job
   admission, not OS or Docker isolation.
 - ASUS hub/client rollout still needs the live runtime scheduler's custody
@@ -105,9 +123,9 @@ the hosted runner's default test profile.
   unlinked, retaining its external compiler cache. The primary checkout is
   the sole local worktree. PRs #126, #130, Dependabot #124 and the new expiry
   repair #133 remain open; other owners' work remains protected.
-- Cloudflare provider authentication now succeeds through the existing
-  credential backend; account, Worker and domain reads return HTTP 200. Valid
-  ASUS actor requests still return HTTP 500 while invalid tokens return 401.
+- Cloudflare provider authentication succeeds through the existing credential
+  backend; account, Worker and domain reads return HTTP 200. Earlier valid
+  ASUS actor requests returned HTTP 500 while invalid tokens returned 401.
   Observed daily SQLite reads are 5,115,274, above the Free allowance of
   5,000,000. Quota exhaustion is a supported inference, not a captured exception.
   The batching/index build was deployed as version `51d78150` with exact
@@ -119,9 +137,18 @@ the hosted runner's default test profile.
   read-only preflight returns provider 200 without login, unlock or auth writes.
   The diagnostic is now deployed as version `85a4bc07`, with exact compiled
   bundle readback, source annotations and unchanged bindings, domain,
-  compatibility and observability. Authenticated runtime diagnosis continues.
+  compatibility and observability. Protected presence, pull and batch reads
+  now return 200, while an invalid token returns 401. Two ASUS samples show
+  Cloud reachable, queue depth zero, advancing cursors and no Cloud errors or
+  dropped batches; the existing hub process is unchanged. These are bounded
+  recovery observations, not complete historical payload delivery evidence.
+  The earlier failure's cause remains unproven. The existing hub token receives
+  the correct operator-only stats refusal; no role escalation was performed.
   No billing, token rotation or Durable Object data mutation was performed by
   the deployment actor. Vitest 5 remains an explicit vendor compatibility hold.
+  Sanitized Windows SSH children now retain the required `PROGRAMDATA` variable;
+  nine controls and two exact-helper calls distinguish that environment defect
+  from credential or fleet-server permission failures.
 
 Private receipts include `carbon-native-canary.json`, `vigil-native-canary.json`,
 `native-windows-source-review.json`, `runner-admission-review.json` and the Linux
