@@ -288,6 +288,8 @@ jobs:
             exit 1
           fi
         fi
+        # Set by the caller-only "Hold caller directories" step; unset (agent-hub's vendored copy) means none.
+        held_dir="${HELD_DIRECTORY:-}"
         decision=automerge
         reason=""
         if [[ "${AUTHOR:-}" != "dependabot[bot]" ]]; then
@@ -305,6 +307,9 @@ jobs:
         elif [[ "$group_unverified" == true ]]; then
           decision=hold
           reason="grouped update ($DEP_GROUP) without per-dependency versions"
+        elif [[ -n "$held_dir" ]]; then
+          decision=hold
+          reason="held directory ($held_dir: every update there needs a human with the hardware)"
         elif [[ "$denied" == true ]]; then
           decision=hold
           reason="deny-listed dependency ($DEP_NAMES matched $deny_regex)"
