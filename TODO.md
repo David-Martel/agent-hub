@@ -4,7 +4,27 @@ Current cross-host reconciliation: [fleet reconciliation plan](docs/fleet-reconc
 This plan records fresh clone, PR, runner and Cloudflare evidence separately from
 historical fleet acceptance below.
 
-Current reconciliation gates (2026-10-15 UTC; coordinator
+Current availability work (2026-10-16 UTC):
+
+- [x] Integrate dependency PR #143 as accepted main `4be2281`; verify exact-main
+  required CI and native Windows artifact smoke; retire the owned merged
+  worktree/ref with history and ignored evidence preserved.
+- [x] Install accepted-main CLI/HTTP/MCP user binaries on both Sparks and verify
+  installed versions/catalogs; running service upgrades remain separate.
+- [ ] Finish the bounded local Redis health patch: 858 core tests and the
+  private Windows MCP runtime check pass; final corrected-source lint/build,
+  normal hooked publication, review and exact-head CI remain open (#144).
+- [ ] Remove ASUS/UDM failure dependencies and correct the audited interface
+  gaps using the [availability and hosting plan](docs/reliability-and-hosting-plan.md).
+  External hosting is priced; provisioning, failover and Drive archive delivery
+  are not yet qualified.
+- [ ] Build ABI-compatible Linux artifacts after runner/resource admission and
+  obtain owning service rollout windows. Preserve active agents and Carbon's
+  owner-directed off state.
+- [ ] Re-establish authenticated Cloud operation: desktop token provenance and
+  Durable Object read-quota recovery remain independent open gates.
+
+Earlier reconciliation gates (2026-10-15 UTC; coordinator
 `codex-p1-agenthub-reconcile`):
 
 - [x] Reconcile five primary clones to accepted main with ignored data,
