@@ -63,3 +63,9 @@ opens those existing files in place; it never replaces them or repairs their
 permissions. This preserves host ownership across Docker Desktop's filesystem
 boundary. Completion requires unchanged file identities and host readback of
 every handoff file, as well as the actor's actual gate results.
+
+Rustdoc executes merged documentation-test binaries in TMPDIR. The owned 256 MiB
+UID-1000 temporary filesystem therefore explicitly permits execution while
+retaining nosuid, nodev and mode 0700. Docker's implicit noexec default otherwise
+makes rustdoc return failure after printing successful standalone test results.
+Source remains read-only, and compilation caches never gain network access.

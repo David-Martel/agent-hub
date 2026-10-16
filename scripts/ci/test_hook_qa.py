@@ -60,7 +60,7 @@ def valid_envelope(mounts, image, label):
             "DeviceRequests": None,
             "SecurityOpt": ["no-new-privileges"],
             "Tmpfs": {
-                "/tmp": "rw,nosuid,nodev,size=268435456,uid=1000,gid=1000,mode=700"
+                "/tmp": "rw,exec,nosuid,nodev,size=268435456,uid=1000,gid=1000,mode=700"
             },
             "Mounts": [
                 {

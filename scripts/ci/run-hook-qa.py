@@ -327,7 +327,7 @@ def validate_envelope(metadata, image, label, phase, mounts):
     )
     require(
         host.get("Tmpfs")
-        == {"/tmp": "rw,nosuid,nodev,size=268435456,uid=1000,gid=1000,mode=700"},
+        == {"/tmp": "rw,exec,nosuid,nodev,size=268435456,uid=1000,gid=1000,mode=700"},
         "Actual owned temporary filesystem differs",
     )
 
@@ -586,7 +586,7 @@ def execute_container(config, source, run, phase, script):
             "--network",
             "bridge" if phase == "audit" else "none",
             "--tmpfs",
-            "/tmp:rw,nosuid,nodev,size=268435456,uid=1000,gid=1000,mode=700",
+            "/tmp:rw,exec,nosuid,nodev,size=268435456,uid=1000,gid=1000,mode=700",
         ]
         mounts = [
             (source, "/source", True),
