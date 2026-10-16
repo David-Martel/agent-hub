@@ -1,0 +1,324 @@
+{
+  "state": "FROZEN_AUTHORED_EXPECTATIONS_NOT_COMPILED",
+  "providers": {
+    "core-capture-revision/MANIFEST.json": "5302bdef58e56a4cb147c57f0acb865549a5b5c744a835651b8b4bd40085405b",
+    "transport-review-revision/frozen-candidate.json": "fb80ec9597687cbb8c944e97cfd59f87c1eac21bc48de3c1e66dc7e624b8e14b",
+    "capture-candidate/MANIFEST.json": "00c08ba2421f6fb31dc1e9147f7e8860fea84c1b13b11d2866f7dca27eccc2a8"
+  },
+  "authored_tests": 62,
+  "ignored_backend_tests": 28,
+  "service_free_and_owned_loopback_tests": 34,
+  "tests": [
+    {
+      "name": "mesh_store::tests::canonical_hash_ignores_only_receiver_stream_cursor",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::canonical_hash_preserves_origin_timestamp_and_array_order",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::canonical_json_object_order_does_not_change_hash",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::canonical_rejects_non_uuid_missing_origin_wrong_protocol_and_nul",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::canonical_rejects_unreplayable_timestamp_precision_and_schema_mismatch",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::destination_is_fingerprinted_and_direct_pair_order_is_validated",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::identity_validation_rejects_empty_paths_control_and_oversize",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::errors_never_include_backend_urls_or_payloads",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::projection_markers_are_scoped_by_bus_identity",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::durable_duplicate_collision_and_restart_preserve_one_event",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::full_log_refuses_new_capture_but_allows_duplicate_and_export",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::import_is_all_or_nothing_and_preserves_foreign_origins_for_mesh_relay",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::no_offsite_is_not_exported_or_imported_but_export_cursor_advances",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::peer_membership_and_cursor_compare_and_swap_cannot_skip_future_events",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::redis_success_pg_marker_failure_repairs_without_second_message_or_notification",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::pending_redis_marker_holds_without_repeating_ambiguous_effects",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::direct_and_group_project_without_joining_members_or_leaking_into_bus_stream",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::stalled_pg_startup_is_cancelled_and_owned_peer_observes_eof",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::concurrent_commit_order_cannot_publish_later_sequence_before_earlier_transaction",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::imported_message_wakes_owned_subscriber_once_and_is_in_normal_history_before_projection",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::concurrent_duplicate_and_collision_share_one_durable_event_and_history_row",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::oldest_ambiguous_projection_is_quarantined_while_later_bus_and_direct_messages_project_once",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::corrupt_oldest_projection_row_is_held_individually_without_skipping_export_corruption",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::lost_owned_redis_connection_retains_retryable_events_then_recovers_without_holds",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::wrong_type_projection_receipt_is_preserved_and_quarantined_without_blocking_next_event",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::acknowledgement_requires_canonical_uuid_consistent_reply_and_no_recursive_ack_request",
+      "ignored": false,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::local_batch_preserves_no_offsite_and_rolls_back_new_members_on_collision",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::local_batch_capacity_failure_retains_no_partial_event_or_history_row",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::pending_and_priority_deadline_use_original_absolute_time_and_retry_never_refreshes",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::delayed_backfill_does_not_revive_expired_pending_ack_or_priority_deadline",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::ack_clears_pending_once_and_late_original_retry_never_resurrects_it",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::durable_ack_before_original_suppresses_pending_even_before_ack_redis_projection",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::posted_receipt_returns_original_notification_identity_and_stream_cursor_on_every_retry",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "mesh_store::tests::denied_redis_clock_is_preflighted_before_any_irreversible_projection_effect",
+      "ignored": true,
+      "source": "core-capture-revision/mesh_store_tests.rs"
+    },
+    {
+      "name": "peer_sync::tests::lost_response_retries_without_duplicate_and_restart_resumes_cursor",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::slow_peer_does_not_serialize_other_peer_or_local_store",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::mismatched_ack_does_not_advance_cursor_after_destination_commit",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::no_offsite_filtered_page_advances_only_scan_cursor",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::multi_hop_import_keeps_original_id_and_origin",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::inbound_wrong_identity_or_no_offsite_does_not_import",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::body_bound_and_bad_routes_fail_closed",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::fallback_reuses_batch_and_accepts_only_matching_peer_receipt",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::peer_auth_binds_identity_and_does_not_accept_global_token",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::shutdown_joins_peer_after_in_flight_exchange_without_aborting_store",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::typed_destination_survives_relay_without_membership_mutation",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::fair_retry_reaches_fifth_route_after_four_owned_stalled_routes",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::production_reply_budget_accepts_real_two_and_half_second_receiver_commit",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::explicit_private_http_never_admits_public_or_unpinned_dns_targets",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::fixture_rejects_collision_atomically_and_does_not_mask_bad_hash",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "peer_sync::tests::three_real_peer_workers_converge_a_b_c_a_cycle_and_then_become_quiescent",
+      "ignored": false,
+      "source": "transport-review-revision/crates/agent-bus-http/src/peer_sync.rs"
+    },
+    {
+      "name": "mesh_capture::tests::replay_preparation_keeps_original_identity_time_and_session_independent_hash",
+      "ignored": false,
+      "source": "capture-candidate/crates/agent-bus-core/src/mesh_capture.rs"
+    },
+    {
+      "name": "mesh_capture::tests::full_replay_request_identity_changes_canonical_hash_and_reserved_provenance_refuses",
+      "ignored": false,
+      "source": "capture-candidate/crates/agent-bus-core/src/mesh_capture.rs"
+    },
+    {
+      "name": "mesh_capture::tests::local_config_failure_is_separate_from_independently_broken_peer_config",
+      "ignored": false,
+      "source": "capture-candidate/crates/agent-bus-core/src/mesh_capture.rs"
+    },
+    {
+      "name": "mesh_capture::tests::sync_bridge_runs_and_joins_distinct_owned_thread_inside_current_thread_runtime",
+      "ignored": false,
+      "source": "capture-candidate/crates/agent-bus-core/src/mesh_capture.rs"
+    },
+    {
+      "name": "mesh_capture::tests::sync_bridge_does_not_enter_or_block_in_place_on_caller_runtime",
+      "ignored": false,
+      "source": "capture-candidate/crates/agent-bus-core/src/mesh_capture.rs"
+    },
+    {
+      "name": "mesh_capture::tests::invalid_local_capture_never_reaches_storage_or_replaces_message_id",
+      "ignored": false,
+      "source": "capture-candidate/crates/agent-bus-core/src/mesh_capture.rs"
+    },
+    {
+      "name": "mesh_capture::tests::unavailable_store_refuses_success_and_reports_no_capture_attempt",
+      "ignored": false,
+      "source": "capture-candidate/crates/agent-bus-core/src/mesh_capture.rs"
+    },
+    {
+      "name": "mesh_capture::tests::actual_sql_write_failure_never_returns_capture_success_and_keeps_original_identity",
+      "ignored": true,
+      "source": "capture-candidate/crates/agent-bus-core/src/mesh_capture.rs"
+    },
+    {
+      "name": "mesh_capture::tests::actual_committed_capture_with_closed_redis_reports_retained_projection_pending",
+      "ignored": true,
+      "source": "capture-candidate/crates/agent-bus-core/src/mesh_capture.rs"
+    },
+    {
+      "name": "mesh_capture::tests::public_bus_batch_direct_and_group_writes_capture_once_with_typed_targets",
+      "ignored": true,
+      "source": "capture-candidate/crates/agent-bus-core/src/mesh_capture.rs"
+    },
+    {
+      "name": "outbox_hub::mesh_migration_tests::enabling_mesh_preserves_preexisting_legacy_receipt_without_second_message",
+      "ignored": true,
+      "source": "capture-candidate/crates/agent-bus-core/src/outbox_hub.rs"
+    },
+    {
+      "name": "outbox_hub::mesh_migration_tests::nonauthority_replay_claim_refuses_before_legacy_memo_or_lease_mutation",
+      "ignored": true,
+      "source": "capture-candidate/crates/agent-bus-core/src/outbox_hub.rs"
+    }
+  ],
+  "limits": "Only the three frozen contributor slices; Root integration tests may add further required expectations. Actual workspace counts come exclusively from compiled list/output."
+}

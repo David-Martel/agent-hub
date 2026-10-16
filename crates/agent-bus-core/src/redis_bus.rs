@@ -2613,39 +2613,16 @@ pub fn bus_list_presence(
 
 /// Get bus health.
 ///
-/// When `pool` is `Some`, a pooled Redis connection is used for the PING and
-/// XLEN commands, eliminating the two fresh TCP handshakes the previous
-/// implementation incurred.  Pass `None` in CLI mode where no pool exists.
-pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
-    // Use a pooled connection when available; otherwise open a fresh one.
-    let (ok, stream_length, redis_persistence) =
-        if let Some(mut conn) = pool.and_then(|p| p.get_connection().ok()) {
-            let ok = redis::cmd("PING")
-                .query::<String>(&mut *conn)
-                .is_ok_and(|pong| pong == "PONG");
-            let stream_length = redis::cmd("XLEN")
-                .arg(&settings.stream_key)
-                .query::<u64>(&mut *conn)
-                .ok();
-            let redis_persistence = redis_persistence_summary(&mut conn);
-            (ok, stream_length, redis_persistence)
-        } else {
-            // CLI mode: fall back to a single fresh connection for both queries.
-            match connect(settings) {
-                Ok(mut conn) => {
-                    let ok = redis::cmd("PING")
-                        .query::<String>(&mut conn)
-                        .is_ok_and(|pong| pong == "PONG");
-                    let stream_length = redis::cmd("XLEN")
-                        .arg(&settings.stream_key)
-                        .query::<u64>(&mut conn)
-                        .ok();
-                    let redis_persistence = redis_persistence_summary(&mut conn);
-                    (ok, stream_length, redis_persistence)
-                }
-                Err(_) => (false, None, None),
-            }
-        };
+/// Redis uses a fresh owned connection with a 750 ms aggregate network budget.
+/// `pool` remains accepted for caller compatibility but is not checked out:
+/// pool validation and reconnect work are outside this probe's owned deadline.
+/// PostgreSQL and backup metadata retain their separate existing behavior.
+pub fn bus_health(settings: &Settings, _pool: Option<&RedisPool>) -> Health {
+    let crate::redis_health::RedisHealth {
+        ok,
+        stream_length,
+        persistence: redis_persistence,
+    } = crate::redis_health::probe(settings);
 
     let (database_ok, database_error, storage_ready) = probe_postgres(settings);
     // Single round-trip for both PG counts instead of two separate queries.
@@ -2692,26 +2669,6 @@ pub fn bus_health(settings: &Settings, pool: Option<&RedisPool>) -> Health {
         postgres_replication_lag_seconds: None,
         cloud: None,
     }
-}
-
-fn redis_persistence_summary(conn: &mut redis::Connection) -> Option<String> {
-    let info = redis::cmd("INFO")
-        .arg("persistence")
-        .query::<String>(conn)
-        .ok()?;
-    let aof = info_value(&info, "aof_enabled").unwrap_or("unknown");
-    let rdb_status = info_value(&info, "rdb_last_bgsave_status").unwrap_or("unknown");
-    let aof_status = info_value(&info, "aof_last_write_status").unwrap_or("unknown");
-    Some(format!(
-        "aof_enabled={aof};rdb_last_bgsave_status={rdb_status};aof_last_write_status={aof_status}"
-    ))
-}
-
-fn info_value<'a>(info: &'a str, key: &str) -> Option<&'a str> {
-    info.lines().find_map(|line| {
-        let (actual_key, value) = line.split_once(':')?;
-        (actual_key == key).then_some(value.trim())
-    })
 }
 
 /// The identity a hub reports: the configured `hub_identity` (what clients

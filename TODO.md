@@ -6,6 +6,15 @@ historical fleet acceptance below.
 
 Current availability work (2026-10-16 UTC):
 
+Resumption owner, source custody, exact failure evidence and next actions:
+[agent-hub checkpoint](docs/agent-hub-resume.md). Mesh source is preserved as a
+[proposal packet](docs/proposals/message-mesh/README.md), not deployed code.
+
+- [ ] Rerun normal pre-push/doctests and fresh audit after the private tmpfs exec
+  fix; finish independent hook review/current-head CI/merge-train integration.
+- [ ] Fix canonical notification-array consumption and recipient SSE resume IDs
+  before compiling the mesh; qualify all added tests against disposable stores.
+
 - [x] Integrate dependency PR #143 as accepted main `4be2281`; verify exact-main
   required CI and native Windows artifact smoke; retire the owned merged
   worktree/ref with history and ignored evidence preserved.
@@ -20,6 +29,9 @@ Current availability work (2026-10-16 UTC):
   gaps using the [availability and hosting plan](docs/reliability-and-hosting-plan.md).
   External hosting is priced; provisioning, failover and Drive archive delivery
   are not yet qualified.
+- [ ] Implement the [local-message and peer mesh contract](docs/message-mesh.md):
+  equal ASUS/P1 capture, durable retry/dedup/backlog and independent local
+  communication; preserve single-authority claim safety and existing journals.
 - [ ] Build ABI-compatible Linux artifacts after runner/resource admission and
   obtain owning service rollout windows. Preserve active agents and Carbon's
   owner-directed off state.

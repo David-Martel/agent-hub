@@ -1,0 +1,50 @@
+{
+  "status": "SOURCE_ONLY / NOT_COMPILED / NOT_TESTED / NOT_DEPLOYED",
+  "owner": "codex p1_hub_runtime_audit",
+  "frozen_review_packet": true,
+  "recorded_utc": "2026-10-16T05:09:56.358001+00:00",
+  "checkpoint_reason": "user usage-limit checkpoint; stop after artifact freeze",
+  "scope": "reviewed four HTTP source files only, not whole active assembly",
+  "source_root": "../assembled-candidate/source",
+  "source_mutations": false,
+  "runtime_calls": false,
+  "cargo_or_docker_executed": false,
+  "blocking_findings": [
+    {
+      "severity": "P1",
+      "code": "canonical_notification_receipt_discarded",
+      "path": "crates/agent-bus-http/src/http.rs",
+      "line": 1318,
+      "disposition": "OPEN; Root owns successor fix and QA"
+    }
+  ],
+  "reviewed_sources": [
+    {
+      "path": "crates/agent-bus-http/src/http.rs",
+      "bytes": 171709,
+      "sha256": "B6D50A2886B8B7AC214D7561A4E9FE1FBB625394F6FC8B88DA3F78069433CEFA"
+    },
+    {
+      "path": "crates/agent-bus-http/src/main.rs",
+      "bytes": 2054,
+      "sha256": "E4C28E8B63F8ED158C46ADA16080D0926018152C19CF2CAE0A52CC2AA9CFD141"
+    },
+    {
+      "path": "crates/agent-bus-http/src/message_mesh.rs",
+      "bytes": 33694,
+      "sha256": "283D70EC6C7B68BFEBBD1970FF47CA6FEEF6D9AB6D84705EB2CE2D358BBC5407"
+    },
+    {
+      "path": "crates/agent-bus-http/src/peer_sync.rs",
+      "bytes": 53874,
+      "sha256": "89AF90ED09A5CA3E9900E0A04A94A1543C26F2B7821A7FE02A29A08B56F9418B"
+    }
+  ],
+  "files": [
+    {
+      "path": "findings.md",
+      "bytes": 5765,
+      "sha256": "F99D9082F455B371CA64B6D1C6B1C80331E7DCE64C7EB6C792DF292636140E6A"
+    }
+  ]
+}
