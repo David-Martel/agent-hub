@@ -53,6 +53,7 @@ Every regression uses owned disposable fixtures before a live failure drill.
 | Priority / owner | Work | Required proof |
 | --- | --- | --- |
 | P1 / bus maintainer | Bound local Redis health across connection setup and commands | Silent/partial/trickled replies, auth/DB setup, current-thread and multi-thread runtime cancellation; actual MCP response and clean child/socket exit |
+| P1 / outbox maintainer | Distinguish journal contention from custody/corruption/capacity/I/O failures | Two real fixture submitters share one journal; the second reports retryable, nonretained busy while the first holds the lock through transport; release/retry preserves identity/order and produces no duplicate effects |
 | P1 / bus maintainer | Prevent remote-configured CLI `watch`/`monitor` from observing a local island; add supported remote streaming | A local-backend sentinel is never contacted under remote configuration, online or offline; cursor/reconnect qualification for the remote implementation |
 | P1 / HTTP maintainer | Remove SSE replay-before-consumer deadlock and close snapshot/subscription gap | 129 and 500 retained notifications yield bounded response headers, ordered replay, concurrent append delivery and disconnect cleanup |
 | P1 / HTTP maintainer | Enforce maintenance pause for MCP mutations as well as REST/replay | Every mutation is rejected while paused without backend effects; discovery, reads and health remain available; resume restores dispatch |
@@ -105,6 +106,10 @@ The new host must run the required writer/control services and persistent state
 outside ASUS and the UDM. A public proxy that still forwards to ASUS preserves
 the original failure dependency. Keep provider-console and direct-IP recovery
 independent of the tailnet being repaired; keep a second tested management route.
+At least one multi-homed recovery host also needs an uplink independent of the
+UDM. An external server cannot restore connectivity to devices whose only
+gateway has lost power. Test the actual alternate uplink rather than inferring
+reachability from several interface addresses.
 Select which forwarding hostnames remain HTTP applications and which carry the
 Headscale control protocol before changing DNS or Cloudflare bindings.
 
@@ -147,6 +152,22 @@ archive candidate, not a transactional claims store. Existing Drive capacity and
 this project's quota grandfathering remain unverified. Consult the current
 [Drive API limits](https://developers.google.com/workspace/drive/api/guides/limits)
 rather than historical request-count quotas.
+
+For object archives, public storage-only examples are R2 Standard at $1.50 for
+100 GB-month before allowances ($1.35 if the full 10 GB-month allowance remains),
+or GCS Iowa Standard at about $2 for 100 GiB over 730 hours before allowances.
+R2 has free Internet egress; GCS operation and restore-network charges remain
+separate. Batch operations and readback verification must be budgeted. Existing
+free allowances and storage plans are unverified. Sources:
+[R2 pricing](https://developers.cloudflare.com/r2/pricing/) and
+[Google storage pricing](https://cloud.google.com/storage/pricing?hl=sv).
+
+The native Windows outbox failure reported during this review is not yet
+diagnosed. Source review confirms a per-user journal and an exclusive lock
+spanning submission/replay, with several failure categories collapsed into one
+public error. Metadata alone cannot distinguish contention from other failures.
+Keep active journal bytes intact; add sanitized diagnostic categories and real
+concurrent fixture tests before changing lock behavior or retry policy.
 
 ## Current open gates
 
