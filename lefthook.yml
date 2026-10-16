@@ -9,42 +9,15 @@ skip_output:
 # every command carrying it was skipped on every commit and push.
 
 pre-commit:
-  parallel: true
   commands:
-    rust-fmt:
-      glob: "*.rs"
-      run: cargo fmt -- --check
-
-    rust-clippy:
-      glob: "*.rs"
-      env:
-        RUSTC_WRAPPER: ""
-      run: cargo clippy --all-targets --quiet -- -D warnings
+    rust-container-qa:
+      run: python3 -I -B scripts/ci/run-hook-qa.py pre-commit
 
 pre-push:
-  parallel: true
   commands:
-    # Backend tests are #[ignore]d (CI's test-integration job runs them).
-    # Unit tests that call Settings::from_env() would otherwise reach the
-    # live bus on this host (6380/5300), so pin both to a closed port.
-    rust-test:
-      glob: "*.rs"
-      env:
-        RUSTC_WRAPPER: ""
-        AGENT_BUS_REDIS_URL: redis://127.0.0.1:1/0
-        AGENT_BUS_DATABASE_URL: postgresql://postgres@127.0.0.1:1/none
-        AGENT_BUS_HUB_CACHE_TTL_SECONDS: "0"
-      run: bash scripts/test-agent-bus-isolated.sh
-
-    # Blocking. A missing cargo-audit is a failure, not a skip: a gate that
-    # cannot run must say so rather than pass.
-    rust-audit:
-      run: |
-        command -v cargo-audit >/dev/null 2>&1 || {
-          echo 'ERROR: cargo-audit is not installed (cargo install cargo-audit --locked)' >&2
-          exit 1
-        }
-        cargo audit
+    rust-container-qa:
+      use_stdin: true
+      run: python3 -I -B scripts/ci/run-hook-qa.py pre-push
 
 commit-msg:
   commands:
