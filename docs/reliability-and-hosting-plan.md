@@ -80,6 +80,7 @@ measurement. Monthly Google examples use 730 hours and Iowa on-demand Linux.
 | DigitalOcean Basic Regular, 2 GiB, 50 GiB disk, bundled IPv4/2,000 GiB transfer | $12; $14.40 with weekly backups | Small combined bus/Headscale pilot; memory/persistence load qualification required |
 | Separate DigitalOcean 1 GiB Headscale and 2 GiB bus VMs | $18; $21.60 with weekly backups | Isolates service resource failures; same provider, no replicated bus failover |
 | Google e2-small, 2 GiB + 20 GiB balanced disk + in-use IPv4 | About $17.88 before egress/backups | Compute $12.23 + disk $2 + IPv4 $3.65; actual region/account quote required |
+| DigitalOcean 2 GiB primary with weekly backups + Google e2-small recovery host above | $32.28 before Google backups, archive and egress | Independent provider recovery capacity; budget approximately $35–40 for the pilot, not implemented automatic HA |
 | Google eligible free-tier e2-micro + eligible standard disk | About $3.65 for IPv4, conditional | Billing/allowance eligibility unverified; 1 GiB is not qualified for the complete bus stack |
 | Cloudflare Workers Paid / Durable Objects | $5 account minimum plus usage | Existing edge application option; not a drop-in host for the native daemon stack or Headscale |
 
@@ -99,6 +100,15 @@ upgrade path after measuring bus/Redis/PostgreSQL working set and traffic.
 If isolation is the immediate priority, evaluate the $21.60 separated layout.
 Neither is automatic HA. A second independent recovery host, state replication,
 tested restoration and writer fencing are separate work and cost items.
+
+Cloudflare Containers were also evaluated separately from Workers. At 730
+continuous hours, basic (1 GiB memory / 4 GB ephemeral disk) has an approximately
+$12.03 plan/memory/disk floor before active CPU, Workers/Durable Objects usage
+and egress, assuming the included allowances remain available. The platform's
+HTTP-only end-user ingress and ephemeral default disk do not directly accommodate
+the current native Redis/PostgreSQL/Headscale and UDP-relay stack. Sources:
+[Containers pricing](https://developers.cloudflare.com/containers/platform/pricing/)
+and [lifecycle/network/storage](https://developers.cloudflare.com/containers/concepts/architecture/).
 
 ## External control plane and forwarding
 
@@ -171,7 +181,13 @@ concurrent fixture tests before changing lock behavior or retry policy.
 
 ## Current open gates
 
-- Final-source health lint/build, normal hooked commit, review and exact-head CI.
+- Health candidate C2 passed 14 focused tests, strict workspace Clippy and MCP
+  build in an isolated Linux QA container. Its actual MCP stalled-backend check
+  returned degraded health in 0.90 seconds with natural child exit and closed
+  fixture sockets. This Bookworm GLIBC 2.36 artifact is not qualified for native
+  vigil1 GLIBC 2.35 deployment. Normal hooked commit, review and exact-head CI
+  remain open; the earlier full core suite passed 858 tests on code-equivalent
+  production logic, not on the final C2 test-source bytes.
 - Compatible Linux artifact build and owning service rollout windows; ASUS CPU
   admission remains on hold while other lanes build.
 - Independent Cloud desktop authentication provenance and read-quota recovery;

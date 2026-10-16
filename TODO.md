@@ -12,8 +12,10 @@ Current availability work (2026-10-16 UTC):
 - [x] Install accepted-main CLI/HTTP/MCP user binaries on both Sparks and verify
   installed versions/catalogs; running service upgrades remain separate.
 - [ ] Finish the bounded local Redis health patch: 858 core tests and the
-  private Windows MCP runtime check pass; final corrected-source lint/build,
-  normal hooked publication, review and exact-head CI remain open (#144).
+  private Windows MCP runtime check pass on code-equivalent production logic.
+  Final C2 passes 14 focused tests, strict workspace lint/build and actual Linux
+  MCP runtime; normal hooked publication, review, exact-head CI and compatible
+  shipping qualification remain open (#144).
 - [ ] Remove ASUS/UDM failure dependencies and correct the audited interface
   gaps using the [availability and hosting plan](docs/reliability-and-hosting-plan.md).
   External hosting is priced; provisioning, failover and Drive archive delivery
