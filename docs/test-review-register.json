@@ -1354,6 +1354,56 @@
       },
       "breaking_behavior": "Preserve failed prefix bytes and exclusive typed metadata summaries; original clocks, mapping and settlement guards unchanged.",
       "additional_coverage_boundary": "Offline synthetic controls; original CI helper cause remains UNKNOWN; source-bound current-head CI required."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/cloud_sync.rs::tests::invalid_push_dispositions_retain_the_entire_batch_and_restart_cursor",
+      "reviewer": "codex-ms01",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-16",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Synthetic loopback HTTP message push acknowledgment and persisted restart cursor; no live bus, presence qualification or production cloud500 diagnosis.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/cloud_sync.rs",
+        "sha256": "e1f6a74805166c809919c640a3e7d5fc142dff449c3666bd188a179618b02e5d",
+        "hash_scope": "whole normalized Rust module, including fixture helpers and both selectors"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/cloud_sync.rs",
+        "sha256": "e1f6a74805166c809919c640a3e7d5fc142dff449c3666bd188a179618b02e5d"
+      },
+      "protections": "Retain whole message batch and cursor unless every submitted ID is accepted or duplicated exactly once; no response content in diagnostics.",
+      "needs": "Disposable container with pinned Rust1.99, loopback sockets and temporary state directory; no backend credentials.",
+      "control": "Observed container29PASS1existingignored; fault reintroduction fails outbox0 versus expected1. Mixed accepted/duplicate IDs succeed, malformed/partial/conflict/rejected/unknown/duplicate/missing dispositions retain batch and cursor across restart.",
+      "review_completed_utc": "2026-10-16T23:50:09.005307+00:00",
+      "reviewed_source_state": "Exact source hash independently inspected; authored container logs and fault reintroduction checked, not independently rerun by reviewer",
+      "additional_coverage_boundary": "Synthetic loopback HTTP and temporary cursors only. Presence accounting, actual Redis backend, cloud quota recovery, deployment and active host journal migration are not qualified. Existing HTTP wire success fixture now has no rejection; new explicit rejected response case must preserve batch."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/cloud_sync.rs::tests::message_push_accepts_only_complete_disjoint_accepted_and_duplicate_ids",
+      "reviewer": "codex-ms01",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-16",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Synthetic loopback HTTP message push acknowledgment and persisted restart cursor; no live bus, presence qualification or production cloud500 diagnosis.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/cloud_sync.rs",
+        "sha256": "e1f6a74805166c809919c640a3e7d5fc142dff449c3666bd188a179618b02e5d",
+        "hash_scope": "whole normalized Rust module, including fixture helpers and both selectors"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/cloud_sync.rs",
+        "sha256": "e1f6a74805166c809919c640a3e7d5fc142dff449c3666bd188a179618b02e5d"
+      },
+      "protections": "Retain whole message batch and cursor unless every submitted ID is accepted or duplicated exactly once; no response content in diagnostics.",
+      "needs": "Disposable container with pinned Rust1.99, loopback sockets and temporary state directory; no backend credentials.",
+      "control": "Observed container29PASS1existingignored; fault reintroduction fails outbox0 versus expected1. Mixed accepted/duplicate IDs succeed, malformed/partial/conflict/rejected/unknown/duplicate/missing dispositions retain batch and cursor across restart.",
+      "review_completed_utc": "2026-10-16T23:50:09.005326+00:00",
+      "reviewed_source_state": "Exact source hash independently inspected; authored container logs and fault reintroduction checked, not independently rerun by reviewer",
+      "additional_coverage_boundary": "Synthetic loopback HTTP and temporary cursors only. Presence accounting, actual Redis backend, cloud quota recovery, deployment and active host journal migration are not qualified. Existing HTTP wire success fixture now has no rejection; new explicit rejected response case must preserve batch."
     }
   ],
   "historical_reviews": [

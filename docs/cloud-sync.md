@@ -87,8 +87,18 @@ proposal without claiming an explicit operator-selected global migration.
 - **Backoff.** After a failure the task waits `clamp(2^n * U(0,1), 1, 60)`
   seconds (full jitter, ceiling 1, 2, 4, ... 60 s) and resets on success. Each
   HTTP request has a 10 s timeout.
-- **Rejections are final.** If the Worker rejects an item (validation, PHI
-  screen, size), it is logged and the cursor moves on; retrying cannot help.
+- **Message acknowledgments fail closed.** A message batch advances only when
+  the Worker accounts for every submitted ID exactly once in `accepted` or
+  `duplicates`, with empty `conflicts` and `rejected` arrays. Missing, malformed,
+  partial or contradictory dispositions retain the entire batch and cursor.
+  Successful partial writes are safe to retry through the Worker's dedup gate.
+  A persistent rejection or conflict requires operator diagnosis; this policy
+  deliberately blocks the batch rather than silently discarding a message.
+  Errors omit response bodies and rejection details. Presence acknowledgments
+  keep their existing count-based contract. Implementation and synthetic HTTP /
+  restart controls: [`cloud_sync.rs`](../crates/agent-bus-http/src/cloud_sync.rs),
+  `message_outcome`, `invalid_push_dispositions_retain_the_entire_batch_and_restart_cursor`
+  and `message_push_accepts_only_complete_disjoint_accepted_and_duplicate_ids`.
 - **A corrupt state file stops sync** rather than restarting from zero, which
   would re-push the whole history. Delete it deliberately to reset.
 

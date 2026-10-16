@@ -23,6 +23,8 @@
 //!   acknowledged stream id (catch-up), so nothing is lost and nothing grows.
 //! - **Backoff.** Failures retry after 1 to 60 s with full jitter.
 //!
+//! Message acknowledgment policy: [cloud sync guide](../../../docs/cloud-sync.md).
+//!
 //! The engine is generic over two small traits ([`LocalStore`], [`CloudApi`])
 //! so the push, pull, overflow and backoff logic is unit tested without Redis
 //! or a network; [`RedisLocal`] and [`HttpCloud`] are the real implementations.
@@ -430,9 +432,9 @@ impl PresenceEvent {
     }
 }
 
-/// What the Worker said about a push. Only counts matter to the engine;
-/// per-item rejections are logged and never retried, because a rejection is a
-/// verdict on the content, not a transient failure.
+/// Validated push disposition counts. Message IDs are checked by `message_outcome`
+/// before the engine acknowledges a batch; message rejections retain the batch.
+/// Presence keeps its existing count-based disposition and rejection logging.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct PushOutcome {
     pub(crate) accepted: usize,
@@ -648,7 +650,13 @@ impl<L: LocalStore, C: CloudApi> Engine<L, C> {
                 .push_messages(&batch)
                 .await
                 .context("pushing messages")?;
-            log_rejections("message", &outcome);
+            if !outcome.rejected.is_empty()
+                || outcome.accepted.checked_add(outcome.duplicates) != Some(batch.len())
+            {
+                return Err(anyhow!(
+                    "cloud message push lacks complete successful disposition; retaining batch"
+                ));
+            }
             let acked = self.outbox.drain(..take).next_back().map(|(id, _)| id);
             self.cursors.push_stream_id = if self.outbox.is_empty() {
                 // Everything loaded is delivered or deliberately skipped.
@@ -1003,6 +1011,43 @@ fn outcome_from(body: &serde_json::Value) -> PushOutcome {
     }
 }
 
+/// Validate the Worker's exact message-ID disposition before acknowledging a batch.
+/// Diagnostics deliberately omit IDs, rejection reasons and response content.
+fn message_outcome(body: &serde_json::Value, batch: &[Message]) -> Result<PushOutcome> {
+    let bad = || anyhow!("cloud message push disposition invalid or incomplete; retaining batch");
+    let expected: std::collections::BTreeSet<&str> = batch.iter().map(|m| m.id.as_str()).collect();
+    if expected.len() != batch.len() {
+        return Err(bad());
+    }
+    for field in ["conflicts", "rejected"] {
+        if !body
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(bad)?
+            .is_empty()
+        {
+            return Err(bad());
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for field in ["accepted", "duplicates"] {
+        for value in body
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(bad)?
+        {
+            let id = value.as_str().ok_or_else(bad)?;
+            if !expected.contains(id) || !seen.insert(id) {
+                return Err(bad());
+            }
+        }
+    }
+    if seen != expected {
+        return Err(bad());
+    }
+    Ok(outcome_from(body))
+}
+
 impl CloudApi for HttpCloud {
     async fn push_messages(&self, batch: &[Message]) -> Result<PushOutcome> {
         let messages: Vec<PushMessage<'_>> = batch.iter().map(PushMessage::from_message).collect();
@@ -1013,7 +1058,7 @@ impl CloudApi for HttpCloud {
                     .json(&serde_json::json!({ "messages": messages })),
             )
             .await?;
-        Ok(outcome_from(&body))
+        message_outcome(&body, batch)
     }
 
     async fn push_presence(&self, events: &[PresenceEvent]) -> Result<PushOutcome> {
@@ -1338,7 +1383,10 @@ mod tests {
                 .unwrap()
                 .pushed
                 .push(batch.iter().map(|m| m.id.clone()).collect());
-            Ok(PushOutcome::default())
+            Ok(PushOutcome {
+                accepted: batch.len(),
+                ..PushOutcome::default()
+            })
         }
         async fn push_presence(&self, events: &[PresenceEvent]) -> Result<PushOutcome> {
             self.gate().await?;
@@ -2070,7 +2118,7 @@ mod tests {
                     s.authed.push(headers.get("authorization").and_then(|v| v.to_str().ok()) == Some("Bearer test-token"));
                     s.push_bodies.push(body);
                     Json(serde_json::json!({"accepted": ids, "duplicates": [], "conflicts": [],
-                        "rejected": [{"id": "x", "reason": "too long"}], "cursor": 1}))
+                        "rejected": [], "cursor": 1}))
                 }),
             )
             .route(
@@ -2198,6 +2246,89 @@ mod tests {
         assert_eq!(inner.ingested.len(), 1);
         assert_eq!(inner.ingested[0].origin_hub.as_deref(), Some("cloud"));
         assert_eq!(inner.applied_presence[0].metadata["origin_hub"], "cloud");
+    }
+
+    /// Protects durable message acknowledgment and restart recovery.
+    /// Detects silent batch loss after malformed, incomplete or conflicting responses.
+    /// Needs loopback sockets and a temporary state directory; no live bus.
+    /// Breadcrumb: this module's `HttpCloud::push_messages` and `Engine::flush_outbox`.
+    #[tokio::test]
+    async fn invalid_push_dispositions_retain_the_entire_batch_and_restart_cursor() {
+        let good = serde_json::json!({"accepted": ["1"], "duplicates": [], "conflicts": [], "rejected": []});
+        let bad = vec![
+            serde_json::json!({}),
+            serde_json::json!({"accepted": [], "duplicates": [], "conflicts": [], "rejected": []}),
+            serde_json::json!({"accepted": 1, "duplicates": 0, "conflicts": [], "rejected": []}),
+            serde_json::json!({"accepted": ["unknown"], "duplicates": [], "conflicts": [], "rejected": []}),
+            serde_json::json!({"accepted": ["1"], "duplicates": ["1"], "conflicts": [], "rejected": []}),
+            serde_json::json!({"accepted": ["1"], "duplicates": [], "conflicts": ["1"], "rejected": []}),
+            serde_json::json!({"accepted": ["1"], "duplicates": [], "conflicts": [], "rejected": [{"id": "1", "reason": "private-marker"}]}),
+            serde_json::json!({"accepted": [null], "duplicates": [], "conflicts": [], "rejected": []}),
+            serde_json::json!({"accepted": ["1"], "duplicates": [], "conflicts": null, "rejected": []}),
+        ];
+        for body in bad {
+            let mut m = msg(1, "alice");
+            m.id = "1".to_owned();
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = config(dir.path(), 500, 5000);
+            save_cursors(&cfg.state_path, &SyncCursors::default()).unwrap();
+            let app = Router::new().route(
+                "/sync/push",
+                post(move || {
+                    let body = body.clone();
+                    async move { Json(body) }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let local = MemLocal::default();
+            local.append(m);
+            let mut engine = Engine::new(
+                local.clone(),
+                http_cloud(&base),
+                &cfg,
+                Arc::new(CloudSyncStatus::default()),
+                SyncCursors::default(),
+            );
+            let err = engine.tick().await.unwrap_err();
+            assert!(!format!("{err:#}").contains("private-marker"));
+            assert_eq!(engine.outbox.len(), 1);
+            assert_eq!(engine.cursors.push_stream_id, "0-0");
+            let restored = load_cursors(&cfg.state_path).unwrap().unwrap();
+            assert_eq!(restored.push_stream_id, "0-0");
+            let mut restarted = Engine::new(
+                local,
+                http_cloud(&base),
+                &cfg,
+                Arc::new(CloudSyncStatus::default()),
+                restored,
+            );
+            assert!(restarted.tick().await.is_err());
+            assert_eq!(restarted.outbox.len(), 1);
+            assert_eq!(restarted.cursors.push_stream_id, "0-0");
+            server.abort();
+            let _ = server.await;
+        }
+        let mut m = msg(1, "alice");
+        m.id = "1".to_owned();
+        assert_eq!(message_outcome(&good, &[m]).unwrap().accepted, 1);
+    }
+
+    /// Protects exact identity accounting and idempotent partial-write retries.
+    /// Detects duplicate submitted IDs and refusal of a valid accepted/duplicate mix.
+    /// Needs synthetic message fixtures only; no backend or hardware.
+    /// Breadcrumb: this module's `message_outcome`.
+    #[test]
+    fn message_push_accepts_only_complete_disjoint_accepted_and_duplicate_ids() {
+        let mut a = msg(1, "alice");
+        a.id = "a".to_owned();
+        let mut b = msg(2, "alice");
+        b.id = "b".to_owned();
+        let body = serde_json::json!({"accepted": ["a"], "duplicates": ["b"], "conflicts": [], "rejected": []});
+        let result = message_outcome(&body, &[a.clone(), b]).unwrap();
+        assert_eq!((result.accepted, result.duplicates), (1, 1));
+        assert!(message_outcome(&body, &[a.clone(), a]).is_err());
     }
 
     #[tokio::test]
