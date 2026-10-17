@@ -12,7 +12,6 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
@@ -20,9 +19,11 @@ import subprocess
 import sys
 import tarfile
 import tempfile
-import uuid
-import tomllib
 import time
+import uuid
+from pathlib import Path, PurePosixPath
+
+import tomllib
 
 
 def require(condition, message):
@@ -285,15 +286,58 @@ def validate_config(config):
     )
 
 
-def validate_envelope(metadata, image, label, phase, mounts):
+def actor_identity():
+    """Map container actor to invoking non-root host UID/GID (1000:1000 on Windows)."""
+    if hasattr(os, "getuid") and hasattr(os, "getgid"):
+        uid, gid = os.getuid(), os.getgid()
+        require(
+            isinstance(uid, int) and isinstance(gid, int) and uid > 0 and gid > 0,
+            "Non-root host UID and GID required for private handoffs",
+        )
+        return uid, gid
+    return 1000, 1000
+
+
+def resolve_sysroot(channel, env, source):
+    """Derive the toolchain sysroot from the admitted compiler inside the container."""
+    raw = subprocess.check_output(
+        ["rustc", "--print", "sysroot"],
+        cwd=source,
+        env=env,
+        timeout=15,
+    )
+    sysroot = raw.decode().strip()
+    prefix = "/usr/local/rustup/toolchains/" + channel + "-"
+    suffix = sysroot[len(prefix) :] if sysroot.startswith(prefix) else ""
+    require(
+        bool(suffix) and "/" not in suffix and "\\" not in suffix,
+        "Admitted compiler sysroot differs from source toolchain",
+    )
+    return sysroot
+
+
+def validate_envelope(
+    metadata, image, label, phase, mounts, user_id=1000, group_id=1000
+):
     """Refuse engine-side changes to the admitted ownership/isolation envelope."""
+    require(
+        isinstance(user_id, int)
+        and isinstance(group_id, int)
+        and user_id > 0
+        and group_id > 0,
+        "Non-root container actor UID and GID required",
+    )
+    expected_user = f"{user_id}:{group_id}"
+    expected_tmpfs = (
+        f"rw,exec,nosuid,nodev,size=268435456,uid={user_id},gid={group_id},mode=700"
+    )
     host, container = metadata["HostConfig"], metadata["Config"]
     require(
         metadata["Image"] == image and container["Image"] == image,
         "Actual container image differs",
     )
     require(
-        container["User"] == "1000:1000" and host["ReadonlyRootfs"] is True,
+        container["User"] == expected_user and host["ReadonlyRootfs"] is True,
         "Actual UID or root filesystem isolation differs",
     )
     require(
@@ -326,8 +370,7 @@ def validate_envelope(metadata, image, label, phase, mounts):
         "Actual no-new-privileges policy differs",
     )
     require(
-        host.get("Tmpfs")
-        == {"/tmp": "rw,exec,nosuid,nodev,size=268435456,uid=1000,gid=1000,mode=700"},
+        host.get("Tmpfs") == {"/tmp": expected_tmpfs},
         "Actual owned temporary filesystem differs",
     )
 
@@ -400,6 +443,12 @@ def existing_handoff(path):
 
 def actor(job):
     """Container entry: fixed commands, private HOME, no inherited environment."""
+    if "uid" in job or "gid" in job:
+        uid, gid = actor_identity()
+        require(
+            (uid, gid) == (job.get("uid"), job.get("gid")),
+            "Actor UID/GID differs from invoking host user",
+        )
     source, output = Path("/source"), Path("/work")
     output.mkdir(exist_ok=True)
     home = output / "home"
@@ -438,7 +487,7 @@ def actor(job):
     channel = tomllib.loads((source / "rust-toolchain.toml").read_text())["toolchain"][
         "channel"
     ]
-    sysroot = "/usr/local/rustup/toolchains/" + channel + "-x86_64-unknown-linux-gnu"
+    sysroot = resolve_sysroot(channel, env, source)
     env.update(SYSROOT=sysroot, LD_LIBRARY_PATH=sysroot + "/lib")
     if job["phase"] != "audit":
         env["CARGO_NET_OFFLINE"] = "true"
@@ -517,6 +566,7 @@ def actor(job):
 
 def execute_container(config, source, run, phase, script):
     """One captured ID; natural rm only after exact child and PID settlement."""
+    user_id, group_id = actor_identity()
     phase_dir = run / phase
     phase_dir.mkdir(mode=0o700)
     # Docker Desktop may assign a different Windows owner to guest-created
@@ -533,7 +583,11 @@ def execute_container(config, source, run, phase, script):
     docker_config.mkdir(mode=0o700)
     (docker_config / "config.json").write_text("{}")
     job_file = phase_dir / "job.json"
-    job_file.write_text(json.dumps({"phase": phase, "jobs": config["jobs"]}))
+    job_file.write_text(
+        json.dumps(
+            {"phase": phase, "jobs": config["jobs"], "uid": user_id, "gid": group_id}
+        )
+    )
     docker = [
         shutil.which("docker"),
         "--host",
@@ -570,7 +624,7 @@ def execute_container(config, source, run, phase, script):
             "--label",
             "agent-bus.hook-run=" + label,
             "--user",
-            "1000:1000",
+            f"{user_id}:{group_id}",
             "--read-only",
             "--cap-drop=ALL",
             "--security-opt",
@@ -586,7 +640,7 @@ def execute_container(config, source, run, phase, script):
             "--network",
             "bridge" if phase == "audit" else "none",
             "--tmpfs",
-            "/tmp:rw,exec,nosuid,nodev,size=268435456,uid=1000,gid=1000,mode=700",
+            f"/tmp:rw,exec,nosuid,nodev,size=268435456,uid={user_id},gid={group_id},mode=700",
         ]
         mounts = [
             (source, "/source", True),
@@ -639,7 +693,9 @@ def execute_container(config, source, run, phase, script):
         (phase_dir / "pre-start-inspect.json").write_text(
             json.dumps(metadata, indent=2)
         )
-        validate_envelope(metadata, config["image"], label, phase, mounts)
+        validate_envelope(
+            metadata, config["image"], label, phase, mounts, user_id, group_id
+        )
         receipt["actual_envelope_verified"] = True
         original = subprocess.Popen(
             docker + ["start", "--attach", cid],
@@ -675,9 +731,12 @@ def execute_container(config, source, run, phase, script):
         for name, identity in handoff_identity.items():
             target = phase_dir / name
             metadata = target.lstat()
-            require(stat.S_ISREG(metadata.st_mode) and not target.is_symlink()
-                    and (metadata.st_dev, metadata.st_ino) == identity,
-                    "Actor replaced a host-owned handoff file")
+            require(
+                stat.S_ISREG(metadata.st_mode)
+                and not target.is_symlink()
+                and (metadata.st_dev, metadata.st_ino) == identity,
+                "Actor replaced a host-owned handoff file",
+            )
             with target.open("rb") as stream:
                 stream.read(1)
         receipt["host_handoff_readback"] = True

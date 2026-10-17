@@ -1,16 +1,16 @@
 """Service-free hostile-input and lifecycle-boundary regressions; no Cargo/Docker."""
 
-import hashlib
 import copy
+import hashlib
 import importlib.util
 import io
 import json
 import os
-from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
-import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location(
@@ -313,7 +313,12 @@ class HookGuards(unittest.TestCase):
         self.assertTrue(receipt["cleanup_errors"])
         self.assertNotIn(["rm", "a" * 64], calls)
 
-    def audit_actor_result(self, tool_version_code, audit_code):
+    def audit_actor_result(
+        self,
+        tool_version_code,
+        audit_code,
+        sysroot="/usr/local/rustup/toolchains/1.99.0-aarch64-unknown-linux-gnu",
+    ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, output = root / "source", root / "work"
@@ -329,6 +334,13 @@ class HookGuards(unittest.TestCase):
             def paths(value):
                 return {"/source": source, "/work": output}.get(value, real_path(value))
 
+            def check_output(command, **kwargs):
+                if command == ["rustc", "--print", "sysroot"]:
+                    return (sysroot + "\n").encode()
+                if command[:3] == ["git", "-C", "/work/advisory-db"]:
+                    return ("b" * 40 + "\n").encode()
+                raise AssertionError(f"Unexpected check_output: {command}")
+
             def tool(command, **kwargs):
                 if command[:2] == ["cargo", "audit"]:
                     code = tool_version_code if "--version" in command else audit_code
@@ -341,10 +353,62 @@ class HookGuards(unittest.TestCase):
 
             with (
                 patch.object(QA, "Path", side_effect=paths),
+                patch.object(QA.subprocess, "check_output", side_effect=check_output),
                 patch.object(QA.subprocess, "run", side_effect=tool),
             ):
                 result = QA.actor({"phase": "audit", "jobs": 2})
             return result, json.loads((output / "actor-receipt.json").read_text())
+
+    def test_actor_derives_arm64_and_x86_64_sysroot_from_admitted_compiler(self):
+        for target in ("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"):
+            sysroot = f"/usr/local/rustup/toolchains/1.99.0-{target}"
+            with patch.object(
+                QA.subprocess, "check_output", return_value=(sysroot + "\n").encode()
+            ):
+                self.assertEqual(QA.resolve_sysroot("1.99.0", {}, Path(".")), sysroot)
+        for bad in (
+            "/usr/local/rustup/toolchains/1.98.0-aarch64-unknown-linux-gnu",
+            "/usr/local/rustup/toolchains/1.99.0-",
+            "/usr/local/rustup/toolchains/1.99.0-aarch64/extra",
+            "/custom/sysroot",
+        ):
+            with (
+                self.subTest(bad=bad),
+                patch.object(
+                    QA.subprocess, "check_output", return_value=(bad + "\n").encode()
+                ),
+                self.assertRaises(RuntimeError),
+            ):
+                QA.resolve_sysroot("1.99.0", {}, Path("."))
+
+    def test_actor_and_envelope_map_invoking_posix_user_and_refuse_root(self):
+        image, label = "sha256:" + "b" * 64, "owned"
+        mounts = [("/owned/source", "/source", True), ("/owned/work", "/work", False)]
+        envelope = valid_envelope(mounts, image, label)
+        envelope["Config"]["User"] = "2002:2003"
+        envelope["HostConfig"]["Tmpfs"] = {
+            "/tmp": "rw,exec,nosuid,nodev,size=268435456,uid=2002,gid=2003,mode=700"
+        }
+        QA.validate_envelope(envelope, image, label, "pre-commit", mounts, 2002, 2003)
+        with self.assertRaises(RuntimeError):
+            QA.validate_envelope(
+                envelope, image, label, "pre-commit", mounts, 1000, 1000
+            )
+        with self.assertRaises(RuntimeError):
+            QA.validate_envelope(envelope, image, label, "pre-commit", mounts, 0, 2003)
+        with (
+            patch.object(QA.os, "getuid", create=True, return_value=2002),
+            patch.object(QA.os, "getgid", create=True, return_value=2003),
+        ):
+            self.assertEqual(QA.actor_identity(), (2002, 2003))
+            with self.assertRaises(RuntimeError):
+                QA.actor({"phase": "pre-commit", "jobs": 2, "uid": 1000, "gid": 1000})
+        with (
+            patch.object(QA.os, "getuid", create=True, return_value=0),
+            patch.object(QA.os, "getgid", create=True, return_value=0),
+            self.assertRaises(RuntimeError),
+        ):
+            QA.actor_identity()
 
     def test_missing_container_audit_tool_fails_before_audit_gate(self):
         result, receipt = self.audit_actor_result(127, 0)
