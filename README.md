@@ -258,6 +258,7 @@ agent-bus serve --transport mcp-http --port 8765
 - `scripts\validate-agent-bus.ps1` now uses the same helper and builds with the `fast-release` profile by default before running tests, health, and optional smoke checks.
 - `scripts\install-mcp-clients.ps1` updates Claude, Codex, and Gemini MCP configs in-place, with timestamped backups by default. It uses the dedicated `agent-bus-mcp` stdio binary when available, falls back to `agent-bus serve --transport stdio`, and runs `scripts\validate-agent-client-configs.ps1` afterward.
 - Client install/version requirements and multi-agent installer practices are documented in [docs/agent-client-installation.md](./docs/agent-client-installation.md).
+- The [Windows hub identity watchdog](./docs/agent-bus-watchdog.md) distinguishes degraded cloud fallback from unknown identities and bounds repeated notifications.
 - `scripts/install-agent-hub-service.ps1` installs the native HTTP transport as a Windows service using `nssm` + `pwsh` and sets `AGENT_BUS_SERVICE_NAME` for the runtime.
 - MCP clients should register the stdio form by default.
 - Streamable HTTP is available for clients that support long-lived MCP sessions and notifications.
