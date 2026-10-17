@@ -2850,6 +2850,46 @@
       },
       "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
       "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/ci/test_dependabot_admission.py::AdmissionTests::test_trusted_policy_inventory_matches_independent_producer_oracle",
+      "reviewer": "codex-ms01-closeout-evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "dfcc837aa67e0f4727e627dc1ba79a83dc74827b",
+      "disposition": "keep",
+      "scope": "ONLY the updated reviewed CI producer hash binding after independent review of the six added dual-runtime watchdog fixture lines. Static source review and actual hash verification; no independent replay or legacy inventory certification.",
+      "selector_source": {
+        "path": "scripts/ci/test_dependabot_admission.py",
+        "first_line": 432,
+        "last_line": 456,
+        "sha256": "dd3925017fa83443b7f7f06b0bcf326e48543a305658ec9df7eaa7a5101773b6"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/dependabot-automerge.yml",
+        "sha256": "89170051f1e57fec152bfc58174bd99e821b3bbf8ec91e246515a681b9b1dcd8"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_dependabot_admission.py",
+          "sha256": "ad2cbb3a68b2edb4e994115fec3c6028f376f8d79fcbff08aa1f6609f1f05012"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "be36166db7c9021a2325abfe78a4ab27f414651b8169fdb79a7198338ff823d6"
+        }
+      ],
+      "rationale": "Protects: reviewed exact CI producer identity and independent job/skip oracle. Detects: stale producer admission after a reviewed workflow change, or unreviewed changed source admitted by hash-only manipulation. Needs: closed credential-free API fixtures and reviewed source bytes. Breadcrumb: test_dependabot_admission.py REVIEWED_HASH/SKIPS and dependabot-automerge.yml reviewed producer declarations.",
+      "relevance": "The release/admission gate intentionally refused the first PR head after the six CI fixture lines changed producer bytes. Refreshing only reviewed identity bindings retains that refusal for future unreviewed changes.",
+      "coverage": {
+        "failing_input_or_control": "Original CI run38988859844 refused expected53b102 versus actualbe36166. Existing future_hash_only, source_changed and merge_changed_source negative controls are unchanged.",
+        "fresh_independent_selector_pass": false,
+        "independent_review": "Reviewer verified the exact four literal replacements, producer/oracle/policy hashes and unchanged sixteen jobs/manual-skip declarations. No independent test replay claimed."
+      },
+      "breaking_behavior": "Only the independently reviewed six-line CI addition is newly admitted. Required sixteen jobs, exact-head checks, manual skip semantics and changed-source negative controls remain unchanged.",
+      "additional_coverage_boundary": "This record does not certify every legacy selector, host deployment, artifact binary or current-head CI success."
     }
   ],
   "historical_reviews": [
