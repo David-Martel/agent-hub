@@ -23,6 +23,8 @@
 //!   acknowledged stream id (catch-up), so nothing is lost and nothing grows.
 //! - **Backoff.** Failures retry after 1 to 60 s with full jitter.
 //!
+//! Message acknowledgment policy: [cloud sync guide](../../../docs/cloud-sync.md).
+//!
 //! The engine is generic over two small traits ([`LocalStore`], [`CloudApi`])
 //! so the push, pull, overflow and backoff logic is unit tested without Redis
 //! or a network; [`RedisLocal`] and [`HttpCloud`] are the real implementations.
@@ -298,6 +300,20 @@ pub(crate) struct SyncCursors {
     pub(crate) pull_cursor: u64,
     /// Last local `presence_events.id` pushed.
     pub(crate) presence_origin_id: i64,
+    /// ID-only rejected-message receipts; never automatically evicted.
+    #[serde(default)]
+    rejection_receipts: Vec<RejectionReceipt>,
+    #[serde(default)]
+    rejected_total: u64,
+}
+
+const MAX_REJECTION_RECEIPTS: usize = 4096;
+const MAX_REJECTION_STATE_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RejectionReceipt {
+    message_id: String,
+    local_stream_id: String,
 }
 
 impl Default for SyncCursors {
@@ -306,6 +322,8 @@ impl Default for SyncCursors {
             push_stream_id: "0-0".to_owned(),
             pull_cursor: 0,
             presence_origin_id: 0,
+            rejection_receipts: Vec::new(),
+            rejected_total: 0,
         }
     }
 }
@@ -331,6 +349,11 @@ pub(crate) fn load_cursors(path: &Path) -> Result<Option<SyncCursors>> {
 /// # Errors
 /// Returns an error if the directory or file cannot be written.
 pub(crate) fn save_cursors(path: &Path, cursors: &SyncCursors) -> Result<()> {
+    // Once rejection evidence exists, no later ordinary cursor write may
+    // downgrade its durability or private permissions.
+    if !cursors.rejection_receipts.is_empty() || cursors.rejected_total > 0 {
+        return save_rejection_cursors(path, cursors);
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("creating {}", parent.display()))?;
@@ -339,6 +362,46 @@ pub(crate) fn save_cursors(path: &Path, cursors: &SyncCursors) -> Result<()> {
     std::fs::write(&tmp, serde_json::to_vec_pretty(cursors)?)
         .with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+}
+
+/// Commit rejection receipts and their acknowledged cursor as one durable edition.
+fn save_rejection_cursors(path: &Path, cursors: &SyncCursors) -> Result<()> {
+    use std::io::Write as _;
+    let bytes = serde_json::to_vec_pretty(cursors)?;
+    if bytes.len() > MAX_REJECTION_STATE_BYTES {
+        return Err(anyhow!(
+            "rejection receipt state exceeds 4 MiB; retaining batch"
+        ));
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let tmp = parent.join(format!(".rejection-state-{}.tmp", uuid::Uuid::new_v4()));
+    let result = (|| -> Result<()> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600)
+        };
+        let mut file = options.open(&tmp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&tmp, path)?;
+        // Directory fsync is supported by the Unix state-store contract.
+        // Windows retains its existing same-volume atomic rename contract.
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.context("persisting ID-only rejection receipt and cursor; retaining batch on failure")
 }
 
 // ---------------------------------------------------------------------------
@@ -430,14 +493,15 @@ impl PresenceEvent {
     }
 }
 
-/// What the Worker said about a push. Only counts matter to the engine;
-/// per-item rejections are logged and never retried, because a rejection is a
-/// verdict on the content, not a transient failure.
+/// Validated push disposition counts. Message IDs are checked by `message_outcome`
+/// before acknowledgment; explicit rejections require durable ID-only receipts.
+/// Presence keeps its existing count-based disposition and rejection logging.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct PushOutcome {
     pub(crate) accepted: usize,
     pub(crate) duplicates: usize,
     pub(crate) rejected: Vec<String>,
+    rejected_ids: Vec<String>,
 }
 
 /// One page of `/sync/pull`.
@@ -648,15 +712,72 @@ impl<L: LocalStore, C: CloudApi> Engine<L, C> {
                 .push_messages(&batch)
                 .await
                 .context("pushing messages")?;
-            log_rejections("message", &outcome);
-            let acked = self.outbox.drain(..take).next_back().map(|(id, _)| id);
-            self.cursors.push_stream_id = if self.outbox.is_empty() {
-                // Everything loaded is delivered or deliberately skipped.
+            let handled = outcome
+                .accepted
+                .checked_add(outcome.duplicates)
+                .and_then(|n| n.checked_add(outcome.rejected_ids.len()));
+            if !outcome.rejected.is_empty() || handled != Some(batch.len()) {
+                return Err(anyhow!(
+                    "cloud message push lacks complete disposition; retaining batch"
+                ));
+            }
+            let mut next = self.cursors.clone();
+            for id in &outcome.rejected_ids {
+                let stream = self
+                    .outbox
+                    .iter()
+                    .take(take)
+                    .find(|(_, msg)| msg.id == *id)
+                    .map(|(stream, _)| stream)
+                    .ok_or_else(|| anyhow!("cloud rejected an unknown ID; retaining batch"))?;
+                if id.len() > 512 || stream.len() > 128 {
+                    return Err(anyhow!(
+                        "rejection receipt ID exceeds bound; retaining batch"
+                    ));
+                }
+                if !next
+                    .rejection_receipts
+                    .iter()
+                    .any(|r| r.message_id == *id && r.local_stream_id == *stream)
+                {
+                    if next.rejection_receipts.len() >= MAX_REJECTION_RECEIPTS {
+                        return Err(anyhow!(
+                            "rejection receipt ledger full (4096); archive state before retry"
+                        ));
+                    }
+                    next.rejection_receipts.push(RejectionReceipt {
+                        message_id: id.clone(),
+                        local_stream_id: stream.clone(),
+                    });
+                    next.rejected_total = next.rejected_total.checked_add(1).ok_or_else(|| {
+                        anyhow!("rejection receipt total overflow; retaining batch")
+                    })?;
+                }
+            }
+            next.push_stream_id = if self.outbox.len() == take {
                 self.read_to.clone()
             } else {
-                acked.unwrap_or_else(|| self.cursors.push_stream_id.clone())
+                self.outbox
+                    .get(take - 1)
+                    .map_or_else(|| next.push_stream_id.clone(), |(id, _)| id.clone())
             };
-            self.persist();
+            if !outcome.rejected_ids.is_empty() {
+                let path = self.state_path.as_ref().ok_or_else(|| {
+                    anyhow!("rejection receipt requires a durable state path; retaining batch")
+                })?;
+                save_rejection_cursors(path, &next)?;
+            }
+            self.cursors = next;
+            self.outbox.drain(..take);
+            if outcome.rejected_ids.is_empty() {
+                self.persist();
+            } else {
+                tracing::warn!(
+                    count = outcome.rejected_ids.len(),
+                    total = self.cursors.rejected_total,
+                    "cloud sync: rejected message IDs recorded in durable sync state"
+                );
+            }
             self.status.record_push_ok(now_ms());
             self.set_depth();
         }
@@ -1000,7 +1121,65 @@ fn outcome_from(body: &serde_json::Value) -> PushOutcome {
         accepted: count("accepted"),
         duplicates: count("duplicates"),
         rejected,
+        rejected_ids: Vec::new(),
     }
+}
+
+/// Validate the Worker's exact message-ID disposition before acknowledging a batch.
+/// Diagnostics deliberately omit IDs, rejection reasons and response content.
+fn message_outcome(body: &serde_json::Value, batch: &[Message]) -> Result<PushOutcome> {
+    let bad = || anyhow!("cloud message push disposition invalid or incomplete; retaining batch");
+    let expected: std::collections::BTreeSet<&str> = batch.iter().map(|m| m.id.as_str()).collect();
+    if expected.len() != batch.len() {
+        return Err(bad());
+    }
+    if !body
+        .get("conflicts")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(bad)?
+        .is_empty()
+    {
+        return Err(bad());
+    }
+    let rejected = body
+        .get("rejected")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(bad)?;
+    let mut seen = std::collections::BTreeSet::new();
+    for field in ["accepted", "duplicates"] {
+        for value in body
+            .get(field)
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(bad)?
+        {
+            let id = value.as_str().ok_or_else(bad)?;
+            if !expected.contains(id) || !seen.insert(id) {
+                return Err(bad());
+            }
+        }
+    }
+    let mut rejected_ids = Vec::new();
+    for value in rejected {
+        let id = value
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(bad)?;
+        value
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(bad)?;
+        if !expected.contains(id) || !seen.insert(id) {
+            return Err(bad());
+        }
+        rejected_ids.push(id.to_owned());
+    }
+    if seen != expected {
+        return Err(bad());
+    }
+    let mut outcome = outcome_from(body);
+    outcome.rejected.clear();
+    outcome.rejected_ids = rejected_ids;
+    Ok(outcome)
 }
 
 impl CloudApi for HttpCloud {
@@ -1013,7 +1192,7 @@ impl CloudApi for HttpCloud {
                     .json(&serde_json::json!({ "messages": messages })),
             )
             .await?;
-        Ok(outcome_from(&body))
+        message_outcome(&body, batch)
     }
 
     async fn push_presence(&self, events: &[PresenceEvent]) -> Result<PushOutcome> {
@@ -1147,6 +1326,7 @@ async fn initial_cursors<L: LocalStore>(
             push_stream_id: local.stream_tail().await?,
             pull_cursor: 0,
             presence_origin_id: local.presence_tail().await?,
+            ..SyncCursors::default()
         }
     };
     save_cursors(&config.state_path, &cursors)?;
@@ -1338,7 +1518,10 @@ mod tests {
                 .unwrap()
                 .pushed
                 .push(batch.iter().map(|m| m.id.clone()).collect());
-            Ok(PushOutcome::default())
+            Ok(PushOutcome {
+                accepted: batch.len(),
+                ..PushOutcome::default()
+            })
         }
         async fn push_presence(&self, events: &[PresenceEvent]) -> Result<PushOutcome> {
             self.gate().await?;
@@ -1601,6 +1784,7 @@ mod tests {
             push_stream_id: "9-1".into(),
             pull_cursor: 4,
             presence_origin_id: 7,
+            ..SyncCursors::default()
         };
         save_cursors(&path, &cursors).unwrap();
         assert_eq!(load_cursors(&path).unwrap(), Some(cursors));
@@ -2070,7 +2254,7 @@ mod tests {
                     s.authed.push(headers.get("authorization").and_then(|v| v.to_str().ok()) == Some("Bearer test-token"));
                     s.push_bodies.push(body);
                     Json(serde_json::json!({"accepted": ids, "duplicates": [], "conflicts": [],
-                        "rejected": [{"id": "x", "reason": "too long"}], "cursor": 1}))
+                        "rejected": [], "cursor": 1}))
                 }),
             )
             .route(
@@ -2198,6 +2382,254 @@ mod tests {
         assert_eq!(inner.ingested.len(), 1);
         assert_eq!(inner.ingested[0].origin_hub.as_deref(), Some("cloud"));
         assert_eq!(inner.applied_presence[0].metadata["origin_hub"], "cloud");
+    }
+
+    /// Protects durable message acknowledgment and restart recovery.
+    /// Detects silent batch loss after malformed, incomplete or conflicting responses.
+    /// Needs loopback sockets and a temporary state directory; no live bus.
+    /// Breadcrumb: this module's `HttpCloud::push_messages` and `Engine::flush_outbox`.
+    #[tokio::test]
+    async fn invalid_push_dispositions_retain_the_entire_batch_and_restart_cursor() {
+        let good = serde_json::json!({"accepted": ["1"], "duplicates": [], "conflicts": [], "rejected": []});
+        let bad = vec![
+            serde_json::json!({}),
+            serde_json::json!({"accepted": [], "duplicates": [], "conflicts": [], "rejected": []}),
+            serde_json::json!({"accepted": 1, "duplicates": 0, "conflicts": [], "rejected": []}),
+            serde_json::json!({"accepted": ["unknown"], "duplicates": [], "conflicts": [], "rejected": []}),
+            serde_json::json!({"accepted": ["1"], "duplicates": ["1"], "conflicts": [], "rejected": []}),
+            serde_json::json!({"accepted": ["1"], "duplicates": [], "conflicts": ["1"], "rejected": []}),
+            serde_json::json!({"accepted": ["1"], "duplicates": [], "conflicts": [], "rejected": [{"id": "1", "reason": "private-marker"}]}),
+            serde_json::json!({"accepted": [null], "duplicates": [], "conflicts": [], "rejected": []}),
+            serde_json::json!({"accepted": ["1"], "duplicates": [], "conflicts": null, "rejected": []}),
+            serde_json::json!({"accepted": [], "duplicates": [], "conflicts": [], "rejected": [{"reason":"private-marker"}]}),
+            serde_json::json!({"accepted": [], "duplicates": [], "conflicts": [], "rejected": [{"id":"unknown","reason":"private-marker"}]}),
+            serde_json::json!({"accepted": [], "duplicates": [], "conflicts": [], "rejected": [{"id":"1","reason":"x"},{"id":"1","reason":"y"}]}),
+            serde_json::json!({"accepted": [], "duplicates": [], "conflicts": [], "rejected": [{"id":"1","reason":null}]}),
+        ];
+        for body in bad {
+            let mut m = msg(1, "alice");
+            m.id = "1".to_owned();
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = config(dir.path(), 500, 5000);
+            save_cursors(&cfg.state_path, &SyncCursors::default()).unwrap();
+            let app = Router::new().route(
+                "/sync/push",
+                post(move || {
+                    let body = body.clone();
+                    async move { Json(body) }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let local = MemLocal::default();
+            local.append(m);
+            let mut engine = Engine::new(
+                local.clone(),
+                http_cloud(&base),
+                &cfg,
+                Arc::new(CloudSyncStatus::default()),
+                SyncCursors::default(),
+            );
+            let err = engine.tick().await.unwrap_err();
+            assert!(!format!("{err:#}").contains("private-marker"));
+            assert_eq!(engine.outbox.len(), 1);
+            assert_eq!(engine.cursors.push_stream_id, "0-0");
+            let restored = load_cursors(&cfg.state_path).unwrap().unwrap();
+            assert_eq!(restored.push_stream_id, "0-0");
+            let mut restarted = Engine::new(
+                local,
+                http_cloud(&base),
+                &cfg,
+                Arc::new(CloudSyncStatus::default()),
+                restored,
+            );
+            assert!(restarted.tick().await.is_err());
+            assert_eq!(restarted.outbox.len(), 1);
+            assert_eq!(restarted.cursors.push_stream_id, "0-0");
+            server.abort();
+            let _ = server.await;
+        }
+        let mut m = msg(1, "alice");
+        m.id = "1".to_owned();
+        assert_eq!(message_outcome(&good, &[m]).unwrap().accepted, 1);
+    }
+
+    /// Protects exact identity accounting and idempotent partial-write retries.
+    /// Detects duplicate submitted IDs and refusal of a valid accepted/duplicate mix.
+    /// Needs synthetic message fixtures only; no backend or hardware.
+    /// Breadcrumb: this module's `message_outcome`.
+    #[test]
+    fn message_push_accepts_only_complete_disjoint_accepted_and_duplicate_ids() {
+        let mut a = msg(1, "alice");
+        a.id = "a".to_owned();
+        let mut b = msg(2, "alice");
+        b.id = "b".to_owned();
+        let body = serde_json::json!({"accepted": ["a"], "duplicates": ["b"], "conflicts": [], "rejected": []});
+        let result = message_outcome(&body, &[a.clone(), b]).unwrap();
+        assert_eq!((result.accepted, result.duplicates), (1, 1));
+        assert!(message_outcome(&body, &[a.clone(), a]).is_err());
+    }
+
+    #[cfg(unix)]
+    fn assert_private_cursor_state(path: &Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    /// Protects forward progress after an explicit per-item rejection without losing its receipt.
+    /// Detects permanent head-of-line stalls, forgotten receipts and replay after restart.
+    /// Needs synthetic HTTP loopback, temporary files and no live services.
+    /// Breadcrumb: this module's `message_outcome`, `Engine::flush_outbox` and `save_rejection_cursors`.
+    #[tokio::test]
+    async fn rejected_message_is_recorded_before_later_messages_advance_and_survives_restart() {
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = Arc::clone(&calls);
+        let app = Router::new().route("/sync/push", post(move |Json(body): Json<serde_json::Value>| {
+            let seen = Arc::clone(&seen);
+            async move {
+                seen.fetch_add(1, Ordering::SeqCst);
+                let mut accepted = Vec::new(); let mut duplicates = Vec::new(); let mut rejected = Vec::new();
+                for item in body["messages"].as_array().unwrap() {
+                    let id = item["id"].as_str().unwrap();
+                    match id {
+                        "id-1" => rejected.push(serde_json::json!({"id": id, "reason": "private-payload-marker"})),
+                        "id-2" => duplicates.push(id.to_owned()),
+                        _ => accepted.push(id.to_owned()),
+                    }
+                }
+                Json(serde_json::json!({"accepted": accepted, "duplicates": duplicates, "conflicts": [], "rejected": rejected}))
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        // One-item batches prove progress past rejection; three items prove the
+        // accepted/duplicate/rejected partition is handled in the same response.
+        for batch_size in [1, 3] {
+            let before_calls = calls.load(Ordering::SeqCst);
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = config(dir.path(), batch_size, 5000);
+            let local = MemLocal::default();
+            for n in 1..=3 {
+                local.append(msg(n, "alice"));
+            }
+            let mut engine = Engine::new(
+                local.clone(),
+                http_cloud(&base),
+                &cfg,
+                Arc::new(CloudSyncStatus::default()),
+                SyncCursors::default(),
+            );
+            engine.push_messages().await.unwrap();
+            assert!(engine.outbox.is_empty());
+            assert_eq!(engine.cursors.push_stream_id, "3-0");
+            let persisted = std::fs::read_to_string(&cfg.state_path).unwrap();
+            assert!(!persisted.contains("private-payload-marker"));
+            let restored = load_cursors(&cfg.state_path).unwrap().unwrap();
+            assert_eq!(restored.rejected_total, 1);
+            assert_eq!(
+                restored.rejection_receipts,
+                vec![RejectionReceipt {
+                    message_id: "id-1".to_owned(),
+                    local_stream_id: "1-0".to_owned()
+                }]
+            );
+            let mut restarted = Engine::new(
+                local,
+                http_cloud(&base),
+                &cfg,
+                Arc::new(CloudSyncStatus::default()),
+                restored,
+            );
+            restarted.push_messages().await.unwrap();
+            let expected = if batch_size == 1 { 3 } else { 1 };
+            assert_eq!(calls.load(Ordering::SeqCst) - before_calls, expected);
+            assert_eq!(restarted.cursors.push_stream_id, "3-0");
+            restarted.cursors.pull_cursor = 9;
+            restarted.cursors.presence_origin_id = 12;
+            restarted.persist();
+            let after = load_cursors(&cfg.state_path).unwrap().unwrap();
+            assert_eq!(
+                after.rejection_receipts,
+                restarted.cursors.rejection_receipts
+            );
+            assert_eq!((after.pull_cursor, after.presence_origin_id), (9, 12));
+            #[cfg(unix)]
+            assert_private_cursor_state(&cfg.state_path);
+            // A later externally archived ledger may be empty while its
+            // lifetime total remains nonzero: this must not downgrade writes.
+            restarted.cursors.rejection_receipts.clear();
+            restarted.persist();
+            let archived = load_cursors(&cfg.state_path).unwrap().unwrap();
+            assert_eq!(archived.rejection_receipts, [] as [RejectionReceipt; 0]);
+            assert_eq!(archived.rejected_total, 1);
+            #[cfg(unix)]
+            assert_private_cursor_state(&cfg.state_path);
+        }
+        server.abort();
+        let _ = server.await;
+    }
+
+    /// Protects write-ahead durability and bounded ID-only rejection retention.
+    /// Detects acknowledgments without a state path, after I/O failure or at ledger capacity.
+    /// Needs synthetic HTTP loopback and temporary files; no live bus or hardware.
+    /// Breadcrumb: this module's `Engine::flush_outbox` and `save_rejection_cursors`.
+    #[tokio::test]
+    async fn rejection_receipt_failure_or_capacity_never_advances_or_drains_the_batch() {
+        let app = Router::new().route("/sync/push", post(|| async {
+            Json(serde_json::json!({"accepted": [], "duplicates": [], "conflicts": [], "rejected": [{"id":"id-1","reason":"private-payload-marker"}]}))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        for mode in 0..3 {
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = config(dir.path(), 1, 5000);
+            let local = MemLocal::default();
+            local.append(msg(1, "alice"));
+            let mut state = SyncCursors::default();
+            if mode == 2 {
+                state.rejection_receipts = (0..MAX_REJECTION_RECEIPTS)
+                    .map(|n| RejectionReceipt {
+                        message_id: format!("prior-{n}"),
+                        local_stream_id: format!("{n}-0"),
+                    })
+                    .collect();
+                state.rejected_total = MAX_REJECTION_RECEIPTS as u64;
+            }
+            save_cursors(&cfg.state_path, &state).unwrap();
+            let mut engine = Engine::new(
+                local,
+                http_cloud(&base),
+                &cfg,
+                Arc::new(CloudSyncStatus::default()),
+                state.clone(),
+            );
+            if mode == 0 {
+                engine.state_path = None;
+            }
+            if mode == 1 {
+                let blocker = dir.path().join("not-a-directory");
+                std::fs::write(&blocker, "block").unwrap();
+                engine.state_path = Some(blocker.join("state.json"));
+            }
+            let error = engine.push_messages().await.unwrap_err();
+            assert!(!format!("{error:#}").contains("private-payload-marker"));
+            assert_eq!(engine.outbox.len(), 1);
+            assert_eq!(engine.cursors, state);
+            assert_eq!(load_cursors(&cfg.state_path).unwrap().unwrap(), state);
+        }
+        let old =
+            serde_json::json!({"push_stream_id":"4-0","pull_cursor":0,"presence_origin_id":0});
+        let old: SyncCursors = serde_json::from_value(old).unwrap();
+        assert_eq!(old.rejection_receipts, [] as [RejectionReceipt; 0]);
+        assert_eq!(old.rejected_total, 0);
+        server.abort();
+        let _ = server.await;
     }
 
     #[tokio::test]
