@@ -273,3 +273,17 @@ behaviour. Current implementation qualifications:
   pass succeeded (there is no separate probe), `cloud_queue_depth` counts
   messages loaded but unacknowledged, and the block also carries
   `cloud_last_pull_at_utc`, `cloud_last_pull_age_seconds` and `cloud_last_error`.
+
+## On-site acknowledgment and explicit rejection evidence
+
+The maintained Rust sync client validates the complete returned message-ID
+partition before acknowledging a submitted batch. A missing, malformed,
+unknown-ID, duplicate-ID or conflicting disposition retains the batch and
+cursor. An explicit well-formed per-ID rejection remains a rejection of that
+item only: before progressing to later messages, the client durably records an
+ID-only rejection receipt and its cursor together. It does not claim rejected
+content was delivered to the cloud. No cloud reason text, message body or
+metadata is stored in the receipt. A bounded ledger that cannot be persisted
+fails closed instead of dropping evidence. Presence keeps its count-based
+contract. See the [client durability and capacity policy](../../docs/cloud-sync.md)
+and [implementation and synthetic restart tests](../../crates/agent-bus-http/src/cloud_sync.rs).
