@@ -38,12 +38,12 @@ def blob(data):
     return hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
 
 
-def valid_envelope(mounts, image, label):
+def valid_envelope(mounts, image, label, user_id=1000, group_id=1000):
     return {
         "Image": image,
         "Config": {
             "Image": image,
-            "User": "1000:1000",
+            "User": f"{user_id}:{group_id}",
             "Labels": {"agent-bus.hook-run": label},
         },
         "HostConfig": {
@@ -60,7 +60,10 @@ def valid_envelope(mounts, image, label):
             "DeviceRequests": None,
             "SecurityOpt": ["no-new-privileges"],
             "Tmpfs": {
-                "/tmp": "rw,exec,nosuid,nodev,size=268435456,uid=1000,gid=1000,mode=700"
+                "/tmp": (
+                    f"rw,exec,nosuid,nodev,size=268435456,"
+                    f"uid={user_id},gid={group_id},mode=700"
+                )
             },
             "Mounts": [
                 {
@@ -208,7 +211,14 @@ class HookGuards(unittest.TestCase):
                 QA.validate_config(config)
 
     def run_fake_container(
-        self, *, exit_code=0, deadline=False, settle=True, phase="pre-commit"
+        self,
+        *,
+        exit_code=0,
+        deadline=False,
+        settle=True,
+        phase="pre-commit",
+        tamper=None,
+        terminal_user=None,
     ):
         """Exercise the actual controller with a deterministic owned-engine fixture."""
         with tempfile.TemporaryDirectory() as directory:
@@ -243,9 +253,12 @@ class HookGuards(unittest.TestCase):
                 if not settle:
                     raise subprocess.TimeoutExpired("owned-cli", timeout)
                 process.returncode = exit_code
-                (run / phase / "actor-receipt.json").write_text(
-                    json.dumps({"state": "PASS"})
-                )
+                with QA.existing_handoff(run / phase / "actor-receipt.json") as stream:
+                    stream.write(json.dumps({"state": "PASS"}).encode())
+                if tamper is not None:
+                    tamper(root, run / phase)
+                if terminal_user is not None:
+                    metadata["Config"]["User"] = terminal_user
                 return b"stdout EOF", b"stderr EOF"
 
             process.communicate = communicate
@@ -262,6 +275,10 @@ class HookGuards(unittest.TestCase):
                 if args[0] == "create":
                     Path(args[args.index("--cidfile") + 1]).write_text(cid)
                     label = args[args.index("--label") + 1].split("=", 1)[1]
+                    user_id, group_id = (
+                        int(part)
+                        for part in args[args.index("--user") + 1].split(":", 1)
+                    )
                     mounts = []
                     for position, part in enumerate(args):
                         if part == "--mount":
@@ -269,7 +286,9 @@ class HookGuards(unittest.TestCase):
                             source = next(f[4:] for f in fields if f.startswith("src="))
                             target = next(f[4:] for f in fields if f.startswith("dst="))
                             mounts.append((source, target, "readonly" in fields))
-                    metadata = valid_envelope(mounts, config["image"], label)
+                    metadata = valid_envelope(
+                        mounts, config["image"], label, user_id, group_id
+                    )
                     metadata["HostConfig"]["NetworkMode"] = (
                         "bridge" if phase == "audit" else "none"
                     )
@@ -285,7 +304,13 @@ class HookGuards(unittest.TestCase):
                 patch.object(QA.subprocess, "Popen", return_value=process),
             ):
                 result = QA.execute_container(config, source, run, phase, script)
-            receipt = json.loads((run / phase / "controller-receipt.json").read_text())
+            fallback = run / f"{phase}-controller-receipt.json"
+            receipt_path = (
+                fallback
+                if fallback.exists()
+                else (run / phase / "controller-receipt.json")
+            )
+            receipt = json.loads(receipt_path.read_text())
             return result, receipt, calls
 
     def test_real_controller_removes_only_captured_id_after_child_eof(self):
@@ -295,6 +320,66 @@ class HookGuards(unittest.TestCase):
         self.assertEqual(receipt["original_cli_exit"], 0)
         self.assertIn(["rm", "a" * 64], calls)
         self.assertFalse(any("--force" in call or "prune" in call for call in calls))
+
+    def test_real_controller_accepts_non_1000_user_and_rejects_terminal_drift(self):
+        with (
+            patch.object(QA.os, "getuid", create=True, return_value=2002),
+            patch.object(QA.os, "getgid", create=True, return_value=2003),
+        ):
+            result, receipt, _ = self.run_fake_container()
+            self.assertEqual(result, 0)
+            self.assertEqual(receipt["state"], "PASS")
+            drift_result, drift_receipt, _ = self.run_fake_container(
+                terminal_user="1000:1000"
+            )
+            self.assertEqual(drift_result, 1)
+            self.assertEqual(drift_receipt["state"], "FAIL")
+
+    def test_container_symlink_or_inode_tampering_cannot_overwrite_host_files(self):
+        for target_name in (
+            "attached.stdout.log",
+            "attached.stderr.log",
+            "terminal-inspect.json",
+            "actor-receipt.json",
+            "controller-receipt.json",
+        ):
+            with (
+                self.subTest(target_name=target_name),
+                tempfile.TemporaryDirectory() as outer_dir,
+            ):
+                victim = Path(outer_dir) / "outside-victim.txt"
+                victim.write_bytes(b"untouched")
+
+                def tamper_with_link(
+                    _root, phase_dir, name=target_name, victim_path=victim
+                ):
+                    target = phase_dir / name
+                    target.unlink()
+                    try:
+                        target.symlink_to(victim_path)
+                    except OSError:
+                        # Fallback when Windows unprivileged symlinks are disabled.
+                        target.write_bytes(b"replaced-inode")
+
+                orig_linked = QA.linked
+
+                def fake_linked(path, name=target_name, orig=orig_linked):
+                    candidate = Path(path)
+                    if (
+                        candidate.name == name
+                        and candidate.exists()
+                        and candidate.read_bytes() == b"replaced-inode"
+                    ):
+                        return True
+                    return orig(candidate)
+
+                with patch.object(QA, "linked", side_effect=fake_linked):
+                    result, receipt, _ = self.run_fake_container(
+                        tamper=tamper_with_link
+                    )
+                    self.assertEqual(result, 1)
+                    self.assertEqual(receipt["state"], "FAIL")
+                    self.assertEqual(victim.read_bytes(), b"untouched")
 
     def test_real_controller_preserves_phase_failure_and_deadline(self):
         for options, failure in (

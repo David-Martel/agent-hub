@@ -426,19 +426,88 @@ def handoff_names(phase):
     ]
 
 
+def controller_names():
+    """Enumerate fixed, host-owned files written by the host controller."""
+    return [
+        "pre-start-inspect.json",
+        "attached.stdout.log",
+        "attached.stderr.log",
+        "terminal-inspect.json",
+        "controller-receipt.json",
+    ]
+
+
 def existing_handoff(path):
     """Truncate a held regular file without creating or replacing its custody."""
+    require(not linked(path.parent) and not linked(path), "Invalid handoff file")
     before = path.lstat()
     require(
         stat.S_ISREG(before.st_mode) and not path.is_symlink(), "Invalid handoff file"
     )
-    stream = path.open("r+b")
-    held = os.fstat(stream.fileno())
-    if (before.st_dev, before.st_ino) != (held.st_dev, held.st_ino):
-        stream.close()
-        raise RuntimeError("Handoff identity changed")
-    stream.truncate(0)
-    return stream
+    flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        held = os.fstat(descriptor)
+        require(
+            stat.S_ISREG(held.st_mode)
+            and (before.st_dev, before.st_ino) == (held.st_dev, held.st_ino),
+            "Handoff identity changed",
+        )
+        os.ftruncate(descriptor, 0)
+    except Exception:
+        os.close(descriptor)
+        raise
+    return os.fdopen(descriptor, "r+b")
+
+
+def write_verified_file(path, identity, data, label="controller"):
+    """Write bytes to a pre-created regular file after verifying inode and no-follow."""
+    require(
+        not linked(path.parent) and not linked(path),
+        f"Actor replaced a host-owned {label} file",
+    )
+    before = path.lstat()
+    require(
+        stat.S_ISREG(before.st_mode)
+        and not path.is_symlink()
+        and (before.st_dev, before.st_ino) == identity,
+        f"Actor replaced a host-owned {label} file",
+    )
+    flags = os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "wb") as stream:
+        held = os.fstat(stream.fileno())
+        require(
+            stat.S_ISREG(held.st_mode) and (held.st_dev, held.st_ino) == identity,
+            f"Actor replaced a host-owned {label} file",
+        )
+        os.ftruncate(stream.fileno(), 0)
+        stream.write(data)
+
+
+def read_verified_file(path, identity=None, label="handoff"):
+    """Read bytes from a regular file after verifying no-follow and optional inode."""
+    require(
+        not linked(path.parent) and not linked(path),
+        f"Actor replaced a host-owned {label} file",
+    )
+    before = path.lstat()
+    require(
+        stat.S_ISREG(before.st_mode)
+        and not path.is_symlink()
+        and (identity is None or (before.st_dev, before.st_ino) == identity),
+        f"Actor replaced a host-owned {label} file",
+    )
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        held = os.fstat(stream.fileno())
+        expected = identity or (before.st_dev, before.st_ino)
+        require(
+            stat.S_ISREG(held.st_mode) and (held.st_dev, held.st_ino) == expected,
+            f"Actor replaced a host-owned {label} file",
+        )
+        return stream.read()
 
 
 def actor(job):
@@ -577,8 +646,15 @@ def execute_container(config, source, run, phase, script):
         target = phase_dir / name
         descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(descriptor)
-        metadata = target.stat()
+        metadata = target.lstat()
         handoff_identity[name] = (metadata.st_dev, metadata.st_ino)
+    controller_identity = {}
+    for name in controller_names():
+        target = phase_dir / name
+        descriptor = os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(descriptor)
+        metadata = target.lstat()
+        controller_identity[name] = (metadata.st_dev, metadata.st_ino)
     docker_config = phase_dir / "docker-config"
     docker_config.mkdir(mode=0o700)
     (docker_config / "config.json").write_text("{}")
@@ -616,10 +692,12 @@ def execute_container(config, source, run, phase, script):
     }
     code = 1
     try:
+        cid_file = phase_dir / "container.cid"
+        require(not linked(cid_file), "Linked container ID file refused")
         command = [
             "create",
             "--cidfile",
-            str(phase_dir / "container.cid"),
+            str(cid_file),
             "--pull=never",
             "--label",
             "agent-bus.hook-run=" + label,
@@ -681,17 +759,18 @@ def execute_container(config, source, run, phase, script):
         try:
             control(*command)
         finally:
-            cid_file = phase_dir / "container.cid"
-            if cid_file.exists():
-                cid = cid_file.read_text().strip()
+            if not linked(cid_file) and cid_file.exists():
+                cid = read_verified_file(cid_file, label="controller").decode().strip()
                 require(
                     re.fullmatch(r"[a-f0-9]{64}", cid) is not None,
                     "Invalid captured container ID",
                 )
         require(cid, "No captured container ID")
         metadata = json.loads(control("inspect", cid))[0]
-        (phase_dir / "pre-start-inspect.json").write_text(
-            json.dumps(metadata, indent=2)
+        write_verified_file(
+            phase_dir / "pre-start-inspect.json",
+            controller_identity["pre-start-inspect.json"],
+            json.dumps(metadata, indent=2).encode(),
         )
         validate_envelope(
             metadata, config["image"], label, phase, mounts, user_id, group_id
@@ -710,14 +789,28 @@ def execute_container(config, source, run, phase, script):
             receipt["first_failure"] = "QA deadline exceeded"
             control("stop", "--time", "30", cid)
             stdout, stderr = original.communicate(timeout=45)
-        (phase_dir / "attached.stdout.log").write_bytes(stdout)
-        (phase_dir / "attached.stderr.log").write_bytes(stderr)
+        write_verified_file(
+            phase_dir / "attached.stdout.log",
+            controller_identity["attached.stdout.log"],
+            stdout,
+        )
+        write_verified_file(
+            phase_dir / "attached.stderr.log",
+            controller_identity["attached.stderr.log"],
+            stderr,
+        )
         receipt.update(
             original_cli_exit=original.returncode, original_cli_both_eof=True
         )
         terminal = json.loads(control("inspect", cid))[0]
-        (phase_dir / "terminal-inspect.json").write_text(json.dumps(terminal, indent=2))
-        validate_envelope(terminal, config["image"], label, phase, mounts)
+        write_verified_file(
+            phase_dir / "terminal-inspect.json",
+            controller_identity["terminal-inspect.json"],
+            json.dumps(terminal, indent=2).encode(),
+        )
+        validate_envelope(
+            terminal, config["image"], label, phase, mounts, user_id, group_id
+        )
         state = terminal["State"]
         receipt["terminal_state"] = state
         require(not state["Running"] and state["Pid"] == 0, "Container has not settled")
@@ -729,18 +822,15 @@ def execute_container(config, source, run, phase, script):
             "Actual QA failed",
         )
         for name, identity in handoff_identity.items():
-            target = phase_dir / name
-            metadata = target.lstat()
-            require(
-                stat.S_ISREG(metadata.st_mode)
-                and not target.is_symlink()
-                and (metadata.st_dev, metadata.st_ino) == identity,
-                "Actor replaced a host-owned handoff file",
-            )
-            with target.open("rb") as stream:
-                stream.read(1)
+            read_verified_file(phase_dir / name, identity, label="handoff")
         receipt["host_handoff_readback"] = True
-        result = json.loads((phase_dir / "actor-receipt.json").read_text())
+        result = json.loads(
+            read_verified_file(
+                phase_dir / "actor-receipt.json",
+                handoff_identity["actor-receipt.json"],
+                label="handoff",
+            ).decode()
+        )
         require(result["state"] == "PASS", "Actor did not complete actual QA")
         code = 0
     except Exception as error:
@@ -757,8 +847,16 @@ def execute_container(config, source, run, phase, script):
                     control("stop", "--time", "30", cid)
                 if original is not None and original.poll() is None:
                     stdout, stderr = original.communicate(timeout=45)
-                    (phase_dir / "attached.stdout.log").write_bytes(stdout)
-                    (phase_dir / "attached.stderr.log").write_bytes(stderr)
+                    write_verified_file(
+                        phase_dir / "attached.stdout.log",
+                        controller_identity["attached.stdout.log"],
+                        stdout,
+                    )
+                    write_verified_file(
+                        phase_dir / "attached.stderr.log",
+                        controller_identity["attached.stderr.log"],
+                        stderr,
+                    )
                     receipt.update(
                         original_cli_exit=original.returncode,
                         original_cli_both_eof=True,
@@ -782,9 +880,28 @@ def execute_container(config, source, run, phase, script):
                 receipt["cleanup_errors"].append(str(error))
                 code = 1
         receipt["state"] = "PASS" if code == 0 else "FAIL"
-        (phase_dir / "controller-receipt.json").write_text(
-            json.dumps(receipt, indent=2)
-        )
+        try:
+            write_verified_file(
+                phase_dir / "controller-receipt.json",
+                controller_identity["controller-receipt.json"],
+                json.dumps(receipt, indent=2).encode(),
+            )
+        except (RuntimeError, OSError, ValueError) as error:
+            receipt["cleanup_errors"].append(str(error))
+            receipt["first_failure"] = receipt["first_failure"] or str(error)
+            code = 1
+            receipt["state"] = "FAIL"
+            fallback = run / f"{phase}-controller-receipt.json"
+            flags = (
+                os.O_CREAT
+                | os.O_EXCL
+                | os.O_WRONLY
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_BINARY", 0)
+            )
+            descriptor = os.open(fallback, flags, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(json.dumps(receipt, indent=2).encode())
     return code
 
 
@@ -813,6 +930,7 @@ def main(mode):
         "adapter_sha256": script_sha,
         "snapshots": [],
     }
+    phase_runs = []
     try:
         for number, commit in enumerate(commits):
             if commit:
@@ -840,6 +958,7 @@ def main(mode):
             )
             phases = ["pre-commit"] if mode == "pre-commit" else ["pre-push", "audit"]
             for phase in phases:
+                phase_runs.append((run, phase))
                 code = execute_container(config, source, run, phase, script)
                 require(
                     inventory(source) == before, "Read-only source inventory changed"
@@ -863,9 +982,20 @@ def main(mode):
     finally:
         (root / "receipt.json").write_text(json.dumps(receipt, indent=2))
         settled = True
-        for controller in root.rglob("controller-receipt.json"):
-            state = json.loads(controller.read_text())
-            settled = settled and not state["cleanup_errors"]
+        for run, phase in phase_runs:
+            fallback = run / f"{phase}-controller-receipt.json"
+            controller = (
+                fallback
+                if fallback.exists()
+                else (run / phase / "controller-receipt.json")
+            )
+            try:
+                state = json.loads(
+                    read_verified_file(controller, label="controller").decode()
+                )
+                settled = settled and not state["cleanup_errors"]
+            except (RuntimeError, OSError, ValueError, KeyError):
+                settled = False
         if settled and lease.read_bytes() == lease_bytes:
             lease.unlink()
         else:
