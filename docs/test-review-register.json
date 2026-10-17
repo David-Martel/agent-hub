@@ -2,7 +2,7 @@
   "schema_version": 1,
   "normalization": "Decode each source as UTF-8 accepting and removing an initial BOM; replace CRLF and lone CR with LF; encode UTF-8 without BOM. Preserve every other character, indentation, whitespace and terminal newline. Selector slices include complete ast.FunctionDef lineno..end_lineno physical lines, including each rationale docstring and original terminal newline. Full shared-file and code hashes use the same normalization.",
   "hash_algorithm": "SHA256",
-  "review_invalidation": "Any selector, code-under-test or shared-source canonical hash change makes this recorded disposition unreviewed until a new independent review. Current rows certify only the named 27 selectors, not the repository test inventory. Historical rows and original controls retain their original source provenance.",
+  "review_invalidation": "Any selector, code-under-test or shared-source canonical hash change makes this recorded disposition unreviewed until a new independent review. Current rows certify only the named 31 selectors, not the repository test inventory. Historical rows and original controls retain their original source provenance.",
   "review_standard": "https://github.com/David-Martel/dtm-claude/blob/main/docs/reference/DOCUMENTATION_AND_TEST_STANDARD.md",
   "controls": {
     "failing_first": {
@@ -1360,50 +1360,88 @@
       "reviewer": "codex-ms01",
       "reviewer_type": "independent_agent",
       "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-16",
+      "date": "2026-10-17",
       "commit_reviewed": null,
       "disposition": "keep",
-      "scope": "Synthetic loopback HTTP message push acknowledgment and persisted restart cursor; no live bus, presence qualification or production cloud500 diagnosis.",
+      "scope": "Synthetic loopback HTTP message partition accounting, ID-only rejection persistence before cursor advance, subsequent cursor writes and restart; no live bus or Windows power-loss qualification.",
       "selector_source": {
         "path": "crates/agent-bus-http/src/cloud_sync.rs",
-        "sha256": "e1f6a74805166c809919c640a3e7d5fc142dff449c3666bd188a179618b02e5d",
-        "hash_scope": "whole normalized Rust module, including fixture helpers and both selectors"
+        "sha256": "efef6641e9313e8ffd1ec69ed2b857c34c85bb00bbd69730f15d877723be1ecd",
+        "hash_scope": "whole normalized Rust module including fixtures"
       },
       "code_under_test": {
         "path": "crates/agent-bus-http/src/cloud_sync.rs",
-        "sha256": "e1f6a74805166c809919c640a3e7d5fc142dff449c3666bd188a179618b02e5d"
+        "sha256": "efef6641e9313e8ffd1ec69ed2b857c34c85bb00bbd69730f15d877723be1ecd"
       },
-      "protections": "Retain whole message batch and cursor unless every submitted ID is accepted or duplicated exactly once; no response content in diagnostics.",
-      "needs": "Disposable container with pinned Rust1.99, loopback sockets and temporary state directory; no backend credentials.",
-      "control": "Observed container29PASS1existingignored; fault reintroduction fails outbox0 versus expected1. Mixed accepted/duplicate IDs succeed, malformed/partial/conflict/rejected/unknown/duplicate/missing dispositions retain batch and cursor across restart.",
-      "review_completed_utc": "2026-10-16T23:50:09.005307+00:00",
-      "reviewed_source_state": "Exact source hash independently inspected; authored container logs and fault reintroduction checked, not independently rerun by reviewer",
-      "additional_coverage_boundary": "Synthetic loopback HTTP and temporary cursors only. Presence accounting, actual Redis backend, cloud quota recovery, deployment and active host journal migration are not qualified. Existing HTTP wire success fixture now has no rejection; new explicit rejected response case must preserve batch."
+      "protections": "Complete per-ID disposition; explicit rejection receipt before drain; no response reason/body retention; no silent loss on storage or capacity failure.",
+      "needs": "Disposable pinned Rust container, loopback sockets and temporary directory; Unix0600 checks platform-gated, Windows directory durability unqualified.",
+      "control": "Fault reintroduction at140cfbb00ae7d0dab1d09f6d9bc71a4f8fa86a29b2fc92cb67dff77b1abaee0a: whole-batch rejection policy makes progress selector fail; bypassed pre-drain durable save makes save-failure selector fail (both exit101). Finalefef source differs only in extraction of identical0600 test assertions. Clean finalpackage recompilation passed31tests/1existingignored; fmt/Clippy passed. Earlier shared-target cached mutant execution is invalid as candidate acceptance. Receipts: fleet-unification/cloud-push-accounting/rejection-{progress,durability}-negative-control.log and rejection-receipt-final-clean-qa.log."
     },
     {
       "selector": "crates/agent-bus-http/src/cloud_sync.rs::tests::message_push_accepts_only_complete_disjoint_accepted_and_duplicate_ids",
       "reviewer": "codex-ms01",
       "reviewer_type": "independent_agent",
       "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-16",
+      "date": "2026-10-17",
       "commit_reviewed": null,
       "disposition": "keep",
-      "scope": "Synthetic loopback HTTP message push acknowledgment and persisted restart cursor; no live bus, presence qualification or production cloud500 diagnosis.",
+      "scope": "Synthetic loopback HTTP message partition accounting, ID-only rejection persistence before cursor advance, subsequent cursor writes and restart; no live bus or Windows power-loss qualification.",
       "selector_source": {
         "path": "crates/agent-bus-http/src/cloud_sync.rs",
-        "sha256": "e1f6a74805166c809919c640a3e7d5fc142dff449c3666bd188a179618b02e5d",
-        "hash_scope": "whole normalized Rust module, including fixture helpers and both selectors"
+        "sha256": "efef6641e9313e8ffd1ec69ed2b857c34c85bb00bbd69730f15d877723be1ecd",
+        "hash_scope": "whole normalized Rust module including fixtures"
       },
       "code_under_test": {
         "path": "crates/agent-bus-http/src/cloud_sync.rs",
-        "sha256": "e1f6a74805166c809919c640a3e7d5fc142dff449c3666bd188a179618b02e5d"
+        "sha256": "efef6641e9313e8ffd1ec69ed2b857c34c85bb00bbd69730f15d877723be1ecd"
       },
-      "protections": "Retain whole message batch and cursor unless every submitted ID is accepted or duplicated exactly once; no response content in diagnostics.",
-      "needs": "Disposable container with pinned Rust1.99, loopback sockets and temporary state directory; no backend credentials.",
-      "control": "Observed container29PASS1existingignored; fault reintroduction fails outbox0 versus expected1. Mixed accepted/duplicate IDs succeed, malformed/partial/conflict/rejected/unknown/duplicate/missing dispositions retain batch and cursor across restart.",
-      "review_completed_utc": "2026-10-16T23:50:09.005326+00:00",
-      "reviewed_source_state": "Exact source hash independently inspected; authored container logs and fault reintroduction checked, not independently rerun by reviewer",
-      "additional_coverage_boundary": "Synthetic loopback HTTP and temporary cursors only. Presence accounting, actual Redis backend, cloud quota recovery, deployment and active host journal migration are not qualified. Existing HTTP wire success fixture now has no rejection; new explicit rejected response case must preserve batch."
+      "protections": "Complete per-ID disposition; explicit rejection receipt before drain; no response reason/body retention; no silent loss on storage or capacity failure.",
+      "needs": "Disposable pinned Rust container, loopback sockets and temporary directory; Unix0600 checks platform-gated, Windows directory durability unqualified.",
+      "control": "Fault reintroduction at140cfbb00ae7d0dab1d09f6d9bc71a4f8fa86a29b2fc92cb67dff77b1abaee0a: whole-batch rejection policy makes progress selector fail; bypassed pre-drain durable save makes save-failure selector fail (both exit101). Finalefef source differs only in extraction of identical0600 test assertions. Clean finalpackage recompilation passed31tests/1existingignored; fmt/Clippy passed. Earlier shared-target cached mutant execution is invalid as candidate acceptance. Receipts: fleet-unification/cloud-push-accounting/rejection-{progress,durability}-negative-control.log and rejection-receipt-final-clean-qa.log."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/cloud_sync.rs::tests::rejected_message_is_recorded_before_later_messages_advance_and_survives_restart",
+      "reviewer": "codex-ms01",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Synthetic loopback HTTP message partition accounting, ID-only rejection persistence before cursor advance, subsequent cursor writes and restart; no live bus or Windows power-loss qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/cloud_sync.rs",
+        "sha256": "efef6641e9313e8ffd1ec69ed2b857c34c85bb00bbd69730f15d877723be1ecd",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/cloud_sync.rs",
+        "sha256": "efef6641e9313e8ffd1ec69ed2b857c34c85bb00bbd69730f15d877723be1ecd"
+      },
+      "protections": "Complete per-ID disposition; explicit rejection receipt before drain; no response reason/body retention; no silent loss on storage or capacity failure.",
+      "needs": "Disposable pinned Rust container, loopback sockets and temporary directory; Unix0600 checks platform-gated, Windows directory durability unqualified.",
+      "control": "Fault reintroduction at140cfbb00ae7d0dab1d09f6d9bc71a4f8fa86a29b2fc92cb67dff77b1abaee0a: whole-batch rejection policy makes progress selector fail; bypassed pre-drain durable save makes save-failure selector fail (both exit101). Finalefef source differs only in extraction of identical0600 test assertions. Clean finalpackage recompilation passed31tests/1existingignored; fmt/Clippy passed. Earlier shared-target cached mutant execution is invalid as candidate acceptance. Receipts: fleet-unification/cloud-push-accounting/rejection-{progress,durability}-negative-control.log and rejection-receipt-final-clean-qa.log."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/cloud_sync.rs::tests::rejection_receipt_failure_or_capacity_never_advances_or_drains_the_batch",
+      "reviewer": "codex-ms01",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Synthetic loopback HTTP message partition accounting, ID-only rejection persistence before cursor advance, subsequent cursor writes and restart; no live bus or Windows power-loss qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/cloud_sync.rs",
+        "sha256": "efef6641e9313e8ffd1ec69ed2b857c34c85bb00bbd69730f15d877723be1ecd",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/cloud_sync.rs",
+        "sha256": "efef6641e9313e8ffd1ec69ed2b857c34c85bb00bbd69730f15d877723be1ecd"
+      },
+      "protections": "Complete per-ID disposition; explicit rejection receipt before drain; no response reason/body retention; no silent loss on storage or capacity failure.",
+      "needs": "Disposable pinned Rust container, loopback sockets and temporary directory; Unix0600 checks platform-gated, Windows directory durability unqualified.",
+      "control": "Fault reintroduction at140cfbb00ae7d0dab1d09f6d9bc71a4f8fa86a29b2fc92cb67dff77b1abaee0a: whole-batch rejection policy makes progress selector fail; bypassed pre-drain durable save makes save-failure selector fail (both exit101). Finalefef source differs only in extraction of identical0600 test assertions. Clean finalpackage recompilation passed31tests/1existingignored; fmt/Clippy passed. Earlier shared-target cached mutant execution is invalid as candidate acceptance. Receipts: fleet-unification/cloud-push-accounting/rejection-{progress,durability}-negative-control.log and rejection-receipt-final-clean-qa.log."
     }
   ],
   "historical_reviews": [

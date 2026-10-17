@@ -87,20 +87,46 @@ proposal without claiming an explicit operator-selected global migration.
 - **Backoff.** After a failure the task waits `clamp(2^n * U(0,1), 1, 60)`
   seconds (full jitter, ceiling 1, 2, 4, ... 60 s) and resets on success. Each
   HTTP request has a 10 s timeout.
-- **Message acknowledgments fail closed.** A message batch advances only when
-  the Worker accounts for every submitted ID exactly once in `accepted` or
-  `duplicates`, with empty `conflicts` and `rejected` arrays. Missing, malformed,
-  partial or contradictory dispositions retain the entire batch and cursor.
-  Successful partial writes are safe to retry through the Worker's dedup gate.
-  A persistent rejection or conflict requires operator diagnosis; this policy
-  deliberately blocks the batch rather than silently discarding a message.
-  Errors omit response bodies and rejection details. Presence acknowledgments
-  keep their existing count-based contract. Implementation and synthetic HTTP /
-  restart controls: [`cloud_sync.rs`](../crates/agent-bus-http/src/cloud_sync.rs),
-  `message_outcome`, `invalid_push_dispositions_retain_the_entire_batch_and_restart_cursor`
-  and `message_push_accepts_only_complete_disjoint_accepted_and_duplicate_ids`.
-- **A corrupt state file stops sync** rather than restarting from zero, which
-  would re-push the whole history. Delete it deliberately to reset.
+- **Message acknowledgments require complete per-ID accounting.** Every submitted
+  ID must occur exactly once in `accepted`, `duplicates` or a well-formed
+  `rejected` entry. Missing, malformed, unknown, duplicate or conflicting
+  dispositions retain the entire batch and cursor. Successful partial writes
+  are safe to retry through the Worker's dedup gate.
+- **Explicit rejections are recorded before advancing.** A known rejected ID does
+  not block later valid messages once its ID-only receipt and acknowledged
+  cursor are durably committed together in the existing sync-state JSON.
+  `rejection_receipts` holds `message_id` and `local_stream_id`; `rejected_total`
+  counts recorded receipts. Inspect these fields in the configured cursor file;
+  neither raw cloud rejection reasons nor message bodies/metadata are retained
+  or logged. Logs report counts only. The original local message remains in its
+  original store; this is not deletion or proof of off-site delivery.
+- **Rejection evidence is bounded and never evicted automatically.** The ledger
+  holds at most 4096 receipts, each message ID at most 512 UTF-8 bytes and each
+  local stream ID at most 128 bytes; serialized rejection state is capped at 4 MiB.
+  A full ledger, missing durable state path or write/flush/rename failure stops
+  the batch visibly before outbox drain or in-memory cursor advance. There is
+  no automatic archive/reset command. Capacity recovery requires an explicit
+  operator-controlled, verified archival/retention operation preserving receipt
+  provenance and cursor position; do not delete the state file to clear this.
+- **Durability is platform-qualified.** The first rejection commit and every
+  subsequent cursor update with retained receipts or a nonzero rejection total
+  use the durable writer. A cursor that has never held rejection evidence keeps
+  its existing best-effort persistence contract. Rejection commits use a private
+  same-parent temporary file, file `sync_all`, then atomic replacement; Unix also syncs the
+  parent directory. Windows keeps the existing same-volume atomic replacement
+  contract; power-loss directory durability is not qualified by Linux tests.
+  Old cursor files default to an empty receipt ledger without resetting position.
+  Presence acknowledgments keep their existing count-based contract.
+  Implementation and synthetic HTTP/restart controls:
+  [`cloud_sync.rs`](../crates/agent-bus-http/src/cloud_sync.rs), `message_outcome`,
+  `rejected_message_is_recorded_before_later_messages_advance_and_survives_restart`
+  and `rejection_receipt_failure_or_capacity_never_advances_or_drains_the_batch`.
+- **A corrupt state file stops sync** rather than restarting from zero.
+  Preserve the original file and any rejection receipts before recovery; restore
+  a verified matching state or perform an explicitly reviewed recovery. Do not
+  delete it to clear a blocked batch or discard rejection evidence. Running an
+  older client against ledger-bearing state is not a supported downgrade:
+  older serializers can discard the newly added receipt fields.
 
 ## `/health`
 
