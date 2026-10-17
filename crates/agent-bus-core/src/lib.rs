@@ -24,6 +24,7 @@ mod outbox_private;
 pub mod output;
 pub mod postgres_store;
 pub mod redis_bus;
+mod redis_health;
 pub mod remote_dispatch;
 pub mod settings;
 pub mod sync_store;
