@@ -659,8 +659,8 @@ impl<'a> McpToolDispatch<'a> {
 
         match name {
             "bus_health" => {
-                // MCP stdio transport has no r2d2 pool; pass None so the health
-                // check falls back to a single fresh connection.
+                // Health owns a fresh Redis connection and its aggregate deadline;
+                // it does not acquire an r2d2 connection on any transport.
                 let h = ops_health(settings, None);
                 Ok(serde_json::to_value(&h)?)
             }
