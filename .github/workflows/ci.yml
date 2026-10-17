@@ -317,6 +317,12 @@ jobs:
       - name: Native fleet manifest and doctor controls
         shell: pwsh
         run: ./scripts/test-agent-bus-fleet-fixtures.ps1
+      - name: Watchdog fixtures on Windows PowerShell 5.1
+        shell: powershell
+        run: ./scripts/test-agent-bus-watchdog-fixtures.ps1
+      - name: Watchdog fixtures on PowerShell 7
+        shell: pwsh
+        run: ./scripts/test-agent-bus-watchdog-fixtures.ps1
       - name: Native functional isolation controls
         shell: pwsh
         run: ./scripts/test-agent-bus-functional-isolation.ps1

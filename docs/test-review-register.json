@@ -2,7 +2,7 @@
   "schema_version": 1,
   "normalization": "Decode each source as UTF-8 accepting and removing an initial BOM; replace CRLF and lone CR with LF; encode UTF-8 without BOM. Preserve every other character, indentation, whitespace and terminal newline. Selector slices include complete ast.FunctionDef lineno..end_lineno physical lines, including each rationale docstring and original terminal newline. Full shared-file and code hashes use the same normalization.",
   "hash_algorithm": "SHA256",
-  "review_invalidation": "Any selector, code-under-test or shared-source canonical hash change makes this recorded disposition unreviewed until a new independent review. Current rows certify only the named 27 selectors, not the repository test inventory. Historical rows and original controls retain their original source provenance.",
+  "review_invalidation": "Any selector, code-under-test or shared-source canonical hash change makes this recorded disposition unreviewed until a new independent review. Rows certify only their named selectors and explicit scopes, not the repository test inventory. Historical rows and original controls retain their original source provenance.",
   "review_standard": "https://github.com/David-Martel/dtm-claude/blob/main/docs/reference/DOCUMENTATION_AND_TEST_STANDARD.md",
   "controls": {
     "failing_first": {
@@ -1354,6 +1354,1542 @@
       },
       "breaking_behavior": "Preserve failed prefix bytes and exclusive typed metadata summaries; original clocks, mapping and settlement guards unchanged.",
       "additional_coverage_boundary": "Offline synthetic controls; original CI helper cause remains UNKNOWN; source-bound current-head CI required."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_expected_authority_is_healthy",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 38,
+        "last_line": 38,
+        "sha256": "dfcc0d8458e4abed714a588a348a9def7bd81740470ce1d0ab4a31982245275c",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_configured_cloud_is_degraded",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 39,
+        "last_line": 39,
+        "sha256": "2bf0192faab64cc75a5d2cb743d1e11a93fb1ebe055f2a7156f7546ad16487f2",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_unknown_cloud_endpoint_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 40,
+        "last_line": 40,
+        "sha256": "8aa6c17b9a4febfb741fd7ffd62da8269c841bc116e0568570bfc1a1c13c5635",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_cloud_claiming_authority_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 41,
+        "last_line": 41,
+        "sha256": "74b47211ad02a158260d4e0e8dfda9336c4196daeadb58adbd80b533eee96d96",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_string_false_does_not_qualify_cloud",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 42,
+        "last_line": 42,
+        "sha256": "0afa7eee57efde7a687448da8b735e756ac0d4be81312fdfc88967d4edaac842",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_missing_authority_bit_does_not_qualify_cloud",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 43,
+        "last_line": 43,
+        "sha256": "6b5bd49b5f1d5d99804b52515e46fef7db11ea29475e0f9b54e34fe990a5bf65",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_wrong_identity_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 44,
+        "last_line": 44,
+        "sha256": "35a0f7f051e7722de0bee3039507f7637d15a6b5e93b4bb0a04007dd5c0cf62d",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_known_island_build_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 45,
+        "last_line": 45,
+        "sha256": "26b9f2b1f2db3a18dd4d58a4a0b34c0b453dcc3d92649caadba30fe7ec362cc2",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_known_island_identity_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 46,
+        "last_line": 46,
+        "sha256": "bbc0739efcfae6a1da4302ddbc1bba9b9c4000af627ae0882c7018bfa09d08b5",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_known_island_service_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 47,
+        "last_line": 47,
+        "sha256": "8fbac19223480525cb1a37f2f141976f00ea50d5875f8599704a8f25b72eb185",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_absent_health_is_unreachable",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 48,
+        "last_line": 48,
+        "sha256": "a09a1248effa1d73688568e0017de94d1cb16c1a4c591f63beb6a5ae3fa80810",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_local_backend_is_not_fleet",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 49,
+        "last_line": 49,
+        "sha256": "a19e4400bfb2c05f7336bfafa8af912b16fdb1a503e7e9c2a993cf498885b5c5",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_unhealthy_backend_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 50,
+        "last_line": 50,
+        "sha256": "203e622068f488b28b4e32c6a017d241f4c43a5cff2e63fac78657c7e7ccc20f",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_string_false_health_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 51,
+        "last_line": 51,
+        "sha256": "429b600c561b4c706820d5c3e7b05a7c7d4ca34986264777aef0ac9cb28e455e",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_string_true_health_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 52,
+        "last_line": 52,
+        "sha256": "c67c188f8040ab564f8fafd0c0758b8864c577890ab7ae7727e3f371d12c68dd",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_numeric_health_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 53,
+        "last_line": 53,
+        "sha256": "23ab37d7cdacb08143fc9b1fe0f0817a80b5f2c2c8c91b0d3bc9a1db8cbabad0",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_null_health_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 54,
+        "last_line": 54,
+        "sha256": "bce7e90907da26034e797e129927d2e56801061397a424621b7534f9ee2813da",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_absent_health_ok_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 55,
+        "last_line": 55,
+        "sha256": "0e75eb3ba10f1c97a3ac5712b4c8ebb9fca5df68d184bb94e156f531595af394",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_missing_named_authority_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 56,
+        "last_line": 56,
+        "sha256": "b9cd75c966144068575bece40035d51dcd7be14f67721e3ac1a669667d6da60b",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_expected_identity_without_authority_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 57,
+        "last_line": 57,
+        "sha256": "89f93bbf6f12d73b570d8776cbc621066d2b05f6543fa37fb58647cad2479190",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_expected_identity_string_true_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 58,
+        "last_line": 58,
+        "sha256": "50efc3f9ec02af8cde8b2075818f644a93193b00caa88bc3b280baf3a8836d62",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_duplicate_cloud_candidate_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 59,
+        "last_line": 59,
+        "sha256": "34b86b29cde653b46c8e07029c9b673af45f4cc9c060a1e61ce7da0b2f6605f0",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_noncloud_role_cannot_be_degraded",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 60,
+        "last_line": 60,
+        "sha256": "0784c73d5b2560f9ec9c957a7d50314e4cc82099a0734fdadc648f607e7c6171",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_unknown_endpoint_cannot_claim_expected_identity",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 61,
+        "last_line": 61,
+        "sha256": "342f4a88c535be5e277c087fe2c6f816498ead013c1f38efa67862155d674dd5",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::assessment_missing_selected_url_is_critical",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 62,
+        "last_line": 62,
+        "sha256": "5e742d42ec440d734504159f263af82c14444ebf37d9b8fc72ec986a15db445b",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: role-aware and Boolean-strict fleet authority classification. Detects: malformed health or unknown/cloud destinations promoted to healthy, or configured fallback falsely called an impostor. Needs: only fixture objects; no config, credentials, network or hardware. Breadcrumb: scripts/agent-bus-watchdog.ps1 Get-WatchdogAssessment.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Disable only the configured-cloud branch: intended assessment expects DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE but gets IDENTITY_MISMATCH. Restore only the old weak ok predicate: malformed health expects UNHEALTHY but gets OK. Valid Boolean authority control still passes.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::notification_first_incident_is_immediate",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 83,
+        "last_line": 83,
+        "sha256": "58310a6a0418c2ee2bfb6ecbe00fa4db6ca836df05663a063f729dadc3a6f442",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: bounded duplicate suppression without hiding distinct or recurring incidents. Detects: moving attempt timestamps, bad clock state or changed endpoints silently suppressing warnings. Needs: injected time and fixture state only. Breadcrumb: scripts/agent-bus-watchdog.ps1 Test-WatchdogNotificationDue.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Normal fixtures pair a same-incident in-window refusal with first/new/boundary/malformed-clock notification positives; unconditional Write-Alert notification mutant is caught by the shared lifecycle selector.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::notification_same_incident_inside_window_is_throttled",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 84,
+        "last_line": 84,
+        "sha256": "3ce329965067cc222fa008cb99d54026425cd91da2ee09bb58b6d81a6f958e6c",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: bounded duplicate suppression without hiding distinct or recurring incidents. Detects: moving attempt timestamps, bad clock state or changed endpoints silently suppressing warnings. Needs: injected time and fixture state only. Breadcrumb: scripts/agent-bus-watchdog.ps1 Test-WatchdogNotificationDue.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Normal fixtures pair a same-incident in-window refusal with first/new/boundary/malformed-clock notification positives; unconditional Write-Alert notification mutant is caught by the shared lifecycle selector.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::notification_exact_cooldown_boundary_is_due",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 85,
+        "last_line": 85,
+        "sha256": "7b74d4fbca5c83719368c1ead39b21c4a859fabc8c6af068aa6d3f0b7548b921",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: bounded duplicate suppression without hiding distinct or recurring incidents. Detects: moving attempt timestamps, bad clock state or changed endpoints silently suppressing warnings. Needs: injected time and fixture state only. Breadcrumb: scripts/agent-bus-watchdog.ps1 Test-WatchdogNotificationDue.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Normal fixtures pair a same-incident in-window refusal with first/new/boundary/malformed-clock notification positives; unconditional Write-Alert notification mutant is caught by the shared lifecycle selector.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::notification_changed_class_is_immediate",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 86,
+        "last_line": 86,
+        "sha256": "dacab8457d4a660e34dfe77e3ed00a2d2204b7aa3c733b0e0d99631e9d4a063a",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: bounded duplicate suppression without hiding distinct or recurring incidents. Detects: moving attempt timestamps, bad clock state or changed endpoints silently suppressing warnings. Needs: injected time and fixture state only. Breadcrumb: scripts/agent-bus-watchdog.ps1 Test-WatchdogNotificationDue.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Normal fixtures pair a same-incident in-window refusal with first/new/boundary/malformed-clock notification positives; unconditional Write-Alert notification mutant is caught by the shared lifecycle selector.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::notification_changed_endpoint_is_immediate",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 87,
+        "last_line": 87,
+        "sha256": "9cd41968ebf781c19eccba8d1581f999e6f1fab3898eaedb5f71592e849f4584",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: bounded duplicate suppression without hiding distinct or recurring incidents. Detects: moving attempt timestamps, bad clock state or changed endpoints silently suppressing warnings. Needs: injected time and fixture state only. Breadcrumb: scripts/agent-bus-watchdog.ps1 Test-WatchdogNotificationDue.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Normal fixtures pair a same-incident in-window refusal with first/new/boundary/malformed-clock notification positives; unconditional Write-Alert notification mutant is caught by the shared lifecycle selector.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::notification_malformed_time_does_not_suppress",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 88,
+        "last_line": 88,
+        "sha256": "6dc747c3e02ec62c6721d2a45569001340ead532d06604e40060d1221d5cc6d1",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: bounded duplicate suppression without hiding distinct or recurring incidents. Detects: moving attempt timestamps, bad clock state or changed endpoints silently suppressing warnings. Needs: injected time and fixture state only. Breadcrumb: scripts/agent-bus-watchdog.ps1 Test-WatchdogNotificationDue.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Normal fixtures pair a same-incident in-window refusal with first/new/boundary/malformed-clock notification positives; unconditional Write-Alert notification mutant is caught by the shared lifecycle selector.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::notification_future_time_does_not_suppress",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 89,
+        "last_line": 89,
+        "sha256": "9004fae2a2128ca03214c00240c0d139798a52e97f05a2f95a5c0da9a9d34e69",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: bounded duplicate suppression without hiding distinct or recurring incidents. Detects: moving attempt timestamps, bad clock state or changed endpoints silently suppressing warnings. Needs: injected time and fixture state only. Breadcrumb: scripts/agent-bus-watchdog.ps1 Test-WatchdogNotificationDue.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Normal fixtures pair a same-incident in-window refusal with first/new/boundary/malformed-clock notification positives; unconditional Write-Alert notification mutant is caught by the shared lifecycle selector.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::notification_legacy_state_uses_original_attempt_time",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 90,
+        "last_line": 90,
+        "sha256": "c829823b60bd3099a81b233515cd5fefda05d4f492b79eb28ea61b1f97b254bd",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: bounded duplicate suppression without hiding distinct or recurring incidents. Detects: moving attempt timestamps, bad clock state or changed endpoints silently suppressing warnings. Needs: injected time and fixture state only. Breadcrumb: scripts/agent-bus-watchdog.ps1 Test-WatchdogNotificationDue.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Normal fixtures pair a same-incident in-window refusal with first/new/boundary/malformed-clock notification positives; unconditional Write-Alert notification mutant is caught by the shared lifecycle selector.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/test-agent-bus-watchdog-fixtures.ps1::lifecycle_repeat_recovery_and_recurrence_preserve_notifications",
+      "reviewer": "closeout_evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "4be2281e85e35cb2299e3d2dfd0a7a78c19f49b6",
+      "reviewed_source_state": "Uncommitted exact source/test hashes independently approved after strict ok correction; final 34 native fixtures passed on Windows PowerShell5.1 and PowerShell7.",
+      "scope": "Only this synthetic PowerShell case and its full shared harness/source; no Windows popup delivery, task-wrapper behavior, live network or concurrency acceptance.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+        "first_line": 108,
+        "last_line": 126,
+        "sha256": "0b17da72ba0ce2647d32cb3b56cb97e6a16a3a1eab39999c6e9f7c5d7e1aa6be",
+        "span_kind": "PowerShell named case record or full lifecycle invocation; shared harness bound separately"
+      },
+      "code_under_test": {
+        "path": "scripts/agent-bus-watchdog.ps1",
+        "sha256": "225b143028578b120487b64e8613bb45fe18bb19f273b19d40db5594491c9f04"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-watchdog-fixtures.ps1",
+          "sha256": "e8a2ea9959d63d493457201dc8b032f1e9576a24697d89bd632ca3aba44dd74f"
+        }
+      ],
+      "rationale": "Protects: persisted warning, duplicate popup throttle, recovery and immediate recurrence. Detects: modal storms, lost incident state, moving attempt time, stale recovery flags or suppressed recurrence. Needs: owned temporary files and msg/EventLog stubs; no live CLI/config/journal. Breadcrumb: scripts/agent-bus-watchdog.ps1 Write-Alert and Write-Ok.",
+      "relevance": "The deployed gen7 scheduled watchdog must preserve true authority loss while avoiding misleading cloud-identity messages and duplicate modal notifications.",
+      "coverage": {
+        "failing_input_or_control": "Restore only unconditional popup: expected one notification after repeated identical incident, observed two; actual owned-file assertions fail nonzero.",
+        "fresh_independent_selector_pass": false,
+        "author_native_selection_pass": {
+          "powershell_5_1": 34,
+          "powershell_7": 34,
+          "failed": 0,
+          "skipped": 0
+        },
+        "independent_review": "Reviewer verified actual AST strict health cases and read corrected source/fixture; did not claim replay of every selector."
+      },
+      "breaking_behavior": "Retain alerts for degraded configured cloud fallback, fail critical unknown/non-authoritative/malformed health, suppress only identical popups for30minutes and reset suppression on recovery.",
+      "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
+    },
+    {
+      "selector": "scripts/ci/test_dependabot_admission.py::AdmissionTests::test_trusted_policy_inventory_matches_independent_producer_oracle",
+      "reviewer": "codex-ms01-closeout-evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "dfcc837aa67e0f4727e627dc1ba79a83dc74827b",
+      "disposition": "keep",
+      "scope": "ONLY the updated reviewed CI producer hash binding after independent review of the six added dual-runtime watchdog fixture lines. Static source review and actual hash verification; no independent replay or legacy inventory certification.",
+      "selector_source": {
+        "path": "scripts/ci/test_dependabot_admission.py",
+        "first_line": 432,
+        "last_line": 456,
+        "sha256": "dd3925017fa83443b7f7f06b0bcf326e48543a305658ec9df7eaa7a5101773b6"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/dependabot-automerge.yml",
+        "sha256": "89170051f1e57fec152bfc58174bd99e821b3bbf8ec91e246515a681b9b1dcd8"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_dependabot_admission.py",
+          "sha256": "ad2cbb3a68b2edb4e994115fec3c6028f376f8d79fcbff08aa1f6609f1f05012"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "be36166db7c9021a2325abfe78a4ab27f414651b8169fdb79a7198338ff823d6"
+        }
+      ],
+      "rationale": "Protects: reviewed exact CI producer identity and independent job/skip oracle. Detects: stale producer admission after a reviewed workflow change, or unreviewed changed source admitted by hash-only manipulation. Needs: closed credential-free API fixtures and reviewed source bytes. Breadcrumb: test_dependabot_admission.py REVIEWED_HASH/SKIPS and dependabot-automerge.yml reviewed producer declarations.",
+      "relevance": "The release/admission gate intentionally refused the first PR head after the six CI fixture lines changed producer bytes. Refreshing only reviewed identity bindings retains that refusal for future unreviewed changes.",
+      "coverage": {
+        "failing_input_or_control": "Original CI run38988859844 refused expected53b102 versus actualbe36166. Existing future_hash_only, source_changed and merge_changed_source negative controls are unchanged.",
+        "fresh_independent_selector_pass": false,
+        "independent_review": "Reviewer verified the exact four literal replacements, producer/oracle/policy hashes and unchanged sixteen jobs/manual-skip declarations. No independent test replay claimed."
+      },
+      "breaking_behavior": "Only the independently reviewed six-line CI addition is newly admitted. Required sixteen jobs, exact-head checks, manual skip semantics and changed-source negative controls remain unchanged.",
+      "additional_coverage_boundary": "This record does not certify every legacy selector, host deployment, artifact binary or current-head CI success."
     }
   ],
   "historical_reviews": [
