@@ -253,10 +253,9 @@ pub fn apply_service_action(
 
 /// Check Redis and `PostgreSQL` liveness.
 ///
-/// Pass `Some(pool)` when an r2d2 [`RedisPool`] is already held by the caller
-/// (HTTP server mode) to reuse a pooled connection.  Pass `None` in CLI and
-/// MCP stdio mode where no pool exists — the function opens a short-lived
-/// connection internally.
+/// Redis uses a fresh owned connection and one aggregate network deadline.
+/// `pool` is retained for caller compatibility; health does not check it out.
+/// PostgreSQL and backup metadata retain their separate existing behavior.
 ///
 /// # Example
 ///
