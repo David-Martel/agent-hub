@@ -23,6 +23,7 @@ pub mod outbox_hub;
 mod outbox_private;
 pub mod output;
 pub mod postgres_store;
+mod real_profile;
 pub mod redis_bus;
 mod redis_health;
 pub mod remote_dispatch;
