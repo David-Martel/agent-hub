@@ -118,7 +118,7 @@ pub(crate) fn config_file_path() -> Option<std::path::PathBuf> {
     resolve_default_config_path(
         env_home.as_deref(),
         crate::real_profile::real_profile_dir().as_deref(),
-        &|path| path.exists(),
+        &probe_config_path,
     )
 }
 
@@ -130,9 +130,40 @@ fn config_path_under(profile: &std::path::Path) -> std::path::PathBuf {
         .join("config.json")
 }
 
+/// Check whether a config path exists, preserving filesystem metadata errors.
+///
+/// Unlike [`std::path::Path::exists`], which maps every error to `false`, this
+/// returns `Ok(false)` only when the file is genuinely absent (`NotFound`) and
+/// no existing ancestor is a non-directory or unreadable.
+fn probe_config_path(path: &std::path::Path) -> std::io::Result<bool> {
+    match std::fs::metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            for ancestor in path.ancestors().skip(1) {
+                if ancestor.as_os_str().is_empty() {
+                    break;
+                }
+                match std::fs::metadata(ancestor) {
+                    Ok(meta) if !meta.is_dir() => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "configuration ancestor is not a directory",
+                        ));
+                    }
+                    Ok(_) => break,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err),
+                }
+            }
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Whether two paths name the same location, ignoring the case and separator
 /// differences Windows treats as equal (`C:\Users\x` and `c:/users/x/`).
-fn same_location(a: &std::path::Path, b: &std::path::Path) -> bool {
+pub(crate) fn same_location(a: &std::path::Path, b: &std::path::Path) -> bool {
     if cfg!(windows) {
         let normalize = |p: &std::path::Path| {
             p.to_string_lossy()
@@ -154,33 +185,112 @@ fn same_location(a: &std::path::Path, b: &std::path::Path) -> bool {
 /// sandbox has no config, and without this rule the first run there writes a
 /// local-mode starter, so the session silently stops talking to the hub.
 ///
-/// The environment-derived path wins whenever it exists, so a deliberately
-/// configured home is never displaced. Otherwise the real profile's config is
-/// used if it exists. It need not name a hub: a profile that has a config is a
-/// configured host, and reading it is strictly better than inventing a
-/// starter. With neither present, the environment path is returned unchanged
-/// and the usual starter is written there.
+/// The environment-derived path wins whenever it exists or fails with a
+/// non-`NotFound` metadata error, so a deliberately configured home (or a real
+/// filesystem permission/layout error on it) is never silently replaced by
+/// another profile. Only when the environment path is confirmed absent does
+/// this fall back to the real profile's config. With neither present, the
+/// environment path is returned unchanged and the usual starter is written
+/// there.
 pub(crate) fn resolve_default_config_path(
     env_home: Option<&std::path::Path>,
     real_profile: Option<&std::path::Path>,
-    exists: &dyn Fn(&std::path::Path) -> bool,
+    try_exists: &dyn Fn(&std::path::Path) -> std::io::Result<bool>,
 ) -> Option<std::path::PathBuf> {
     let from_env = env_home.map(config_path_under);
     let from_profile = real_profile.map(config_path_under);
     match (from_env, from_profile) {
         (Some(env_path), Some(profile_path)) => {
-            if same_location(&env_path, &profile_path)
-                || exists(&env_path)
-                || !exists(&profile_path)
-            {
-                Some(env_path)
-            } else {
-                Some(profile_path)
+            if same_location(&env_path, &profile_path) {
+                return Some(env_path);
+            }
+            match try_exists(&env_path) {
+                Ok(true) | Err(_) => Some(env_path),
+                Ok(false) => match try_exists(&profile_path) {
+                    Ok(true) | Err(_) => Some(profile_path),
+                    Ok(false) => Some(env_path),
+                },
             }
         }
         (Some(env_path), None) => Some(env_path),
-        (None, Some(profile_path)) => exists(&profile_path).then_some(profile_path),
+        (None, Some(profile_path)) => match try_exists(&profile_path) {
+            Ok(true) | Err(_) => Some(profile_path),
+            Ok(false) => None,
+        },
         (None, None) => None,
+    }
+}
+
+fn component_eq(actual: Option<&std::ffi::OsStr>, expected: &str) -> bool {
+    actual.is_some_and(|name| {
+        if cfg!(windows) {
+            name.eq_ignore_ascii_case(expected)
+        } else {
+            name == std::ffi::OsStr::new(expected)
+        }
+    })
+}
+
+/// When `path` has the shape `<profile>/.config/agent-bus/config.json`, return
+/// `<profile>` so tilde-prefixed credential paths inside that config file
+/// expand against the profile that owns the config rather than a redirected
+/// sandbox `USERPROFILE`/`HOME`.
+fn profile_root_for_config(path: &std::path::Path) -> Option<&std::path::Path> {
+    if !component_eq(path.file_name(), "config.json") {
+        return None;
+    }
+    let agent_bus_dir = path.parent()?;
+    if !component_eq(agent_bus_dir.file_name(), "agent-bus") {
+        return None;
+    }
+    let dot_config = agent_bus_dir.parent()?;
+    if !component_eq(dot_config.file_name(), ".config") {
+        return None;
+    }
+    dot_config
+        .parent()
+        .filter(|profile| !profile.as_os_str().is_empty())
+}
+
+fn expand_tilde_with(value: &str, home: &std::path::Path) -> String {
+    if value.chars().any(char::is_control) {
+        return value.to_owned();
+    }
+    let trimmed = value.trim();
+    if trimmed == "~" {
+        home.to_string_lossy().into_owned()
+    } else if let Some(rest) = trimmed
+        .strip_prefix("~/")
+        .or_else(|| trimmed.strip_prefix("~\\"))
+    {
+        home.join(rest).to_string_lossy().into_owned()
+    } else {
+        value.to_owned()
+    }
+}
+
+impl ConfigFile {
+    /// Rewrite tilde-prefixed file settings (`~/...`, `~\...`, `~`) against
+    /// `profile` so credentials and state paths inherited from a profile's
+    /// `.config/agent-bus/config.json` resolve inside that profile even when
+    /// `USERPROFILE` or `HOME` points at an unconfigured sandbox.
+    fn anchor_tilde_paths(&mut self, profile: &std::path::Path) {
+        if let Some(token_file) = self.cloud_token_file.as_deref() {
+            self.cloud_token_file = Some(expand_tilde_with(token_file, profile));
+        }
+        if let Some(state_file) = self.cloud_sync_state_file.as_deref() {
+            self.cloud_sync_state_file = Some(expand_tilde_with(state_file, profile));
+        }
+        if let Some(serde_json::Value::Array(entries)) = self.server_urls.as_mut() {
+            for entry in entries {
+                if let serde_json::Value::Object(fields) = entry
+                    && let Some(serde_json::Value::String(token_file)) =
+                        fields.get_mut("token_file")
+                {
+                    *token_file = expand_tilde_with(token_file, profile);
+                }
+            }
+        }
     }
 }
 
@@ -196,7 +306,10 @@ pub fn load_config_file() -> ConfigFile {
 fn load_config_file_at(path: &std::path::Path) -> ConfigFile {
     match std::fs::read_to_string(path) {
         Ok(text) => match serde_json::from_str::<ConfigFile>(&text) {
-            Ok(cfg) => {
+            Ok(mut cfg) => {
+                if let Some(profile) = profile_root_for_config(path) {
+                    cfg.anchor_tilde_paths(profile);
+                }
                 tracing::debug!("loaded agent-bus config from {}", path.display());
                 cfg
             }
@@ -1167,8 +1280,8 @@ mod tests {
         profile
     }
 
-    fn on_disk(path: &std::path::Path) -> bool {
-        path.exists()
+    fn on_disk(path: &std::path::Path) -> std::io::Result<bool> {
+        probe_config_path(path)
     }
 
     #[test]
@@ -1231,6 +1344,114 @@ mod tests {
             None
         );
         assert_eq!(resolve_default_config_path(None, None, &on_disk), None);
+    }
+
+    #[test]
+    fn env_config_metadata_error_never_switches_to_real_profile() {
+        let sandbox = profile_with(None);
+        let real = profile_with(Some(r#"{"server_url":"http://hub.example:8400"}"#));
+        let sandbox_cfg = config_path_under(sandbox.path());
+
+        // 1. Injected PermissionDenied on the environment config path must keep
+        // the environment path rather than silently loading the real profile.
+        let denied =
+            resolve_default_config_path(Some(sandbox.path()), Some(real.path()), &|path| {
+                if path == sandbox_cfg {
+                    Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                } else {
+                    Ok(true)
+                }
+            })
+            .expect("a config path");
+        assert_eq!(denied, sandbox_cfg);
+
+        // 2. Real on-disk ancestor error (`.config` is a regular file) must be
+        // detected by `probe_config_path`, keep the sandbox path, and surface a
+        // configuration initialization error instead of switching profiles.
+        std::fs::write(sandbox.path().join(".config"), b"not a directory")
+            .expect("create blocking file");
+        let on_disk_path =
+            resolve_default_config_path(Some(sandbox.path()), Some(real.path()), &on_disk)
+                .expect("a config path");
+        assert_eq!(on_disk_path, sandbox_cfg);
+        let config = load_settings_config_at(&on_disk_path);
+        assert!(
+            config.configuration_error.is_some(),
+            "metadata failure on env config must retain configuration_error"
+        );
+        assert_eq!(config.server_url, None);
+    }
+
+    #[test]
+    fn real_profile_fallback_anchors_tilde_token_files_to_the_selected_profile() {
+        struct RedirectedSandboxEnv(std::path::PathBuf);
+        impl crate::hub_candidates::CredentialEnv for RedirectedSandboxEnv {
+            fn var(&self, _name: &str) -> Option<String> {
+                None
+            }
+            fn read_to_string(&self, path: &std::path::Path) -> std::io::Result<String> {
+                std::fs::read_to_string(path)
+            }
+            fn home_dir(&self) -> Option<std::path::PathBuf> {
+                Some(self.0.clone())
+            }
+        }
+
+        let sandbox = profile_with(None);
+        let real = profile_with(Some(
+            r#"{
+                "server_urls": [
+                    {
+                        "url": "https://hub.example.com:8400",
+                        "role": "cloud",
+                        "token_file": "~/.config/agent-bus/cloud.token"
+                    }
+                ],
+                "cloud_token_file": "~/.config/agent-bus/sync.token",
+                "cloud_sync_state_file": "~/.config/agent-bus/cloud-sync-state.json"
+            }"#,
+        ));
+        let real_token_path = real
+            .path()
+            .join(".config")
+            .join("agent-bus")
+            .join("cloud.token");
+        std::fs::write(&real_token_path, "real-profile-token-value\n").expect("write real token");
+
+        let path = resolve_default_config_path(Some(sandbox.path()), Some(real.path()), &on_disk)
+            .expect("resolved fallback config path");
+        assert_eq!(path, config_path_under(real.path()));
+
+        let config = load_settings_config_at(&path);
+        assert_eq!(
+            config.cloud_token_file.as_deref(),
+            Some(
+                real.path()
+                    .join(".config/agent-bus/sync.token")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(
+            config.cloud_sync_state_file.as_deref(),
+            Some(
+                real.path()
+                    .join(".config/agent-bus/cloud-sync-state.json")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+
+        let (candidates, error) = resolve_candidate_tiers(&config, None, None, None);
+        assert_eq!(error, None);
+        assert_eq!(candidates.len(), 1);
+        let auth = crate::hub_candidates::HubAuth::new(None, candidates.clone());
+        let env = RedirectedSandboxEnv(sandbox.path().to_path_buf());
+        let token = auth
+            .credential_for(&candidates[0], &env)
+            .expect("candidate token from real profile must resolve despite sandboxed home_dir")
+            .expect("bearer token present");
+        assert_eq!(token.expose(), "real-profile-token-value");
     }
 
     #[test]
