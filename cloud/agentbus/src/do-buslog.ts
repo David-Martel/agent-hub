@@ -285,6 +285,14 @@ export interface SyncPushResult {
   cursor: number;
 }
 
+
+/** Errors that retrying the same message can never fix: SQLite constraint, size and type
+ * violations. Everything else is treated as possibly transient. */
+const DETERMINISTIC_INSERT_ERROR = /SQLITE_(CONSTRAINT|TOOBIG|MISMATCH|RANGE)|too big|constraint failed/i;
+function isDeterministicInsertError(err: unknown): boolean {
+  return err instanceof Error && DETERMINISTIC_INSERT_ERROR.test(err.message);
+}
+
 /** `true` when `existing` (an already-stored row for the same
  * `(origin_hub, id)` or `(origin_hub, client_msg_id)` key) has different
  * content than `input` — i.e. a genuine conflict, not a harmless retry. */
@@ -895,11 +903,14 @@ export class BusLog extends DurableObject<Env> {
       try {
         outcome = this.insertMessage({ ...item, origin_hub: originHub }, { skipPendingAck: true });
       } catch (err) {
-        // One row the store cannot insert must not fail the whole batch: the hub re-sends an
-        // unchanged batch forever, so a single poison row would block every message behind it.
-        // The caller gets a generic reason (review L1: no raw SQLite text); the real error is
-        // logged so an operator can find the row.
+        // A row the store can NEVER insert (constraint, size or type violation) must not fail the
+        // whole batch: the hub re-sends an unchanged batch forever, so one poison row would block
+        // every message behind it. Anything else (busy/overloaded/unknown storage failures) may
+        // succeed on retry, so it is logged and rethrown: rejecting it would let the client
+        // advance its cursor and never replicate the message. The caller gets a generic reason
+        // (review L1: no raw SQLite text); the real error is logged either way.
         console.error(`syncPush: insert failed for id=${item.id} origin_hub=${originHub}:`, err);
+        if (!isDeterministicInsertError(err)) throw err;
         rejected.push({ id: item.id, client_msg_id: item.client_msg_id, reason: "storage rejected the message" });
         continue;
       }

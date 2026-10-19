@@ -697,4 +697,19 @@ describe("syncPush poison-row isolation", () => {
       logged.mockRestore();
     }
   });
+
+  it("does NOT swallow a possibly transient storage failure: it is rethrown so the hub retries", async () => {
+    const stub = env.BUS_LOG.get(env.BUS_LOG.idFromName(`transient-${crypto.randomUUID()}`));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await runInDurableObject(stub, async (bus: BusLog) => {
+        vi.spyOn(bus, "insertMessage").mockImplementation(() => {
+          throw new Error("SQLITE_BUSY: simulated");
+        });
+        expect(() => bus.syncPush(HUB_A, [item(crypto.randomUUID(), "x")])).toThrow("SQLITE_BUSY");
+      });
+    } finally {
+      logged.mockRestore();
+    }
+  });
 });
