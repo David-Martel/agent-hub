@@ -69,3 +69,30 @@ UID-1000 temporary filesystem therefore explicitly permits execution while
 retaining nosuid, nodev and mode 0700. Docker's implicit noexec default otherwise
 makes rustdoc return failure after printing successful standalone test results.
 Source remains read-only, and compilation caches never gain network access.
+
+## Provisioning on Linux (asuspro13, verified 2026-10-19)
+
+All paths below live under `~/.local/state/agent-bus-hook-qa` (`$Q`), four distinct
+directories (`cargo_home`, `target`, `tools`, `evidence`) plus `config.json`. The Docker
+engine is the rootful local daemon at `unix:///var/run/docker.sock`.
+
+1. Image. Build `FROM rust:<channel>-bookworm` with the channel from `rust-toolchain.toml`,
+   then `rustup component add rustfmt clippy`. Record the image ID with
+   `docker image inspect <tag> --format '{{.Id}}'` (the `sha256:` value goes in the config).
+   The image supplies `/usr/bin/python3`, `git` and `bash`, which the gates need.
+2. Tools. From a container of that image copy `rustfmt`, `cargo-fmt`, `cargo-clippy` and
+   `clippy-driver` out of `/usr/local/rustup/toolchains/<channel>-x86_64-unknown-linux-gnu/bin`
+   into `$Q/tools/bin`, and `cargo install cargo-audit --locked --root /tmp/audit` inside the same
+   image for `cargo-audit`. Building audit in the QA image keeps it on the image's GLIBC.
+3. Dependency cache. The gates run `--offline`, so fill `$Q/cargo_home` once with network:
+   `docker run --rm --user $(id -u):$(id -g) -e CARGO_HOME=/cargo_home -v $Q/cargo_home:/cargo_home
+   -v "$PWD":/src:ro -w /src --entrypoint cargo <image> fetch --locked`. Re-run it after a
+   `Cargo.lock` change. Never create `config.toml` or credentials there.
+4. Config. Compute `tool_files_sha256` with `inventory()` from `scripts/ci/run-hook-qa.py`
+   (relative path to SHA-256 for every file under `tools`), write the JSON and run
+   `validate_config()` on it before the first commit.
+5. Environment. Export `AGENT_BUS_HOOK_QA_CONFIG` where every shell, including non-interactive
+   ones, sees it: on asuspro13 that is `~/.config/bash/env.bash`, guarded by a file-exists test.
+
+A passing pre-commit gate takes about one minute and writes `evidence/hook-qa-*/receipt.json`
+with `"state": "PASS"`; the pre-push gate (tests plus audit) adds a similar time.
