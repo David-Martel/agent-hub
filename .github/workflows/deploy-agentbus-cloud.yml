@@ -25,7 +25,9 @@ concurrency:
 jobs:
   deploy:
     if: github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, Linux, X64, vigil1]
+    # Ephemeral GitHub-hosted VM per job: never shares persistent container or
+    # filesystem state with the self-hosted pull_request runners.
+    runs-on: ubuntu-latest
     environment: cloudflare-agentbus
     timeout-minutes: 15
     steps:
@@ -35,13 +37,16 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: "26.12.0"
+      - name: Configure isolated npm
+        working-directory: cloud/agentbus
+        run: bash ../../scripts/ci/setup-npm.sh
       - name: Install and test the merged commit
         working-directory: cloud/agentbus
         run: |
-          bash ../../scripts/ci/setup-npm.sh
           npm ci
           npx tsc --noEmit
           npm test
+          python3 -B -m unittest discover -s tools -p "test_*.py"
       - name: Deploy (secrets and Durable Object data are kept by wrangler)
         working-directory: cloud/agentbus
         env:
