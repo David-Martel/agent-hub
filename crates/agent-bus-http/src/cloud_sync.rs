@@ -128,12 +128,7 @@ fn build_config(
     let token = read_private_token_file(token_file, env).map_err(|reason| reason.to_string())?;
     let state_path = match settings.cloud_sync_state_file.as_deref() {
         Some(path) => PathBuf::from(path),
-        None => env
-            .home_dir()
-            .ok_or("cannot choose a cloud sync state file without a home directory")?
-            .join(".config")
-            .join("agent-bus")
-            .join("cloud-sync-state.json"),
+        None => default_state_path(env)?,
     };
     Ok(CloudSyncConfig {
         base_url,
@@ -148,6 +143,40 @@ fn build_config(
             .var("AGENT_BUS_CLOUD_SYNC_BACKFILL")
             .is_some_and(|value| matches!(value.trim(), "1" | "true" | "yes")),
     })
+}
+
+fn default_state_path(env: &dyn CredentialEnv) -> std::result::Result<PathBuf, String> {
+    let state_under = |profile: &Path| {
+        profile
+            .join(".config")
+            .join("agent-bus")
+            .join("cloud-sync-state.json")
+    };
+    let config_under = |profile: &Path| {
+        profile
+            .join(".config")
+            .join("agent-bus")
+            .join("config.json")
+    };
+    let primary_home = env
+        .home_dir()
+        .or_else(|| env.real_profile_dir())
+        .ok_or("cannot choose a cloud sync state file without a home directory")?;
+    let primary_state = state_under(&primary_home);
+    if std::fs::metadata(&primary_state).is_ok()
+        || std::fs::metadata(config_under(&primary_home)).is_ok()
+    {
+        return Ok(primary_state);
+    }
+    if let Some(real_profile) = env.real_profile_dir() {
+        let real_state = state_under(&real_profile);
+        if std::fs::metadata(&real_state).is_ok()
+            || std::fs::metadata(config_under(&real_profile)).is_ok()
+        {
+            return Ok(real_state);
+        }
+    }
+    Ok(primary_state)
 }
 
 /// Accept `https://…`, or `http://` only for a loopback host.
@@ -1744,6 +1773,50 @@ mod tests {
         assert_eq!(cfg.base_url, "https://cloud.example");
         assert!(cfg.state_path.ends_with("cloud-sync-state.json"));
         assert!(!cfg.backfill);
+    }
+
+    #[test]
+    fn omitted_state_file_uses_real_profile_cursor_when_sandbox_has_none() {
+        struct RedirectedEnv {
+            sandbox: PathBuf,
+            real: PathBuf,
+        }
+        impl CredentialEnv for RedirectedEnv {
+            fn var(&self, _name: &str) -> Option<String> {
+                None
+            }
+            fn read_to_string(&self, path: &Path) -> std::io::Result<String> {
+                std::fs::read_to_string(path)
+            }
+            fn home_dir(&self) -> Option<PathBuf> {
+                Some(self.sandbox.clone())
+            }
+            fn real_profile_dir(&self) -> Option<PathBuf> {
+                Some(self.real.clone())
+            }
+        }
+
+        let sandbox = tempfile::tempdir().unwrap();
+        let real = tempfile::tempdir().unwrap();
+        let real_bus_dir = real.path().join(".config").join("agent-bus");
+        std::fs::create_dir_all(&real_bus_dir).unwrap();
+        let real_state = real_bus_dir.join("cloud-sync-state.json");
+        std::fs::write(&real_state, r#"{"last_message_id":"42-0"}"#).unwrap();
+        let tok = token_file(&real_bus_dir, 0o600);
+
+        let mut s = settings(Some("https://cloud.example"), Some(&tok), Some("hub-a"));
+        s.cloud_sync_state_file = None;
+        let env = RedirectedEnv {
+            sandbox: sandbox.path().to_path_buf(),
+            real: real.path().to_path_buf(),
+        };
+        let Resolution::Enabled(cfg) = resolve(&s, &env) else {
+            panic!("expected enabled");
+        };
+        assert_eq!(
+            cfg.state_path, real_state,
+            "omitted cloud_sync_state_file must use the real profile cursor rather than the empty sandbox"
+        );
     }
 
     // ----- backoff and cursors --------------------------------------------

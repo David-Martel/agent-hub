@@ -271,15 +271,33 @@ fn expand_tilde_with(value: &str, home: &std::path::Path) -> String {
 
 impl ConfigFile {
     /// Rewrite tilde-prefixed file settings (`~/...`, `~\...`, `~`) against
-    /// `profile` so credentials and state paths inherited from a profile's
-    /// `.config/agent-bus/config.json` resolve inside that profile even when
-    /// `USERPROFILE` or `HOME` points at an unconfigured sandbox.
+    /// `profile` and default an omitted `cloud_sync_state_file` to
+    /// `<profile>/.config/agent-bus/cloud-sync-state.json` so credentials and
+    /// state paths inherited from a profile's `.config/agent-bus/config.json`
+    /// resolve inside that profile even when `USERPROFILE` or `HOME` points at
+    /// an unconfigured sandbox.
     fn anchor_tilde_paths(&mut self, profile: &std::path::Path) {
         if let Some(token_file) = self.cloud_token_file.as_deref() {
             self.cloud_token_file = Some(expand_tilde_with(token_file, profile));
         }
-        if let Some(state_file) = self.cloud_sync_state_file.as_deref() {
-            self.cloud_sync_state_file = Some(expand_tilde_with(state_file, profile));
+        match self
+            .cloud_sync_state_file
+            .as_deref()
+            .filter(|state_file| !state_file.trim().is_empty())
+        {
+            Some(state_file) => {
+                self.cloud_sync_state_file = Some(expand_tilde_with(state_file, profile));
+            }
+            None => {
+                self.cloud_sync_state_file = Some(
+                    profile
+                        .join(".config")
+                        .join("agent-bus")
+                        .join("cloud-sync-state.json")
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+            }
         }
         if let Some(serde_json::Value::Array(entries)) = self.server_urls.as_mut() {
             for entry in entries {
@@ -1452,6 +1470,66 @@ mod tests {
             .expect("candidate token from real profile must resolve despite sandboxed home_dir")
             .expect("bearer token present");
         assert_eq!(token.expose(), "real-profile-token-value");
+    }
+
+    #[test]
+    fn real_profile_fallback_defaults_omitted_cloud_sync_state_file_to_selected_profile() {
+        let sandbox = profile_with(None);
+        let real = profile_with(Some(
+            r#"{
+                "cloud_url": "https://cloud.example.com",
+                "cloud_token_file": "~/.config/agent-bus/sync.token"
+            }"#,
+        ));
+
+        let path = resolve_default_config_path(Some(sandbox.path()), Some(real.path()), &on_disk)
+            .expect("resolved fallback config path");
+        assert_eq!(path, config_path_under(real.path()));
+
+        let config = load_settings_config_at(&path);
+        let expected_state_path = real
+            .path()
+            .join(".config")
+            .join("agent-bus")
+            .join("cloud-sync-state.json")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            config.cloud_sync_state_file.as_deref(),
+            Some(expected_state_path.as_str()),
+            "omitted cloud_sync_state_file must default to the selected real profile, not the sandbox"
+        );
+        assert_ne!(
+            config.cloud_sync_state_file.as_deref(),
+            Some(
+                sandbox
+                    .path()
+                    .join(".config")
+                    .join("agent-bus")
+                    .join("cloud-sync-state.json")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+
+        let key = "__AGENT_BUS_TEST_CLOUD_SYNC_STATE__";
+        // SAFETY: key is unique to this unit test and not read concurrently.
+        unsafe { std::env::remove_var(key) };
+        assert_eq!(
+            resolve_nonempty(key, config.cloud_sync_state_file.clone()).as_deref(),
+            Some(expected_state_path.as_str())
+        );
+        let override_path = sandbox.path().join("custom-sync-state.json");
+        // SAFETY: key is unique to this unit test and not read concurrently.
+        unsafe { std::env::set_var(key, &override_path) };
+        let resolved_override = resolve_nonempty(key, config.cloud_sync_state_file);
+        // SAFETY: key is unique to this unit test and not read concurrently.
+        unsafe { std::env::remove_var(key) };
+        assert_eq!(
+            resolved_override.as_deref(),
+            Some(override_path.to_string_lossy().as_ref()),
+            "environment variable must still override the profile-anchored default"
+        );
     }
 
     #[test]
