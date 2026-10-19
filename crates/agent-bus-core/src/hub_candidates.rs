@@ -151,6 +151,11 @@ pub trait CredentialEnv {
     fn read_to_string(&self, path: &Path) -> io::Result<String>;
     /// The user's home directory, for expanding a leading `~`.
     fn home_dir(&self) -> Option<PathBuf>;
+    /// The account's real OS profile directory, consulted when a leading-`~`
+    /// credential path is absent (`NotFound`) under [`Self::home_dir`].
+    fn real_profile_dir(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// The real process environment and file system.
@@ -171,6 +176,10 @@ impl CredentialEnv for SystemEnv {
         self.var(name)
             .filter(|value| !value.trim().is_empty())
             .map(PathBuf::from)
+    }
+
+    fn real_profile_dir(&self) -> Option<PathBuf> {
+        crate::real_profile::real_profile_dir()
     }
 }
 
@@ -577,6 +586,47 @@ fn token_value(raw: &str) -> Result<BearerToken, SkipReason> {
     Ok(BearerToken::new(token))
 }
 
+fn read_single_private_token_file(
+    path: &str,
+    expanded: &Path,
+    env: &dyn CredentialEnv,
+) -> Result<String, (io::ErrorKind, SkipReason)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(expanded)
+            .map_err(|error| {
+                (
+                    error.kind(),
+                    SkipReason(format!(
+                        "cannot stat token_file {path:?}: {:?}",
+                        error.kind()
+                    )),
+                )
+            })?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err((
+                io::ErrorKind::PermissionDenied,
+                SkipReason(format!(
+                    "token_file {path:?} must not be accessible to group or other (mode {:o}); run chmod 600",
+                    mode & 0o777
+                )),
+            ));
+        }
+    }
+    env.read_to_string(expanded).map_err(|error| {
+        (
+            error.kind(),
+            SkipReason(format!(
+                "cannot read token_file {path:?}: {:?}",
+                error.kind()
+            )),
+        )
+    })
+}
+
 /// Read and validate a bearer token from a file, expanding a leading `~`.
 ///
 /// The file must not be accessible to group or other users on Unix (mode
@@ -593,47 +643,47 @@ pub fn read_private_token_file(
     if path.trim().is_empty() || path.chars().any(char::is_control) {
         return Err(SkipReason("invalid token_file reference".to_owned()));
     }
-    let expanded = expanded_token_path(path, env)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&expanded)
-            .map_err(|error| {
-                SkipReason(format!(
-                    "cannot stat token_file {path:?}: {:?}",
-                    error.kind()
-                ))
-            })?
-            .permissions()
-            .mode();
-        if mode & 0o077 != 0 {
-            return Err(SkipReason(format!(
-                "token_file {path:?} must not be accessible to group or other (mode {:o}); run chmod 600",
-                mode & 0o777
-            )));
+    let (primary, fallback) = expanded_token_paths(path, env)?;
+    let raw = match read_single_private_token_file(path, &primary, env) {
+        Ok(raw) => raw,
+        Err((io::ErrorKind::NotFound, reason)) => {
+            if let Some(fallback_path) = fallback {
+                read_single_private_token_file(path, &fallback_path, env)
+                    .map_err(|(_, fallback_reason)| fallback_reason)?
+            } else {
+                return Err(reason);
+            }
         }
-    }
-    let raw = env.read_to_string(&expanded).map_err(|error| {
-        SkipReason(format!(
-            "cannot read token_file {path:?}: {:?}",
-            error.kind()
-        ))
-    })?;
+        Err((_, reason)) => return Err(reason),
+    };
     token_value(&raw)
 }
 
-fn expanded_token_path(value: &str, env: &dyn CredentialEnv) -> Result<PathBuf, SkipReason> {
-    if value == "~" || value.starts_with("~/") || value.starts_with("~\\") {
-        let home = env
-            .home_dir()
-            .ok_or_else(|| SkipReason("cannot expand ~ without a home directory".to_owned()))?;
-        return Ok(if value == "~" {
-            home
-        } else {
-            home.join(&value[2..])
-        });
+fn expand_tilde_under(value: &str, home: &Path) -> PathBuf {
+    if value == "~" {
+        home.to_path_buf()
+    } else {
+        home.join(&value[2..])
     }
-    Ok(PathBuf::from(value))
+}
+
+fn expanded_token_paths(
+    value: &str,
+    env: &dyn CredentialEnv,
+) -> Result<(PathBuf, Option<PathBuf>), SkipReason> {
+    if value == "~" || value.starts_with("~/") || value.starts_with("~\\") {
+        let primary_home = env
+            .home_dir()
+            .or_else(|| env.real_profile_dir())
+            .ok_or_else(|| SkipReason("cannot expand ~ without a home directory".to_owned()))?;
+        let primary = expand_tilde_under(value, &primary_home);
+        let fallback = env
+            .real_profile_dir()
+            .filter(|real| !crate::settings::same_location(real, &primary_home))
+            .map(|real| expand_tilde_under(value, &real));
+        return Ok((primary, fallback));
+    }
+    Ok((PathBuf::from(value), None))
 }
 
 impl HubCandidate {
@@ -670,13 +720,31 @@ impl HubCandidate {
                 if path.trim().is_empty() || path.chars().any(char::is_control) {
                     return Err(SkipReason("invalid token_file reference".to_owned()));
                 }
-                let expanded = expanded_token_path(path, env)?;
-                let raw = env.read_to_string(&expanded).map_err(|error| {
-                    SkipReason(format!(
-                        "cannot read token_file {path:?}: {:?}",
-                        error.kind()
-                    ))
-                })?;
+                let (primary, fallback) = expanded_token_paths(path, env)?;
+                let raw = match env.read_to_string(&primary) {
+                    Ok(raw) => raw,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                        if let Some(fallback_path) = fallback {
+                            env.read_to_string(&fallback_path).map_err(|err| {
+                                SkipReason(format!(
+                                    "cannot read token_file {path:?}: {:?}",
+                                    err.kind()
+                                ))
+                            })?
+                        } else {
+                            return Err(SkipReason(format!(
+                                "cannot read token_file {path:?}: {:?}",
+                                error.kind()
+                            )));
+                        }
+                    }
+                    Err(error) => {
+                        return Err(SkipReason(format!(
+                            "cannot read token_file {path:?}: {:?}",
+                            error.kind()
+                        )));
+                    }
+                };
                 token_value(&raw).map(Some)
             }
             CandidateAuth::TokenEnv(name) => {
@@ -930,7 +998,9 @@ mod tests {
     struct FakeEnv {
         vars: HashMap<String, String>,
         files: HashMap<PathBuf, String>,
+        errors: HashMap<PathBuf, io::ErrorKind>,
         home: Option<PathBuf>,
+        real_profile: Option<PathBuf>,
         reads: RefCell<Vec<PathBuf>>,
     }
 
@@ -941,6 +1011,9 @@ mod tests {
 
         fn read_to_string(&self, path: &Path) -> io::Result<String> {
             self.reads.borrow_mut().push(path.to_path_buf());
+            if let Some(kind) = self.errors.get(path) {
+                return Err(io::Error::from(*kind));
+            }
             self.files
                 .get(path)
                 .cloned()
@@ -949,6 +1022,10 @@ mod tests {
 
         fn home_dir(&self) -> Option<PathBuf> {
             self.home.clone()
+        }
+
+        fn real_profile_dir(&self) -> Option<PathBuf> {
+            self.real_profile.clone()
         }
     }
 
@@ -1504,6 +1581,79 @@ mod tests {
         );
         let err = c.authorization(None, &env).expect_err("no home");
         assert!(err.0.contains('~'), "{err}");
+    }
+
+    #[test]
+    fn token_file_tilde_falls_back_to_real_profile_when_absent_in_sandbox_home() {
+        let mut env = FakeEnv {
+            home: Some(PathBuf::from("/sandbox/home")),
+            real_profile: Some(PathBuf::from("/real/profile")),
+            ..FakeEnv::default()
+        };
+        env.files.insert(
+            PathBuf::from("/real/profile/.config/agent-bus/token"),
+            "real-profile-token".to_owned(),
+        );
+        let c = candidate(
+            "http://hub.lan:8400",
+            HubRole::Fallback,
+            CandidateAuth::TokenFile("~/.config/agent-bus/token".to_owned()),
+        );
+        let token = c
+            .authorization(None, &env)
+            .expect("fallback to real profile")
+            .expect("token");
+        assert_eq!(token.expose(), "real-profile-token");
+        assert_eq!(
+            env.reads.borrow().as_slice(),
+            [
+                PathBuf::from("/sandbox/home/.config/agent-bus/token"),
+                PathBuf::from("/real/profile/.config/agent-bus/token"),
+            ]
+        );
+    }
+
+    #[test]
+    fn token_file_tilde_prefers_sandbox_home_and_never_falls_back_on_permission_denied() {
+        let mut env = FakeEnv {
+            home: Some(PathBuf::from("/sandbox/home")),
+            real_profile: Some(PathBuf::from("/real/profile")),
+            ..FakeEnv::default()
+        };
+        env.files.insert(
+            PathBuf::from("/sandbox/home/.config/agent-bus/token"),
+            "sandbox-token".to_owned(),
+        );
+        env.files.insert(
+            PathBuf::from("/real/profile/.config/agent-bus/token"),
+            "real-profile-token".to_owned(),
+        );
+        let c = candidate(
+            "http://hub.lan:8400",
+            HubRole::Fallback,
+            CandidateAuth::TokenFile("~/.config/agent-bus/token".to_owned()),
+        );
+        let token = c
+            .authorization(None, &env)
+            .expect("sandbox token")
+            .expect("token");
+        assert_eq!(token.expose(), "sandbox-token");
+
+        env.files
+            .remove(&PathBuf::from("/sandbox/home/.config/agent-bus/token"));
+        env.errors.insert(
+            PathBuf::from("/sandbox/home/.config/agent-bus/token"),
+            io::ErrorKind::PermissionDenied,
+        );
+        env.reads.borrow_mut().clear();
+        let err = c
+            .authorization(None, &env)
+            .expect_err("PermissionDenied must not fall back to real profile");
+        assert!(err.0.contains("PermissionDenied"), "{err}");
+        assert_eq!(
+            env.reads.borrow().as_slice(),
+            [PathBuf::from("/sandbox/home/.config/agent-bus/token")]
+        );
     }
 
     #[test]
