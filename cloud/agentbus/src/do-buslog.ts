@@ -891,10 +891,19 @@ export class BusLog extends DurableObject<Env> {
         });
         continue;
       }
-      const { inserted, conflict } = this.insertMessage(
-        { ...item, origin_hub: originHub },
-        { skipPendingAck: true },
-      );
+      let outcome: { inserted: boolean; conflict: boolean };
+      try {
+        outcome = this.insertMessage({ ...item, origin_hub: originHub }, { skipPendingAck: true });
+      } catch (err) {
+        // One row the store cannot insert must not fail the whole batch: the hub re-sends an
+        // unchanged batch forever, so a single poison row would block every message behind it.
+        // The caller gets a generic reason (review L1: no raw SQLite text); the real error is
+        // logged so an operator can find the row.
+        console.error(`syncPush: insert failed for id=${item.id} origin_hub=${originHub}:`, err);
+        rejected.push({ id: item.id, client_msg_id: item.client_msg_id, reason: "storage rejected the message" });
+        continue;
+      }
+      const { inserted, conflict } = outcome;
       if (inserted) {
         accepted.push(item.id);
       } else if (conflict) {

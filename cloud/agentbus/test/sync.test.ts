@@ -655,3 +655,46 @@ describe("syncPull snapshot cursor regression", () => {
     });
   });
 });
+
+// Protects: one message the store cannot insert must not 500 the whole /sync/push batch.
+// Detects: a poison row that the hub re-sends forever (the batch is retried unchanged), which
+//   blocks every later message behind it and leaves cloud_reachable=false.
+// Needs: the workers vitest pool. Breadcrumb: BusLog.syncPush, guarded() in src/index.ts.
+describe("syncPush poison-row isolation", () => {
+  const item = (id: string, body: string) => ({
+    id,
+    origin_hub: HUB_A,
+    timestamp_utc: "2026-10-19T00:00:00.000Z",
+    protocol_version: "1.0",
+    from: "claude",
+    to: "codex",
+    topic: "status",
+    body,
+    tags: [],
+    priority: "normal",
+    request_ack: false,
+    metadata: {},
+  });
+
+  it("rejects the failing item, stores its neighbours, and logs the real error", async () => {
+    const stub = env.BUS_LOG.get(env.BUS_LOG.idFromName(`poison-${crypto.randomUUID()}`));
+    const [a, b, c] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      await runInDurableObject(stub, async (bus: BusLog) => {
+        const real = bus.insertMessage.bind(bus);
+        vi.spyOn(bus, "insertMessage").mockImplementation((input, opts) => {
+          if (input.id === b) throw new Error("SQLITE_TOOBIG: simulated");
+          return real(input, opts);
+        });
+        const result = bus.syncPush(HUB_A, [item(a, "first"), item(b, "poison"), item(c, "third")]);
+        expect(result.accepted).toEqual([a, c]);
+        expect(result.rejected.map((r) => r.id)).toEqual([b]);
+        expect(result.rejected[0]?.reason).not.toContain("SQLITE");
+      });
+      expect(logged.mock.calls.flat().join(" ")).toContain("SQLITE_TOOBIG");
+    } finally {
+      logged.mockRestore();
+    }
+  });
+});
