@@ -1533,6 +1533,27 @@ mod tests {
     }
 
     #[test]
+    fn explicit_custom_config_leaves_omitted_cloud_sync_state_file_unanchored() {
+        let dir = tempfile::tempdir().expect("tempdir for custom config");
+        let custom_config_path = dir.path().join("hub-b.json");
+        std::fs::write(
+            &custom_config_path,
+            r#"{
+                "cloud_url": "https://cloud.example.com",
+                "cloud_token_file": "/tmp/hub-b.token",
+                "hub_identity": "hub-b"
+            }"#,
+        )
+        .expect("write custom config");
+
+        let config = load_settings_config_at(&custom_config_path);
+        assert_eq!(
+            config.cloud_sync_state_file, None,
+            "an explicit custom config outside <profile>/.config/agent-bus/config.json must leave omitted cloud_sync_state_file as None so it defaults to env.home_dir()"
+        );
+    }
+
+    #[test]
     fn starter_config_preserves_creator_between_parent_setup_and_exclusive_open() {
         let directory = tempfile::tempdir().expect("temporary config directory");
         let path = directory.path().join("nested/config.json");
