@@ -6,7 +6,8 @@ Detects:  a readback that passes on a stale deployment (the mismatch tests are
   the positive control), a deploy job routed to persistent PR runners, or
   setup-npm.sh combined into the same step as npm ci.
 Needs:    Python stdlib only (runs under both unittest and pytest), no network.
-  Run: python3 -B -m unittest discover -s cloud/agentbus/tools -p "test_*.py"
+  Run (from cloud/agentbus):
+    python3 -B -m unittest discover -s tools -p "test_verify_deploy.py"
 Breadcrumb: .github/workflows/deploy-agentbus-cloud.yml
 """
 
@@ -112,7 +113,7 @@ class VerifyDeployTests(unittest.TestCase):
         )
         self.assertNotIn("npm ci", steps[setup_idx])
         self.assertIn(
-            'python3 -B -m unittest discover -s tools -p "test_*.py"',
+            'python3 -B -m unittest discover -s tools -p "test_verify_deploy.py"',
             steps[install_idx],
         )
 
