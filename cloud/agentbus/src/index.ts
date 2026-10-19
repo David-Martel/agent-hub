@@ -165,6 +165,9 @@ async function guarded(fn: () => unknown | Promise<unknown>): Promise<Response> 
     if (isForbidden) {
       return errorResponse(403, (err as Error).message);
     }
+    // The response stays generic (review L1) but the cause must not vanish: with no log, a 500
+    // here was undiagnosable from Workers observability.
+    console.error("guarded: unhandled error:", err);
     return errorResponse(500, "internal error");
   }
 }
