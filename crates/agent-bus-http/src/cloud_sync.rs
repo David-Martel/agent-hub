@@ -1746,6 +1746,70 @@ mod tests {
         assert!(!cfg.backfill);
     }
 
+    #[test]
+    fn omitted_state_file_for_explicit_custom_config_uses_env_home_not_real_profile_cursor() {
+        struct RedirectedEnv {
+            sandbox: PathBuf,
+            real: PathBuf,
+        }
+        impl CredentialEnv for RedirectedEnv {
+            fn var(&self, _name: &str) -> Option<String> {
+                None
+            }
+            fn read_to_string(&self, path: &Path) -> std::io::Result<String> {
+                std::fs::read_to_string(path)
+            }
+            fn home_dir(&self) -> Option<PathBuf> {
+                Some(self.sandbox.clone())
+            }
+            fn real_profile_dir(&self) -> Option<PathBuf> {
+                Some(self.real.clone())
+            }
+        }
+
+        let sandbox = tempfile::tempdir().unwrap();
+        let real = tempfile::tempdir().unwrap();
+        let real_bus_dir = real.path().join(".config").join("agent-bus");
+        std::fs::create_dir_all(&real_bus_dir).unwrap();
+        let real_state = real_bus_dir.join("cloud-sync-state.json");
+        std::fs::write(&real_state, r#"{"last_message_id":"42-0"}"#).unwrap();
+        let tok = token_file(&real_bus_dir, 0o600);
+        let env = RedirectedEnv {
+            sandbox: sandbox.path().to_path_buf(),
+            real: real.path().to_path_buf(),
+        };
+
+        // Case 1: An explicit custom config (`AGENT_BUS_CONFIG=/tmp/hub-b.json`)
+        // leaves `settings.cloud_sync_state_file = None` when omitted, and must
+        // resolve its cursor under `env.home_dir()` rather than inheriting
+        // another hub's cursor from `real_profile_dir()`.
+        let mut custom_cfg = settings(Some("https://cloud.example"), Some(&tok), Some("hub-b"));
+        custom_cfg.cloud_sync_state_file = None;
+        let Resolution::Enabled(resolved_custom) = resolve(&custom_cfg, &env) else {
+            panic!("expected enabled for custom config");
+        };
+        let expected_sandbox_state = sandbox
+            .path()
+            .join(".config")
+            .join("agent-bus")
+            .join("cloud-sync-state.json");
+        assert_eq!(
+            resolved_custom.state_path, expected_sandbox_state,
+            "explicit custom config with omitted cloud_sync_state_file must stay isolated in env.home_dir() and never inherit real_profile's cursor"
+        );
+
+        // Case 2: When `settings` was loaded from the real profile fallback
+        // (`<real>/.config/agent-bus/config.json`), `settings.rs` anchors
+        // `cloud_sync_state_file` to `<real>/.config/agent-bus/cloud-sync-state.json`,
+        // which `resolve` honors directly.
+        let mut fallback_cfg = settings(Some("https://cloud.example"), Some(&tok), Some("hub-a"));
+        fallback_cfg.cloud_sync_state_file = Some(real_state.to_string_lossy().into_owned());
+        let Resolution::Enabled(resolved_fallback) = resolve(&fallback_cfg, &env) else {
+            panic!("expected enabled for profile fallback config");
+        };
+        assert_eq!(resolved_fallback.state_path, real_state);
+    }
+
     // ----- backoff and cursors --------------------------------------------
 
     #[test]
