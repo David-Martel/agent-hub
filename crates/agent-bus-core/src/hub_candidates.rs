@@ -586,19 +586,11 @@ fn token_value(raw: &str) -> Result<BearerToken, SkipReason> {
     Ok(BearerToken::new(token))
 }
 
-/// Read and validate a bearer token from a file, expanding a leading `~`.
-///
-/// The file must not be accessible to group or other users on Unix (mode
-/// 0600-style): a token readable by other local users is refused, not
-/// merely warned about. The error text never contains the token value.
-///
-/// # Errors
-/// [`SkipReason`] when the path is invalid, the file cannot be read, is too
-/// permissive, or holds an empty or malformed token.
-fn check_private_token_permissions(
+fn read_single_private_token_file(
     path: &str,
     expanded: &Path,
-) -> Result<(), (io::ErrorKind, SkipReason)> {
+    env: &dyn CredentialEnv,
+) -> Result<String, (io::ErrorKind, SkipReason)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -624,9 +616,15 @@ fn check_private_token_permissions(
             ));
         }
     }
-    #[cfg(not(unix))]
-    let _ = (path, expanded);
-    Ok(())
+    env.read_to_string(expanded).map_err(|error| {
+        (
+            error.kind(),
+            SkipReason(format!(
+                "cannot read token_file {path:?}: {:?}",
+                error.kind()
+            )),
+        )
+    })
 }
 
 /// Read and validate a bearer token from a file, expanding a leading `~`.
@@ -646,41 +644,17 @@ pub fn read_private_token_file(
         return Err(SkipReason("invalid token_file reference".to_owned()));
     }
     let (primary, fallback) = expanded_token_paths(path, env)?;
-    let expanded = match check_private_token_permissions(path, &primary) {
-        Ok(()) => primary,
+    let raw = match read_single_private_token_file(path, &primary, env) {
+        Ok(raw) => raw,
         Err((io::ErrorKind::NotFound, reason)) => {
-            if let Some(fallback_path) = fallback.clone() {
-                check_private_token_permissions(path, &fallback_path)
-                    .map_err(|(_, fallback_reason)| fallback_reason)?;
-                fallback_path
+            if let Some(fallback_path) = fallback {
+                read_single_private_token_file(path, &fallback_path, env)
+                    .map_err(|(_, fallback_reason)| fallback_reason)?
             } else {
                 return Err(reason);
             }
         }
         Err((_, reason)) => return Err(reason),
-    };
-    let raw = match env.read_to_string(&expanded) {
-        Ok(raw) => raw,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if let Some(fallback_path) = fallback.filter(|fb| fb != &expanded) {
-                check_private_token_permissions(path, &fallback_path)
-                    .map_err(|(_, reason)| reason)?;
-                env.read_to_string(&fallback_path).map_err(|err| {
-                    SkipReason(format!("cannot read token_file {path:?}: {:?}", err.kind()))
-                })?
-            } else {
-                return Err(SkipReason(format!(
-                    "cannot read token_file {path:?}: {:?}",
-                    error.kind()
-                )));
-            }
-        }
-        Err(error) => {
-            return Err(SkipReason(format!(
-                "cannot read token_file {path:?}: {:?}",
-                error.kind()
-            )));
-        }
     };
     token_value(&raw)
 }
