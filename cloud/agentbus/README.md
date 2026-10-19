@@ -417,6 +417,13 @@ regex checks only on the fields that are inherently dynamic (timestamps).
 
 ## Deploy checklist
 
+**Routine deploys are automatic.** A push to `main` that changes `cloud/agentbus/**` runs
+`.github/workflows/deploy-agentbus-cloud.yml`: it tests the merged commit, runs `wrangler deploy
+--message "Source<sha>"` with the scoped token from the `cloudflare-agentbus` GitHub environment
+(secret `CLOUDFLARE_API_TOKEN`, variable `CLOUDFLARE_ACCOUNT_ID`), then `tools/verify_deploy.py`
+checks that the newest deployment names the commit and `/health` is ok. `workflow_dispatch` re-runs
+it. The steps below are the one-time setup and the manual fallback.
+
 Nothing above requires D1 or R2 access — only Workers scripts, Durable
 Object namespaces, and (for the custom domain) zone DNS/Routes permission.
 

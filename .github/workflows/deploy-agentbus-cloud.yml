@@ -1,0 +1,55 @@
+# Deploys the agentbus-cloud Worker (cloud/agentbus) from merged main only.
+#
+# Why: the Worker was deployed by hand from a person's session, so what ran in Cloudflare could
+# differ from main and nothing recorded which commit it was. This job deploys the merged commit
+# with a scoped Workers Scripts token held in the GitHub environment below (a pull-request run
+# cannot read it), then reads the deployment back. Mirrors vigil-spark deploy-lkg-worker.yml.
+# Test: cloud/agentbus/tools/test_verify_deploy.py.
+name: Deploy agentbus-cloud
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - cloud/agentbus/**
+      - .github/workflows/deploy-agentbus-cloud.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-agentbus-cloud
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, X64, vigil1]
+    environment: cloudflare-agentbus
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26.12.0"
+      - name: Install and test the merged commit
+        working-directory: cloud/agentbus
+        run: |
+          bash ../../scripts/ci/setup-npm.sh
+          npm ci
+          npx tsc --noEmit
+          npm test
+      - name: Deploy (secrets and Durable Object data are kept by wrangler)
+        working-directory: cloud/agentbus
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --message "Source${GITHUB_SHA}" --tag "git-${GITHUB_SHA}"
+      - name: Read the deployment back
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: python3 cloud/agentbus/tools/verify_deploy.py --commit "$GITHUB_SHA"
