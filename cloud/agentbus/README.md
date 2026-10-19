@@ -417,6 +417,15 @@ regex checks only on the fields that are inherently dynamic (timestamps).
 
 ## Deploy checklist
 
+**Routine deploys are automatic.** Every merge to `main` that changes `cloud/agentbus/`
+runs [`.github/workflows/deploy-agentbus-cloud.yml`](../../.github/workflows/deploy-agentbus-cloud.yml):
+type-check, tests, `wrangler deploy --message "agent-hub <sha>"`, then
+[`tools/deploy-readback.ts`](tools/deploy-readback.ts) fails the job unless Cloudflare's live
+deployment names that commit. It uses the scoped `agentbus-cloud-deploy` token (Workers Scripts
+Write only) from the `cloudflare-agentbus` environment, which only `main` can read. Re-run it
+with `gh workflow run deploy-agentbus-cloud.yml -R David-Martel/agent-hub --ref main`. The
+steps below are the one-time setup and the secrets, which the job does not change.
+
 Nothing above requires D1 or R2 access — only Workers scripts, Durable
 Object namespaces, and (for the custom domain) zone DNS/Routes permission.
 

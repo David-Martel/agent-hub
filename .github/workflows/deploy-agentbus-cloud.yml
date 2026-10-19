@@ -1,0 +1,63 @@
+# Deploys the agentbus-cloud Worker (cloud/agentbus) from merged main only.
+#
+# Why: the Worker was deployed by hand under the owner's Cloudflare login, so a merged fix
+# (for example the sync-push poison-row isolation) was not live until someone remembered to run
+# wrangler. This job deploys every merged change to cloud/agentbus with a scoped token, then
+# reads back from Cloudflare that the live deployment names the merged commit.
+#
+# Token: `agentbus-cloud-deploy`, Workers Scripts Write only (Cloudflare has no per-script scope),
+# IP-restricted to the lab egress, held as CLOUDFLARE_API_TOKEN in the `cloudflare-agentbus`
+# environment, whose deployment branch policy admits main only, so a pull-request run cannot read
+# it. Inventory and rotation: vigil-spark docs/fleet-secrets-and-cloudflare-tokens.md.
+# Worker secrets (AGENT_BUS_TOKENS) and the custom domain are not touched: `wrangler deploy`
+# keeps existing secrets, and wrangler.toml declares no routes.
+# Test of the readback logic: cloud/agentbus/test/deploy-readback.test.ts.
+name: Deploy agentbus-cloud
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - cloud/agentbus/**
+      - .github/workflows/deploy-agentbus-cloud.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-agentbus-cloud
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy agentbus-cloud
+    if: github.ref == 'refs/heads/main'
+    # vigil1 leaves through the lab egress that the token's IP condition admits.
+    runs-on: [self-hosted, Linux, X64, vigil1]
+    environment: cloudflare-agentbus
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: cloud/agentbus
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26.12.0"
+      - run: bash ../../scripts/ci/setup-npm.sh
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm test
+      - name: Deploy (message names the merged commit)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy --message "agent-hub ${GITHUB_SHA}"
+      - name: Read back the live deployment from Cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: node tools/deploy-readback.ts "${GITHUB_SHA}"
