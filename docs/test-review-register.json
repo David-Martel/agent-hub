@@ -132,6 +132,15 @@
       "shared_selector_rebind": 7,
       "new_lifecycle_selectors": 6,
       "scope": "Independent offline lifecycle and adapter controls; actual861 artifact replay with earlier preservation overlay is separate; original CI cause UNKNOWN."
+    },
+    "cloud_deploy_readback": {
+      "base_commit": "df1807eb0bd6a83ab45ddee9320628a0c1d9f0ee",
+      "reviewed_code_sha256": "0b6559dc0f33c0b55d7a5722b6a89603d411c0d033487a7db26d04f50d7aa6de",
+      "reviewed_test_sha256": "16193aac5b09364a3037101ccab9461d6a7d0b5d90e77b5fafdd21b4a1e68728",
+      "root_independent_passed": 13,
+      "ci_bridge_passed": 13,
+      "ruff_check": "PASS",
+      "scope": "Safe endpoint/HTTP-code diagnostics and honest UserAgent; no inference that UserAgent caused the CI403; new CI required."
     }
   },
   "reviews": [
@@ -2978,6 +2987,181 @@
       "protections": "Complete per-ID disposition; explicit rejection receipt before drain; no response reason/body retention; no silent loss on storage or capacity failure.",
       "needs": "Disposable pinned Rust container, loopback sockets and temporary directory; Unix0600 checks platform-gated, Windows directory durability unqualified.",
       "control": "Fault reintroduction at140cfbb00ae7d0dab1d09f6d9bc71a4f8fa86a29b2fc92cb67dff77b1abaee0a: whole-batch rejection policy makes progress selector fail; bypassed pre-drain durable save makes save-failure selector fail (both exit101). Finalefef source differs only in extraction of identical0600 test assertions. Clean finalpackage recompilation passed31tests/1existingignored; fmt/Clippy passed. Earlier shared-target cached mutant execution is invalid as candidate acceptance. Receipts: fleet-unification/cloud-push-accounting/rejection-{progress,durability}-negative-control.log and rejection-receipt-final-clean-qa.log."
+    },
+    {
+      "selector": "cloud/agentbus/tools/test_verify_deploy.py::VerifyDeployTests.test_transport_identifies_verifier_and_keeps_health_unauthenticated",
+      "reviewer": "codex-p1gen9-network-closeout",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-20",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Independent full implementation/test diff review and actual13-selector unittest replay plus13-selector scripts/ci bridge. Worker authored implementation/tests. No credentials, external network, CI egress or live deployment certification.",
+      "selector_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "35141898b19e38b117295d9cbf47d57de1f3d0fbedad494eaabd557a96fb2d55",
+        "hash_scope": "complete AST FunctionDef lines including rationale docstring"
+      },
+      "shared_test_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "16193aac5b09364a3037101ccab9461d6a7d0b5d90e77b5fafdd21b4a1e68728"
+      },
+      "code_under_test": {
+        "path": "cloud/agentbus/tools/verify_deploy.py",
+        "sha256": "0b6559dc0f33c0b55d7a5722b6a89603d411c0d033487a7db26d04f50d7aa6de"
+      },
+      "protections": "Protects: client identification and API-only bearer credentials.\nDetects: urllib's default UA or bearer reuse across endpoint phases.\nNeeds: captured stdlib requests, no network or credentials.\nBreadcrumb: verify_deploy.py get_json request headers.",
+      "control": "New controls failed on df1807e (7failures/1error including nonobjectJSON); final13/13 passed independently. Status403 remains fail-closed with exactly one request per failed phase. Missing-token diagnostic is an expected negative control."
+    },
+    {
+      "selector": "cloud/agentbus/tools/test_verify_deploy.py::VerifyDeployTests.test_http_failures_name_phase_status_and_codes_without_response_data",
+      "reviewer": "codex-p1gen9-network-closeout",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-20",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Independent full implementation/test diff review and actual13-selector unittest replay plus13-selector scripts/ci bridge. Worker authored implementation/tests. No credentials, external network, CI egress or live deployment certification.",
+      "selector_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "48192ca99099d4e52c9e0b652c9ea04cc61eb5025f1a779ac19231047ca6549a",
+        "hash_scope": "complete AST FunctionDef lines including rationale docstring"
+      },
+      "shared_test_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "16193aac5b09364a3037101ccab9461d6a7d0b5d90e77b5fafdd21b4a1e68728"
+      },
+      "code_under_test": {
+        "path": "cloud/agentbus/tools/verify_deploy.py",
+        "sha256": "0b6559dc0f33c0b55d7a5722b6a89603d411c0d033487a7db26d04f50d7aa6de"
+      },
+      "protections": "Protects: HTTP diagnostics without credential or body disclosure.\nDetects: API/health ambiguity, raw error echoes, or retrying a denied request.\nNeeds: synthetic HTTPError bodies and captured stderr; no live endpoints.\nBreadcrumb: verify_deploy.py get_json HTTPError handling and main phases.",
+      "control": "New controls failed on df1807e (7failures/1error including nonobjectJSON); final13/13 passed independently. Status403 remains fail-closed with exactly one request per failed phase. Missing-token diagnostic is an expected negative control."
+    },
+    {
+      "selector": "cloud/agentbus/tools/test_verify_deploy.py::VerifyDeployTests.test_http_error_body_read_is_bounded",
+      "reviewer": "codex-p1gen9-network-closeout",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-20",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Independent full implementation/test diff review and actual13-selector unittest replay plus13-selector scripts/ci bridge. Worker authored implementation/tests. No credentials, external network, CI egress or live deployment certification.",
+      "selector_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "76926515a861a47896e42280b81049565681936ffb471b5dbcd4ac5293531912",
+        "hash_scope": "complete AST FunctionDef lines including rationale docstring"
+      },
+      "shared_test_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "16193aac5b09364a3037101ccab9461d6a7d0b5d90e77b5fafdd21b4a1e68728"
+      },
+      "code_under_test": {
+        "path": "cloud/agentbus/tools/verify_deploy.py",
+        "sha256": "0b6559dc0f33c0b55d7a5722b6a89603d411c0d033487a7db26d04f50d7aa6de"
+      },
+      "protections": "Protects: bounded diagnostic response processing and fail-closed denial.\nDetects: unbounded error-body reads while extracting optional API codes.\nNeeds: synthetic oversized body with an instrumented read method.\nBreadcrumb: verify_deploy.py HTTP error diagnostic byte limit.",
+      "control": "New controls failed on df1807e (7failures/1error including nonobjectJSON); final13/13 passed independently. Status403 remains fail-closed with exactly one request per failed phase. Missing-token diagnostic is an expected negative control."
+    },
+    {
+      "selector": "cloud/agentbus/tools/test_verify_deploy.py::VerifyDeployTests.test_http_code_count_and_malformed_bodies_are_safe",
+      "reviewer": "codex-p1gen9-network-closeout",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-20",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Independent full implementation/test diff review and actual13-selector unittest replay plus13-selector scripts/ci bridge. Worker authored implementation/tests. No credentials, external network, CI egress or live deployment certification.",
+      "selector_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "4e9bbd8192db83a949c63deb30e291edd4273e59fda3a951ca68221261a004ec",
+        "hash_scope": "complete AST FunctionDef lines including rationale docstring"
+      },
+      "shared_test_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "16193aac5b09364a3037101ccab9461d6a7d0b5d90e77b5fafdd21b4a1e68728"
+      },
+      "code_under_test": {
+        "path": "cloud/agentbus/tools/verify_deploy.py",
+        "sha256": "0b6559dc0f33c0b55d7a5722b6a89603d411c0d033487a7db26d04f50d7aa6de"
+      },
+      "protections": "Protects: a finite code-only diagnostic even for untrusted error responses.\nDetects: unlimited codes, malformed-body echoes, or string codes.\nNeeds: synthetic bounded JSON/HTML/error bodies; no credentials or network.\nBreadcrumb: verify_deploy.py HTTP error code extraction.",
+      "control": "New controls failed on df1807e (7failures/1error including nonobjectJSON); final13/13 passed independently. Status403 remains fail-closed with exactly one request per failed phase. Missing-token diagnostic is an expected negative control."
+    },
+    {
+      "selector": "cloud/agentbus/tools/test_verify_deploy.py::VerifyDeployTests.test_transport_and_json_failures_are_phase_safe_and_fail_closed",
+      "reviewer": "codex-p1gen9-network-closeout",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-20",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Independent full implementation/test diff review and actual13-selector unittest replay plus13-selector scripts/ci bridge. Worker authored implementation/tests. No credentials, external network, CI egress or live deployment certification.",
+      "selector_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "33b5ed95ed276abe85d41f2aeb33f1ff298a683d5940e174c6e119e1a6ca9ddd",
+        "hash_scope": "complete AST FunctionDef lines including rationale docstring"
+      },
+      "shared_test_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "16193aac5b09364a3037101ccab9461d6a7d0b5d90e77b5fafdd21b4a1e68728"
+      },
+      "code_under_test": {
+        "path": "cloud/agentbus/tools/verify_deploy.py",
+        "sha256": "0b6559dc0f33c0b55d7a5722b6a89603d411c0d033487a7db26d04f50d7aa6de"
+      },
+      "protections": "Protects: phase-specific failures without exception or response text.\nDetects: token-bearing URLs leaking through transport/JSON exception messages.\nNeeds: synthetic URL errors, invalid JSON and non-object JSON; no network.\nBreadcrumb: verify_deploy.py get_json error mapping.",
+      "control": "New controls failed on df1807e (7failures/1error including nonobjectJSON); final13/13 passed independently. Status403 remains fail-closed with exactly one request per failed phase. Missing-token diagnostic is an expected negative control."
+    },
+    {
+      "selector": "cloud/agentbus/tools/test_verify_deploy.py::VerifyDeployTests.test_main_stale_deployment_still_fails_without_echoing_annotation",
+      "reviewer": "codex-p1gen9-network-closeout",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-20",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Independent full implementation/test diff review and actual13-selector unittest replay plus13-selector scripts/ci bridge. Worker authored implementation/tests. No credentials, external network, CI egress or live deployment certification.",
+      "selector_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "70127f7a36303f28a3524146e0d3dd695ad8363a03ce98c06173eebeffd3a83d",
+        "hash_scope": "complete AST FunctionDef lines including rationale docstring"
+      },
+      "shared_test_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "16193aac5b09364a3037101ccab9461d6a7d0b5d90e77b5fafdd21b4a1e68728"
+      },
+      "code_under_test": {
+        "path": "cloud/agentbus/tools/verify_deploy.py",
+        "sha256": "0b6559dc0f33c0b55d7a5722b6a89603d411c0d033487a7db26d04f50d7aa6de"
+      },
+      "protections": "Protects: stale-deploy rejection after a successful authenticated read.\nDetects: echoed annotations or a health query after mismatch.\nNeeds: one synthetic stale deployment and request count control.\nBreadcrumb: verify_deploy.py newest_deployment_names_commit and main.",
+      "control": "New controls failed on df1807e (7failures/1error including nonobjectJSON); final13/13 passed independently. Status403 remains fail-closed with exactly one request per failed phase. Missing-token diagnostic is an expected negative control."
+    },
+    {
+      "selector": "cloud/agentbus/tools/test_verify_deploy.py::VerifyDeployTests.test_main_success_requires_api_revision_and_worker_health",
+      "reviewer": "codex-p1gen9-network-closeout",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-20",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Independent full implementation/test diff review and actual13-selector unittest replay plus13-selector scripts/ci bridge. Worker authored implementation/tests. No credentials, external network, CI egress or live deployment certification.",
+      "selector_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "3d962eb0c63503cfe5ff45ebe9c2da5c6f32050c58799a7f9f699b57f3d2c6fb",
+        "hash_scope": "complete AST FunctionDef lines including rationale docstring"
+      },
+      "shared_test_source": {
+        "path": "cloud/agentbus/tools/test_verify_deploy.py",
+        "sha256": "16193aac5b09364a3037101ccab9461d6a7d0b5d90e77b5fafdd21b4a1e68728"
+      },
+      "code_under_test": {
+        "path": "cloud/agentbus/tools/verify_deploy.py",
+        "sha256": "0b6559dc0f33c0b55d7a5722b6a89603d411c0d033487a7db26d04f50d7aa6de"
+      },
+      "protections": "Protects: both existing acceptance conditions after diagnostic changes.\nDetects: liveness alone as revision proof or missing health validation.\nNeeds: two synthetic transport replies and a failing health positive control.\nBreadcrumb: verify_deploy.py main deployment and health acceptance.",
+      "control": "New controls failed on df1807e (7failures/1error including nonobjectJSON); final13/13 passed independently. Status403 remains fail-closed with exactly one request per failed phase. Missing-token diagnostic is an expected negative control."
     }
   ],
   "historical_reviews": [

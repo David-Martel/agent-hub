@@ -424,6 +424,24 @@ regex checks only on the fields that are inherently dynamic (timestamps).
 checks that the newest deployment names the commit and `/health` is ok. `workflow_dispatch` re-runs
 it. The steps below are the one-time setup and the manual fallback.
 
+The [readback verifier](tools/verify_deploy.py) identifies both requests with
+`User-Agent: agent-hub-deploy-readback/1.0`; the API bearer is sent only to the
+deployments API, never to public health. Failures name the static phase
+(`deployments-api` or `health`). HTTP failures report the status and, when
+available, up to eight distinct integer Cloudflare error codes extracted from
+at most 4096 error-response bytes. Response messages, bodies, URLs and token
+values are not echoed. Transport and JSON failures use static diagnostics.
+Every HTTP 403 still fails immediately; there is no automatic retry or fallback
+that admits a failed readback. The user agent identifies this client; it is not
+proof of the cause of the observed CI-only 403 (the same Python API and health
+reads succeeded locally). A fresh CI run must establish the outcome.
+
+Run the offline [transport and fail-closed controls](tools/test_verify_deploy.py)
+from this directory with `uv run --no-project python -B -m unittest discover -s tools -p
+"test_verify_deploy.py"`. These mocked tests do not certify live deployment or
+Cloudflare token permissions. Their selector/code hashes are bound by the
+repository's [independent test-review register](../../docs/test-review-register.json).
+
 Nothing above requires D1 or R2 access — only Workers scripts, Durable
 Object namespaces, and (for the custom domain) zone DNS/Routes permission.
 
