@@ -39,6 +39,8 @@ winreg = "0.56"
 
 [dev-dependencies]
 tempfile = "3"
+# `link_route` race tests probe real local sockets.
+tokio = { version = "1", features = ["net", "io-util"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]

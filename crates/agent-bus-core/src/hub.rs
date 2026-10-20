@@ -25,15 +25,30 @@
 //!   the explicit, deliberate local-only mode (e.g. running on the hub host
 //!   itself), not a fallback.
 //!
-//! This module does no I/O of its own: callers supply a `probe` closure so
-//! the actual transport (blocking `reqwest` today) stays out of
-//! `agent-bus-core`, keeping this crate's dependency footprint unchanged and
-//! making [`resolve_hub`]'s selection logic trivially unit-testable with a
-//! fake probe.
+//! This module does no I/O of its own: callers supply a `probe` so the actual
+//! transport (`reqwest`) stays out of `agent-bus-core`, keeping this crate's
+//! dependency footprint unchanged and making the selection logic trivially
+//! unit-testable with a fake probe.
+//!
+//! Configured candidates are resolved in two ways over one shared plan
+//! ([`crate::link_route`]): [`resolve_configured_hub`] and
+//! [`resolve_authoritative_hub`] walk the plan in order with a synchronous
+//! probe (deterministic, used by tests and simple callers), while
+//! [`resolve_configured_hub_concurrent`] and
+//! [`resolve_authoritative_hub_concurrent`] *race* it with an [`AsyncProbe`] so
+//! a dead path never delays a live one. Both apply the same candidate set,
+//! credential, identity and authority rules, and both report what they saw in
+//! [`HubBackend`]'s `probes`.
 
 use crate::hub_cache::{CacheOs, HubCache, candidates_fingerprint, default_cache_path};
 use crate::hub_candidates::{HubAuth, HubCandidate, HubRole, SystemEnv, validate_candidates};
-use crate::network_location::{SystemNetwork, current_locations, location_order};
+use crate::link_route::{
+    AsyncProbe, PlanRequest, PlannedRoute, ProbeFailure, ProbeReport, RaceResult, RoutePlan, Slot,
+    SlotOutcome, Winner, plan_routes, race, walk,
+};
+use crate::network_location::{
+    NetworkProbe, SystemNetwork, current_locations, network_fingerprint,
+};
 use crate::settings::Settings;
 use serde::Serialize;
 use std::time::{Duration, SystemTime};
@@ -66,17 +81,27 @@ pub enum HubBackend {
         authoritative: bool,
         /// The hub's reported build/version string, when available.
         hub_build: Option<String>,
-        /// Every candidate URL tried, in order, including the one that
-        /// answered (last element).
+        /// Every candidate URL tried, in plan order (best link class first),
+        /// including the one that answered. When candidates are raced it also
+        /// holds the ones started before the winner answered, so the winner
+        /// is not necessarily last; see `probes` for what each one did.
         tried: Vec<String>,
+        /// What every planned candidate did: its link class and either the
+        /// round trip of a healthy answer or why it did not win. Empty for
+        /// the plain-string [`resolve_hub`]. Never carries credentials.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        probes: Vec<ProbeReport>,
     },
     /// One or more candidates were configured but none answered within the
     /// connect timeout. Reads must be labelled `offline`/`stale`, never
     /// treated as authoritative; writes (send, presence, claim, ack) must be
     /// refused loudly rather than silently applied to a local store.
     Offline {
-        /// Every candidate URL tried, in order.
+        /// Every candidate URL tried, in plan order.
         tried: Vec<String>,
+        /// What every planned candidate did (see [`HubBackend::Remote`]).
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        probes: Vec<ProbeReport>,
     },
     /// No candidates were configured: this process IS the local store by
     /// deliberate configuration (e.g. it runs on the hub host itself), not
@@ -111,6 +136,25 @@ impl HubBackend {
             Self::Offline { .. } | Self::Local => None,
         }
     }
+
+    /// The JSON placed under `backend` in `health` output: the serialized
+    /// state plus `selected`, the URL chosen (`null` when offline).
+    #[must_use]
+    pub fn to_report(&self) -> serde_json::Value {
+        let mut report = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
+        if let Some(map) = report.as_object_mut() {
+            match self {
+                Self::Remote { url, .. } => {
+                    map.insert("selected".to_owned(), serde_json::Value::from(url.as_str()));
+                }
+                Self::Offline { .. } => {
+                    map.insert("selected".to_owned(), serde_json::Value::Null);
+                }
+                Self::Local => {}
+            }
+        }
+        report
+    }
 }
 
 /// Resolve the active hub backend from an ordered candidate list.
@@ -141,16 +185,22 @@ pub fn resolve_hub(
                 authoritative: index == 0,
                 hub_build: info.build_version,
                 tried,
+                probes: Vec::new(),
             };
         }
     }
-    HubBackend::Offline { tried }
+    HubBackend::Offline {
+        tried,
+        probes: Vec::new(),
+    }
 }
 
 /// Resolve configured roles and credentials, optionally reusing a last-good URL.
 ///
-/// The cached URL is always authenticated and probed again before use. Cache
-/// failure never changes authority or permits a local-store fallback.
+/// Walks the [`RoutePlan`] in order with a synchronous `probe` and stops at the
+/// first accepted answer. The cached URL is always authenticated and probed
+/// again before use. Cache failure never changes authority or permits a
+/// local-store fallback.
 pub fn resolve_configured_hub(
     settings: &Settings,
     mut probe: impl FnMut(&str) -> Option<ProbeInfo>,
@@ -164,6 +214,37 @@ pub fn resolve_authoritative_hub(
     mut probe: impl FnMut(&str) -> Option<ProbeInfo>,
 ) -> HubBackend {
     resolve_settings_hub(settings, &mut probe, true)
+}
+
+/// [`resolve_configured_hub`], but racing the candidates concurrently.
+///
+/// Probes start at the delays of the [`RoutePlan`] (better link classes first,
+/// each worse class one stagger later) and the first healthy, identity-checked
+/// answer wins; the rest are cancelled. Dead paths cost nothing beyond their
+/// own failure, so an offline-heavy client no longer pays one timeout per
+/// candidate.
+pub async fn resolve_configured_hub_concurrent(
+    settings: &Settings,
+    probe: &AsyncProbe,
+) -> HubBackend {
+    resolve_settings_hub_concurrent(settings, probe, false).await
+}
+
+/// [`resolve_authoritative_hub`], racing the authoritative routes concurrently.
+pub async fn resolve_authoritative_hub_concurrent(
+    settings: &Settings,
+    probe: &AsyncProbe,
+) -> HubBackend {
+    resolve_settings_hub_concurrent(settings, probe, true).await
+}
+
+/// Run `future` to completion on the ambient multi-thread Tokio runtime from
+/// synchronous code, or return `None` when there is no such runtime (a plain
+/// thread, or a current-thread runtime where blocking would deadlock).
+pub fn block_on_ambient<F: std::future::Future>(future: F) -> Option<F::Output> {
+    let handle = tokio::runtime::Handle::try_current().ok()?;
+    (handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread)
+        .then(|| tokio::task::block_in_place(|| handle.block_on(future)))
 }
 
 fn resolution_cache(settings: &Settings) -> Option<HubCache> {
@@ -202,16 +283,186 @@ fn identity_matches(candidate: &HubCandidate, info: &ProbeInfo) -> bool {
         .is_none_or(|expected| info.hub_identity.as_ref() == Some(expected))
 }
 
-/// Cache key: the candidate fingerprint plus the location set, so a last-good
-/// route learned at one location is never tried first at another.
-fn routing_fingerprint(candidates: &[HubCandidate], locations: Option<&[String]>) -> String {
+/// Cache key: the candidate fingerprint, the location set and the local
+/// network fingerprint. A last-good route learned at one location, or on one
+/// set of network attachments, is never tried first at another; plugging in a
+/// Thunderbolt or Ethernet link therefore forces a fresh race.
+fn routing_fingerprint(
+    candidates: &[HubCandidate],
+    locations: Option<&[String]>,
+    network: &str,
+) -> String {
     let base = candidates_fingerprint(candidates);
-    match locations {
+    let located = match locations {
         None => base,
         Some(names) => {
             let mut names = names.to_vec();
             names.sort_unstable();
             format!("{base}@{}", names.join(","))
+        }
+    };
+    format!("{located}#{network}")
+}
+
+/// The fingerprint of this machine's current network attachments.
+fn system_network_fingerprint() -> String {
+    network_fingerprint(&SystemNetwork.prefixes())
+}
+
+/// Everything one resolution needs, computed once and shared by the serial
+/// walk and the concurrent race so both apply identical rules.
+struct Resolution {
+    candidates: Vec<HubCandidate>,
+    plan: RoutePlan,
+    auth: HubAuth,
+    cache: Option<HubCache>,
+    fingerprint: String,
+}
+
+/// What was attempted so far, for [`HubBackend`]'s `tried` and `probes`.
+#[derive(Default)]
+struct Tally {
+    tried: Vec<String>,
+    probes: Vec<ProbeReport>,
+}
+
+impl Resolution {
+    /// Build the plan, or return the backend to report without probing:
+    /// invalid configuration is `Offline` (never `Local`), no candidates is
+    /// deliberate `Local`.
+    fn begin(
+        settings: &Settings,
+        authority_only: bool,
+        locations: Option<&[String]>,
+        network: &str,
+        cache: Option<HubCache>,
+    ) -> Result<Self, HubBackend> {
+        let candidates = settings.effective_hub_candidates();
+        if settings.hub_config_error.is_some() || validate_candidates(&candidates).is_err() {
+            return Err(HubBackend::Offline {
+                tried: settings.server_urls.clone(),
+                probes: Vec::new(),
+            });
+        }
+        if candidates.is_empty() {
+            return Err(HubBackend::Local);
+        }
+        let auth = HubAuth::new(settings.auth_token.clone(), candidates.clone());
+        let fingerprint = routing_fingerprint(&candidates, locations, network);
+        let cached = if authority_only {
+            None
+        } else {
+            cache
+                .as_ref()
+                .and_then(|cache| cache.load(&fingerprint, SystemTime::now()))
+                .and_then(|cached| {
+                    candidates.iter().position(|candidate| {
+                        candidate.url == cached.url && candidate.role == cached.role
+                    })
+                })
+        };
+        let plan = plan_routes(&PlanRequest {
+            candidates: &candidates,
+            locations,
+            cached,
+            authority_only,
+            stagger: Duration::from_millis(settings.probe_stagger_ms),
+        });
+        Ok(Self {
+            candidates,
+            plan,
+            auth,
+            cache,
+            fingerprint,
+        })
+    }
+
+    /// The probes for one stage. A route whose credential cannot be resolved
+    /// is skipped without being contacted, so a token is never sent to a
+    /// route it was not configured for.
+    fn slots(&self, routes: &[PlannedRoute]) -> Vec<Slot> {
+        routes
+            .iter()
+            .map(|route| {
+                let candidate = &self.candidates[route.index];
+                let skip = self
+                    .auth
+                    .credential_for(candidate, &SystemEnv)
+                    .err()
+                    .map(|reason| {
+                        tracing::debug!(reason = %reason, "hub candidate credential unavailable");
+                        ProbeFailure::CredentialUnavailable
+                    });
+                Slot {
+                    url: candidate.url.clone(),
+                    delay: route.delay,
+                    skip,
+                }
+            })
+            .collect()
+    }
+
+    /// `true` when the healthy answer `info` is acceptable for `route`.
+    fn accepts(&self, route: &PlannedRoute, info: &ProbeInfo) -> bool {
+        let candidate = &self.candidates[route.index];
+        let accepted = identity_matches(candidate, info);
+        if !accepted {
+            tracing::debug!(
+                expected = ?candidate.hub,
+                reported = ?info.hub_identity,
+                "hub candidate reached a different hub; skipping"
+            );
+        }
+        accepted
+    }
+
+    fn record(&self, tally: &mut Tally, routes: &[PlannedRoute], result: &RaceResult) {
+        for (route, outcome) in routes.iter().zip(&result.outcomes) {
+            let candidate = &self.candidates[route.index];
+            let attempted = match outcome {
+                SlotOutcome::Healthy { .. } => true,
+                SlotOutcome::Failed(reason) => reason.was_attempted(),
+            };
+            if attempted {
+                tally.tried.push(candidate.url.clone());
+            }
+            tally
+                .probes
+                .push(ProbeReport::new(&candidate.url, route.class, *outcome));
+        }
+    }
+
+    /// Remember the winner and report it.
+    fn succeed(&self, route: &PlannedRoute, winner: Winner, tally: Tally) -> HubBackend {
+        let candidate = &self.candidates[route.index];
+        if let Some(cache) = &self.cache
+            && let Err(error) = cache.store_with_rtt(
+                &self.fingerprint,
+                &candidate.url,
+                candidate.role,
+                u32::try_from(winner.rtt.as_millis()).ok(),
+                SystemTime::now(),
+            )
+        {
+            tracing::debug!(kind = ?error.kind(), "hub resolution cache write failed");
+        }
+        HubBackend::Remote {
+            url: candidate.url.clone(),
+            authoritative: candidate.role == HubRole::Authoritative,
+            hub_build: winner.info.build_version,
+            tried: tally.tried,
+            probes: tally.probes,
+        }
+    }
+
+    /// Nothing answered: forget any cached route and report `Offline`.
+    fn exhausted(self, tally: Tally) -> HubBackend {
+        if let Some(cache) = self.cache {
+            cache.invalidate();
+        }
+        HubBackend::Offline {
+            tried: tally.tried,
+            probes: tally.probes,
         }
     }
 }
@@ -221,94 +472,108 @@ fn resolve_settings_hub(
     probe: &mut impl FnMut(&str) -> Option<ProbeInfo>,
     authority_only: bool,
 ) -> HubBackend {
-    resolve_settings_hub_at(
+    resolve_serial(
         settings,
         probe,
         authority_only,
         current_network_locations(settings).as_deref(),
+        &system_network_fingerprint(),
+        resolution_cache(settings),
     )
 }
 
-fn resolve_settings_hub_at(
+/// Walk the plan with a synchronous probe, primary stage then deferred.
+fn resolve_serial(
     settings: &Settings,
     probe: &mut impl FnMut(&str) -> Option<ProbeInfo>,
     authority_only: bool,
     locations: Option<&[String]>,
+    network: &str,
+    cache: Option<HubCache>,
 ) -> HubBackend {
-    let candidates = settings.effective_hub_candidates();
-    if settings.hub_config_error.is_some() || validate_candidates(&candidates).is_err() {
-        return HubBackend::Offline {
-            tried: settings.server_urls.clone(),
-        };
-    }
-    if candidates.is_empty() {
-        return HubBackend::Local;
-    }
-    let auth = HubAuth::new(settings.auth_token.clone(), candidates.clone());
-    let cache = resolution_cache(settings);
-    let fingerprint = routing_fingerprint(&candidates, locations);
-    let mut order = Vec::with_capacity(candidates.len());
-    if !authority_only
-        && let Some(cache) = &cache
-        && let Some(cached) = cache.load(&fingerprint, SystemTime::now())
-        && let Some(index) = candidates
-            .iter()
-            .position(|candidate| candidate.url == cached.url && candidate.role == cached.role)
-    {
-        order.push(index);
-    }
-    for index in location_order(&candidates, locations) {
-        if !order.contains(&index) {
-            order.push(index);
-        }
-    }
-    let mut tried = Vec::with_capacity(candidates.len());
-    for index in order {
-        let candidate = &candidates[index];
-        if authority_only && candidate.role != HubRole::Authoritative {
+    let resolution = match Resolution::begin(settings, authority_only, locations, network, cache) {
+        Ok(resolution) => resolution,
+        Err(backend) => return backend,
+    };
+    let mut tally = Tally::default();
+    for routes in [&resolution.plan.primary, &resolution.plan.deferred] {
+        if routes.is_empty() {
             continue;
         }
-        tried.push(candidate.url.clone());
-        if let Err(reason) = auth.credential_for(candidate, &SystemEnv) {
-            tracing::debug!(reason = %reason, "hub candidate credential unavailable");
+        let slots = resolution.slots(routes);
+        let result = walk(&slots, probe, |slot, info| {
+            resolution.accepts(&routes[slot], info)
+        });
+        resolution.record(&mut tally, routes, &result);
+        if let Some(winner) = result.winner {
+            return resolution.succeed(&routes[winner.slot], winner, tally);
+        }
+    }
+    resolution.exhausted(tally)
+}
+
+async fn resolve_settings_hub_concurrent(
+    settings: &Settings,
+    probe: &AsyncProbe,
+    authority_only: bool,
+) -> HubBackend {
+    resolve_concurrent(
+        settings,
+        probe,
+        authority_only,
+        current_network_locations(settings).as_deref(),
+        &system_network_fingerprint(),
+        resolution_cache(settings),
+    )
+    .await
+}
+
+/// Race the plan with an asynchronous probe, primary stage then deferred.
+async fn resolve_concurrent(
+    settings: &Settings,
+    probe: &AsyncProbe,
+    authority_only: bool,
+    locations: Option<&[String]>,
+    network: &str,
+    cache: Option<HubCache>,
+) -> HubBackend {
+    let resolution = match Resolution::begin(settings, authority_only, locations, network, cache) {
+        Ok(resolution) => resolution,
+        Err(backend) => return backend,
+    };
+    let budget = Duration::from_millis(settings.probe_connect_timeout_ms);
+    let mut tally = Tally::default();
+    for routes in [&resolution.plan.primary, &resolution.plan.deferred] {
+        if routes.is_empty() {
             continue;
         }
-        if let Some(info) = probe(&candidate.url) {
-            if !identity_matches(candidate, &info) {
-                tracing::debug!(
-                    expected = ?candidate.hub,
-                    reported = ?info.hub_identity,
-                    "hub candidate reached a different hub; skipping"
-                );
-                continue;
-            }
-            if let Some(cache) = &cache
-                && let Err(error) = cache.store(
-                    &fingerprint,
-                    &candidate.url,
-                    candidate.role,
-                    SystemTime::now(),
-                )
-            {
-                tracing::debug!(kind = ?error.kind(), "hub resolution cache write failed");
-            }
-            return HubBackend::Remote {
-                url: candidate.url.clone(),
-                authoritative: candidate.role == HubRole::Authoritative,
-                hub_build: info.build_version,
-                tried,
-            };
+        let slots = resolution.slots(routes);
+        let result = race(&slots, probe, budget, |slot, info| {
+            resolution.accepts(&routes[slot], info)
+        })
+        .await;
+        resolution.record(&mut tally, routes, &result);
+        if let Some(winner) = result.winner {
+            return resolution.succeed(&routes[winner.slot], winner, tally);
         }
     }
-    if let Some(cache) = cache {
-        cache.invalidate();
-    }
-    HubBackend::Offline { tried }
+    resolution.exhausted(tally)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serial resolution at a fixed `locations`, with a fixed network and no
+    /// on-disk cache, so ordering and acceptance rules stay deterministic.
+    fn resolve_settings_hub_at(
+        settings: &Settings,
+        probe: &mut impl FnMut(&str) -> Option<ProbeInfo>,
+        authority_only: bool,
+        locations: Option<&[String]>,
+    ) -> HubBackend {
+        resolve_serial(settings, probe, authority_only, locations, "test-net", None)
+    }
 
     fn configured_settings(urls: &[&str]) -> Settings {
         let mut settings = Settings::from_env();
@@ -415,6 +680,7 @@ mod tests {
                 authoritative: true,
                 hub_build: Some("0.5.0 (abc123)".to_owned()),
                 tried: urls(&["http://a:8400"]),
+                probes: Vec::new(),
             }
         );
         assert!(backend.is_remote());
@@ -437,6 +703,7 @@ mod tests {
                 authoritative: false,
                 hub_build: None,
                 tried: urls(&["http://dead:8400", "http://b:8400"]),
+                probes: Vec::new(),
             }
         );
     }
@@ -449,6 +716,7 @@ mod tests {
             backend,
             HubBackend::Offline {
                 tried: urls(&["http://dead-1:8400", "http://dead-2:8400"]),
+                probes: Vec::new(),
             }
         );
         assert!(backend.is_offline());
@@ -517,6 +785,7 @@ mod tests {
                 authoritative: true,
                 hub_build: Some("0.5.0 (cloud)".to_owned()),
                 tried: urls(&["https://agentbus.dtmventures.com"]),
+                probes: Vec::new(),
             }
         );
 
@@ -528,6 +797,7 @@ mod tests {
             backend,
             HubBackend::Offline {
                 tried: urls(&["https://agentbus.dtmventures.com"]),
+                probes: Vec::new(),
             }
         );
     }
@@ -539,6 +809,7 @@ mod tests {
             authoritative: true,
             hub_build: Some("0.5.0 (abc123)".to_owned()),
             tried: urls(&["http://a:8400"]),
+            probes: Vec::new(),
         };
         let value = serde_json::to_value(&backend).expect("serializable");
         assert_eq!(value["mode"], "remote");
@@ -548,6 +819,7 @@ mod tests {
 
         let offline = HubBackend::Offline {
             tried: urls(&["http://a:8400"]),
+            probes: Vec::new(),
         };
         let value = serde_json::to_value(&offline).expect("serializable");
         assert_eq!(value["mode"], "offline");
@@ -644,14 +916,15 @@ mod tests {
 
     #[test]
     fn a_route_reporting_another_hub_identity_is_rejected() {
+        // Why: a dead tunnel whose port was reused must not be trusted; the next proven route wins.
         let settings = routed_settings();
-        let campus = vec!["campus".to_owned()];
+        let both = vec!["campus".to_owned(), "lab-fabric".to_owned()];
         let backend = resolve_settings_hub_at(
             &settings,
             &mut |url: &str| {
                 Some(ProbeInfo {
                     build_version: None,
-                    hub_identity: Some(if url == "http://127.0.0.1:18400" {
+                    hub_identity: Some(if url == "http://10.0.0.1:8400" {
                         "someone-else".to_owned()
                     } else {
                         "onsite".to_owned()
@@ -659,14 +932,26 @@ mod tests {
                 })
             },
             false,
-            Some(&campus),
+            Some(&both),
         );
-        // The impostor route is skipped and probing continues in location
-        // order to the next route that proves it is the named hub.
-        assert!(matches!(
-            backend,
-            HubBackend::Remote { ref url, authoritative: true, .. } if url == "http://10.0.0.1:8400"
-        ));
+        // The preferred fabric route is the impostor: it is rejected, and the
+        // next route in plan order that proves it is the named hub wins.
+        let HubBackend::Remote {
+            ref url,
+            authoritative,
+            ref probes,
+            ..
+        } = backend
+        else {
+            panic!("expected a remote backend, got {backend:?}");
+        };
+        assert_eq!(url, "http://127.0.0.1:18400");
+        assert!(authoritative);
+        assert_eq!(
+            probes[0].error,
+            Some(ProbeFailure::IdentityMismatch),
+            "the rejected route is reported, not hidden"
+        );
     }
 
     #[test]
@@ -734,14 +1019,377 @@ mod tests {
     #[test]
     fn routing_fingerprint_separates_locations() {
         let candidates = routed_settings().hub_candidates;
-        let unaware = routing_fingerprint(&candidates, None);
-        let campus = routing_fingerprint(&candidates, Some(&["campus".to_owned()]));
-        let swapped =
-            routing_fingerprint(&candidates, Some(&["home".to_owned(), "campus".to_owned()]));
-        let sorted =
-            routing_fingerprint(&candidates, Some(&["campus".to_owned(), "home".to_owned()]));
+        let unaware = routing_fingerprint(&candidates, None, "net");
+        let campus = routing_fingerprint(&candidates, Some(&["campus".to_owned()]), "net");
+        let swapped = routing_fingerprint(
+            &candidates,
+            Some(&["home".to_owned(), "campus".to_owned()]),
+            "net",
+        );
+        let sorted = routing_fingerprint(
+            &candidates,
+            Some(&["campus".to_owned(), "home".to_owned()]),
+            "net",
+        );
         assert_ne!(unaware, campus);
         assert_ne!(campus, sorted);
         assert_eq!(swapped, sorted, "location set order is irrelevant");
+        let elsewhere = routing_fingerprint(&candidates, Some(&["campus".to_owned()]), "other-net");
+        assert_ne!(campus, elsewhere, "a new network attachment is a new key");
+    }
+
+    // ---- concurrent resolution against real local sockets ---------------
+
+    use crate::link_route::ProbeFuture;
+    use std::io::{Read as _, Write as _};
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// A tiny `/health` server on an ephemeral port that counts connections.
+    struct FakeHub {
+        url: String,
+        hits: Arc<AtomicUsize>,
+        stop: Arc<AtomicBool>,
+        address: std::net::SocketAddr,
+    }
+
+    impl Drop for FakeHub {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            let _wake = std::net::TcpStream::connect(self.address);
+        }
+    }
+
+    fn fake_hub(delay: Duration, identity: &'static str) -> FakeHub {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake hub");
+        let address = listener.local_addr().expect("address");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (thread_hits, thread_stop) = (Arc::clone(&hits), Arc::clone(&stop));
+        std::thread::spawn(move || {
+            while let Ok((mut stream, _peer)) = listener.accept() {
+                if thread_stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                thread_hits.fetch_add(1, Ordering::SeqCst);
+                std::thread::spawn(move || {
+                    let mut buffer = [0_u8; 1024];
+                    let _read = stream.read(&mut buffer);
+                    std::thread::sleep(delay);
+                    let body = format!(r#"{{"ok":true,"hub_identity":"{identity}"}}"#);
+                    let _write = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                });
+            }
+        });
+        FakeHub {
+            url: format!("http://{address}"),
+            hits,
+            stop,
+            address,
+        }
+    }
+
+    fn refusing_url() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reserve port");
+        let address = listener.local_addr().expect("address");
+        drop(listener);
+        format!("http://{address}")
+    }
+
+    fn socket_probe() -> AsyncProbe {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        Arc::new(|url: String| -> ProbeFuture {
+            Box::pin(async move {
+                let host = url.strip_prefix("http://")?.to_owned();
+                let mut stream = tokio::net::TcpStream::connect(&host).await.ok()?;
+                stream
+                    .write_all(b"GET /health HTTP/1.1\r\nhost: fake\r\nconnection: close\r\n\r\n")
+                    .await
+                    .ok()?;
+                let mut response = String::new();
+                stream.read_to_string(&mut response).await.ok()?;
+                let body = response.split("\r\n\r\n").nth(1)?;
+                let value: serde_json::Value = serde_json::from_str(body).ok()?;
+                Some(ProbeInfo {
+                    build_version: None,
+                    hub_identity: value["hub_identity"].as_str().map(str::to_owned),
+                })
+            })
+        })
+    }
+
+    /// Candidates `[fabric, lan]`, both authoritative routes to hub `hub`.
+    fn two_link_settings(fabric: &str, lan: &str) -> Settings {
+        let mut settings = configured_settings(&[fabric, lan]);
+        settings.hub_candidates[0].sites = vec!["lab-fabric".to_owned()];
+        settings.hub_candidates[1].sites = vec!["lab-lan".to_owned()];
+        for candidate in &mut settings.hub_candidates {
+            candidate.role = HubRole::Authoritative;
+            candidate.hub = Some("hub".to_owned());
+        }
+        settings.probe_connect_timeout_ms = 400;
+        settings.probe_stagger_ms = 60;
+        settings
+    }
+
+    fn both_links() -> Vec<String> {
+        vec!["lab-fabric".to_owned(), "lab-lan".to_owned()]
+    }
+
+    fn cache_in(dir: &tempfile::TempDir) -> HubCache {
+        HubCache::new(
+            dir.path().join("hub-resolution.json"),
+            Duration::from_secs(600),
+        )
+    }
+
+    async fn race_at(
+        settings: &Settings,
+        locations: &[String],
+        network: &str,
+        cache: Option<HubCache>,
+        authority_only: bool,
+    ) -> HubBackend {
+        resolve_concurrent(
+            settings,
+            &socket_probe(),
+            authority_only,
+            Some(locations),
+            network,
+            cache,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn the_preferred_link_class_wins_when_both_links_are_healthy() {
+        // Why: with a fabric link and a LAN both up, the fabric must be selected.
+        let fabric = fake_hub(Duration::ZERO, "hub");
+        let lan = fake_hub(Duration::ZERO, "hub");
+        let settings = two_link_settings(&fabric.url, &lan.url);
+        let backend = race_at(&settings, &both_links(), "net", None, false).await;
+        let HubBackend::Remote { url, probes, .. } = &backend else {
+            panic!("expected remote, got {backend:?}");
+        };
+        assert_eq!(url, &fabric.url);
+        assert_eq!(probes[0].class, crate::link_route::LinkClass::Fabric);
+        assert_eq!(lan.hits.load(Ordering::SeqCst), 0, "the LAN never started");
+        assert_eq!(backend.to_report()["selected"], fabric.url);
+    }
+
+    #[tokio::test]
+    async fn dead_and_slow_routes_do_not_delay_the_healthy_one() {
+        // Why: this is the bug being fixed: four dead candidates used to cost four timeouts.
+        let slow = fake_hub(Duration::from_secs(5), "hub");
+        let lan = fake_hub(Duration::ZERO, "hub");
+        let mut settings = two_link_settings(&slow.url, &lan.url);
+        settings.hub_candidates.push(HubCandidate {
+            url: refusing_url(),
+            role: HubRole::Authoritative,
+            auth: crate::hub_candidates::CandidateAuth::Global,
+            sites: vec!["lab-lan".to_owned()],
+            hub: Some("hub".to_owned()),
+        });
+        let begun = std::time::Instant::now();
+        let backend = race_at(&settings, &both_links(), "net", None, false).await;
+        assert_eq!(backend.url(), Some(lan.url.as_str()));
+        assert!(
+            begun.elapsed() < Duration::from_millis(400),
+            "took {:?}; the race must not wait out a stalled route",
+            begun.elapsed()
+        );
+        let HubBackend::Remote { tried, probes, .. } = backend else {
+            panic!("expected remote");
+        };
+        assert!(
+            tried.contains(&slow.url) && tried.contains(&lan.url),
+            "the stalled and the winning route were both started: {tried:?}"
+        );
+        assert_eq!(
+            probes[0].error,
+            Some(ProbeFailure::Cancelled),
+            "the stalled route was in flight when the LAN won"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_fresh_cache_hit_is_probed_first_and_wins_without_racing_the_rest() {
+        // Why: after the first resolution the cached route should answer alone.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fabric = fake_hub(Duration::ZERO, "hub");
+        let lan = fake_hub(Duration::ZERO, "hub");
+        let settings = two_link_settings(&fabric.url, &lan.url);
+        let locations = both_links();
+        let fingerprint = routing_fingerprint(&settings.hub_candidates, Some(&locations), "net");
+        cache_in(&dir)
+            .store_with_rtt(
+                &fingerprint,
+                &lan.url,
+                HubRole::Authoritative,
+                Some(3),
+                SystemTime::now(),
+            )
+            .expect("seed cache");
+        let backend = race_at(&settings, &locations, "net", Some(cache_in(&dir)), false).await;
+        assert_eq!(backend.url(), Some(lan.url.as_str()), "cached route first");
+        assert_eq!(fabric.hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_changed_network_fingerprint_misses_the_cache_and_re_races() {
+        // Why: plugging in a better link must not be masked by a route cached before it existed.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fabric = fake_hub(Duration::ZERO, "hub");
+        let lan = fake_hub(Duration::ZERO, "hub");
+        let settings = two_link_settings(&fabric.url, &lan.url);
+        let locations = both_links();
+        let fingerprint =
+            routing_fingerprint(&settings.hub_candidates, Some(&locations), "lan-only");
+        cache_in(&dir)
+            .store_with_rtt(
+                &fingerprint,
+                &lan.url,
+                HubRole::Authoritative,
+                Some(3),
+                SystemTime::now(),
+            )
+            .expect("seed cache");
+        let same = race_at(
+            &settings,
+            &locations,
+            "lan-only",
+            Some(cache_in(&dir)),
+            false,
+        )
+        .await;
+        assert_eq!(
+            same.url(),
+            Some(lan.url.as_str()),
+            "same network: cache hit"
+        );
+        let plugged = race_at(
+            &settings,
+            &locations,
+            "lan-and-fabric",
+            Some(cache_in(&dir)),
+            false,
+        )
+        .await;
+        assert_eq!(
+            plugged.url(),
+            Some(fabric.url.as_str()),
+            "a new attachment forces a fresh race that prefers the fabric"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_cached_route_is_replaced_by_a_concurrent_re_probe() {
+        // Why: after a failure the stale route must not stick or force a sequential walk.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dead = refusing_url();
+        let lan = fake_hub(Duration::ZERO, "hub");
+        let settings = two_link_settings(&dead, &lan.url);
+        let locations = both_links();
+        let fingerprint = routing_fingerprint(&settings.hub_candidates, Some(&locations), "net");
+        cache_in(&dir)
+            .store_with_rtt(
+                &fingerprint,
+                &dead,
+                HubRole::Authoritative,
+                Some(1),
+                SystemTime::now(),
+            )
+            .expect("seed cache");
+        let begun = std::time::Instant::now();
+        let backend = race_at(&settings, &locations, "net", Some(cache_in(&dir)), false).await;
+        assert_eq!(backend.url(), Some(lan.url.as_str()));
+        assert!(begun.elapsed() < Duration::from_millis(300));
+        let remembered = cache_in(&dir)
+            .load(&fingerprint, SystemTime::now())
+            .expect("the new winner is cached");
+        assert_eq!(remembered.url, lan.url);
+        assert!(remembered.rtt_ms.is_some(), "the winning RTT is persisted");
+    }
+
+    #[tokio::test]
+    async fn invalidating_after_a_request_failure_forces_a_full_re_probe() {
+        // Why: a connection failure against the cached route must drop it immediately.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let lan = fake_hub(Duration::ZERO, "hub");
+        let settings = two_link_settings(&refusing_url(), &lan.url);
+        let locations = both_links();
+        let backend = race_at(&settings, &locations, "net", Some(cache_in(&dir)), false).await;
+        assert_eq!(backend.url(), Some(lan.url.as_str()));
+        let fingerprint = routing_fingerprint(&settings.hub_candidates, Some(&locations), "net");
+        assert!(
+            cache_in(&dir)
+                .load(&fingerprint, SystemTime::now())
+                .is_some()
+        );
+        cache_in(&dir).invalidate();
+        assert!(
+            cache_in(&dir)
+                .load(&fingerprint, SystemTime::now())
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn claims_never_go_to_a_faster_fallback_or_a_foreign_hub() {
+        // Why: a fast route must not become a claims authority unless it is the named hub.
+        let impostor = fake_hub(Duration::ZERO, "someone-else");
+        let genuine = fake_hub(Duration::from_millis(80), "hub");
+        let mut settings = two_link_settings(&impostor.url, &genuine.url);
+        settings.hub_candidates[0].role = HubRole::Authoritative;
+        let backend = race_at(&settings, &both_links(), "net", None, true).await;
+        let HubBackend::Remote {
+            url,
+            authoritative,
+            probes,
+            ..
+        } = &backend
+        else {
+            panic!("expected remote, got {backend:?}");
+        };
+        assert_eq!(url, &genuine.url);
+        assert!(authoritative);
+        assert_eq!(probes[0].error, Some(ProbeFailure::IdentityMismatch));
+
+        let mut fallback_only = two_link_settings(&impostor.url, &genuine.url);
+        fallback_only.hub_candidates[1].role = HubRole::Fallback;
+        let refused = race_at(&fallback_only, &both_links(), "net", None, true).await;
+        assert!(refused.is_offline(), "no authoritative route proved itself");
+    }
+
+    #[tokio::test]
+    async fn a_wrong_location_guess_falls_back_to_the_deferred_routes() {
+        // Why: a false-negative location must cost time, never reachability.
+        let lan = fake_hub(Duration::ZERO, "hub");
+        let settings = two_link_settings(&refusing_url(), &lan.url);
+        let elsewhere = vec!["somewhere-else".to_owned()];
+        let backend = race_at(&settings, &elsewhere, "net", None, false).await;
+        assert_eq!(
+            backend.url(),
+            Some(lan.url.as_str()),
+            "routes declared for another site are still tried when nothing else answers"
+        );
+    }
+
+    #[tokio::test]
+    async fn nothing_answering_is_offline_with_a_report_per_candidate() {
+        // Why: offline must stay explicit and carry per-route reasons, never a local fallback.
+        let settings = two_link_settings(&refusing_url(), &refusing_url());
+        let backend = race_at(&settings, &both_links(), "net", None, false).await;
+        let HubBackend::Offline { tried, probes } = &backend else {
+            panic!("expected offline, got {backend:?}");
+        };
+        assert_eq!(tried.len(), 2);
+        assert!(probes.iter().all(|probe| probe.error.is_some()));
+        assert!(backend.to_report()["selected"].is_null());
     }
 }

@@ -195,6 +195,41 @@ resolved remote hub via a blocking-from-async `RemoteMcpTransport`
 hub itself) never uses this path — it always dispatches locally, so a hub
 can never proxy to itself even if its own config named a `server_url`.
 
+#### Link-aware selection (race, not walk)
+
+`agent_bus_core::link_route` replaces the sequential walk for the CLI and the
+stdio MCP server (`resolve_*_hub_concurrent`; the closure-based
+`resolve_configured_hub` / `resolve_authoritative_hub` remain as the
+deterministic serial walk over the same plan):
+
+- **Class** per candidate (`LinkClass::of`): `fabric` (a `sites` word of
+  `fabric`, `tb`, `thunderbolt`, `usb4`, `p2p`) > `lan` (everything else,
+  including direct links and SSH-forwarded loopback) > `tailnet` (site
+  `tailnet`/`tailscale`, `*.ts.net`, or `100.64.0.0/10`) > `cloud` (role).
+- **Candidate set**: routes whose `sites` intersect the detected
+  `network_locations`, plus site-less, tailnet and cloud routes. Unknown or
+  undetected location keeps every route eligible. Routes declared for another
+  location form a *deferred* stage raced only if the first stage fails, so a
+  wrong location guess costs time, never reachability.
+- **Race**: each route's `/health` probe starts after `wave *
+  probe_stagger_ms` (default 75 ms, `AGENT_BUS_PROBE_STAGGER_MS`), where a wave
+  is one (link class, role) pair: authoritative routes lead fallbacks on the
+  same kind of link, and routes of equal class and role start together so the
+  lower-RTT one wins. Each probe is bounded by
+  `probe_connect_timeout_ms` (default 750 ms). The first healthy answer that
+  passes the unchanged identity, credential and authority checks wins; the rest
+  are dropped. Claims race only `authoritative` routes.
+- **Route cache** (`hub-resolution.json`, TTL `hub_cache_ttl_seconds`, default
+  600 s): winner URL, role and RTT, keyed by candidate list, location set and a
+  fingerprint of the local interface prefixes, so plugging in a fabric or
+  Ethernet link forces a fresh race. A cached route is still health-probed
+  first (no stagger); any failed request invalidates it.
+- **`health`** keeps `backend.tried` and adds `backend.probes[]`
+  (`{url, class, rtt_ms | error}`) and `backend.selected`. No secrets.
+
+The hub-to-cloud sync (`cloud_sync.rs`) dials a single validated `cloud_url`,
+so there is no candidate set to select over; it does not use this selector.
+
 A durable offline write outbox (spool-and-replay for `send`/`presence`/
 `claim`/`ack` while offline, with idempotent UUIDv7 client ids) is
 deliberately **not** implemented yet — see #80.

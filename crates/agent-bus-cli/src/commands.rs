@@ -276,10 +276,7 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_stora
                 match http_get(&format!("{url}/health")) {
                     Ok(mut val) => {
                         if let serde_json::Value::Object(ref mut map) = val {
-                            map.insert(
-                                "backend".to_owned(),
-                                serde_json::to_value(&backend).unwrap_or(serde_json::Value::Null),
-                            );
+                            map.insert("backend".to_owned(), backend.to_report());
                             insert_network_location(map, settings);
                         }
                         output(&val, encoding);
@@ -305,14 +302,14 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_stora
                     }
                 }
             }
-            agent_bus_core::hub::HubBackend::Offline { tried } => {
+            agent_bus_core::hub::HubBackend::Offline { .. } => {
                 // Explicit, visible offline status — never a silent fallback
                 // to a local Redis read presented as fleet health.
                 let mut report = serde_json::json!({
                     "ok": false,
                     "database_ok": false,
                     "storage_ready": false,
-                    "backend": {"mode": "offline", "tried": tried},
+                    "backend": backend.to_report(),
                 });
                 if let serde_json::Value::Object(ref mut map) = report {
                     insert_network_location(map, settings);
@@ -813,7 +810,9 @@ pub(crate) fn cmd_ack(
                 output(&val, encoding);
                 Ok(())
             }
-            agent_bus_core::hub::HubBackend::Offline { tried } => Err(offline_error("ack", &tried)),
+            agent_bus_core::hub::HubBackend::Offline { tried, .. } => {
+                Err(offline_error("ack", &tried))
+            }
             agent_bus_core::hub::HubBackend::Local => Err(anyhow!(
                 "internal error: active_hub_backend returned Local while server_urls is non-empty"
             )),
@@ -1792,7 +1791,7 @@ pub(crate) fn cmd_claims(
                 output(&val, encoding);
                 Ok(())
             }
-            agent_bus_core::hub::HubBackend::Offline { tried } => {
+            agent_bus_core::hub::HubBackend::Offline { tried, .. } => {
                 Err(offline_error("claims", &tried))
             }
             agent_bus_core::hub::HubBackend::Local => Err(anyhow!(

@@ -13,13 +13,14 @@
 //! never accepted as inline MCP arguments or attached as client default headers.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use agent_bus_core::error::{AgentBusError, Result};
 use agent_bus_core::hub::ProbeInfo;
 use agent_bus_core::hub::invalidate_configured_cache;
 use agent_bus_core::hub_candidates::{HubAuth, SystemEnv};
+use agent_bus_core::link_route::{AsyncProbe, ProbeFuture};
 use agent_bus_core::remote_dispatch::RemoteMcpTransport;
 use agent_bus_core::settings::Settings;
 use agent_bus_core::settings::redact_url;
@@ -113,6 +114,36 @@ impl HttpMcpTransport {
     }
 }
 
+impl HttpMcpTransport {
+    /// One authenticated `GET {url}/health`, bounded by the connect budget.
+    async fn probe_health_async(&self, url: &str) -> Option<ProbeInfo> {
+        let health_url = format!("{url}/health");
+        let response = self
+            .authed(&health_url, self.client().ok()?.get(&health_url))
+            .ok()?
+            .timeout(Duration::from_millis(
+                self.settings.probe_connect_timeout_ms,
+            ))
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        let body: Value = response.json().await.ok()?;
+        Some(ProbeInfo {
+            build_version: body
+                .get("build_version")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            hub_identity: body
+                .get("hub_identity")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        })
+    }
+}
+
 /// Run a future to completion from a synchronous context, whether or not one
 /// is already on a Tokio runtime worker thread. Mirrors
 /// `agent-bus-cli`'s `server_mode::run_server_future`.
@@ -200,32 +231,20 @@ impl RemoteMcpTransport for HttpMcpTransport {
         })
     }
     fn probe_health(&self, url: &str) -> Option<ProbeInfo> {
-        run_future(async {
-            let health_url = format!("{url}/health");
-            let response = self
-                .authed(&health_url, self.client().ok()?.get(&health_url))
-                .ok()?
-                .timeout(Duration::from_millis(
-                    self.settings.probe_connect_timeout_ms,
-                ))
-                .send()
-                .await
-                .ok()?;
-            if !response.status().is_success() {
-                return None;
-            }
-            let body: Value = response.json().await.ok()?;
-            Some(ProbeInfo {
-                build_version: body
-                    .get("build_version")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                hub_identity: body
-                    .get("hub_identity")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-            })
-        })
+        run_future(self.probe_health_async(url))
+    }
+
+    fn async_probe(&self) -> Option<AsyncProbe> {
+        // An owned copy of this transport (a cheap client clone plus the
+        // settings) lets the resolver run one probe per candidate at once.
+        let transport = Arc::new(Self {
+            client: Ok(self.client().ok()?.clone()),
+            settings: self.settings.clone(),
+        });
+        Some(Arc::new(move |url: String| -> ProbeFuture {
+            let transport = Arc::clone(&transport);
+            Box::pin(async move { transport.probe_health_async(&url).await })
+        }))
     }
 
     fn call_tool(&self, url: &str, name: &str, args: &Map<String, Value>) -> Result<Value> {

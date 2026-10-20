@@ -17,10 +17,14 @@ use reqwest::StatusCode;
 use agent_bus_core::hub::HubBackend;
 #[cfg(feature = "server-mode")]
 use agent_bus_core::hub::{
-    ProbeInfo, invalidate_configured_cache, resolve_authoritative_hub, resolve_configured_hub,
+    ProbeInfo, invalidate_configured_cache, resolve_authoritative_hub,
+    resolve_authoritative_hub_concurrent, resolve_configured_hub,
+    resolve_configured_hub_concurrent,
 };
 #[cfg(feature = "server-mode")]
 use agent_bus_core::hub_candidates::{HubAuth, SystemEnv};
+#[cfg(feature = "server-mode")]
+use agent_bus_core::link_route::{AsyncProbe, ProbeFuture};
 #[cfg(feature = "server-mode")]
 use agent_bus_core::settings::redact_url;
 
@@ -276,15 +280,30 @@ pub(crate) fn use_server_mode(settings: &Settings) -> bool {
 #[cfg(feature = "server-mode")]
 fn probe_hub_health(settings: &Settings, url: &str) -> Option<ProbeInfo> {
     let client = client_for_settings(settings).ok()?;
+    run_server_future(async { Ok(probe_hub_health_async(settings, &client, url).await) })
+        .ok()
+        .flatten()
+}
+
+/// The asynchronous `/health` probe shared by the serial walk and the
+/// concurrent race: one authenticated GET bounded by the connect budget.
+#[cfg(feature = "server-mode")]
+async fn probe_hub_health_async(
+    settings: &Settings,
+    client: &reqwest::Client,
+    url: &str,
+) -> Option<ProbeInfo> {
     let health_url = format!("{url}/health");
-    let health = match run_server_future(send_json(
+    let health = match send_json(
         settings,
-        &client,
+        client,
         reqwest::Method::GET,
         &health_url,
         None,
         Some(Duration::from_millis(settings.probe_connect_timeout_ms)),
-    )) {
+    )
+    .await
+    {
         Ok(health) => health,
         Err(error) => {
             // send_json already scrubs the actual sent credential from
@@ -313,7 +332,44 @@ fn probe_hub_health(settings: &Settings, url: &str) -> Option<ProbeInfo> {
 /// exactly the split-brain island #78 reports.
 #[cfg(feature = "server-mode")]
 pub(crate) fn active_hub_backend(settings: &Settings) -> HubBackend {
+    if let Some(probe) = hub_probe(settings)
+        && let Some(backend) = run_race_future(resolve_configured_hub_concurrent(settings, &probe))
+    {
+        return backend;
+    }
     resolve_configured_hub(settings, &mut |url: &str| probe_hub_health(settings, url))
+}
+
+/// An owned `/health` probe that the resolver can run for many candidates at
+/// once, or `None` when the guarded HTTP client cannot be built (the serial
+/// walk then reports every candidate as unreachable, as before).
+#[cfg(feature = "server-mode")]
+fn hub_probe(settings: &Settings) -> Option<AsyncProbe> {
+    let client = client_for_settings(settings).ok()?;
+    let settings = Arc::new(settings.clone());
+    Some(Arc::new(move |url: String| -> ProbeFuture {
+        let (settings, client) = (Arc::clone(&settings), Arc::clone(&client));
+        Box::pin(async move { probe_hub_health_async(&settings, &client, &url).await })
+    }))
+}
+
+/// Drive `future` to completion from synchronous code.
+///
+/// On a runtime of its own the runtime is torn down with
+/// `shutdown_background`: a cancelled probe may still be inside a blocking
+/// name lookup, and waiting for it would hand back the time the race saved.
+#[cfg(feature = "server-mode")]
+fn run_race_future<T>(future: impl Future<Output = T>) -> Option<T> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return agent_bus_core::hub::block_on_ambient(future);
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .ok()?;
+    let output = runtime.block_on(future);
+    runtime.shutdown_background();
+    Some(output)
 }
 
 /// Render an `HubBackend::Offline` state as the loud, explicit error used by
@@ -363,7 +419,7 @@ pub(crate) fn resolve_hub_url(settings: &Settings, command: &str) -> Result<Stri
     reject_hub_config_error(settings)?;
     match active_hub_backend(settings) {
         HubBackend::Remote { url, .. } => Ok(url),
-        HubBackend::Offline { tried } => Err(offline_error(command, &tried)),
+        HubBackend::Offline { tried, .. } => Err(offline_error(command, &tried)),
         HubBackend::Local => Err(anyhow::anyhow!(
             "{command}: resolve_hub_url called with no hub candidates configured (local-only \
              mode) -- this is a caller bug, not an offline condition; check use_server_mode first"
@@ -390,13 +446,21 @@ pub(crate) fn resolve_authoritative_claim_url(
     command: &str,
 ) -> Result<String> {
     reject_hub_config_error(settings)?;
-    match resolve_authoritative_hub(settings, &mut |url: &str| probe_hub_health(settings, url)) {
+    let backend = match hub_probe(settings)
+        .and_then(|probe| run_race_future(resolve_authoritative_hub_concurrent(settings, &probe)))
+    {
+        Some(backend) => backend,
+        None => {
+            resolve_authoritative_hub(settings, &mut |url: &str| probe_hub_health(settings, url))
+        }
+    };
+    match backend {
         HubBackend::Remote {
             url,
             authoritative: true,
             ..
         } => Ok(url),
-        HubBackend::Remote { tried, .. } | HubBackend::Offline { tried } => {
+        HubBackend::Remote { tried, .. } | HubBackend::Offline { tried, .. } => {
             Err(claim_pending_error(command, &tried))
         }
         HubBackend::Local => Err(anyhow::anyhow!(
