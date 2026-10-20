@@ -1,0 +1,14 @@
+{
+  "source_head": "4874d850ea5e90965ddeac9be7782ac369a71d7d",
+  "source_kind": "transferred untracked Warp prototype",
+  "mappings": [
+    {
+      "old_path": "docs/cloud-token-operations-2026-10-08.md",
+      "new_path": "docs/cloud-token-operations.md",
+      "original_sha256": "80fb5e6d7bec4c6c73f43cb01467518cd7d5ef8b1a65b230867ae4cddd17f3ef",
+      "result_sha256": "5f0559fa257d259f8b762a6c7e93b1010d0e8e6054541e4ddf9fdd68cb74674d",
+      "collision_checked": true,
+      "original_preserved": true
+    }
+  ]
+}

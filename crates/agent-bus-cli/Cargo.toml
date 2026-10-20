@@ -30,6 +30,8 @@ axum = { version = "0.8", features = ["macros"] }
 tokio-stream = "0.1"
 tower-http = { version = "0.7", features = ["cors", "trace"] }
 anyhow = "1"
+rand = "0.8"
+sha2 = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 mimalloc = "0.1"

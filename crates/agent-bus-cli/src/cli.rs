@@ -1286,6 +1286,30 @@ pub(crate) enum Cmd {
         #[arg(long, default_value = "compact", value_enum, help = "Output format")]
         encoding: Encoding,
     },
+
+    /// Mint, store, and smoke-test Cloudflare cloud-tier tokens (no env secrets).
+    CloudTokens(CloudTokensCmd),
+}
+
+/// Operator subcommands for cloud credentials.
+#[derive(clap::Args)]
+pub(crate) struct CloudTokensCmd {
+    #[arg(value_enum)]
+    pub action: crate::cloud_tokens::CloudTokensAction,
+    #[command(flatten)]
+    pub options: CloudTokenOptions,
+}
+
+#[derive(clap::Args)]
+pub(crate) struct CloudTokenOptions {
+    #[arg(long)]
+    pub manifest: Option<std::path::PathBuf>,
+    #[arg(long)]
+    pub example: Option<std::path::PathBuf>,
+    #[arg(long)]
+    pub repo_root: Option<std::path::PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
 }
 
 #[cfg(test)]

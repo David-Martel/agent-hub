@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "description": "Identity roster for agentbus.dtmventures.com AGENT_BUS_TOKENS. Secrets are NEVER stored here — only roles and agent/host bindings. Generated tokens live in Bitwarden and/or ~/.config/agent-bus/cloud-tokens.json (ACL-locked).",
+  "worker_name": "agentbus-cloud",
+  "cloud_base_url": "https://agentbus.dtmventures.com",
+  "bitwarden": {
+    "collection_hint": "agent-bus-cloud",
+    "item_name": "agentbus.dtmventures.com AGENT_BUS_TOKENS",
+    "recovery_item_name": "agentbus.dtmventures.com recovery notes",
+    "require_session": true
+  },
+  "storage": {
+    "tokens_map_path": "~/.config/agent-bus/cloud-tokens.json",
+    "client_token_path": "~/.config/agent-bus/cloud-token",
+    "client_token_role": "agent",
+    "client_token_agent": "warp-oz-p1gen7",
+    "client_token_host": "dtm-p1gen7",
+    "acl_owner_only": true
+  },
+  "anti_lockout": {
+    "keep_previous_map_backup": true,
+    "backup_dir": "~/.config/agent-bus/token-backups",
+    "require_bw_item_before_wrangler_put": true,
+    "forbid_onsite_token_reuse": true
+  },
+  "identities": [
+    {
+      "id": "hub-asuspro13-sync",
+      "role": "hub",
+      "agent": "asuspro13-sync",
+      "hub": "asuspro13",
+      "purpose": "On-site hub push/pull sync client only"
+    },
+    {
+      "id": "operator-fleet",
+      "role": "operator",
+      "agent": "operator",
+      "purpose": "Claims resolve + /sync/stats"
+    },
+    {
+      "id": "agent-warp-p1gen7",
+      "role": "agent",
+      "agent": "warp-oz-p1gen7",
+      "host": "dtm-p1gen7",
+      "purpose": "CLI/MCP on p1gen7 against cloud candidate"
+    },
+    {
+      "id": "agent-claude-asus",
+      "role": "agent",
+      "agent": "claude",
+      "host": "asuspro13",
+      "purpose": "Claude on ASUS cloud path"
+    },
+    {
+      "id": "agent-codex-asus",
+      "role": "agent",
+      "agent": "codex",
+      "host": "asuspro13",
+      "purpose": "Codex on ASUS cloud path"
+    },
+    {
+      "id": "agent-codex-carbon",
+      "role": "agent",
+      "agent": "codex-carbon-fleet",
+      "host": "dtm-carbon-two",
+      "purpose": "Codex cloud candidate on Carbon"
+    },
+    {
+      "id": "agent-claude-carbon",
+      "role": "agent",
+      "agent": "claude-carbon-two",
+      "host": "dtm-carbon-two",
+      "purpose": "Claude cloud candidate on Carbon"
+    },
+    {
+      "id": "agent-codex-work",
+      "role": "agent",
+      "agent": "codex-work",
+      "host": "dtm-work",
+      "purpose": "Codex cloud candidate on Work"
+    },
+    {
+      "id": "agent-claude-work",
+      "role": "agent",
+      "agent": "claude-work",
+      "host": "dtm-work",
+      "purpose": "Claude cloud candidate on Work"
+    }
+  ]
+}

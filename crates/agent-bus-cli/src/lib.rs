@@ -9,6 +9,7 @@
 
 mod channels;
 mod cli;
+mod cloud_tokens;
 mod codex_bridge;
 mod commands;
 mod journal;
@@ -31,7 +32,8 @@ use clap::Parser;
 use mimalloc::MiMalloc;
 
 use agent_bus_core::bootstrap;
-use cli::{Cli, Cmd, HistoryCmd};
+use cli::{Cli, CloudTokensCmd, Cmd, HistoryCmd};
+use cloud_tokens::run_cloud_tokens;
 use commands::{
     CompactContextArgs, PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_backup, cmd_batch_send,
     cmd_claim, cmd_claims, cmd_codex_sync, cmd_compact_context, cmd_compact_thread, cmd_dedup,
@@ -105,6 +107,17 @@ fn args_with_optional_default<const N: usize>(
         .collect()
 }
 
+fn run_cloud_token_command(command: &CloudTokensCmd) -> Result<()> {
+    let options = &command.options;
+    run_cloud_tokens(
+        command.action,
+        options.manifest.as_deref(),
+        options.example.as_deref(),
+        options.repo_root.as_deref(),
+        options.dry_run,
+    )
+}
+
 fn main_entry_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> {
     let args = args.into_iter().collect::<Vec<_>>();
     let handle = std::thread::Builder::new()
@@ -137,12 +150,15 @@ fn main_entry_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> 
     reason = "main command dispatch — extracting further would obscure flow"
 )]
 fn run(args: Vec<OsString>) -> Result<()> {
+    let cli = Cli::parse_from(args);
+    if let Cmd::CloudTokens(ref command) = cli.command {
+        return run_cloud_token_command(command);
+    }
     let (settings, guard) = bootstrap()?;
     // Attach the bearer token (if any) to all server-mode HTTP requests before
     // the first call routes through the shared client.
     server_mode::init_server_auth(&settings);
 
-    let cli = Cli::parse_from(args);
     match cli.command {
         Cmd::Health {
             ref encoding,
@@ -159,6 +175,8 @@ fn run(args: Vec<OsString>) -> Result<()> {
                 cmd_history_status(&settings, encoding)?;
             }
         },
+
+        Cmd::CloudTokens(ref command) => run_cloud_token_command(command)?,
 
         Cmd::Send {
             ref from_agent,
