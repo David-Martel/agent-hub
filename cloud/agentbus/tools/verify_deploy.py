@@ -22,6 +22,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from typing import Any
 
 API = "https://api.cloudflare.com/client/v4"
 USER_AGENT = "agent-hub-deploy-readback/1.0"
@@ -36,7 +37,7 @@ class ReadbackFailure(Exception):
     """A read failed with endpoint-phase diagnostics safe for CI logs."""
 
 
-def newest_deployment_names_commit(payload: dict, commit: str) -> str:
+def newest_deployment_names_commit(payload: dict[str, Any], commit: str) -> str:
     """Return the version id of the newest deployment, or raise DeployMismatch."""
     deployments = (payload.get("result") or {}).get("deployments") or []
     if not deployments:
@@ -55,7 +56,7 @@ def newest_deployment_names_commit(payload: dict, commit: str) -> str:
 
 def get_json(
     url: str, token: str | None = None, *, phase: str = "deployments-api"
-) -> dict:
+) -> dict[str, Any]:
     request = urllib.request.Request(
         url, headers={"Accept": "application/json", "User-Agent": USER_AGENT}
     )
@@ -96,7 +97,8 @@ def get_json(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    description = __doc__ or "Read back an agentbus-cloud deployment."
+    parser = argparse.ArgumentParser(description=description.splitlines()[0])
     parser.add_argument(
         "--commit", required=True, help="full 40-hex commit the deploy was made from"
     )

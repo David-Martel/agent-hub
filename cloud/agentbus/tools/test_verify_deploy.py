@@ -20,6 +20,7 @@ import os
 import re
 import sys
 import unittest
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
@@ -89,7 +90,7 @@ class VerifyDeployTests(unittest.TestCase):
                     "https://example.invalid/?token=" + secret,
                     403,
                     secret,
-                    {},
+                    Message(),
                     io.BytesIO(
                         json.dumps(
                             {
@@ -105,7 +106,7 @@ class VerifyDeployTests(unittest.TestCase):
                         ).encode()
                     ),
                 )
-                replies = [failure]
+                replies: list[HTTPError | io.BytesIO] = [failure]
                 if health_failure:
                     replies.insert(
                         0,
@@ -144,16 +145,18 @@ class VerifyDeployTests(unittest.TestCase):
         """
 
         class Body(io.BytesIO):
-            def __init__(self, value):
+            def __init__(self, value: bytes) -> None:
                 super().__init__(value)
-                self.sizes = []
+                self.sizes: list[int | None] = []
 
-            def read(self, size=-1):
+            def read(self, size: int | None = -1) -> bytes:
                 self.sizes.append(size)
                 return super().read(size)
 
         body = Body(b" " * 20000 + b"sensitive-tail")
-        failure = HTTPError("https://example.invalid", 403, "secret-reason", {}, body)
+        failure = HTTPError(
+            "https://example.invalid", 403, "secret-reason", Message(), body
+        )
         stderr = io.StringIO()
         with (
             patch.dict(os.environ, {"CLOUDFLARE_API_TOKEN": "fake-token"}),
@@ -192,7 +195,7 @@ class VerifyDeployTests(unittest.TestCase):
                     "https://example.invalid",
                     403,
                     "sensitive-reason",
-                    {},
+                    Message(),
                     io.BytesIO(body),
                 )
                 stderr = io.StringIO()
@@ -332,6 +335,11 @@ class VerifyDeployTests(unittest.TestCase):
             self.assertEqual(vd.main(["--commit", SHA, "--account-id", "acct"]), 2)
 
     def test_workflow_isolates_runner_and_npm_bootstrap_step(self):
+        """Protects: isolated deploy runners and a preceding npm bootstrap step.
+        Detects: persistent runners, combined setup/install, or missing readback tests.
+        Needs: checked-in workflow text only; no runner, network or credentials.
+        Breadcrumb: .github/workflows/deploy-agentbus-cloud.yml deploy steps.
+        """
         workflow = (
             REPO_ROOT / ".github/workflows/deploy-agentbus-cloud.yml"
         ).read_text(encoding="utf-8")
@@ -350,6 +358,8 @@ class VerifyDeployTests(unittest.TestCase):
         )
         self.assertIsNotNone(setup_idx, "setup-npm.sh step must be present")
         self.assertIsNotNone(install_idx, "npm ci step must be present")
+        assert setup_idx is not None
+        assert install_idx is not None
         self.assertLess(
             setup_idx,
             install_idx,
