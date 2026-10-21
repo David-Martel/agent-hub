@@ -185,6 +185,15 @@ timeout per candidate) and returns exactly one of:
   the hub host itself). This is deliberate local-only mode, not a fallback,
   and is reported as such.
 
+The CLI honors the same routing for the thread and ack-sweep commands
+(#165): `thread-create`, `thread-join`, `thread-leave`, `thread-list`,
+`thread-close`, `summarize-thread`, `compact-thread`, `pending-acks` and
+`overdue-acks` call the hub's `/threads`, `/thread-summary`, `/compact-thread`,
+`/pending-acks` and `/overdue-acks` endpoints whenever `server_urls` is
+non-empty, and report the hub's error (or the offline error) instead of a
+loopback Redis failure. `hub_routing_test.rs` pins Redis to a closed port, so
+a regression that opens local Redis in remote mode fails there.
+
 `bus_health` (CLI `health`, MCP `bus_health` tool) always includes a
 `backend` field reporting exactly which of the three states above answered,
 so a client silently reading its own local store while believing it talks to

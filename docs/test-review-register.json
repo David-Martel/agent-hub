@@ -7181,6 +7181,426 @@
         "sha256": "75ab0b07109248e9f88d607dad581f0888c1ea9bb24871dbbf33cf48fe6fa321",
         "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
       }
+    },
+    {
+      "selector": "crates/agent-bus-cli/src/commands.rs::tests::thread_commands_reject_dot_only_ids_before_local_bus_access",
+      "protections": "unsupported thread IDs are rejected consistently in local CLI mode.",
+      "detects": "create or membership commands reaching Redis for dot-only identifiers.",
+      "needs": "closed-port settings; the expected validation diagnostic must precede I/O.",
+      "breadcrumb": "crates/agent-bus-cli/src/ (commands.rs, `validate_thread_command_id`).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "938187f028d317cea25cbf49ad38ae7ae2baedd24b2386e1492045824a5f2563",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_lifecycle_commands_route_through_the_remote_hub",
+      "protections": "configured-hub thread creation, membership, listing and closure semantics.",
+      "detects": "wrong HTTP verbs, routes, query parameters or creation payload fields.",
+      "needs": "owned loopback request capture and CLI children isolated from real stores.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (thread lifecycle commands).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "53bef49f5675c8ff5316d6890a3fdce8fb2522482b27138418d7d714a50d86ee",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_commands_percent_encode_ids_for_the_hub_path",
+      "protections": "spaces and slashes in supported thread IDs remain one URL segment.",
+      "detects": "raw interpolation changing the endpoint or rejecting valid encoded IDs.",
+      "needs": "owned fixture accepting only the exact encoded close route.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`build_hub_url` and `cmd_thread_close`).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "f0c3c3d28f251ee782549344a8f24dc07ef137da1bf3fa816677c42504f2ac08",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_commands_reject_dot_only_ids_before_hub_mutation",
+      "protections": "a CLI cannot create a thread whose dot-only ID disappears from mutation URLs.",
+      "detects": "creation accepting an ID that join, leave or close cannot address remotely.",
+      "needs": "owned loopback HTTP fixture and isolated CLI children; no fleet backend.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (thread lifecycle commands).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "f1ee95988ab6998db189f2b64b8bfd9e439d99239263e2ca240cd67a0c67103f",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_lifecycle_preserves_encoded_ids_from_creation_through_mutation",
+      "protections": "validation preserves ordinary IDs requiring path-segment encoding.",
+      "detects": "an overbroad ID rejection or creation-to-mutation identity mismatch.",
+      "needs": "owned loopback fixture recording request paths and the creation body.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`build_hub_url` and thread commands).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "e2069d9729e48537efe9300e81c88ee3bde404241df072ee9a0382b4c18ad2ce",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_commands_validate_before_any_hub_request",
+      "protections": "a blank joining agent cannot trigger a remote thread mutation.",
+      "detects": "forwarding invalid membership arguments instead of rejecting them locally.",
+      "needs": "owned fixture recording non-health requests and a failing CLI result.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`thread_member_remote`).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "c1d98be019a0422843e148409d59ab343398413007b12cb32140aa93c86cbfc9",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::summarize_and_compact_thread_route_through_the_remote_hub",
+      "protections": "thread summary and compaction use the configured remote hub and CLI output shape.",
+      "detects": "local-store fallback, wrong endpoints, or exposing the compaction envelope.",
+      "needs": "owned canned HTTP responses and closed local stores for isolated CLI children.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_summarize_thread` and `cmd_compact_thread`).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "aeb1cc285b27904c7217360914a1a32806e7d93841e6350580a0f497f804507d",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::pending_acks_routes_through_the_remote_hub_with_the_agent_filter",
+      "protections": "pending ACK reads retain the agent filter and JSON/human output semantics remotely.",
+      "detects": "missing query parameters, wrong paths, or omission of the human stale marker.",
+      "needs": "owned typed-response fixture, captured request targets and isolated CLI children.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_pending_acks` and `render_pending_acks`).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "971a064bb347d7238efb1e919483fab5afd2c3a5f358e34294f4c469a470cf4a",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::pending_acks_omits_reflected_bearer_from_malformed_success_response",
+      "protections": "a malformed successful pending-ACK reply cannot disclose bearer credentials.",
+      "detects": "Serde retaining a reflected invalid value in the printed error chain.",
+      "needs": "authenticated owned mock response, fallback probe counter and isolated CLI.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_pending_acks` and `decode_task_response`).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "96f5fba74a34dce2b79a12e4170df29554c5d0cabef54c3cdb3f0a1fdba566bf",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::overdue_acks_routes_through_the_remote_hub",
+      "protections": "overdue ACK inspection reads the configured remote hub instead of local Redis.",
+      "detects": "an incorrect endpoint or loss of the returned overdue message record.",
+      "needs": "owned overdue-response fixture and closed local stores.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_overdue_acks`).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "198062d7b6efccbe74772e99fb9ebcbf5a37a9a574d1eccfd9b81c80ac344814",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_and_ack_sweep_commands_refuse_offline_hubs_without_opening_local_redis",
+      "protections": "unavailable configured hubs do not become a silent local thread/ACK view.",
+      "detects": "local Redis fallback or missing offline diagnostics across the command matrix.",
+      "needs": "closed remote candidate ports and independently closed local stores.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (remote thread and ACK command branches).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "dbd9418254dd154268beb28327568d4938ca7eb0659b74c6fb1a6f180a10faf7",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_and_ack_sweep_commands_report_the_hub_error_not_a_loopback_redis_error",
+      "protections": "a responding hub's failure remains the diagnostic authority for these commands.",
+      "detects": "hiding an HTTP failure behind a subsequent local Redis error.",
+      "needs": "owned failing-response hub and isolated command-matrix subprocesses.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (remote thread and ACK error propagation).",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "d4ae933d2979eeeb15a3821ac8b6093a45b9cce1",
+      "disposition": "keep",
+      "scope": "Independent root complete combined commands.rs diff review against origin/main and pinned author QA evidence. The four health/Offline integration hunks preserve thread validation, routing and ACK error handling; the11incoming test bodies are byte unchanged. This is integration source review with author-executed47+1QA, not a root test replay or general legacy-inventory, live store, fleet deployment or durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "6bacb32fcde35c8745008bf015c2bc304926628bd3c229adfd2603303d73f994",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "4445061fb36c43359e9525671403b2a8e16de7ea7041213701b98b93ee17a2b2"
+      },
+      "control": "Root independently read complete combined commands.rs delta against origin/main and pinned main174-qa receipt; KEEP all12incoming selectors with new combined-source bindings. Author actual combined native Windows routing47PASS/0fail/0ignore47.45s plus local-validation1PASS/0fail; strict workspace/all-target Clippy-Dwarnings3.50s/0warnings; fmt unchanged, changed-source rationale91examined/0failing/6427legacy. QA target/pr162-integration/main174-qa.json SHA256ef080eae33b94e889f2026f13e5893740ccab030f460e66b3e1ba6879c20f6e8. Original174RED/GREEN/source-equivalence reviews are archived unchanged; no new RED, root execution, deployment or live store claim.",
+      "breaking_behavior": "Normal main integration combines existing162health backend.to_report and Offline metadata patterns with174thread/ACK routing; no new thread/ACK assertion, timeout, launch flag, route or validation change. Existing CLI/MCP runtime-owner code and prior disclosure remain byte-identical.",
+      "predecessor_review": {
+        "commit": "5d9e43e80e4af4f796a047f811fe97842c761f74",
+        "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
+      }
     }
   ],
   "historical_reviews": [
@@ -10063,6 +10483,839 @@
       "selector_digest": {
         "sha256": "75ab0b07109248e9f88d607dad581f0888c1ea9bb24871dbbf33cf48fe6fa321",
         "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_lifecycle_commands_route_through_the_remote_hub",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "f97fd4f306b9667d7dd990f819bd01b6f393be52ce50ac7d3639e80d96f2cf3f",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "configured-hub thread creation, membership, listing and closure semantics.",
+      "detects": "wrong HTTP verbs, routes, query parameters or creation payload fields.",
+      "needs": "owned loopback request capture and CLI children isolated from real stores.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (thread lifecycle commands).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This existing positive/regression selector was not individually claimed RED; its actual assertions, relevance and author GREEN were reviewed without weakening.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_commands_percent_encode_ids_for_the_hub_path",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "4f0f09f8086799847c4da364cf6e4e052472c7892ea5a01e71b9b54044a2696c",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "spaces and slashes in supported thread IDs remain one URL segment.",
+      "detects": "raw interpolation changing the endpoint or rejecting valid encoded IDs.",
+      "needs": "owned fixture accepting only the exact encoded close route.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`build_hub_url` and `cmd_thread_close`).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This existing positive/regression selector was not individually claimed RED; its actual assertions, relevance and author GREEN were reviewed without weakening.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_commands_reject_dot_only_ids_before_hub_mutation",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "b83f89be1abcf851b3776bdbd18ee4c3670bb12455def0db56b78a57593d31f5",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "a CLI cannot create a thread whose dot-only ID disappears from mutation URLs.",
+      "detects": "creation accepting an ID that join, leave or close cannot address remotely.",
+      "needs": "owned loopback HTTP fixture and isolated CLI children; no fleet backend.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (thread lifecycle commands).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This selector failed at acceptance of dot-only creation after exercising all four commands; final assertions also require zero health/mutation requests.",
+      "breaking_behavior": "CLI create/join/leave/close now consistently refuse dot-only or whitespace-dot IDs before local or remote I/O. Core API behavior and other raw IDs are unchanged."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_lifecycle_preserves_encoded_ids_from_creation_through_mutation",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "43cca4b86c76a1cd8323aaac6c5fc271437bbe74d4bfe21c7ab145b7c2e589e4",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "validation preserves ordinary IDs requiring path-segment encoding.",
+      "detects": "an overbroad ID rejection or creation-to-mutation identity mismatch.",
+      "needs": "owned loopback fixture recording request paths and the creation body.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`build_hub_url` and thread commands).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This existing positive/regression selector was not individually claimed RED; its actual assertions, relevance and author GREEN were reviewed without weakening.",
+      "breaking_behavior": "Positive creation-to-join/leave/close control preserves existing valid space/slash IDs; no new production normalization is permitted."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_commands_validate_before_any_hub_request",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "fa7a45373536ff412e6436c41c30e33839fe8e6b8aa1a14fa4834cd0f18dc982",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "a blank joining agent cannot trigger a remote thread mutation.",
+      "detects": "forwarding invalid membership arguments instead of rejecting them locally.",
+      "needs": "owned fixture recording non-health requests and a failing CLI result.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`thread_member_remote`).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This existing positive/regression selector was not individually claimed RED; its actual assertions, relevance and author GREEN were reviewed without weakening.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::summarize_and_compact_thread_route_through_the_remote_hub",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "25e2ce9bef27e7217e5cbf7fe7625be90977ce16d5f543a53a2ea112835acedf",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "thread summary and compaction use the configured remote hub and CLI output shape.",
+      "detects": "local-store fallback, wrong endpoints, or exposing the compaction envelope.",
+      "needs": "owned canned HTTP responses and closed local stores for isolated CLI children.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_summarize_thread` and `cmd_compact_thread`).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This existing positive/regression selector was not individually claimed RED; its actual assertions, relevance and author GREEN were reviewed without weakening.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::pending_acks_routes_through_the_remote_hub_with_the_agent_filter",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "743d9610ab886be3b31c15933380a56a7df010d742e2bf7002738517daf0ceaf",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "pending ACK reads retain the agent filter and JSON/human output semantics remotely.",
+      "detects": "missing query parameters, wrong paths, or omission of the human stale marker.",
+      "needs": "owned typed-response fixture, captured request targets and isolated CLI children.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_pending_acks` and `render_pending_acks`).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This existing positive/regression selector was not individually claimed RED; its actual assertions, relevance and author GREEN were reviewed without weakening.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::pending_acks_omits_reflected_bearer_from_malformed_success_response",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "9da7683fc46d721495b8141460e6ea45e1d73fd425e472499328534101d5a2e4",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "a malformed successful pending-ACK reply cannot disclose bearer credentials.",
+      "detects": "Serde retaining a reflected invalid value in the printed error chain.",
+      "needs": "authenticated owned mock response, fallback probe counter and isolated CLI.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_pending_acks` and `decode_task_response`).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This selector failed because the synthetic bearer entered the malformed HTTP200 decode error; the valid typed-response control remains.",
+      "breaking_behavior": "Malformed successful pending-ACK responses now fail through the existing sanitized decoder; returned server values no longer enter the error chain. No fallback or success output is allowed."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::overdue_acks_routes_through_the_remote_hub",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "27f0f0deace73d781a9f553362063fdf02eaf55e2146bc062302de59cd9bd22d",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "overdue ACK inspection reads the configured remote hub instead of local Redis.",
+      "detects": "an incorrect endpoint or loss of the returned overdue message record.",
+      "needs": "owned overdue-response fixture and closed local stores.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_overdue_acks`).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This existing positive/regression selector was not individually claimed RED; its actual assertions, relevance and author GREEN were reviewed without weakening.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_and_ack_sweep_commands_refuse_offline_hubs_without_opening_local_redis",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "ece38f7bc428aec5f23e1d65bd3de17f1f9686328773d8aa1b9991becace01da",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "unavailable configured hubs do not become a silent local thread/ACK view.",
+      "detects": "local Redis fallback or missing offline diagnostics across the command matrix.",
+      "needs": "closed remote candidate ports and independently closed local stores.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (remote thread and ACK command branches).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This existing positive/regression selector was not individually claimed RED; its actual assertions, relevance and author GREEN were reviewed without weakening.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_and_ack_sweep_commands_report_the_hub_error_not_a_loopback_redis_error",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "ef0ba8f0ead39d4601f47758cbf18a2a8075fd6d661269a845cd43e26792beac",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "a responding hub's failure remains the diagnostic authority for these commands.",
+      "detects": "hiding an HTTP failure behind a subsequent local Redis error.",
+      "needs": "owned failing-response hub and isolated command-matrix subprocesses.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (remote thread and ACK error propagation).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This existing positive/regression selector was not individually claimed RED; its actual assertions, relevance and author GREEN were reviewed without weakening.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion."
+    },
+    {
+      "selector": "crates/agent-bus-cli/src/commands.rs::tests::thread_commands_reject_dot_only_ids_before_local_bus_access",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "797738edabeede92e00fe41ea23369eb3b5a9c17",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "07301b2c5f1abf3b176f185bd160cd1c8ed16609cfc2c0591a46d5dedfc2ae0c",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "unsupported thread IDs are rejected consistently in local CLI mode.",
+      "detects": "create or membership commands reaching Redis for dot-only identifiers.",
+      "needs": "closed-port settings; the expected validation diagnostic must precede I/O.",
+      "breadcrumb": "crates/agent-bus-cli/src/ (commands.rs, `validate_thread_command_id`).",
+      "control": "Independent root source-only review (tools6393fb/5c46ab/c689d0); no root execution of routing47/CLI166 is claimed. Author owned-loopback RED selected47/failed2 receipt7A781A4A655911B5D4BFB96B80DF926FA29EFA8F9478488A3FD0AF00806DC43E; local validation RED selected166/failed1 B352B2EBF4876A0EB1AE524C5CD997931C8790651101A03CE85F6DC0245E7625. Author full GREEN42B460EA0A428C2E1A085C32C2D63D90C07C1E9F384443E936EEB14D2B5529E7 executed commands8008/hub8BA1. Strict compilation18FF2A96E5A1E118D7A23E92D6C88F3B89E00349EB9BB9F7B53964C12CC2D677 qualifies later assertion-style8D9E. Final18E6 is an inspected Breadcrumb-only successor. Final-current-source normal prepush remains required. This selector failed specifically because dot-only creation reached the deliberately closed Redis port instead of returning the unsupported-ID diagnostic.",
+      "breaking_behavior": "CLI create/join/leave/close now consistently refuse dot-only or whitespace-dot IDs before local or remote I/O. Core API behavior and other raw IDs are unchanged."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_lifecycle_commands_route_through_the_remote_hub",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "53bef49f5675c8ff5316d6890a3fdce8fb2522482b27138418d7d714a50d86ee",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "configured-hub thread creation, membership, listing and closure semantics.",
+      "detects": "wrong HTTP verbs, routes, query parameters or creation payload fields.",
+      "needs": "owned loopback request capture and CLI children isolated from real stores.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (thread lifecycle commands).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_commands_percent_encode_ids_for_the_hub_path",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "f0c3c3d28f251ee782549344a8f24dc07ef137da1bf3fa816677c42504f2ac08",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "spaces and slashes in supported thread IDs remain one URL segment.",
+      "detects": "raw interpolation changing the endpoint or rejecting valid encoded IDs.",
+      "needs": "owned fixture accepting only the exact encoded close route.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`build_hub_url` and `cmd_thread_close`).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_commands_reject_dot_only_ids_before_hub_mutation",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "f1ee95988ab6998db189f2b64b8bfd9e439d99239263e2ca240cd67a0c67103f",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "a CLI cannot create a thread whose dot-only ID disappears from mutation URLs.",
+      "detects": "creation accepting an ID that join, leave or close cannot address remotely.",
+      "needs": "owned loopback HTTP fixture and isolated CLI children; no fleet backend.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (thread lifecycle commands).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "CLI create/join/leave/close now consistently refuse dot-only or whitespace-dot IDs before local or remote I/O. Core API behavior and other raw IDs are unchanged.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_lifecycle_preserves_encoded_ids_from_creation_through_mutation",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "e2069d9729e48537efe9300e81c88ee3bde404241df072ee9a0382b4c18ad2ce",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "validation preserves ordinary IDs requiring path-segment encoding.",
+      "detects": "an overbroad ID rejection or creation-to-mutation identity mismatch.",
+      "needs": "owned loopback fixture recording request paths and the creation body.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`build_hub_url` and thread commands).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "Positive creation-to-join/leave/close control preserves existing valid space/slash IDs; no new production normalization is permitted.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_commands_validate_before_any_hub_request",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "c1d98be019a0422843e148409d59ab343398413007b12cb32140aa93c86cbfc9",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "a blank joining agent cannot trigger a remote thread mutation.",
+      "detects": "forwarding invalid membership arguments instead of rejecting them locally.",
+      "needs": "owned fixture recording non-health requests and a failing CLI result.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`thread_member_remote`).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::summarize_and_compact_thread_route_through_the_remote_hub",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "aeb1cc285b27904c7217360914a1a32806e7d93841e6350580a0f497f804507d",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "thread summary and compaction use the configured remote hub and CLI output shape.",
+      "detects": "local-store fallback, wrong endpoints, or exposing the compaction envelope.",
+      "needs": "owned canned HTTP responses and closed local stores for isolated CLI children.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_summarize_thread` and `cmd_compact_thread`).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::pending_acks_routes_through_the_remote_hub_with_the_agent_filter",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "971a064bb347d7238efb1e919483fab5afd2c3a5f358e34294f4c469a470cf4a",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "pending ACK reads retain the agent filter and JSON/human output semantics remotely.",
+      "detects": "missing query parameters, wrong paths, or omission of the human stale marker.",
+      "needs": "owned typed-response fixture, captured request targets and isolated CLI children.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_pending_acks` and `render_pending_acks`).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::pending_acks_omits_reflected_bearer_from_malformed_success_response",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "96f5fba74a34dce2b79a12e4170df29554c5d0cabef54c3cdb3f0a1fdba566bf",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "a malformed successful pending-ACK reply cannot disclose bearer credentials.",
+      "detects": "Serde retaining a reflected invalid value in the printed error chain.",
+      "needs": "authenticated owned mock response, fallback probe counter and isolated CLI.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_pending_acks` and `decode_task_response`).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "Malformed successful pending-ACK responses now fail through the existing sanitized decoder; returned server values no longer enter the error chain. No fallback or success output is allowed.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::overdue_acks_routes_through_the_remote_hub",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "198062d7b6efccbe74772e99fb9ebcbf5a37a9a574d1eccfd9b81c80ac344814",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "overdue ACK inspection reads the configured remote hub instead of local Redis.",
+      "detects": "an incorrect endpoint or loss of the returned overdue message record.",
+      "needs": "owned overdue-response fixture and closed local stores.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (`cmd_overdue_acks`).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_and_ack_sweep_commands_refuse_offline_hubs_without_opening_local_redis",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "dbd9418254dd154268beb28327568d4938ca7eb0659b74c6fb1a6f180a10faf7",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "unavailable configured hubs do not become a silent local thread/ACK view.",
+      "detects": "local Redis fallback or missing offline diagnostics across the command matrix.",
+      "needs": "closed remote candidate ports and independently closed local stores.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (remote thread and ACK command branches).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::thread_and_ack_sweep_commands_report_the_hub_error_not_a_loopback_redis_error",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+      "disposition": "keep",
+      "scope": "Independent source and evidence review of this named CLI selector only; authored metadata is separate from implementation/assertions. No live store, fleet deployment or general test-inventory certification.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "hash_scope": "whole normalized Rust module including rationale, fixture and assertions"
+      },
+      "selector_digest": {
+        "sha256": "6bacb32fcde35c8745008bf015c2bc304926628bd3c229adfd2603303d73f994",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd"
+      },
+      "protections": "a responding hub's failure remains the diagnostic authority for these commands.",
+      "detects": "hiding an HTTP failure behind a subsequent local Redis error.",
+      "needs": "owned failing-response hub and isolated command-matrix subprocesses.",
+      "breadcrumb": "crates/agent-bus-cli/src/commands.rs (remote thread and ACK error propagation).",
+      "control": "Root independent source-equivalence KEEP of the exact two-line Windows fixture correction: cmd.creation_flags retains its identical argument and invocation; its semicolon moves from inside the cfg(windows) block to outside. No production, test assertion, timeout or launch flag changes. Prior exact8D9E runtime evidence remains normal prepush F8AD05DD5ADD6E48931A406B4F36E3C1682BEBB36C417215D997AAFB6C65E8C1 (signed8e440; CLI166/routing47/core875/HTTP83 plus audit PASS). The complete original review/control row is archived unchanged. Linux Rust1.99/clippy0.1.99 normal gates excluded cfg(windows); hosted Windows1.99 strict Clippy caught semicolon_outside_block at run39556617645/job119080014519 before runtime tests. Author targeted native Windows lint now passes at pinned Rust1.99.0/clippy0.1.99, receipt1DD321303FF3584CF83A779C61DD11E7433E8B25C1BD125EE8E81E68398DAD6B. Normal final-source hooks, genuine incremental Claude review and current-head CI remain required; no root runtime replay of this successor is claimed.",
+      "breaking_behavior": "Review/rationale and hidden fixture launch only; existing assertions preserved. No weaker pass criterion.",
+      "source_equivalence_review": {
+        "reviewer": "codex-gen9-fleet",
+        "scope": "Independent literal two-punctuation source delta review only; reviewer did not author implementation or assertions",
+        "predecessor_commit": "8e440b947c41e01208bfa148601443524e1a90b7",
+        "predecessor_source_sha256": "8d9e9e3c105eb262ed92297550c9dab7116603f3f9603e75994a6b6dfe8bf62a",
+        "successor_source_sha256": "8c8ea42cc2721dfdaec23bb2dddb497dc000f1339b8420999ac486ebefef8efa",
+        "prior_actual_outside_review_receipt_sha256": "d0e71b21021c3ba0013ec086ea3562e80af130823b1f942edc5bd962e1073311"
+      },
+      "native_windows_lint": {
+        "receipt": "C:/codedev/evidence/fleet-unification/artifacts/agent-hub-pr174-native-clippy.json",
+        "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
+        "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
       }
     }
   ]
