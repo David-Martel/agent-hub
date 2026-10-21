@@ -22,15 +22,22 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from typing import Any
 
 API = "https://api.cloudflare.com/client/v4"
+USER_AGENT = "agent-hub-deploy-readback/1.0"
+ERROR_BODY_LIMIT = 4096
 
 
 class DeployMismatch(Exception):
     """The newest deployment does not name the expected commit."""
 
 
-def newest_deployment_names_commit(payload: dict, commit: str) -> str:
+class ReadbackFailure(Exception):
+    """A read failed with endpoint-phase diagnostics safe for CI logs."""
+
+
+def newest_deployment_names_commit(payload: dict[str, Any], commit: str) -> str:
     """Return the version id of the newest deployment, or raise DeployMismatch."""
     deployments = (payload.get("result") or {}).get("deployments") or []
     if not deployments:
@@ -39,27 +46,59 @@ def newest_deployment_names_commit(payload: dict, commit: str) -> str:
     message = (newest.get("annotations") or {}).get("workers/message", "")
     if f"Source{commit}" not in message:
         raise DeployMismatch(
-            f"newest deployment {newest.get('id')} message {message!r} "
-            f"lacks Source{commit}"
+            "newest deployment lacks the expected Source commit annotation"
         )
     versions = newest.get("versions") or []
     if len(versions) != 1 or versions[0].get("percentage") != 100:
-        raise DeployMismatch(
-            f"newest deployment {newest.get('id')} is not 100 percent on one version"
-        )
+        raise DeployMismatch("newest deployment is not 100 percent on one version")
     return versions[0]["version_id"]
 
 
-def get_json(url: str, token: str | None = None) -> dict:
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+def get_json(
+    url: str, token: str | None = None, *, phase: str = "deployments-api"
+) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url, headers={"Accept": "application/json", "User-Agent": USER_AGENT}
+    )
     if token:
         request.add_header("Authorization", "Bearer " + token)
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        codes: list[int] = []
+        try:
+            with error:
+                body = json.loads(error.read(ERROR_BODY_LIMIT))
+            errors = body.get("errors") if isinstance(body, dict) else None
+            for item in errors if isinstance(errors, list) else []:
+                code = item.get("code") if isinstance(item, dict) else None
+                if type(code) is int and 0 <= code <= 99999999 and code not in codes:
+                    codes.append(code)
+                    if len(codes) == 8:
+                        break
+        except (OSError, ValueError):
+            # Optional body diagnostics never replace the HTTP failure below.
+            codes = []
+        status = error.code if type(error.code) is int else "unknown"
+        diagnostic = f"phase={phase} http_status={status}"
+        if codes:
+            diagnostic += " cloudflare_codes=" + ",".join(map(str, codes))
+        raise ReadbackFailure(diagnostic) from None
+    except urllib.error.URLError:
+        raise ReadbackFailure(f"phase={phase} transport_error=URLError") from None
+    except OSError:
+        raise ReadbackFailure(f"phase={phase} transport_error=OSError") from None
+    except ValueError:
+        raise ReadbackFailure(f"phase={phase} invalid_json") from None
+    if not isinstance(payload, dict):
+        raise ReadbackFailure(f"phase={phase} invalid_json")
+    return payload
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    description = __doc__ or "Read back an agentbus-cloud deployment."
+    parser = argparse.ArgumentParser(description=description.splitlines()[0])
     parser.add_argument(
         "--commit", required=True, help="full 40-hex commit the deploy was made from"
     )
@@ -78,15 +117,20 @@ def main(argv: list[str] | None = None) -> int:
             f"{API}/accounts/{args.account_id}/workers/scripts/"
             f"{args.script}/deployments",
             token,
+            phase="deployments-api",
         )
         version = newest_deployment_names_commit(deployments, args.commit)
-        health = get_json(args.health_url)
-    except (DeployMismatch, urllib.error.URLError, ValueError) as error:
+        health = get_json(args.health_url, phase="health")
+    except DeployMismatch as error:
+        print(f"deploy readback FAILED: phase=deployments-api {error}", file=sys.stderr)
+        return 1
+    except ReadbackFailure as error:
         print(f"deploy readback FAILED: {error}", file=sys.stderr)
         return 1
     if health.get("ok") is not True or health.get("runtime") != "cloudflare-workers":
         print(
-            "deploy readback FAILED: /health is not ok from the Workers runtime",
+            "deploy readback FAILED: phase=health "
+            "/health is not ok from the Workers runtime",
             file=sys.stderr,
         )
         return 1
