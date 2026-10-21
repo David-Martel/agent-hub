@@ -33,10 +33,18 @@ struct CacheEntry {
     fingerprint: String,
     url: String,
     role: HubRole,
+    /// Health round-trip of the winning probe, in milliseconds. Absent in
+    /// entries written before link-aware selection existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rtt_ms: Option<u32>,
     resolved_at_unix_ms: u64,
 }
 
 /// Default time-to-live of a cached resolution, in seconds.
+///
+/// Preserve the existing default. Prefix changes and failed remote calls can
+/// invalidate sooner, but adding an interface on an existing prefix need not
+/// change the key. A successful resolution refreshes the entry's timestamp.
 pub const DEFAULT_TTL_SECONDS: u64 = 60;
 
 /// A cached resolution that is still fresh.
@@ -48,6 +56,8 @@ pub struct CachedHub {
     pub role: HubRole,
     /// How old the entry is.
     pub age: Duration,
+    /// Health round-trip of the probe that selected it, when recorded.
+    pub rtt_ms: Option<u32>,
 }
 
 /// The operating-system family that decides the default cache directory.
@@ -170,6 +180,7 @@ impl HubCache {
             url: entry.url,
             role: entry.role,
             age,
+            rtt_ms: entry.rtt_ms,
         })
     }
 
@@ -183,6 +194,21 @@ impl HubCache {
         fingerprint: &str,
         url: &str,
         role: HubRole,
+        now: SystemTime,
+    ) -> io::Result<()> {
+        self.store_with_rtt(fingerprint, url, role, None, now)
+    }
+
+    /// [`Self::store`], also recording the winning probe's round-trip time.
+    ///
+    /// # Errors
+    /// The underlying I/O error; callers treat it as non-fatal.
+    pub fn store_with_rtt(
+        &self,
+        fingerprint: &str,
+        url: &str,
+        role: HubRole,
+        rtt_ms: Option<u32>,
         now: SystemTime,
     ) -> io::Result<()> {
         if !self.enabled() {
@@ -224,6 +250,7 @@ impl HubCache {
             fingerprint: fingerprint.to_owned(),
             url: url.to_owned(),
             role,
+            rtt_ms,
             resolved_at_unix_ms: timestamp,
         };
         let bytes = serde_json::to_vec(&entry).map_err(io::Error::other)?;
@@ -904,6 +931,39 @@ mod tests {
         }
         std::fs::remove_file(&path).expect("remove");
         assert!(cache.load("fp", t0()).is_none(), "absent file is a miss");
+    }
+
+    /// Protects: RTT persistence without breaking pre-RTT cache entries.
+    /// Detects: lost winning RTT or rejecting a valid legacy file.
+    /// Needs: a temporary cache, fixed time and legacy entry.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (`Resolution::succeed`).
+    #[test]
+    fn the_winning_round_trip_is_persisted_and_old_entries_still_load() {
+        // Why: the route cache records RTT, but files written before it existed must stay readable.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cache = cache_in(&dir, TTL);
+        cache
+            .store_with_rtt(
+                "fp",
+                "http://hub.lan:8400",
+                HubRole::Fallback,
+                Some(7),
+                t0(),
+            )
+            .expect("store");
+        assert_eq!(cache.load("fp", t0()).expect("hit").rtt_ms, Some(7));
+        let path = dir.path().join("agent-bus").join("hub-resolution.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"version":1,"fingerprint":"fp","url":"http://hub.lan:8400","role":"fallback","resolved_at_unix_ms":{}}}"#,
+                t0().duration_since(SystemTime::UNIX_EPOCH)
+                    .expect("epoch")
+                    .as_millis()
+            ),
+        )
+        .expect("legacy file");
+        assert_eq!(cache.load("fp", t0()).expect("legacy hit").rtt_ms, None);
     }
 
     #[test]

@@ -123,25 +123,39 @@ fn main_entry_with_args(args: impl IntoIterator<Item = OsString>) -> Result<()> 
     let handle = std::thread::Builder::new()
         .name("agent-bus-main".to_owned())
         .stack_size(MAIN_THREAD_STACK_BYTES)
-        .spawn(move || {
-            let runtime = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .context("failed to build Tokio runtime")?;
-            // `run` is synchronous, but `bootstrap()` spawns the background
-            // PgWriter via `tokio::spawn`, which requires an entered runtime
-            // context. Hold the EnterGuard for the whole call (and keep
-            // `runtime` alive) so spawn/Handle::current work. Dropping the
-            // runtime here (the previous `let _ = runtime;`) panicked every
-            // command at startup with "no reactor running".
-            let _guard = runtime.enter();
-            run(args)
-        })
+        .spawn(move || run_with_cli_runtime(|| run(args)))
         .context("failed to spawn agent-bus main thread")?;
 
     match handle.join() {
         Ok(result) => result,
         Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+struct CliRuntimeOwner(Option<tokio::runtime::Runtime>);
+
+impl Drop for CliRuntimeOwner {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            // A cancelled reqwest request can leave OS DNS running in Tokio's
+            // blocking pool. Command completion must not wait for that worker.
+            runtime.shutdown_background();
+        }
+    }
+}
+
+fn run_with_cli_runtime(action: impl FnOnce() -> Result<()>) -> Result<()> {
+    let owner = CliRuntimeOwner(Some(
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("failed to build Tokio runtime")?,
+    ));
+    // End the entered context before the owner shuts down, including on panic.
+    // Command dispatch still performs its existing explicit service cleanup.
+    {
+        let _guard = owner.0.as_ref().context("CLI runtime unavailable")?.enter();
+        action()
     }
 }
 

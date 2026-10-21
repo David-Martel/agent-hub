@@ -67,6 +67,7 @@ pub struct ConfigFile {
     )]
     pub server_urls: Option<serde_json::Value>,
     pub probe_connect_timeout_ms: Option<u64>,
+    pub probe_stagger_ms: Option<u64>,
     pub hub_cache_ttl_seconds: Option<u64>,
     /// Named network locations used to order hub candidates by their
     /// `sites`; see [`crate::network_location`].
@@ -799,6 +800,10 @@ pub struct Settings {
     pub hub_candidates: Vec<HubCandidate>,
     /// Maximum time spent connecting to one hub.
     pub probe_connect_timeout_ms: u64,
+    /// Head start each worse link class gives the better one when candidates
+    /// are probed concurrently (see [`crate::link_route`]); zero probes every
+    /// candidate at once.
+    pub probe_stagger_ms: u64,
     /// Cross-process resolution cache lifetime; zero disables it.
     pub hub_cache_ttl_seconds: u64,
     /// Invalid configuration must fail closed before any backend operation.
@@ -878,6 +883,7 @@ impl Settings {
             server_urls: Vec::new(),
             hub_candidates: Vec::new(),
             probe_connect_timeout_ms: 750,
+            probe_stagger_ms: crate::link_route::DEFAULT_STAGGER_MS,
             hub_cache_ttl_seconds: 0,
             hub_config_error: None,
             network_locations: Vec::new(),
@@ -1005,10 +1011,15 @@ impl Settings {
                 cfg.probe_connect_timeout_ms,
                 750,
             ),
+            probe_stagger_ms: resolve_parse(
+                "AGENT_BUS_PROBE_STAGGER_MS",
+                cfg.probe_stagger_ms,
+                crate::link_route::DEFAULT_STAGGER_MS,
+            ),
             hub_cache_ttl_seconds: resolve_parse(
                 "AGENT_BUS_HUB_CACHE_TTL_SECONDS",
                 cfg.hub_cache_ttl_seconds,
-                60,
+                crate::hub_cache::DEFAULT_TTL_SECONDS,
             ),
             machine_safe: resolve_parse("AGENT_BUS_MACHINE_SAFE", cfg.machine_safe, false),
             // Bearer token for the HTTP server: env var overrides config file;
@@ -1049,6 +1060,11 @@ impl Settings {
         if self.probe_connect_timeout_ms == 0 || self.probe_connect_timeout_ms > 30_000 {
             return Err(crate::error::AgentBusError::InvalidParams(
                 "probe_connect_timeout_ms must be between 1 and 30000".to_owned(),
+            ));
+        }
+        if self.probe_stagger_ms > 5_000 {
+            return Err(crate::error::AgentBusError::InvalidParams(
+                "probe_stagger_ms must be at most 5000".to_owned(),
             ));
         }
         validate_candidates(&self.effective_hub_candidates())

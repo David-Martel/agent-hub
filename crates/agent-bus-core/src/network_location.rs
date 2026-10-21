@@ -38,13 +38,30 @@ use crate::hub_candidates::HubCandidate;
 pub const LOCATION_OVERRIDE_ENV: &str = "AGENT_BUS_NETWORK_LOCATION";
 
 /// An IP prefix such as `10.60.0.0/16` or `fd00::/8`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Cidr {
     network: IpAddr,
     prefix: u8,
 }
 
+impl std::fmt::Display for Cidr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}", self.network, self.prefix)
+    }
+}
+
 impl Cidr {
+    /// The prefix of `prefix` bits that contains `address`, or `None` when
+    /// `prefix` exceeds the address family's width.
+    #[must_use]
+    pub fn of_address(address: IpAddr, prefix: u8) -> Option<Self> {
+        let max = if address.is_ipv4() { 32 } else { 128 };
+        (prefix <= max).then(|| Self {
+            network: mask(address, prefix),
+            prefix,
+        })
+    }
+
     /// Parse `address/prefix`. The address is masked to the prefix.
     ///
     /// # Errors
@@ -208,6 +225,41 @@ pub trait NetworkProbe {
     fn signals(&self) -> NetworkSignals;
     /// The raw [`LOCATION_OVERRIDE_ENV`] value, if set.
     fn override_value(&self) -> Option<String>;
+    /// The prefix each operationally-up, non-loopback interface address
+    /// belongs to. Unlike [`Self::signals`] this never reads DNS
+    /// configuration, so it is cheap enough to run on every resolution.
+    fn prefixes(&self) -> Vec<Cidr>;
+}
+
+/// A short, stable hash of the local interface prefixes.
+///
+/// Order and duplicates do not matter. Changing the prefix set invalidates
+/// route preference, while same-prefix DHCP renewals and IPv6 privacy rotation
+/// do not. This is not an interface-identity fingerprint: adding another link
+/// on an already-present prefix can leave the key unchanged.
+#[must_use]
+pub fn network_fingerprint(prefixes: &[Cidr]) -> String {
+    use sha2::{Digest, Sha256};
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut sorted: Vec<Cidr> = prefixes.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    let mut hash = Sha256::new();
+    hash.update(b"agent-bus-network-prefixes-v1");
+    for prefix in &sorted {
+        hash.update(prefix.to_string().as_bytes());
+        hash.update([0]);
+    }
+    hash.finalize()
+        .iter()
+        .take(8)
+        .flat_map(|byte| {
+            [
+                char::from(HEX[usize::from(byte >> 4)]),
+                char::from(HEX[usize::from(byte & 15)]),
+            ]
+        })
+        .collect()
 }
 
 /// Names of every rule the signals match, in rule order.
@@ -317,6 +369,25 @@ impl NetworkProbe for SystemNetwork {
     fn override_value(&self) -> Option<String> {
         std::env::var(LOCATION_OVERRIDE_ENV).ok()
     }
+
+    fn prefixes(&self) -> Vec<Cidr> {
+        if_addrs::get_if_addrs()
+            .map(|interfaces| {
+                interfaces
+                    .into_iter()
+                    .filter(|interface| interface.is_oper_up() && !interface.is_loopback())
+                    .filter_map(|interface| match &interface.addr {
+                        if_addrs::IfAddr::V4(v4) => {
+                            Cidr::of_address(IpAddr::V4(v4.ip), v4.prefixlen)
+                        }
+                        if_addrs::IfAddr::V6(v6) => {
+                            Cidr::of_address(IpAddr::V6(v6.ip), v6.prefixlen)
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// Parse `search`/`domain` lines of a resolv.conf-format file.
@@ -411,6 +482,16 @@ mod tests {
         }
         fn override_value(&self) -> Option<String> {
             self.override_value.clone()
+        }
+        fn prefixes(&self) -> Vec<Cidr> {
+            // Treat every address as a /24 (v4) or /64 (v6) attachment.
+            self.signals
+                .addresses
+                .iter()
+                .filter_map(|address| {
+                    Cidr::of_address(*address, if address.is_ipv4() { 24 } else { 64 })
+                })
+                .collect()
         }
     }
 
@@ -595,6 +676,50 @@ mod tests {
                 "home.example.com".to_owned(),
                 "corp.example".to_owned()
             ]
+        );
+    }
+
+    /// Protects: attachment keys ignore order, duplicates and host rotation.
+    /// Detects: same-prefix DHCP/privacy changes altering the cache key.
+    /// Needs: synthetic IPv4 interfaces sharing network prefixes.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (`system_network_fingerprint`).
+    #[test]
+    fn fingerprint_ignores_order_duplicates_and_host_bits() {
+        // Why: DHCP renewals and v6 privacy rotation must not look like a new network.
+        let a = network(&["192.168.50.7", "10.60.0.2"], &[]).prefixes();
+        let b = network(&["10.60.0.9", "192.168.50.200", "192.168.50.7"], &[]).prefixes();
+        assert_eq!(network_fingerprint(&a), network_fingerprint(&b));
+    }
+
+    /// Protects: attachment changes invalidate route selection cache keys.
+    /// Detects: identical keys after adding fabric or removing interfaces.
+    /// Needs: synthetic LAN/fabric prefixes and an empty set.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (`system_network_fingerprint`).
+    #[test]
+    fn fingerprint_changes_when_an_attachment_appears_or_disappears() {
+        // Why: plugging in a Thunderbolt/USB-C Ethernet link must trigger a re-probe.
+        let lan = network(&["192.168.50.7"], &[]).prefixes();
+        let lan_and_fabric = network(&["192.168.50.7", "10.60.0.2"], &[]).prefixes();
+        assert_ne!(
+            network_fingerprint(&lan),
+            network_fingerprint(&lan_and_fabric)
+        );
+        assert_ne!(network_fingerprint(&lan), network_fingerprint(&[]));
+        assert_eq!(network_fingerprint(&lan).len(), 16);
+    }
+
+    /// Protects: system discovery excludes the IPv4 loopback prefix.
+    /// Detects: an enumerated prefix containing the loopback address.
+    /// Needs: host interface enumeration; no nonempty or IPv6 claim.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (`system_network_fingerprint`).
+    #[test]
+    fn system_prefixes_are_never_loopback() {
+        // Why: loopback is present on every host and would add no signal.
+        assert!(
+            SystemNetwork
+                .prefixes()
+                .iter()
+                .all(|prefix| !prefix.contains(IpAddr::from([127, 0, 0, 1])))
         );
     }
 

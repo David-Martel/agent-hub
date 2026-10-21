@@ -187,6 +187,7 @@ fn isolated_settings(redis_url: String) -> Settings {
         server_urls: Vec::new(),
         hub_candidates: Vec::new(),
         probe_connect_timeout_ms: 750,
+        probe_stagger_ms: agent_bus_core::link_route::DEFAULT_STAGGER_MS,
         hub_cache_ttl_seconds: 0,
         hub_config_error: None,
         network_locations: Vec::new(),
