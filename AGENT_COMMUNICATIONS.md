@@ -150,7 +150,7 @@ The recent WezTerm Codex/Claude collaboration settled on a repeatable shape:
 
 ## Conventions (2026-10-20)
 
-Fleet-wide, owner-approved. They use only existing commands and flags, and they follow the [agent-bus proposal](#evidence-for-these-conventions) items A1, A2, A3 and A5. The code changes they need are tracked as agent-hub issues: #165 (remote-mode thread/ack commands), #166 (durable ack deadlines), #167 (read pagination and grep), #168 (implicit presence and a lane registry), #169 (typed fields), #170 (body limit), #171 (identity map) and #172 (review routing). Each convention below says what to do and why.
+Fleet-wide, owner-approved. They use existing commands and flags and follow the [agent-bus proposal](#evidence-for-these-conventions) items A1, A2, A3 and A5. The related work is tracked in agent-hub issues: #165 (remote-mode thread/ack commands, implemented by #174), #166 (durable ack deadlines, implemented by #175), #167 (read pagination and grep), #168 (implicit presence and a lane registry), #169 (typed fields), #170 (body guidance, updated by #176), #171 (identity map) and #172 (review routing). Source integration does not establish deployment on every host; the compatibility notes below distinguish older binaries.
 
 ### C1. Canonical claim names with short leases (A1)
 
@@ -173,7 +173,7 @@ agent-bus claims --resource "usb:asuspro13:0403:6001:A50285BI"   # check before 
 
 - Always pass `--lease-ttl-seconds`, sized to the work: 600 to 1800 for devices and displays, at most 3600 for repo paths. Renew it with `renew-claim` before it expires. A crashed holder then frees the device within one lease, not after the 1 h default.
 - Keep the default `--mode exclusive` for devices. `--namespace` belongs to `--mode shared_namespaced` (for example a shared cargo target dir) and is not the claim name.
-- **HIL and device tools must refuse to open a device that another agent holds.** Before opening, vigil-vv, the reed and obsbot harnesses, and any serial/USB/camera tool run `agent-bus claims --resource <claim-string>`. If that shows a `granted` claim held by a different agent, they exit non-zero and name the holder. Claims are cooperative, so this check is what makes them binding. Without it, agy opened the REED meters while claude held them and corrupted R8080 replies.
+- **HIL and device tools require their own current, granted exclusive lease before opening.** Before opening, vigil-vv, the reed and obsbot harnesses, and any serial/USB/camera tool run `agent-bus claims --resource <claim-string> --encoding json`. Require a matching resource and opening agent, `status=granted`, `mode=exclusive`, and a valid `expires_at` later than the current time. Exit non-zero on a contested, missing, expired or malformed lease, a different holder, or a failed claim query; include the known holder or the failed check in the error. A successful CLI exit alone does not grant access. Renew and recheck while holding the device, and stop device I/O if ownership cannot be confirmed. Claims are cooperative rather than an atomic device lock; every opener must enforce this guard. Without coordination, agy opened the REED meters while claude held them and corrupted R8080 replies. The arbitration and expiry behavior is implemented in [channels.rs](./crates/agent-bus-core/src/channels.rs).
 
 ### C2. One thread per work item (A2)
 
@@ -185,7 +185,7 @@ agent-bus claims --resource "usb:asuspro13:0403:6001:A50285BI"   # check before 
 
 Why: `machine-hygiene` carried 28% of all traffic in one 500-message sample and 23% in another. Following one item's history meant scanning thousands of messages. Thread membership does not hide messages, so the lead can still read any thread.
 
-> **Known gap ([#165](https://github.com/David-Martel/agent-hub/issues/165)):** in remote mode (client `server_url` set, no local Redis), `thread-create`, `thread-list`, `thread-close`, `summarize-thread` and `compact-thread` still try local Redis and fail. Until it is fixed, run those on the hub host. Elsewhere, `send --thread-id` and `read --thread-id` work, and they carry the convention.
+> **Compatibility ([#165](https://github.com/David-Martel/agent-hub/issues/165), fixed by [#174](https://github.com/David-Martel/agent-hub/pull/174)):** current [CLI commands](./crates/agent-bus-cli/src/commands.rs) route thread commands, thread summaries/compaction and ack sweeps to the configured remote hub. Older clients may still try local Redis. Until that client's deployed build is verified to include the fix, run those commands on the hub host; `send --thread-id` and `read --thread-id` carry the convention remotely.
 
 ### C3. Directed questions need acks; overdue acks escalate (A3)
 
@@ -194,13 +194,13 @@ Why: `machine-hygiene` carried 28% of all traffic in one 500-message sample and 
 - **Escalation sweep:** the coordination lead (currently `claude-asus-hygiene`) runs `agent-bus overdue-acks --encoding json` and, as a cross-check, reads its own `--request-ack` messages in the window for a missing `ack`. A question unacknowledged after **2 h** is re-sent to the lead with `knock --request-ack`. After **8 h** it goes to the owner on `machine-hygiene` as `ESCALATED <thread-id>: <question>`.
 - An unattended or busy agent says so with `agent-bus presence --agent <id> --status busy` (valid values: `online|offline|busy`). The sweep skips recipients that are `busy` or `offline`, so they don't trigger false escalations. Implicit presence is proposed in [#168](https://github.com/David-Martel/agent-hub/issues/168).
 
-> **Known gap ([#166](https://github.com/David-Martel/agent-hub/issues/166)):** today an ack-deadline record expires at its own deadline, so `overdue-acks` rarely lists anything. `pending-acks` entries also expire after 300 s, and both commands need local Redis (#165). Until those land, the sweep relies on the durable messages: a `--request-ack` message with no `ack` whose `reply_to` is its id.
+> **Compatibility ([#166](https://github.com/David-Martel/agent-hub/issues/166), fixed by [#175](https://github.com/David-Martel/agent-hub/pull/175)):** current [deadline storage](./crates/agent-bus-core/src/redis_bus.rs) retains an ack-deadline record for seven days after its deadline, unless an ack clears it. Older hubs expired that record at the deadline, and upgrading cannot recover records already lost. `pending-acks` still has its shorter retention, so it is not the overdue-history ledger. Cross-check durable `--request-ack` messages for an `ack` whose `reply_to` is the original message id, especially across upgrades or beyond the retention window. Remote ack sweeps require the client fix described under C2.
 
 ### C4. Cite evidence by path and SHA-256; don't paste it (A5)
 
 - Put results, logs, diffs and receipts in a file. Cite them as `evidence: <host>:<absolute-or-~-path> sha256:<64-hex>`, for example `evidence: asuspro13:~/dev/evidence/run-42/manifest.json sha256:3f1c…` (write the full hash, not a shortened one).
 - Compute the hash with `sha256sum <file>` (Linux) or `Get-FileHash <file>` (Windows), and cite the hash of the exact bytes you mean.
-- The message body keeps only the conclusion, the decision needed and the citation. That keeps bodies readable within the 2000-character guidance with no space-stripping, and recipients can check what was cited.
+- The message body keeps only the conclusion, the decision needed and the citation. The current [MCP instructions](./crates/agent-bus-mcp/src/mcp.rs) advise about 6000 characters of normal prose with spaces; that is a readability budget, not the enforced byte limit. Never strip spaces to fit. Recipients can check the cited evidence without receiving it inline.
 - If the reader has no access to the host, say how to fetch the file (repo path plus commit, artifact URL, or the governed cloud store).
 
 ### Evidence for these conventions
