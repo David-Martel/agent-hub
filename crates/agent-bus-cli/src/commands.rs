@@ -99,6 +99,21 @@ fn append_ack_path(url: &mut reqwest::Url, message_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Build `<hub>/<segments...>?<query>` with every segment and query value
+/// percent-encoded, so an id such as `a b/c` cannot change the route (#165).
+#[cfg(feature = "server-mode")]
+fn build_hub_url(base: &str, segments: &[&str], query: &[(&str, &str)]) -> Result<String> {
+    let mut url = reqwest::Url::parse(base).context("invalid hub URL")?;
+    url.path_segments_mut()
+        .map_err(|()| anyhow::anyhow!("hub URL does not support path segments"))?
+        .pop_if_empty()
+        .extend(segments);
+    if !query.is_empty() {
+        url.query_pairs_mut().extend_pairs(query);
+    }
+    Ok(url.to_string())
+}
+
 #[cfg(feature = "server-mode")]
 fn build_server_resource_url(base: &str, resource: &str, action: Option<&str>) -> Result<String> {
     let mut url = reqwest::Url::parse(base).context("invalid server URL")?;
@@ -169,6 +184,14 @@ fn decode_task_response<T: serde::de::DeserializeOwned>(
 fn validated_task_body(task: &str) -> Result<&str> {
     let body = non_empty(task, "--task")?;
     Ok(non_empty(body, "body")?)
+}
+
+/// Reject thread identifiers that URL path construction would normalize away.
+fn validate_thread_command_id(thread_id: &str) -> Result<()> {
+    if matches!(non_empty(thread_id, "thread_id")?, "." | "..") {
+        anyhow::bail!("thread_id '.' and '..' are unsupported");
+    }
+    Ok(())
 }
 
 fn list_filtered_messages(
@@ -838,18 +861,39 @@ pub(crate) fn cmd_ack(
 /// List messages awaiting acknowledgement.
 ///
 /// Scans Redis for all `agent_bus:pending_ack:*` keys and prints the results.
-/// Entries older than 60 seconds are flagged as STALE.
+/// Entries older than 60 seconds are flagged as STALE. When a remote hub is
+/// configured (#165) the list comes from `GET /pending-acks` instead and no
+/// local Redis is opened.
 ///
 /// # Errors
 ///
-/// Returns an error if the Redis connection or SCAN commands fail.
+/// Returns an error if the Redis connection or SCAN commands fail, or, in
+/// remote mode, if no hub answers or the hub's reply is malformed.
 pub(crate) fn cmd_pending_acks(
     settings: &Settings,
     agent: Option<&str>,
     encoding: &Encoding,
 ) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = resolve_hub_url(settings, "pending-acks")?;
+        let query: Vec<(&str, &str)> = agent.map(|agent| ("agent", agent)).into_iter().collect();
+        let url = build_hub_url(&base, &["pending-acks"], &query)?;
+        let value = http_get(&url)?;
+        let pending: Vec<agent_bus_core::redis_bus::PendingAck> =
+            decode_task_response(value, "hub returned a malformed /pending-acks body")?;
+        render_pending_acks(&pending, encoding);
+        return Ok(());
+    }
+
     let mut conn = connect(settings)?;
     let pending = ops_list_pending_acks(&mut conn, agent)?;
+    render_pending_acks(&pending, encoding);
+    Ok(())
+}
+
+/// Print pending acks as the human table or the machine encodings.
+fn render_pending_acks(pending: &[agent_bus_core::redis_bus::PendingAck], encoding: &Encoding) {
     if matches!(encoding, Encoding::Human) {
         if pending.is_empty() {
             println!("No pending acknowledgements.");
@@ -859,7 +903,7 @@ pub(crate) fn cmd_pending_acks(
                 "MESSAGE ID", "RECIPIENT", "SENT AT"
             );
             println!("{}", "-".repeat(90));
-            for p in &pending {
+            for p in pending {
                 let status = if p.stale { "STALE" } else { "waiting" };
                 println!(
                     "{:<38}  {:<12}  {:<26}  {}",
@@ -869,9 +913,8 @@ pub(crate) fn cmd_pending_acks(
             println!("\n{} pending ack(s)", pending.len());
         }
     } else {
-        output(&pending, encoding);
+        output(pending, encoding);
     }
-    Ok(())
 }
 
 pub(crate) fn cmd_presence(settings: &Settings, args: &PresenceArgs<'_>) -> Result<()> {
@@ -2177,6 +2220,24 @@ pub(crate) fn cmd_summarize_thread(
     limit: usize,
     encoding: &Encoding,
 ) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = resolve_hub_url(settings, "summarize-thread")?;
+        let since = since_minutes.to_string();
+        let limit = limit.to_string();
+        let url = build_hub_url(
+            &base,
+            &["thread-summary"],
+            &[
+                ("thread_id", thread_id),
+                ("since_minutes", &since),
+                ("limit", &limit),
+            ],
+        )?;
+        output(&http_get(&url)?, encoding);
+        return Ok(());
+    }
+
     let summary = ops_summarize_thread(
         settings,
         &SummarizeThreadRequest {
@@ -2205,6 +2266,28 @@ pub(crate) fn cmd_compact_thread(
     limit: usize,
     encoding: &Encoding,
 ) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = resolve_hub_url(settings, "compact-thread")?;
+        let url = build_hub_url(&base, &["compact-thread"], &[])?;
+        let reply = http_post(
+            &url,
+            &serde_json::json!({
+                "thread_id": thread_id,
+                "token_budget": token_budget,
+                "since_minutes": since_minutes,
+                "limit": limit,
+            }),
+        )?;
+        // Local mode prints only the message list; keep the remote output identical.
+        let messages = reply
+            .get("messages")
+            .cloned()
+            .context("hub returned a /compact-thread body without `messages`")?;
+        output(&messages, encoding);
+        return Ok(());
+    }
+
     let mut conn = connect(settings)?;
     let result = compact_thread_op(
         &mut conn,
@@ -2506,7 +2589,8 @@ pub(crate) fn cmd_inventory(
 ///
 /// # Errors
 ///
-/// Returns an error if `created_by` is empty, or the Redis connection fails.
+/// Returns an error if `created_by` is empty, a supplied thread ID is dot-only,
+/// or the Redis connection fails.
 pub(crate) fn cmd_thread_create(
     settings: &Settings,
     thread_id: Option<&str>,
@@ -2516,6 +2600,25 @@ pub(crate) fn cmd_thread_create(
     encoding: &Encoding,
 ) -> Result<()> {
     use crate::ops::thread::{CreateThreadRequest, create_thread as ops_create_thread};
+
+    if let Some(id) = thread_id.filter(|id| !id.trim().is_empty()) {
+        validate_thread_command_id(id)?;
+    }
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let created_by = non_empty(created_by, "created_by")?;
+        let base = resolve_hub_url(settings, "thread-create")?;
+        let url = build_hub_url(&base, &["threads"], &[])?;
+        let mut payload = serde_json::json!({ "created_by": created_by });
+        for (key, value) in [("thread_id", thread_id), ("repo", repo), ("topic", topic)] {
+            if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+                payload[key] = serde_json::Value::String(value.to_owned());
+            }
+        }
+        output(&http_post(&url, &payload)?, encoding);
+        return Ok(());
+    }
 
     let thread = ops_create_thread(
         settings,
@@ -2535,8 +2638,8 @@ pub(crate) fn cmd_thread_create(
 ///
 /// # Errors
 ///
-/// Returns an error if `thread_id` or `agent` is empty, the thread does not
-/// exist, or the Redis connection fails.
+/// Returns an error if `thread_id` or `agent` is empty, the ID is dot-only,
+/// the thread does not exist, or the Redis connection fails.
 pub(crate) fn cmd_thread_join(
     settings: &Settings,
     thread_id: &str,
@@ -2544,6 +2647,13 @@ pub(crate) fn cmd_thread_join(
     encoding: &Encoding,
 ) -> Result<()> {
     use crate::ops::thread::{ThreadMemberRequest, join_thread as ops_join_thread};
+
+    validate_thread_command_id(thread_id)?;
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        return thread_member_remote(settings, "thread-join", "join", thread_id, agent, encoding);
+    }
 
     let thread = ops_join_thread(settings, &ThreadMemberRequest { thread_id, agent })?;
 
@@ -2555,8 +2665,8 @@ pub(crate) fn cmd_thread_join(
 ///
 /// # Errors
 ///
-/// Returns an error if `thread_id` or `agent` is empty, the thread does not
-/// exist, or the Redis connection fails.
+/// Returns an error if `thread_id` or `agent` is empty, the ID is dot-only,
+/// the thread does not exist, or the Redis connection fails.
 pub(crate) fn cmd_thread_leave(
     settings: &Settings,
     thread_id: &str,
@@ -2565,9 +2675,41 @@ pub(crate) fn cmd_thread_leave(
 ) -> Result<()> {
     use crate::ops::thread::{ThreadMemberRequest, leave_thread as ops_leave_thread};
 
+    validate_thread_command_id(thread_id)?;
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        return thread_member_remote(
+            settings,
+            "thread-leave",
+            "leave",
+            thread_id,
+            agent,
+            encoding,
+        );
+    }
+
     let thread = ops_leave_thread(settings, &ThreadMemberRequest { thread_id, agent })?;
 
     output(&serde_json::to_value(&thread)?, encoding);
+    Ok(())
+}
+
+/// Join or leave a thread on the remote hub (`PUT /threads/{id}/{action}?agent=`).
+#[cfg(feature = "server-mode")]
+fn thread_member_remote(
+    settings: &Settings,
+    command: &str,
+    action: &str,
+    thread_id: &str,
+    agent: &str,
+    encoding: &Encoding,
+) -> Result<()> {
+    let thread_id = non_empty(thread_id, "thread_id")?;
+    let agent = non_empty(agent, "agent")?;
+    let base = resolve_hub_url(settings, command)?;
+    let url = build_hub_url(&base, &["threads", thread_id, action], &[("agent", agent)])?;
+    output(&http_put(&url, &serde_json::json!({}))?, encoding);
     Ok(())
 }
 
@@ -2578,6 +2720,14 @@ pub(crate) fn cmd_thread_leave(
 /// Returns an error if the Redis connection fails.
 pub(crate) fn cmd_thread_list(settings: &Settings, encoding: &Encoding) -> Result<()> {
     use crate::ops::thread::list_threads as ops_list_threads;
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = resolve_hub_url(settings, "thread-list")?;
+        let url = build_hub_url(&base, &["threads"], &[])?;
+        output(&http_get(&url)?, encoding);
+        return Ok(());
+    }
 
     let threads = ops_list_threads(settings)?;
     let count = threads.len();
@@ -2592,14 +2742,25 @@ pub(crate) fn cmd_thread_list(settings: &Settings, encoding: &Encoding) -> Resul
 ///
 /// # Errors
 ///
-/// Returns an error if `thread_id` is empty, the thread does not exist,
-/// or the Redis connection fails.
+/// Returns an error if `thread_id` is empty or dot-only, the thread does not
+/// exist, or the Redis connection fails.
 pub(crate) fn cmd_thread_close(
     settings: &Settings,
     thread_id: &str,
     encoding: &Encoding,
 ) -> Result<()> {
     use crate::ops::thread::close_thread as ops_close_thread;
+
+    validate_thread_command_id(thread_id)?;
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let thread_id = non_empty(thread_id, "thread_id")?;
+        let base = resolve_hub_url(settings, "thread-close")?;
+        let url = build_hub_url(&base, &["threads", thread_id, "close"], &[])?;
+        output(&http_put(&url, &serde_json::json!({}))?, encoding);
+        return Ok(());
+    }
 
     let thread = ops_close_thread(settings, thread_id)?;
     output(&serde_json::to_value(&thread)?, encoding);
@@ -2617,6 +2778,14 @@ pub(crate) fn cmd_thread_close(
 /// Returns an error if the Redis connection fails.
 pub(crate) fn cmd_overdue_acks(settings: &Settings, encoding: &Encoding) -> Result<()> {
     use crate::ops::ack_deadline::check_overdue_acks as ops_check_overdue_acks;
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = resolve_hub_url(settings, "overdue-acks")?;
+        let url = build_hub_url(&base, &["overdue-acks"], &[])?;
+        output(&http_get(&url)?, encoding);
+        return Ok(());
+    }
 
     let overdue = ops_check_overdue_acks(settings)?;
     let count = overdue.len();
@@ -2990,6 +3159,43 @@ mod tests {
         .expect_err("blank created_by must fail");
 
         assert!(err.to_string().contains("created_by"));
+    }
+
+    /// Protects: unsupported thread IDs are rejected consistently in local CLI mode.
+    /// Detects: create or membership commands reaching Redis for dot-only identifiers.
+    /// Needs: closed-port settings; the expected validation diagnostic must precede I/O.
+    /// Breadcrumb: crates/agent-bus-cli/src/ (commands.rs, `validate_thread_command_id`).
+    #[test]
+    fn thread_commands_reject_dot_only_ids_before_local_bus_access() {
+        for id in [".", "..", " . ", " .. "] {
+            let settings = test_settings();
+            for (command, result) in [
+                (
+                    "thread-create",
+                    cmd_thread_create(&settings, Some(id), "fixture", None, None, &Encoding::Json),
+                ),
+                (
+                    "thread-join",
+                    cmd_thread_join(&settings, id, "fixture", &Encoding::Json),
+                ),
+                (
+                    "thread-leave",
+                    cmd_thread_leave(&settings, id, "fixture", &Encoding::Json),
+                ),
+                (
+                    "thread-close",
+                    cmd_thread_close(&settings, id, &Encoding::Json),
+                ),
+            ] {
+                let diagnostic = result
+                    .expect_err("dot-only ID must fail before accessing a backend")
+                    .to_string();
+                assert!(
+                    diagnostic.contains("unsupported"),
+                    "{command} did not reject {id:?} before backend access: {diagnostic}"
+                );
+            }
+        }
     }
 
     #[test]
