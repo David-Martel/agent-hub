@@ -1828,3 +1828,403 @@ fn claim_reports_pending_when_only_a_non_authoritative_candidate_answers() {
         "authoritative-only claims must make no request to a fallback candidate"
     );
 }
+
+// ---------------------------------------------------------------------------
+// threads and ack sweeps — remote routing (#165, the CLI half of #78)
+// ---------------------------------------------------------------------------
+//
+// These commands used to open local Redis unconditionally, so on any host whose
+// client config sets `server_url` they failed with a loopback Redis error even
+// though the hub already serves `/threads`, `/thread-summary`,
+// `/compact-thread`, `/pending-acks` and `/overdue-acks`. Every test below pins
+// Redis to a closed port (see `isolated_agent_bus`), so a regression that opens
+// local Redis fails loudly instead of quietly reaching a real backend.
+
+/// Requests the mock hub saw, minus the `/health` probe every command makes.
+fn hub_requests_except_health(hub: &MockHub) -> Vec<serde_json::Value> {
+    hub.requests()
+        .into_iter()
+        .filter(|request| request["target"] != "/health")
+        .collect()
+}
+
+fn thread_fixture(thread_id: &str, status: &str) -> String {
+    serde_json::json!({
+        "thread_id": thread_id,
+        "created_by": "claude",
+        "created_at": "2026-10-21T00:00:00Z",
+        "members": ["claude", "codex"],
+        "repo": "agent-hub",
+        "topic": "review",
+        "status": status,
+    })
+    .to_string()
+}
+
+fn run_ok(command: &mut Command, what: &str) -> String {
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("run {what}: {error}"));
+    assert!(
+        output.status.success(),
+        "{what} failed\nstdout: {}\nstderr: {}",
+        stdout_of(&output),
+        stderr_of(&output)
+    );
+    stdout_of(&output)
+}
+
+#[test]
+fn thread_lifecycle_commands_route_through_the_remote_hub() {
+    let member_route = |method: &'static str, path: &'static str| MockRoute {
+        method,
+        path,
+        status: 200,
+        body: thread_fixture("item-1", "open"),
+    };
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "POST",
+            path: "/threads",
+            status: 201,
+            body: thread_fixture("item-1", "open"),
+        },
+        member_route("PUT", "/threads/item-1/join"),
+        member_route("PUT", "/threads/item-1/leave"),
+        MockRoute {
+            method: "GET",
+            path: "/threads",
+            status: 200,
+            body: format!(
+                r#"{{"threads": [{}], "count": 1}}"#,
+                thread_fixture("item-1", "open")
+            ),
+        },
+        MockRoute {
+            method: "PUT",
+            path: "/threads/item-1/close",
+            status: 200,
+            body: thread_fixture("item-1", "closed"),
+        },
+    ]);
+    let calls: [(&str, &[&str]); 5] = [
+        (
+            "thread-create",
+            &[
+                "--thread-id",
+                "item-1",
+                "--created-by",
+                "claude",
+                "--repo",
+                "agent-hub",
+                "--topic",
+                "review",
+            ],
+        ),
+        (
+            "thread-join",
+            &["--thread-id", "item-1", "--agent", "codex"],
+        ),
+        (
+            "thread-leave",
+            &["--thread-id", "item-1", "--agent", "codex"],
+        ),
+        ("thread-list", &[]),
+        ("thread-close", &["--thread-id", "item-1"]),
+    ];
+    let outputs: Vec<String> = calls
+        .iter()
+        .map(|(command, args)| {
+            run_ok(
+                agent_bus_with_hub_candidates(&[hub.url()], command)
+                    .arg(command)
+                    .args(*args)
+                    .args(["--encoding", "json"]),
+                command,
+            )
+        })
+        .collect();
+    assert!(outputs[0].contains("item-1"), "create: {}", outputs[0]);
+    assert!(outputs[3].contains("item-1"), "list: {}", outputs[3]);
+    assert!(outputs[4].contains("closed"), "close: {}", outputs[4]);
+
+    let requests = hub_requests_except_health(&hub);
+    let seen: Vec<(&str, &str)> = requests
+        .iter()
+        .map(|r| {
+            (
+                r["method"].as_str().unwrap_or_default(),
+                r["target"].as_str().unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        [
+            ("POST", "/threads"),
+            ("PUT", "/threads/item-1/join?agent=codex"),
+            ("PUT", "/threads/item-1/leave?agent=codex"),
+            ("GET", "/threads"),
+            ("PUT", "/threads/item-1/close"),
+        ],
+        "unexpected hub traffic: {requests:?}"
+    );
+    let create_body: serde_json::Value =
+        serde_json::from_str(requests[0]["body"].as_str().unwrap_or("{}")).expect("create body");
+    assert_eq!(create_body["created_by"], "claude");
+    assert_eq!(create_body["thread_id"], "item-1");
+    assert_eq!(create_body["repo"], "agent-hub");
+    assert_eq!(create_body["topic"], "review");
+}
+
+#[test]
+fn thread_commands_percent_encode_ids_for_the_hub_path() {
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "PUT",
+            path: "/threads/a%20b%2Fc/close",
+            status: 200,
+            body: thread_fixture("a b/c", "closed"),
+        },
+    ]);
+    let stdout = run_ok(
+        agent_bus_with_hub_candidates(&[hub.url()], "thread-close-encoded").args([
+            "thread-close",
+            "--thread-id",
+            "a b/c",
+            "--encoding",
+            "json",
+        ]),
+        "thread-close with a hostile id",
+    );
+    assert!(stdout.contains("closed"), "{stdout}");
+}
+
+#[test]
+fn thread_commands_validate_before_any_hub_request() {
+    let hub = MockHub::spawn(vec![health_route()]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "thread-blank")
+        .args([
+            "thread-join",
+            "--thread-id",
+            "item-1",
+            "--agent",
+            "   ",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run thread-join");
+    assert!(!output.status.success());
+    assert!(
+        stderr_of(&output).contains("agent"),
+        "{}",
+        stderr_of(&output)
+    );
+    assert!(
+        hub_requests_except_health(&hub).is_empty(),
+        "a blank agent must be rejected before the hub is asked to mutate anything"
+    );
+}
+
+#[test]
+fn summarize_and_compact_thread_route_through_the_remote_hub() {
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/thread-summary",
+            status: 200,
+            body: r#"{"session": "item-1", "message_count": 3, "agents": ["claude"]}"#.to_owned(),
+        },
+        MockRoute {
+            method: "POST",
+            path: "/compact-thread",
+            status: 200,
+            body: r#"{"messages": [{"id": "m-1", "body": "hi"}], "token_count": 5, "truncated": false}"#
+                .to_owned(),
+        },
+    ]);
+    let summary = run_ok(
+        agent_bus_with_hub_candidates(&[hub.url()], "summarize-thread-remote").args([
+            "summarize-thread",
+            "--thread-id",
+            "item-1",
+            "--since-minutes",
+            "120",
+            "--limit",
+            "50",
+            "--encoding",
+            "json",
+        ]),
+        "summarize-thread",
+    );
+    assert!(summary.contains("message_count"), "{summary}");
+
+    let compact = run_ok(
+        agent_bus_with_hub_candidates(&[hub.url()], "compact-thread-remote").args([
+            "compact-thread",
+            "--thread-id",
+            "item-1",
+            "--token-budget",
+            "2000",
+            "--encoding",
+            "json",
+        ]),
+        "compact-thread",
+    );
+    // Local mode prints only the message list; the remote path must match.
+    assert!(compact.contains("m-1"), "{compact}");
+    assert!(!compact.contains("token_count"), "{compact}");
+
+    let requests = hub_requests_except_health(&hub);
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    let summary_target = requests[0]["target"].as_str().unwrap_or_default();
+    assert!(
+        summary_target.starts_with("/thread-summary?")
+            && summary_target.contains("thread_id=item-1")
+            && summary_target.contains("since_minutes=120")
+            && summary_target.contains("limit=50"),
+        "{summary_target}"
+    );
+    let compact_body: serde_json::Value =
+        serde_json::from_str(requests[1]["body"].as_str().unwrap_or("{}")).expect("compact body");
+    assert_eq!(compact_body["thread_id"], "item-1");
+    assert_eq!(compact_body["token_budget"], 2000);
+}
+
+#[test]
+fn pending_acks_routes_through_the_remote_hub_with_the_agent_filter() {
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/pending-acks",
+            status: 200,
+            body: r#"[{"message_id": "msg-9", "recipient": "gemini", "sent_at": "2026-10-21T00:00:00Z", "stale": true}]"#
+                .to_owned(),
+        },
+    ]);
+    let json = run_ok(
+        agent_bus_with_hub_candidates(&[hub.url()], "pending-acks-remote").args([
+            "pending-acks",
+            "--agent",
+            "gemini",
+            "--encoding",
+            "json",
+        ]),
+        "pending-acks",
+    );
+    assert!(json.contains("msg-9"), "{json}");
+    let human = run_ok(
+        agent_bus_with_hub_candidates(&[hub.url()], "pending-acks-remote-human").args([
+            "pending-acks",
+            "--encoding",
+            "human",
+        ]),
+        "pending-acks human",
+    );
+    assert!(
+        human.contains("msg-9") && human.contains("STALE"),
+        "{human}"
+    );
+
+    let requests = hub_requests_except_health(&hub);
+    assert_eq!(requests[0]["target"], "/pending-acks?agent=gemini");
+    assert_eq!(requests[1]["target"], "/pending-acks");
+}
+
+#[test]
+fn overdue_acks_routes_through_the_remote_hub() {
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/overdue-acks",
+            status: 200,
+            body: r#"{"overdue_acks": [{"message_id": "msg-7", "recipient": "gemini", "deadline_at": "2026-10-20T00:00:00Z", "escalation_level": 0}], "count": 1}"#
+                .to_owned(),
+        },
+    ]);
+    let stdout = run_ok(
+        agent_bus_with_hub_candidates(&[hub.url()], "overdue-acks-remote").args([
+            "overdue-acks",
+            "--encoding",
+            "json",
+        ]),
+        "overdue-acks",
+    );
+    assert!(stdout.contains("msg-7"), "{stdout}");
+}
+
+/// Every command the issue lists, with arguments that pass local validation.
+fn remote_mode_command_matrix() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
+        (
+            "thread-create",
+            vec!["thread-create", "--created-by", "claude"],
+        ),
+        (
+            "thread-join",
+            vec!["thread-join", "--thread-id", "t", "--agent", "codex"],
+        ),
+        (
+            "thread-leave",
+            vec!["thread-leave", "--thread-id", "t", "--agent", "codex"],
+        ),
+        ("thread-list", vec!["thread-list"]),
+        ("thread-close", vec!["thread-close", "--thread-id", "t"]),
+        (
+            "summarize-thread",
+            vec!["summarize-thread", "--thread-id", "t"],
+        ),
+        ("compact-thread", vec!["compact-thread", "--thread-id", "t"]),
+        ("pending-acks", vec!["pending-acks"]),
+        ("overdue-acks", vec!["overdue-acks"]),
+    ]
+}
+
+#[test]
+fn thread_and_ack_sweep_commands_refuse_offline_hubs_without_opening_local_redis() {
+    for (name, args) in remote_mode_command_matrix() {
+        let output = agent_bus_with_hub_candidates(&["http://127.0.0.1:1".to_owned()], name)
+            .args(&args)
+            .output()
+            .unwrap_or_else(|error| panic!("run {name}: {error}"));
+        let stderr = stderr_of(&output);
+        assert!(!output.status.success(), "{name} must fail offline");
+        assert!(
+            stderr.contains("offline: no authoritative hub reachable"),
+            "{name}: expected the explicit offline error, got: {stderr}"
+        );
+        assert!(
+            !stderr.to_lowercase().contains("redis"),
+            "{name} opened local Redis in remote mode: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn thread_and_ack_sweep_commands_report_the_hub_error_not_a_loopback_redis_error() {
+    // The hub answers /health but has no route for the command, so every call
+    // gets a 404 from the hub itself. That is the error the operator must see.
+    let hub = MockHub::spawn(vec![health_route()]);
+    for (name, args) in remote_mode_command_matrix() {
+        let output = agent_bus_with_hub_candidates(&[hub.url()], name)
+            .args(&args)
+            .output()
+            .unwrap_or_else(|error| panic!("run {name}: {error}"));
+        let stderr = stderr_of(&output);
+        assert!(!output.status.success(), "{name} must fail on a hub 404");
+        assert!(
+            !stderr.to_lowercase().contains("redis"),
+            "{name} opened local Redis in remote mode: {stderr}"
+        );
+        assert!(
+            stderr.contains("404") || stderr.contains("no mock route"),
+            "{name}: expected the hub's own error, got: {stderr}"
+        );
+    }
+}
