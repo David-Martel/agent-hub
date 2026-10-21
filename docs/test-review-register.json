@@ -7123,6 +7123,64 @@
       "needs": "Private reqwest resolver, owned finite blocking-worker gate, readiness signal and unconditional gate release/join; no live DNS, network endpoint, Redis or PostgreSQL.",
       "control": "Author unchanged-drop RED selected2/failed2 exit101: both actions returned but owner completion awaited gate release; receipt target/pr162-integration/runtime-red.json SHAd096af8f6eb7182be6f8b0001ae4766679dd16f1a5cea86c69f92b8f0b59ed60. Root independent toola18990 replay selected2/passed2 at lib6C77/testF1D6/exe7FBA, all pins stable. Root tool59bc22 verified two-comment successor7BC; then explicitly approved equivalent lazy bool::then successor962A. Author rebuilt final962A/B129 executable selected2/passed2; final author QA target/pr162-integration/runtime-qa.json SHA2562436c1c0b838ec6f78bf23cec84453e6c5072b5b3cf712078598ba2ecec91500. These distinct source/executable provenances are not relabeled.",
       "breaking_behavior": "Replaces unbounded normal runtime destruction with an RAII shutdown_background owner after the EnterGuard scope; keeps existing synchronous run dispatch and explicit BootstrapGuard shutdown unchanged. Running OS-style blocking resolution is not forcibly stopped; owner does not wait for it. Panic path is protected by Drop design but not dynamically tested by these two selectors."
+    },
+    {
+      "selector": "crates/agent-bus-mcp/src/hub_transport.rs::tests::mcp_runtime_success_exits_before_cancelled_dns_finishes",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "00a0db16e774075aeb03fc4deb3d27dd2e9192a0",
+      "disposition": "keep",
+      "scope": "Independent root complete two-file source/diff review and current native replay of dedicated MCP runtime-owner/ambient run_future controls, including actual owned-child natural exit while real reqwest blocking resolver worker remains gated. No live stdin JSON-RPC session, backend/config, OS DNS, fleet deployment or error-path durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-mcp/src/hub_transport.rs",
+        "sha256": "ed36f4f6fe1a236897f8c048b0ea77b3c9e600c7841dc272518e0744c0f39fec",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-mcp/src/main.rs",
+        "sha256": "81154ed1648b82f70378b45f232c9930fe2634beffa948020e05a7fa51dff79d"
+      },
+      "protections": "Dedicated MCP process success completion propagates its result and exits naturally without waiting for cancelled DNS.",
+      "detects": "An actually started reqwest spawn_blocking lookup keeps the old MCP Runtime::drop and native child process alive beyond the gate-held2second window.",
+      "needs": "Owned hidden native test child, real ambient run_future/reqwest custom resolver, worker-start/owner-result markers, private stdin release, worker hard10second timeout and bounded unconditional parent cleanup. No backend/config/bootstrap or JSON-RPC handshake.",
+      "control": "Author baseline mcp-runtime-red.json SHA256a08f96aa86bd760aae87a365c69c8b88af2688a91ceccc7560f03e72468bbb83:2selected/2failed exit101,4.09s at unchanged normal Runtime::drop helper; each actual child starts DNS, fails pre-release exit, then release permits worker completion/owner result and normal reap. Final author and independent root native2/2PASS at main81154/testED36/image793543. Root toold02b86 wall111ms, harness0.06s; image/source pins stable before/after. Final author QA target/pr162-integration/mcp-runtime-qa.json SHA2562b9a80f48c82490f165e514d535e1d8175e38f9ed77533ae15f0fc4a4ac80a48. Actual strict workspace/all-target Clippy-Dwarnings and shared changed-source rationale pass; checker SHA256f77451735660850c40e4ca8471b655eb1a2177595d521ac81b971740f21da0af. Earlier A434 GREEN and previous CLI-only00a approval remain historical, not relabeled.",
+      "breaking_behavior": "Use a small RAII shutdown_background owner for the dedicated MCP runtime after block_on returns or unwinds. Preserve the existing main-owned thread, bootstrap/serve and normal-path explicit PgWriter cleanup. Existing early-error question-mark returns can bypass guard.shutdown; no new durable-write guarantee. No resolver/network/settings change.",
+      "selector_digest": {
+        "sha256": "3e6284436c2d1a9bf4abfb3f995007de14b4edfdfdd00c550fcec0e3b41a450b",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      }
+    },
+    {
+      "selector": "crates/agent-bus-mcp/src/hub_transport.rs::tests::mcp_runtime_error_exits_before_cancelled_dns_finishes",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "00a0db16e774075aeb03fc4deb3d27dd2e9192a0",
+      "disposition": "keep",
+      "scope": "Independent root complete two-file source/diff review and current native replay of dedicated MCP runtime-owner/ambient run_future controls, including actual owned-child natural exit while real reqwest blocking resolver worker remains gated. No live stdin JSON-RPC session, backend/config, OS DNS, fleet deployment or error-path durability qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-mcp/src/hub_transport.rs",
+        "sha256": "ed36f4f6fe1a236897f8c048b0ea77b3c9e600c7841dc272518e0744c0f39fec",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-mcp/src/main.rs",
+        "sha256": "81154ed1648b82f70378b45f232c9930fe2634beffa948020e05a7fa51dff79d"
+      },
+      "protections": "Dedicated MCP process error completion propagates its result and exits naturally without waiting for cancelled DNS.",
+      "detects": "An actually started reqwest spawn_blocking lookup keeps the old MCP Runtime::drop and native child process alive beyond the gate-held2second window.",
+      "needs": "Owned hidden native test child, real ambient run_future/reqwest custom resolver, worker-start/owner-result markers, private stdin release, worker hard10second timeout and bounded unconditional parent cleanup. No backend/config/bootstrap or JSON-RPC handshake.",
+      "control": "Author baseline mcp-runtime-red.json SHA256a08f96aa86bd760aae87a365c69c8b88af2688a91ceccc7560f03e72468bbb83:2selected/2failed exit101,4.09s at unchanged normal Runtime::drop helper; each actual child starts DNS, fails pre-release exit, then release permits worker completion/owner result and normal reap. Final author and independent root native2/2PASS at main81154/testED36/image793543. Root toold02b86 wall111ms, harness0.06s; image/source pins stable before/after. Final author QA target/pr162-integration/mcp-runtime-qa.json SHA2562b9a80f48c82490f165e514d535e1d8175e38f9ed77533ae15f0fc4a4ac80a48. Actual strict workspace/all-target Clippy-Dwarnings and shared changed-source rationale pass; checker SHA256f77451735660850c40e4ca8471b655eb1a2177595d521ac81b971740f21da0af. Earlier A434 GREEN and previous CLI-only00a approval remain historical, not relabeled.",
+      "breaking_behavior": "Use a small RAII shutdown_background owner for the dedicated MCP runtime after block_on returns or unwinds. Preserve the existing main-owned thread, bootstrap/serve and normal-path explicit PgWriter cleanup. Existing early-error question-mark returns can bypass guard.shutdown; no new durable-write guarantee. No resolver/network/settings change.",
+      "selector_digest": {
+        "sha256": "75ab0b07109248e9f88d607dad581f0888c1ea9bb24871dbbf33cf48fe6fa321",
+        "method": "Canonical tools.doc_checks.rationale.read_selectors Rust selector digest, including its rationale/context as defined by that checker"
+      }
     }
   ],
   "historical_reviews": [

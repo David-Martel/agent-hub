@@ -425,6 +425,202 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
 
+    struct McpGatedDns {
+        gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    }
+
+    impl reqwest::dns::Resolve for McpGatedDns {
+        fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            let gate = self.gate.lock().unwrap().take().unwrap();
+            let started = self.started.lock().unwrap().take().unwrap();
+            let worker = tokio::task::spawn_blocking(move || {
+                println!("MCP_DNS_WORKER_STARTED");
+                std::io::stdout().flush().unwrap();
+                let _ = started.send(());
+                let _ = gate.recv_timeout(Duration::from_secs(10));
+                println!("MCP_DNS_WORKER_FINISHED");
+            });
+            Box::pin(async move {
+                let _ = worker.await;
+                Err(std::io::Error::other("owned MCP DNS fixture completed").into())
+            })
+        }
+    }
+
+    fn gated_mcp_runtime_child(return_error: bool) {
+        use anyhow::Context as _;
+        let (release, gate) = std::sync::mpsc::channel();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        // Parent release or EOF always opens the gate. The worker also has its
+        // own hard timeout if the parent disappears without closing its pipe.
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let _ = std::io::stdin().read_line(&mut line);
+            let _ = release.send(());
+        });
+        let resolver = Arc::new(McpGatedDns {
+            gate: Mutex::new(Some(gate)),
+            started: Mutex::new(Some(started)),
+        });
+        let result = crate::run_with_mcp_runtime(async move {
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .dns_resolver(resolver)
+                .build()?;
+            run_future(async {
+                let request = client.get("http://owned-mcp-dns.invalid/health").send();
+                tokio::pin!(request);
+                tokio::select! {
+                    response = &mut request => anyhow::bail!(
+                        "request completed before DNS release: {response:?}"
+                    ),
+                    started = ready => {
+                        started.context("DNS worker did not signal readiness")?;
+                        Ok(())
+                    }
+                }
+            })?;
+            if return_error {
+                anyhow::bail!("synthetic MCP session error");
+            }
+            Ok(())
+        });
+        if return_error {
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "synthetic MCP session error"
+            );
+        } else {
+            assert!(result.is_ok(), "{result:?}");
+        }
+        println!("MCP_RUNTIME_OWNER_RETURNED");
+    }
+
+    fn wait_mcp_child(
+        child: &mut std::process::Child,
+        budget: Duration,
+    ) -> std::io::Result<Option<std::process::ExitStatus>> {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(Some(status));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn assert_mcp_runtime_process_exit(selector: &str, return_error: bool) {
+        const CHILD_KEY: &str = "AGENT_BUS_MCP_RUNTIME_CHILD";
+        if std::env::var(CHILD_KEY).ok().as_deref() == Some(selector) {
+            gated_mcp_runtime_child(return_error);
+            return;
+        }
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt as _;
+            command.creation_flags(0x0800_0000)
+        };
+        command.args([
+            "--exact",
+            &format!("hub_transport::tests::{selector}"),
+            "--nocapture",
+        ]);
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("AGENT_BUS_") {
+                command.env_remove(key);
+            }
+        }
+        command
+            .env(CHILD_KEY, selector)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let mut stderr = child.stderr.take().unwrap();
+        let (started, ready) = std::sync::mpsc::channel();
+        let output = std::thread::spawn(move || -> std::io::Result<String> {
+            let mut text = String::new();
+            for line in BufReader::new(stdout).lines() {
+                let line = line?;
+                if line.contains("MCP_DNS_WORKER_STARTED") {
+                    let _ = started.send(());
+                }
+                text.push_str(&line);
+                text.push('\n');
+            }
+            Ok(text)
+        });
+        let errors = std::thread::spawn(move || {
+            let mut text = String::new();
+            stderr.read_to_string(&mut text).map(|_| text)
+        });
+        let worker_started = ready.recv_timeout(Duration::from_secs(3));
+        let before_release = wait_mcp_child(&mut child, Duration::from_secs(2));
+        // Release on every path before cleanup/assertions. Dropping stdin also
+        // releases the child reader on EOF if the release write fails.
+        if let Some(mut input) = child.stdin.take() {
+            let _ = input.write_all(b"release\n");
+        }
+        let mut settled = wait_mcp_child(&mut child, Duration::from_secs(3));
+        let mut kill_error = None;
+        if !matches!(settled, Ok(Some(_))) {
+            kill_error = child.kill().err();
+            settled = wait_mcp_child(&mut child, Duration::from_secs(5));
+        }
+        assert!(
+            matches!(settled, Ok(Some(_))),
+            "owned child did not settle: {settled:?}; kill={kill_error:?}"
+        );
+        let stdout = output.join().unwrap().unwrap();
+        let stderr = errors.join().unwrap().unwrap();
+        assert!(
+            worker_started.is_ok(),
+            "real DNS worker never started: {stdout}; {stderr}"
+        );
+        assert!(
+            matches!(before_release, Ok(Some(status)) if status.success()),
+            "MCP process waited for cancelled DNS: {before_release:?}; {stdout}; {stderr}"
+        );
+        assert!(
+            stdout.contains("MCP_RUNTIME_OWNER_RETURNED"),
+            "child did not check the session result: {stdout}; {stderr}"
+        );
+        assert!(
+            !stdout.contains("MCP_DNS_WORKER_FINISHED"),
+            "worker ended before natural process exit: {stdout}"
+        );
+    }
+
+    // Protects: dedicated MCP process exits after successful session completion with cancelled DNS.
+    // Detects: runtime destruction retaining an actually started blocking reqwest resolver worker.
+    // Needs: owned hidden native child and private finite DNS gate; no backend/config or MCP handshake.
+    // Breadcrumb: crates/agent-bus-mcp/src/main.rs (run_with_mcp_runtime).
+    #[test]
+    fn mcp_runtime_success_exits_before_cancelled_dns_finishes() {
+        assert_mcp_runtime_process_exit(
+            "mcp_runtime_success_exits_before_cancelled_dns_finishes",
+            false,
+        );
+    }
+
+    // Protects: dedicated MCP process returns the original session error without waiting on DNS.
+    // Detects: error-path runtime destruction blocking process exit after an ambient probe is cancelled.
+    // Needs: owned hidden native child, readiness marker and unconditional gate release/reap.
+    // Breadcrumb: crates/agent-bus-mcp/src/main.rs (run_with_mcp_runtime).
+    #[test]
+    fn mcp_runtime_error_exits_before_cancelled_dns_finishes() {
+        assert_mcp_runtime_process_exit(
+            "mcp_runtime_error_exits_before_cancelled_dns_finishes",
+            true,
+        );
+    }
+
     fn accept_bounded(listener: &TcpListener) -> std::net::TcpStream {
         listener
             .set_nonblocking(true)
