@@ -7897,6 +7897,186 @@
       "breaking_behavior": "Linux owner/group/mode mismatch or unreadable metadata now refuses before publication even if GNU cp reports success. Darwin controls remain simulated, not actual macOS qualification.",
       "base_commit": "34226fa1b33571a9097652b900f9d9d2440ae2a0",
       "predecessor_record": "Previous seven current KEEP bindings retained unchanged in historical_reviews; all unrelated reviews preserved."
+    },
+    {
+      "base_commit": "b4e6de94b0f4bf27114705407102638f0f94a9bc",
+      "reviewer_type": "independent_agent",
+      "selector_source": {
+        "last_line": 775,
+        "path": "crates/agent-bus-core/src/outbox_client.rs",
+        "first_line": 715,
+        "hash_scope": "Inclusive rationale+test physical lines normalized to LF, including terminal newline.",
+        "sha256": "1aac44cabbbb7f9a0eac94e6e5e40072602e0c9f48288e2dd5e0e51a4c9666dd"
+      },
+      "relevance": "Real Busy precondition; one retained identity despite ambiguous transport, then one successful drain.",
+      "disposition": "keep",
+      "shared_sources": [
+        {
+          "path": "docs/durable-outbox.md",
+          "sha256": "4d4736b9a379a76307272ef0cdf6253ee6808d7c5dbd54b838bc1cc871861db1"
+        }
+      ],
+      "selector": "crates/agent-bus-core/src/outbox_client.rs::tests::contended_submission_waits_then_retains_one_original_request",
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "coverage": {
+        "failing_first": "Actual896ca7: original submit rejects a250ms writer with generic storage error; one runtime failure before fix. Other controls protect retained refusal/ordering behavior, not separate historical failures.",
+        "windows_qualification": "Actual725b4c:19 focused client tests PASS13.416s;915 unrelated core tests unselected. Earlier0302b1 caught mandatory Windows byte-range read lock in fixture; snapshots moved outside held lock lifetime without product guard changes.",
+        "strict_lint": "Actual52f087 core lib/tests Clippy -D warnings PASS."
+      },
+      "scope": "Independent Codex-family source review at exact E7748EBA/4D4736B9; reviewer did not write source/tests. Runtime execution belongs to root725b4c/66805 and strictClippy52f087, not this reviewer. Final equivalent assertion/comment requires normal pre-push replay; no outside-family approval or live deployment implied.",
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/outbox_client.rs",
+        "sha256": "e7748eba5fe4554df9c2815a4d8f685f645026b294b106dc4c9c89d14f9528c2"
+      },
+      "breaking_behavior": "Only Busy acquisition waits within original12s deadline; no enqueue or transport retry. Custody/corruption/scope and stable replay identities remain guarded.",
+      "reviewer": "/root/bus_installer_resume",
+      "reviewer_authored_test_or_fix": false,
+      "limits": "An expired helper allows one initial open; filesystem latency/suspension are not real-time bounded. Native250ms release controls retain a scheduler limitation despite explicit Busy preconditions; actual legacy RED confirms relevance."
+    },
+    {
+      "base_commit": "b4e6de94b0f4bf27114705407102638f0f94a9bc",
+      "reviewer_type": "independent_agent",
+      "selector_source": {
+        "last_line": 805,
+        "path": "crates/agent-bus-core/src/outbox_client.rs",
+        "first_line": 777,
+        "hash_scope": "Inclusive rationale+test physical lines normalized to LF, including terminal newline.",
+        "sha256": "b155c1ffa80ebc3b00fa438803df718783347b8f9f80e321b7add5daf5101aae"
+      },
+      "relevance": "Original deadline and expired-deadline reuse; held journal bytes and pending count unchanged.",
+      "disposition": "keep",
+      "shared_sources": [
+        {
+          "path": "docs/durable-outbox.md",
+          "sha256": "4d4736b9a379a76307272ef0cdf6253ee6808d7c5dbd54b838bc1cc871861db1"
+        }
+      ],
+      "selector": "crates/agent-bus-core/src/outbox_client.rs::tests::contended_journal_exhausts_original_deadline_without_mutation",
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "coverage": {
+        "failing_first": "Actual896ca7: original submit rejects a250ms writer with generic storage error; one runtime failure before fix. Other controls protect retained refusal/ordering behavior, not separate historical failures.",
+        "windows_qualification": "Actual725b4c:19 focused client tests PASS13.416s;915 unrelated core tests unselected. Earlier0302b1 caught mandatory Windows byte-range read lock in fixture; snapshots moved outside held lock lifetime without product guard changes.",
+        "strict_lint": "Actual52f087 core lib/tests Clippy -D warnings PASS."
+      },
+      "scope": "Independent Codex-family source review at exact E7748EBA/4D4736B9; reviewer did not write source/tests. Runtime execution belongs to root725b4c/66805 and strictClippy52f087, not this reviewer. Final equivalent assertion/comment requires normal pre-push replay; no outside-family approval or live deployment implied.",
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/outbox_client.rs",
+        "sha256": "e7748eba5fe4554df9c2815a4d8f685f645026b294b106dc4c9c89d14f9528c2"
+      },
+      "breaking_behavior": "Only Busy acquisition waits within original12s deadline; no enqueue or transport retry. Custody/corruption/scope and stable replay identities remain guarded.",
+      "reviewer": "/root/bus_installer_resume",
+      "reviewer_authored_test_or_fix": false,
+      "limits": "An expired helper allows one initial open; filesystem latency/suspension are not real-time bounded. Native250ms release controls retain a scheduler limitation despite explicit Busy preconditions; actual legacy RED confirms relevance."
+    },
+    {
+      "base_commit": "b4e6de94b0f4bf27114705407102638f0f94a9bc",
+      "reviewer_type": "independent_agent",
+      "selector_source": {
+        "last_line": 850,
+        "path": "crates/agent-bus-core/src/outbox_client.rs",
+        "first_line": 807,
+        "hash_scope": "Inclusive rationale+test physical lines normalized to LF, including terminal newline.",
+        "sha256": "79de91a6b44dd2ca83d31a1e83d2591e69ab442c2dc3ad0136a26d13480f2d53"
+      },
+      "relevance": "Actual public twelve-second budget, explicit busy/no-retention error, no transport, and twenty-second upper bound.",
+      "disposition": "keep",
+      "shared_sources": [
+        {
+          "path": "docs/durable-outbox.md",
+          "sha256": "4d4736b9a379a76307272ef0cdf6253ee6808d7c5dbd54b838bc1cc871861db1"
+        }
+      ],
+      "selector": "crates/agent-bus-core/src/outbox_client.rs::tests::contended_submission_deadline_reports_that_no_request_was_retained",
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "coverage": {
+        "failing_first": "Actual896ca7: original submit rejects a250ms writer with generic storage error; one runtime failure before fix. Other controls protect retained refusal/ordering behavior, not separate historical failures.",
+        "windows_qualification": "Actual725b4c:19 focused client tests PASS13.416s;915 unrelated core tests unselected. Earlier0302b1 caught mandatory Windows byte-range read lock in fixture; snapshots moved outside held lock lifetime without product guard changes.",
+        "strict_lint": "Actual52f087 core lib/tests Clippy -D warnings PASS."
+      },
+      "scope": "Independent Codex-family source review at exact E7748EBA/4D4736B9; reviewer did not write source/tests. Runtime execution belongs to root725b4c/66805 and strictClippy52f087, not this reviewer. Final equivalent assertion/comment requires normal pre-push replay; no outside-family approval or live deployment implied.",
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/outbox_client.rs",
+        "sha256": "e7748eba5fe4554df9c2815a4d8f685f645026b294b106dc4c9c89d14f9528c2"
+      },
+      "breaking_behavior": "Only Busy acquisition waits within original12s deadline; no enqueue or transport retry. Custody/corruption/scope and stable replay identities remain guarded.",
+      "reviewer": "/root/bus_installer_resume",
+      "reviewer_authored_test_or_fix": false,
+      "limits": "An expired helper allows one initial open; filesystem latency/suspension are not real-time bounded. Native250ms release controls retain a scheduler limitation despite explicit Busy preconditions; actual legacy RED confirms relevance."
+    },
+    {
+      "base_commit": "b4e6de94b0f4bf27114705407102638f0f94a9bc",
+      "reviewer_type": "independent_agent",
+      "selector_source": {
+        "last_line": 876,
+        "path": "crates/agent-bus-core/src/outbox_client.rs",
+        "first_line": 852,
+        "hash_scope": "Inclusive rationale+test physical lines normalized to LF, including terminal newline.",
+        "sha256": "611c9dc9c97f8e6026323004f2d658ff279e4ad2001489b8e700080655f28487"
+      },
+      "relevance": "Non-Busy corruption refuses promptly and preserves original invalid bytes.",
+      "disposition": "keep",
+      "shared_sources": [
+        {
+          "path": "docs/durable-outbox.md",
+          "sha256": "4d4736b9a379a76307272ef0cdf6253ee6808d7c5dbd54b838bc1cc871861db1"
+        }
+      ],
+      "selector": "crates/agent-bus-core/src/outbox_client.rs::tests::corrupt_journal_is_not_retried_or_rewritten",
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "coverage": {
+        "failing_first": "Actual896ca7: original submit rejects a250ms writer with generic storage error; one runtime failure before fix. Other controls protect retained refusal/ordering behavior, not separate historical failures.",
+        "windows_qualification": "Actual725b4c:19 focused client tests PASS13.416s;915 unrelated core tests unselected. Earlier0302b1 caught mandatory Windows byte-range read lock in fixture; snapshots moved outside held lock lifetime without product guard changes.",
+        "strict_lint": "Actual52f087 core lib/tests Clippy -D warnings PASS."
+      },
+      "scope": "Independent Codex-family source review at exact E7748EBA/4D4736B9; reviewer did not write source/tests. Runtime execution belongs to root725b4c/66805 and strictClippy52f087, not this reviewer. Final equivalent assertion/comment requires normal pre-push replay; no outside-family approval or live deployment implied.",
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/outbox_client.rs",
+        "sha256": "e7748eba5fe4554df9c2815a4d8f685f645026b294b106dc4c9c89d14f9528c2"
+      },
+      "breaking_behavior": "Only Busy acquisition waits within original12s deadline; no enqueue or transport retry. Custody/corruption/scope and stable replay identities remain guarded.",
+      "reviewer": "/root/bus_installer_resume",
+      "reviewer_authored_test_or_fix": false,
+      "limits": "An expired helper allows one initial open; filesystem latency/suspension are not real-time bounded. Native250ms release controls retain a scheduler limitation despite explicit Busy preconditions; actual legacy RED confirms relevance."
+    },
+    {
+      "base_commit": "b4e6de94b0f4bf27114705407102638f0f94a9bc",
+      "reviewer_type": "independent_agent",
+      "selector_source": {
+        "last_line": 914,
+        "path": "crates/agent-bus-core/src/outbox_client.rs",
+        "first_line": 878,
+        "hash_scope": "Inclusive rationale+test physical lines normalized to LF, including terminal newline.",
+        "sha256": "534ab998f0ddb0758458c1dd0c0e2930c587c7bd5a90d1daf01dd1b713afeb8e"
+      },
+      "relevance": "Existing request drains after contention; next sequence remains two, so no replacement submission.",
+      "disposition": "keep",
+      "shared_sources": [
+        {
+          "path": "docs/durable-outbox.md",
+          "sha256": "4d4736b9a379a76307272ef0cdf6253ee6808d7c5dbd54b838bc1cc871861db1"
+        }
+      ],
+      "selector": "crates/agent-bus-core/src/outbox_client.rs::tests::contended_flush_waits_without_submitting_another_request",
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "coverage": {
+        "failing_first": "Actual896ca7: original submit rejects a250ms writer with generic storage error; one runtime failure before fix. Other controls protect retained refusal/ordering behavior, not separate historical failures.",
+        "windows_qualification": "Actual725b4c:19 focused client tests PASS13.416s;915 unrelated core tests unselected. Earlier0302b1 caught mandatory Windows byte-range read lock in fixture; snapshots moved outside held lock lifetime without product guard changes.",
+        "strict_lint": "Actual52f087 core lib/tests Clippy -D warnings PASS."
+      },
+      "scope": "Independent Codex-family source review at exact E7748EBA/4D4736B9; reviewer did not write source/tests. Runtime execution belongs to root725b4c/66805 and strictClippy52f087, not this reviewer. Final equivalent assertion/comment requires normal pre-push replay; no outside-family approval or live deployment implied.",
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/outbox_client.rs",
+        "sha256": "e7748eba5fe4554df9c2815a4d8f685f645026b294b106dc4c9c89d14f9528c2"
+      },
+      "breaking_behavior": "Only Busy acquisition waits within original12s deadline; no enqueue or transport retry. Custody/corruption/scope and stable replay identities remain guarded.",
+      "reviewer": "/root/bus_installer_resume",
+      "reviewer_authored_test_or_fix": false,
+      "limits": "An expired helper allows one initial open; filesystem latency/suspension are not real-time bounded. Native250ms release controls retain a scheduler limitation despite explicit Busy preconditions; actual legacy RED confirms relevance."
     }
   ],
   "historical_reviews": [
