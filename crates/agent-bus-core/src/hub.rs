@@ -1392,4 +1392,282 @@ mod tests {
         assert!(probes.iter().all(|probe| probe.error.is_some()));
         assert!(backend.to_report()["selected"].is_null());
     }
+
+    type ProbeEvents = Arc<std::sync::Mutex<Vec<String>>>;
+    type ProbeStep = (String, Duration, Option<String>);
+
+    /// Fake only transport latency/results; exercise the actual resolver and race.
+    fn scripted_probe(steps: Vec<ProbeStep>) -> (AsyncProbe, ProbeEvents) {
+        let steps = Arc::new(steps);
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&events);
+        let probe = Arc::new(move |url: String| -> ProbeFuture {
+            let (_, delay, identity) = steps
+                .iter()
+                .find(|step| step.0 == url)
+                .cloned()
+                .expect("every contacted URL must have an explicit fixture result");
+            let events = Arc::clone(&recorded);
+            Box::pin(async move {
+                events.lock().expect("events").push(format!("start:{url}"));
+                tokio::time::sleep(delay).await;
+                events.lock().expect("events").push(format!("finish:{url}"));
+                identity.map(|hub| ProbeInfo {
+                    build_version: None,
+                    hub_identity: Some(hub),
+                })
+            })
+        });
+        (probe, events)
+    }
+
+    /// Give the cloud its own private fixture credential, never a fleet token.
+    fn authority_cloud_settings() -> (Settings, tempfile::TempDir) {
+        let credentials = tempfile::tempdir().expect("private fixture credentials");
+        let token = credentials.path().join("cloud.token");
+        std::fs::write(&token, "test-only-cloud-token").expect("fixture token");
+        let mut settings =
+            configured_settings(&["http://authority.lan:8400", "https://cloud.example.com"]);
+        settings.hub_candidates[0].hub = Some("fleet".to_owned());
+        settings.hub_candidates[0].sites = vec!["lab-fabric".to_owned()];
+        settings.hub_candidates[1].role = HubRole::Cloud;
+        settings.hub_candidates[1].hub = Some("cloud-store".to_owned());
+        settings.hub_candidates[1].auth =
+            crate::hub_candidates::CandidateAuth::TokenFile(token.to_string_lossy().into_owned());
+        settings.probe_connect_timeout_ms = 400;
+        settings.probe_stagger_ms = 60;
+        (settings, credentials)
+    }
+
+    fn cloud_steps(settings: &Settings) -> Vec<ProbeStep> {
+        vec![
+            (
+                settings.hub_candidates[0].url.clone(),
+                Duration::from_millis(250),
+                Some("fleet".to_owned()),
+            ),
+            (
+                settings.hub_candidates[1].url.clone(),
+                Duration::ZERO,
+                Some("cloud-store".to_owned()),
+            ),
+        ]
+    }
+
+    /// Protects: reads stay on the same authority store as durable mutations.
+    /// Detects: a healthy faster independent cloud winning the global race.
+    /// Needs: virtual time, explicit private cloud credentials, no real network.
+    /// Breadcrumb: crates/agent-bus-core/src/link_route.rs (`race`).
+    #[tokio::test(start_paused = true)]
+    async fn healthy_authority_precedes_a_faster_independent_cloud() {
+        let (settings, _credentials) = authority_cloud_settings();
+        let (probe, events) = scripted_probe(cloud_steps(&settings));
+        let backend = resolve_concurrent(&settings, &probe, false, None, "net", None).await;
+        assert_eq!(backend.url(), Some(settings.hub_candidates[0].url.as_str()));
+        assert!(
+            !events
+                .lock()
+                .expect("events")
+                .iter()
+                .any(|event| event.contains("cloud.example.com"))
+        );
+    }
+
+    /// Protects: a remembered independent store cannot override authority recovery.
+    /// Detects: cached-cloud promotion ahead of a reachable named authority.
+    /// Needs: private cache, virtual time and explicit synthetic credentials.
+    /// Breadcrumb: crates/agent-bus-core/src/hub_cache.rs (`HubCache`).
+    #[tokio::test(start_paused = true)]
+    async fn cached_cloud_does_not_bypass_a_healthy_authority() {
+        let (settings, _credentials) = authority_cloud_settings();
+        let directory = tempfile::tempdir().expect("private cache");
+        let fingerprint = routing_fingerprint(&settings.hub_candidates, None, "net");
+        cache_in(&directory)
+            .store(
+                &fingerprint,
+                &settings.hub_candidates[1].url,
+                HubRole::Cloud,
+                SystemTime::now(),
+            )
+            .expect("seed cloud cache");
+        let (probe, events) = scripted_probe(cloud_steps(&settings));
+        let backend = resolve_concurrent(
+            &settings,
+            &probe,
+            false,
+            None,
+            "net",
+            Some(cache_in(&directory)),
+        )
+        .await;
+        assert_eq!(backend.url(), Some(settings.hub_candidates[0].url.as_str()));
+        assert_eq!(
+            events.lock().expect("events").len(),
+            2,
+            "only the authority starts and finishes"
+        );
+    }
+
+    /// Protects: a location guess cannot demote the real authority below cloud.
+    /// Detects: globally primary cloud beating a healthy deferred authority.
+    /// Needs: virtual time and an intentionally nonmatching location label.
+    /// Breadcrumb: crates/agent-bus-core/src/link_route.rs (`plan_routes`).
+    #[tokio::test(start_paused = true)]
+    async fn deferred_authority_is_exhausted_before_independent_cloud() {
+        let (settings, _credentials) = authority_cloud_settings();
+        let (probe, _) = scripted_probe(cloud_steps(&settings));
+        let away = vec!["elsewhere".to_owned()];
+        let backend = resolve_concurrent(&settings, &probe, false, Some(&away), "net", None).await;
+        assert_eq!(backend.url(), Some(settings.hub_candidates[0].url.as_str()));
+    }
+
+    /// Protects: fallback starts only after all routes to the authority fail.
+    /// Detects: independent cloud starting before a deferred authority attempt.
+    /// Needs: observed virtual probe start/finish order, not wall-clock timing.
+    /// Breadcrumb: crates/agent-bus-core/src/link_route.rs (`race`).
+    #[tokio::test(start_paused = true)]
+    async fn cloud_waits_for_primary_and_deferred_authority_failures() {
+        let (mut settings, _credentials) = authority_cloud_settings();
+        let mut second = settings.hub_candidates[0].clone();
+        second.url = "http://authority-tail.lan:8400".to_owned();
+        second.sites = vec!["different-site".to_owned()];
+        settings.hub_candidates.insert(1, second);
+        let cloud = settings.hub_candidates[2].url.clone();
+        let deferred = settings.hub_candidates[1].url.clone();
+        let (probe, events) = scripted_probe(vec![
+            (
+                settings.hub_candidates[0].url.clone(),
+                Duration::from_millis(100),
+                None,
+            ),
+            (deferred.clone(), Duration::from_millis(100), None),
+            (
+                cloud.clone(),
+                Duration::ZERO,
+                Some("cloud-store".to_owned()),
+            ),
+        ]);
+        let backend = resolve_concurrent(
+            &settings,
+            &probe,
+            false,
+            Some(&["lab-fabric".to_owned()]),
+            "net",
+            None,
+        )
+        .await;
+        assert_eq!(backend.url(), Some(cloud.as_str()));
+        let observed = events.lock().expect("events");
+        let finished = observed
+            .iter()
+            .position(|e| e == &format!("finish:{deferred}"))
+            .expect("deferred authority was exhausted");
+        let started = observed
+            .iter()
+            .position(|e| e == &format!("start:{cloud}"))
+            .expect("fallback was tried");
+        assert!(
+            finished < started,
+            "independent fallback follows the complete authority group"
+        );
+    }
+
+    /// Protects: independent fallback stores keep configured consistency order.
+    /// Detects: racing unrelated stores merely because their link class matches.
+    /// Needs: virtual time and explicit different logical hub identities.
+    /// Breadcrumb: crates/agent-bus-core/src/hub_candidates.rs (`HubCandidate`).
+    #[tokio::test(start_paused = true)]
+    async fn different_fallback_stores_are_not_interchangeable_routes() {
+        let mut settings =
+            configured_settings(&["http://first.lan:8400", "http://second.lan:8400"]);
+        for (index, candidate) in settings.hub_candidates.iter_mut().enumerate() {
+            candidate.role = HubRole::Fallback;
+            candidate.hub = Some(format!("store-{index}"));
+        }
+        let (probe, _) = scripted_probe(vec![
+            (
+                settings.hub_candidates[0].url.clone(),
+                Duration::from_millis(250),
+                Some("store-0".to_owned()),
+            ),
+            (
+                settings.hub_candidates[1].url.clone(),
+                Duration::ZERO,
+                Some("store-1".to_owned()),
+            ),
+        ]);
+        let backend = resolve_concurrent(&settings, &probe, false, None, "net", None).await;
+        assert_eq!(backend.url(), Some(settings.hub_candidates[0].url.as_str()));
+    }
+
+    /// Protects: missing hub identity never implies two URLs share storage.
+    /// Detects: grouping all unnamed fallbacks into one consistency domain.
+    /// Needs: legacy unnamed candidates and deterministic transport latency.
+    /// Breadcrumb: crates/agent-bus-core/src/hub_candidates.rs (`HubCandidate`).
+    #[tokio::test(start_paused = true)]
+    async fn unnamed_fallback_urls_remain_separate_stores() {
+        let mut settings =
+            configured_settings(&["http://first.lan:8400", "http://second.lan:8400"]);
+        for candidate in &mut settings.hub_candidates {
+            candidate.role = HubRole::Fallback;
+        }
+        let (probe, _) = scripted_probe(vec![
+            (
+                settings.hub_candidates[0].url.clone(),
+                Duration::from_millis(250),
+                Some("first".to_owned()),
+            ),
+            (
+                settings.hub_candidates[1].url.clone(),
+                Duration::ZERO,
+                Some("second".to_owned()),
+            ),
+        ]);
+        let backend = resolve_concurrent(&settings, &probe, false, None, "net", None).await;
+        assert_eq!(backend.url(), Some(settings.hub_candidates[0].url.as_str()));
+    }
+
+    /// Protects: synchronous fallback resolution follows the authority barrier.
+    /// Detects: serial paths retaining global cache/location-first ordering.
+    /// Needs: synthetic cloud credentials, a seeded cache and observed calls.
+    /// Breadcrumb: crates/agent-bus-core/src/link_route.rs (`walk`).
+    #[test]
+    fn serial_resolution_also_prefers_a_deferred_authority_over_cached_cloud() {
+        let (settings, _credentials) = authority_cloud_settings();
+        let directory = tempfile::tempdir().expect("private cache");
+        let away = vec!["elsewhere".to_owned()];
+        let fingerprint = routing_fingerprint(&settings.hub_candidates, Some(&away), "net");
+        cache_in(&directory)
+            .store(
+                &fingerprint,
+                &settings.hub_candidates[1].url,
+                HubRole::Cloud,
+                SystemTime::now(),
+            )
+            .expect("seed cache");
+        let mut calls = Vec::new();
+        let backend = resolve_serial(
+            &settings,
+            &mut |url: &str| {
+                calls.push(url.to_owned());
+                Some(ProbeInfo {
+                    build_version: None,
+                    hub_identity: Some(
+                        if url.contains("authority") {
+                            "fleet"
+                        } else {
+                            "cloud-store"
+                        }
+                        .to_owned(),
+                    ),
+                })
+            },
+            false,
+            Some(&away),
+            "net",
+            Some(cache_in(&directory)),
+        );
+        assert_eq!(backend.url(), Some(settings.hub_candidates[0].url.as_str()));
+        assert_eq!(calls, vec![settings.hub_candidates[0].url.clone()]);
+    }
 }
