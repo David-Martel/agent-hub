@@ -1,7 +1,7 @@
 //! Axum HTTP REST server mirroring MCP tool operations.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result};
@@ -85,10 +85,139 @@ type AgentConnections = Arc<
 >;
 type ControlStatusState = Arc<RwLock<ServerControlStatus>>;
 
-fn open_pubsub_connection(redis_url: &str) -> Option<redis::Connection> {
+struct SseCountGuard(Arc<SseSubscriberCount>);
+
+impl Drop for SseCountGuard {
+    fn drop(&mut self) {
+        self.0.dec();
+    }
+}
+
+// Bound idle I/O by the existing one-second reconnect cadence. This is a
+// cancellation poll, not an event delay: ready Redis messages are read at once.
+const PUBSUB_IO_TIMEOUT: Duration = Duration::from_secs(1);
+const PUBSUB_RETRY_DELAY: Duration = Duration::from_secs(1);
+
+struct PubSubControl {
+    stopped: Mutex<bool>,
+    retry_wakeup: Condvar,
+    signal: tokio::sync::watch::Sender<bool>,
+}
+
+impl Default for PubSubControl {
+    fn default() -> Self {
+        Self {
+            stopped: Mutex::new(false),
+            retry_wakeup: Condvar::new(),
+            signal: tokio::sync::watch::channel(false).0,
+        }
+    }
+}
+
+impl PubSubControl {
+    fn is_stopped(&self) -> bool {
+        *self.signal.borrow()
+    }
+
+    fn stop(&self) {
+        let mut stopped = self
+            .stopped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *stopped = true;
+        self.signal.send_replace(true);
+        self.retry_wakeup.notify_all();
+    }
+
+    fn wait_for_retry(&self) {
+        let stopped = self
+            .stopped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _guard = self
+            .retry_wakeup
+            .wait_timeout_while(stopped, PUBSUB_RETRY_DELAY, |stopped| !*stopped);
+    }
+}
+
+#[derive(Default)]
+struct PubSubWorkers {
+    control: Arc<PubSubControl>,
+    tasks: Mutex<tokio::task::JoinSet<()>>,
+}
+
+impl Drop for PubSubWorkers {
+    fn drop(&mut self) {
+        // Unwinding or cancelling the server future cannot await; still release
+        // any started blocking work instead of relying on JoinSet::abort.
+        self.control.stop();
+    }
+}
+
+impl PubSubWorkers {
+    fn spawn(&self, worker: impl FnOnce(Arc<PubSubControl>) + Send + 'static) {
+        let mut tasks = self
+            .tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Reap disconnected clients instead of retaining one entry per request.
+        while let Some(result) = tasks.try_join_next() {
+            if let Err(error) = result {
+                tracing::error!(%error, "Pub/Sub worker failed");
+            }
+        }
+        if !self.control.is_stopped() {
+            let control = Arc::clone(&self.control);
+            tasks.spawn_blocking(move || worker(control));
+        }
+    }
+
+    async fn shutdown(&self) -> Result<()> {
+        self.control.stop();
+        // Stop is persistent; a racing handler cannot register another worker.
+        let mut tasks = std::mem::take(
+            &mut *self
+                .tasks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        let mut failure = None;
+        while let Some(result) = tasks.join_next().await {
+            if let Err(error) = result {
+                failure = Some(error);
+            }
+        }
+        if let Some(error) = failure {
+            return Err(error).context("Pub/Sub worker failed during shutdown");
+        }
+        Ok(())
+    }
+}
+
+async fn send_pubsub_event(
+    tx: &tokio::sync::mpsc::Sender<Result<Event, std::convert::Infallible>>,
+    cancelled: &mut tokio::sync::watch::Receiver<bool>,
+    event: Event,
+) -> bool {
+    if *cancelled.borrow() {
+        return false;
+    }
+    tokio::select! {
+        biased;
+        _ = cancelled.changed() => false,
+        result = tx.send(Ok(event)) => result.is_ok(),
+    }
+}
+
+fn open_pubsub_connection(redis_url: &str, control: &PubSubControl) -> Option<redis::Connection> {
     for candidate in loopback_url_candidates(redis_url) {
+        if control.is_stopped() {
+            return None;
+        }
         if let Ok(client) = redis::Client::open(candidate.as_str())
-            && let Ok(conn) = client.get_connection()
+            && let Ok(conn) = client.get_connection_with_timeout(PUBSUB_IO_TIMEOUT)
+            && conn.set_read_timeout(Some(PUBSUB_IO_TIMEOUT)).is_ok()
+            && conn.set_write_timeout(Some(PUBSUB_IO_TIMEOUT)).is_ok()
         {
             return Some(conn);
         }
@@ -146,6 +275,8 @@ pub(crate) struct AppState {
     pub(crate) control_status: ControlStatusState,
     /// Cooperative graceful-shutdown trigger for HTTP service maintenance.
     pub(crate) shutdown_signal: Arc<Notify>,
+    /// Owned blocking subscriptions, cooperatively stopped and joined before runtime drop.
+    pubsub_workers: Arc<PubSubWorkers>,
     /// Cloud sync status (agent-hub#79); `None` unless sync is configured, in
     /// which case `/health` is exactly what it was before sync existed.
     pub(crate) cloud_sync: crate::cloud_sync::SharedStatus,
@@ -827,19 +958,15 @@ async fn http_sse_handler(
     let counter = Arc::clone(&state.sse_subscriber_count);
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(64);
+    let runtime = tokio::runtime::Handle::current();
 
-    tokio::task::spawn_blocking(move || {
-        // RAII guard: decrement the counter on any exit path — normal return,
-        // client disconnect, or subscription failure.
-        struct CountGuard(Arc<SseSubscriberCount>);
-        impl Drop for CountGuard {
-            fn drop(&mut self) {
-                self.0.dec();
-            }
-        }
-        let _count_guard = CountGuard(counter);
+    // Construct before registration: rejected registrations must decrement too.
+    let count_guard = SseCountGuard(counter);
+    state.pubsub_workers.spawn(move |control| {
+        let _count_guard = count_guard;
+        let mut cancelled = control.signal.subscribe();
 
-        let Some(mut conn) = open_pubsub_connection(&settings.redis_url) else {
+        let Some(mut conn) = open_pubsub_connection(&settings.redis_url, &control) else {
             return;
         };
         let mut pubsub = conn.as_pubsub();
@@ -847,7 +974,12 @@ async fn http_sse_handler(
             return;
         }
 
-        while let Ok(msg) = pubsub.get_message() {
+        while !control.is_stopped() && !tx.is_closed() {
+            let msg = match pubsub.get_message() {
+                Ok(msg) => msg,
+                Err(error) if error.is_timeout() => continue,
+                Err(_) => break,
+            };
             let Ok(payload): Result<String, _> = msg.get_payload() else {
                 continue;
             };
@@ -868,8 +1000,10 @@ async fn http_sse_handler(
             }
 
             let sse_event = Event::default().data(payload);
-            if tx.blocking_send(Ok(sse_event)).is_err() {
-                break; // client disconnected
+            // A full SSE queue must not hide shutdown or pin a blocking thread.
+            let sent = runtime.block_on(send_pubsub_event(&tx, &mut cancelled, sse_event));
+            if !sent {
+                break;
             }
         }
     });
@@ -1224,19 +1358,25 @@ fn spawn_agent_notification_bridge(state: &AppState) {
     let agent_connections = Arc::clone(&state.agent_connections);
     let runtime = tokio::runtime::Handle::current();
 
-    tokio::task::spawn_blocking(move || {
-        loop {
-            let Some(mut conn) = open_pubsub_connection(&settings.redis_url) else {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+    state.pubsub_workers.spawn(move |control| {
+        let mut cancelled = control.signal.subscribe();
+        while !control.is_stopped() {
+            let Some(mut conn) = open_pubsub_connection(&settings.redis_url, &control) else {
+                control.wait_for_retry();
                 continue;
             };
             let mut pubsub = conn.as_pubsub();
             if pubsub.subscribe(&settings.channel_key).is_err() {
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                control.wait_for_retry();
                 continue;
             }
 
-            while let Ok(msg) = pubsub.get_message() {
+            while !control.is_stopped() {
+                let msg = match pubsub.get_message() {
+                    Ok(msg) => msg,
+                    Err(error) if error.is_timeout() => continue,
+                    Err(_) => break,
+                };
                 let Ok(payload): Result<String, _> = msg.get_payload() else {
                     continue;
                 };
@@ -1258,10 +1398,15 @@ fn spawn_agent_notification_bridge(state: &AppState) {
                     continue;
                 };
                 runtime.block_on(async {
-                    push_notifications_to_agent_connections(&agent_connections, &[notification])
-                        .await;
+                    let notifications = [notification];
+                    tokio::select! {
+                        biased;
+                        _ = cancelled.changed() => {},
+                        () = push_notifications_to_agent_connections(&agent_connections, &notifications) => {},
+                    }
                 });
             }
+            control.wait_for_retry();
         }
     });
 }
@@ -1447,13 +1592,17 @@ async fn http_sse_agent_handler(
         }
     }
 
-    state
-        .agent_connections
-        .write()
-        .await
-        .entry(agent_id.clone())
-        .or_default()
-        .push(tx.clone());
+    {
+        let mut connections = state.agent_connections.write().await;
+        // Serialize against shutdown's clear: an in-flight replay must not
+        // register another permanently open SSE stream after cancellation.
+        if !state.pubsub_workers.control.is_stopped() {
+            connections
+                .entry(agent_id.clone())
+                .or_default()
+                .push(tx.clone());
+        }
+    }
 
     // Spawn a cleanup task that runs when the receiver drops (i.e. client
     // disconnects).  It removes this specific sender from the map.
@@ -3709,11 +3858,17 @@ async fn require_bearer_auth(
 pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<()> {
     let bind_host = settings.server_host.clone();
     let redis = RedisPool::new(&settings).context("Redis client creation failed")?;
+    // Bind before spawning persistent workers; failed startup owns none to leak.
+    let addr = format_socket_addr(effective_bind_host(&bind_host), port);
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .context("failed to bind HTTP server")?;
     let control_status = Arc::new(RwLock::new(ServerControlStatus::new(
         &settings.service_agent_id,
         &settings.service_name,
     )));
     let shutdown_signal = Arc::new(Notify::new());
+    let pubsub_workers = Arc::new(PubSubWorkers::default());
     let settings = Arc::new(settings);
     let cloud_sync = crate::cloud_sync::start(
         &settings,
@@ -3729,6 +3884,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         sse_subscriber_count: Arc::new(SseSubscriberCount::default()),
         control_status,
         shutdown_signal: Arc::clone(&shutdown_signal),
+        pubsub_workers: Arc::clone(&pubsub_workers),
         cloud_sync,
     };
     spawn_agent_notification_bridge(&state);
@@ -3738,6 +3894,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
     spawn_pg_backfill_monitor(&state);
     // Capture before `state` is moved into the router.
     let auth_token = state.settings.auth_token.clone();
+    let agent_connections = Arc::clone(&state.agent_connections);
     let app = Router::new()
         .route("/mcp", post(handle_mcp_http).get(handle_mcp_sse))
         .route("/health", get(http_health_handler))
@@ -3874,27 +4031,38 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         app
     };
 
-    let addr = format_socket_addr(effective_bind_host(&bind_host), port);
     tracing::info!("HTTP server listening on {addr}");
     eprintln!("agent-bus HTTP server listening on http://{addr}");
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .context("failed to bind HTTP server")?;
-    axum::serve(listener, app)
+    let stopping_workers = Arc::clone(&pubsub_workers);
+    let stopping_connections = Arc::clone(&agent_connections);
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             tokio::select! {
                 () = shutdown_signal.notified() => {},
                 _ = tokio::signal::ctrl_c() => {},
             }
+            // Close both Redis-backed /events and agent-specific SSE streams
+            // before Axum waits for their response bodies to finish.
+            stopping_workers.control.stop();
+            stopping_connections.write().await.clear();
         })
-        .await
-        .context("HTTP server error")?;
+        .await;
+    // Also cancel on transport errors; never leave a blocking task for Runtime
+    // drop (which waits indefinitely for started spawn_blocking work).
+    pubsub_workers.control.stop();
+    agent_connections.write().await.clear();
+    pubsub_workers.shutdown().await?;
+    result.context("HTTP server error")?;
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[path = "http_pubsub_tests.rs"]
+mod pubsub_lifecycle_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4027,6 +4195,7 @@ mod tests {
                 "AgentHub",
             ))),
             shutdown_signal: Arc::new(Notify::new()),
+            pubsub_workers: Arc::new(PubSubWorkers::default()),
             cloud_sync: None,
         }
     }
