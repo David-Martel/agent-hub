@@ -6,6 +6,11 @@
 >
 > Protocol Version: v0.5 | Implementation: Rust native (zero Python)
 > Storage: Redis (realtime) + PostgreSQL (durable history)
+>
+> **Single source of truth (owner decision, 2026-10-20).** Every `AGENT_COORDINATION.md`
+> (in `~/.agents`, `~/.claude`, `~/.codex`, `~/.gemini` and at repo roots) is now a short
+> pointer to this file. Rules that existed only in those copies are in
+> [Fleet Operating Rules](#fleet-operating-rules-consolidated-2026-10-20).
 
 ## Code-Grounded Status (2026-06-22)
 
@@ -812,3 +817,135 @@ Severity: `severity:critical|high|medium|low`
 Session: `session:<session-name>`
 Type: `type:benchmark|validation|coordination`
 Status: `status:complete|fixed|verified`
+
+## Fleet Operating Rules (consolidated 2026-10-20)
+
+These rules were written only in the per-agent `AGENT_COORDINATION.md` copies. Those copies are
+now pointers to this file, so the rules live here. Each rule names the copy it came from, and
+each was checked against `agent-bus 0.5.0 (df1807e)` on 2026-10-20. The copies are named
+by host and by the first 7 hex digits of their SHA-256:
+
+- `agents-p1gen7`: `~/.agents/AGENT_COORDINATION.md` on dtm-p1gen7 and dtm-p1gen9 (`3585c75`, written 2026-10-14).
+- `agents-spark`: `~/.agents/AGENT_COORDINATION.md` on spark-0060 and spark-3066 (`5fcdb07`, 2026-03-24).
+- `codex-p1gen7`: `~/.codex/AGENT_COORDINATION.md` on dtm-p1gen7 (`d9450de`, 2026-06-26).
+- `gemini`: `~/.gemini/AGENT_COORDINATION.md` on all hosts that have one (`248e8a2`, 2026-03-14).
+- `dtm-claude-root`: the git-tracked `AGENT_COORDINATION.md` in dtm-claude, finance-warehouse,
+  decibel-gen3 and STM32-USB-Audio (blob `8cf90ef`).
+
+Byte-for-byte backups of every replaced copy are on each host under
+`~/.local/state/git-guard/preserve/coordination-doc/`.
+
+### Hub and client configuration
+
+- **One authoritative hub, asuspro13.** The fleet clients run in remote mode against it. On
+  2026-10-20, `agent-bus health` on dtm-p1gen7, dtm-p1gen9, dtm-super-nuc and minisforum-ms01
+  reported `backend.mode=remote` and `hub_identity=asuspro13`. No Windows workstation listened
+  on `:8400`. Check yours with `agent-bus health --encoding compact` and read `backend.url` and
+  `hub_identity`. Source: `agents-p1gen7`.
+- **Where the client finds the hub.** The client tries, in order, `AGENT_BUS_SERVER_URLS`,
+  `AGENT_BUS_SERVER_URL`, then `server_urls` and `server_url` in `~/.config/agent-bus/config.json`
+  (override the path with `AGENT_BUS_CONFIG`). With none of them set it runs in local-only
+  mode. The order is defined in `crates/agent-bus-core/src/settings.rs`. Link-aware ordering and
+  SSH forwards are described in [docs/network-location-routing.md](./docs/network-location-routing.md).
+  Source: `agents-p1gen7`.
+- **Bearer auth.** The hub requires a token on every route except `/health`. The client reads
+  it from `AGENT_BUS_AUTH_TOKEN`, then from `auth_token` in config.json. Per-hub `token_file` /
+  `token_env` entries are described in [docs/per-candidate-hub-auth-20261004.md](./docs/per-candidate-hub-auth-20261004.md).
+  On a Windows host, `scripts/sync-agent-bus-client-auth.ps1` fixes a client that gets
+  `HTTP 401` (see [docs/agent-client-installation.md](./docs/agent-client-installation.md#same-machine-auth-alignment)).
+  `config.json` holds a secret: never paste it into a message, a doc or a commit.
+  Source: `agents-p1gen7`, `codex-p1gen7`.
+- **Hostnames in agent-facing URLs.** Write `localhost` on the same machine and the hub's
+  hostname across machines. Do not hard-code private LAN addresses. Storage backends keep
+  `127.0.0.1`, as [docs/agent-client-installation.md](./docs/agent-client-installation.md#recommended-defaults)
+  explains. Source: every copy.
+- **A stdio MCP server needs a local Redis.** On a host without one, the MCP handshake
+  succeeds, but every tool call fails. Agents on such a host use the CLI in remote mode or the
+  hub's HTTP `/mcp` endpoint. Source: the dtm-claude `CLAUDE.md` "Agent bus coordination" section.
+
+### Identity and presence
+
+- **Stable ids.** Base ids are `claude`, `codex`, `gemini` and `copilot`. A fleet lane adds its
+  host and, optionally, its lane, as in `claude-ms01` or `codex-p1gen9-hook-migration`. Use one
+  id for the whole session so that watch filters and acks stay coherent, and never share an id
+  between two agents running at the same time. The identity map is tracked in
+  [#171](https://github.com/David-Martel/agent-hub/issues/171). Source: `agents-p1gen7`,
+  `gemini`, the dtm-claude `CLAUDE.md`.
+- **Presence makes you visible.** Sending messages does not make you visible to other agents;
+  only presence does. Set it at session start with
+  `agent-bus presence --agent <id> --status online --capability mcp --ttl-seconds 300`.
+  A record expires after `--ttl-seconds` (180 s by default), so refresh it during long work.
+  Set `--status busy` when you will not answer (see C3), and `--status offline` when you
+  finish. Implicit presence is proposed in [#168](https://github.com/David-Martel/agent-hub/issues/168).
+  Source: `dtm-claude-root` (step 1), `agents-p1gen7`.
+
+### Message etiquette and secrets
+
+- **Never send secrets, credentials, tokens or raw health data (PHI) through the bus.** Not in
+  bodies, tags or metadata. Cite a protected file by path and SHA-256 instead (C4).
+  Source: every copy.
+- Use `to=all` only for broad announcements.
+- Put the actual ask in the body: the current state, the exact task, the expected output and
+  the relevant paths or run ids. Keep it short.
+- Set `reply_to` when several agents are active, so that the answer reaches the right one.
+  Source: `gemini`.
+- Give each file cluster or deploy step a single owner. Claim before you edit shared deploy,
+  CI, infra, prompt or config files.
+- Close the loop. Post a final message when a task is done, and also when you abandon it.
+  Source: `agents-p1gen7`.
+
+### Message envelope
+
+The CLI flags `--from-agent`/`--to-agent` correspond to `sender`/`recipient` in MCP and HTTP,
+and to `from`/`to` in stored messages. Source: `agents-p1gen7` (fields checked against live
+messages on 2026-10-20).
+
+| Field | Set by | Notes |
+|-------|--------|-------|
+| `id`, `timestamp_utc`, `protocol_version` | hub | UUID, UTC ISO 8601, `"1.0"` |
+| `from`, `to` | sender | Agent id; `to` may be `all` |
+| `topic`, `body` | sender | Keep the topic short and stable |
+| `thread_id`, `tags` | sender | See C2 and the tagging contract |
+| `priority` | sender | `low`, `normal` (default), `high`, `urgent` |
+| `request_ack`, `reply_to` | sender | `reply_to` defaults to the sender |
+| `metadata` | sender/hub | `_schema`, `_compressed`, `_original_size`, ... |
+| `client_msg_id`, `origin_hub`, `stream_id` | client/hub | For dedup, routing and stream position |
+
+### Sessions
+
+Set `AGENT_BUS_SESSION_ID=<id>` to tag every message with `session:<id>` automatically. After
+the session:
+
+- `agent-bus session-summary --session <id>` summarizes it.
+- `agent-bus dedup --session <id>` groups its findings by file path.
+- `agent-bus token-count --text "..."` estimates the size of a body before you send it.
+
+Source: `dtm-claude-root`.
+
+### Superseded guidance in the old copies
+
+These statements appear in the old copies and are **obsolete**. They were not imported:
+
+| Statement (copy) | Status |
+|------------------|--------|
+| Use `agent-bus-http.exe` for client operations (`agents-spark`) | Wrong: it is a server only. See **Binary selection** above |
+| MCP command `agent-bus.exe serve --transport stdio` (`dtm-claude-root`, `agents-spark`) | Fallback only. Use `agent-bus-mcp` |
+| "MCP Tools (13 total)" (`dtm-claude-root`) | The current list has 17 tools |
+| `localhost:8400` is the workstation endpoint (`codex-p1gen7`, 2026-06-26) | Superseded by hub routing (`agents-p1gen7`, 2026-10-14, verified 2026-10-20) |
+| Python `uv --directory ~/.codex/tools/agent-bus-mcp run agent-bus-mcp`, Redis `:6379`, spec in blood-sugar `AGENTS_IPC.md` (`gemini`) | Retired. The Rust binaries replaced them, and Redis listens on `:6380` |
+| When done, post a `RELEASING:` status message (`dtm-claude-root`) | Use `agent-bus release-claim` (see C1) |
+| Source at `rust-cli/` (`dtm-claude-root`, `agents-spark`) | Moved to `crates/` |
+| `~/.agents/AGENT_COORDINATION.md` is canonical, and the per-agent copies mirror it (`agents-*`) | This file is canonical |
+| `compact-context` emits a PostgreSQL `jsonb` fallback warning (`agents-*`) | Not reproduced on 0.5.0 (2026-10-20) |
+| Interop roadmap (v0.4 stable, v0.5+ A2A adapters, gossip) (`agents-*`) | Historical |
+
+### Related documents
+
+- [docs/agent-client-installation.md](./docs/agent-client-installation.md): installing the
+  binaries and MCP clients, and aligning auth.
+- [MCP_CONFIGURATION.md](./MCP_CONFIGURATION.md): MCP client configuration per agent.
+- [Coordination patterns](https://github.com/David-Martel/dtm-claude/blob/main/context/agent-bus-coordination-patterns-20260313.md)
+  in dtm-claude: worked multi-agent patterns.
+- Host-local files that are not tracked here: on dtm-p1gen7, the PowerShell wrappers in
+  `~/.codex/tools/agent-bus-mcp/scripts/`. On dtm-p1gen7 and dtm-p1gen9, the skills registry
+  `~/.agents/SKILLS.md`.
