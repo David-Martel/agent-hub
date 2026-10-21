@@ -1532,6 +1532,11 @@ mod tests {
         second.url = "http://authority-tail.lan:8400".to_owned();
         second.sites = vec!["different-site".to_owned()];
         settings.hub_candidates.insert(1, second);
+        settings.server_urls = settings
+            .hub_candidates
+            .iter()
+            .map(|candidate| candidate.url.clone())
+            .collect();
         let cloud = settings.hub_candidates[2].url.clone();
         let deferred = settings.hub_candidates[1].url.clone();
         let (probe, events) = scripted_probe(vec![
