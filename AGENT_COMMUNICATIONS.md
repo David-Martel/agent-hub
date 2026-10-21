@@ -148,6 +148,65 @@ The recent WezTerm Codex/Claude collaboration settled on a repeatable shape:
 - Prefer `read-direct` for pairwise handoffs and `compact-context` with `repo` + `thread_id` when resuming a single line of work.
 - Health-check the HTTP service before a long wave, especially if `agent-bus-http.exe` is being used as the primary coordination surface.
 
+## Conventions (2026-10-20)
+
+Fleet-wide, owner-approved. They use only existing commands and flags, and they follow the [agent-bus proposal](#evidence-for-these-conventions) items A1, A2, A3 and A5. The code changes they need are tracked as agent-hub issues: #165 (remote-mode thread/ack commands), #166 (durable ack deadlines), #167 (read pagination and grep), #168 (implicit presence and a lane registry), #169 (typed fields), #170 (body limit), #171 (identity map) and #172 (review routing). Each convention below says what to do and why.
+
+### C1. Canonical claim names with short leases (A1)
+
+Claim the resource string itself, in exactly one of these forms:
+
+| Resource | Claim string |
+| --- | --- |
+| USB device | `usb:<host>:<vid>:<pid>:<serial>`, e.g. `usb:asuspro13:0403:6001:A50285BI` |
+| Display / seat | `display:<host>:<seat>`, e.g. `display:asuspro13:seat0` |
+| Repo paths | `repo:<owner/repo>:<path-glob>`, e.g. `repo:David-Martel/agent-hub:AGENT_COMMUNICATIONS.md` |
+| Pull request | `pr:<owner/repo>#<n>`, e.g. `pr:David-Martel/vigil-spark#2875` |
+
+```bash
+agent-bus claim "usb:asuspro13:0403:6001:A50285BI" --agent <id> \
+  --reason "R8080 HIL run" --lease-ttl-seconds 900 --thread-id <work-thread>
+agent-bus renew-claim "usb:asuspro13:0403:6001:A50285BI" --agent <id> --lease-ttl-seconds 900
+agent-bus release-claim "usb:asuspro13:0403:6001:A50285BI" --agent <id>
+agent-bus claims --resource "usb:asuspro13:0403:6001:A50285BI"   # check before opening
+```
+
+- Always pass `--lease-ttl-seconds`, sized to the work: 600 to 1800 for devices and displays, at most 3600 for repo paths. Renew it with `renew-claim` before it expires. A crashed holder then frees the device within one lease, not after the 1 h default.
+- Keep the default `--mode exclusive` for devices. `--namespace` belongs to `--mode shared_namespaced` (for example a shared cargo target dir) and is not the claim name.
+- **HIL and device tools must refuse to open a device that another agent holds.** Before opening, vigil-vv, the reed and obsbot harnesses, and any serial/USB/camera tool run `agent-bus claims --resource <claim-string>`. If that shows a `granted` claim held by a different agent, they exit non-zero and name the holder. Claims are cooperative, so this check is what makes them binding. Without it, agy opened the REED meters while claude held them and corrupted R8080 replies.
+
+### C2. One thread per work item (A2)
+
+- Each PR or TODO item gets one thread. Use URL-path-safe ids, because the hub serves `/threads/{id}`: `pr-<repo>-<n>` (e.g. `pr-vigil-spark-2875`) and `item-<id>` (e.g. `item-B6`).
+- Create the thread once (`agent-bus thread-create --thread-id pr-vigil-spark-2875 --created-by <id> --repo vigil-spark --topic status`). Then send every message about the item with `--thread-id pr-vigil-spark-2875` and `--tag repo:<name>`.
+- `machine-hygiene` carries only `START` and `DONE` rollups, one line each, naming the item thread: `START pr-vigil-spark-2875: <one-line goal>` and `DONE pr-vigil-spark-2875: <outcome>; evidence <path> sha256:<hex>`. Progress, questions and review traffic stay in the item thread.
+- On completion, run `agent-bus summarize-thread --thread-id <id>`, post the DONE rollup, then `agent-bus thread-close --thread-id <id>`.
+- To resume an item, read only its thread: `agent-bus read --thread-id <id> --since-minutes <n> --excerpt 200`.
+
+Why: `machine-hygiene` carried 28% of all traffic in one 500-message sample and 23% in another. Following one item's history meant scanning thousands of messages. Thread membership does not hide messages, so the lead can still read any thread.
+
+> **Known gap ([#165](https://github.com/David-Martel/agent-hub/issues/165)):** in remote mode (client `server_url` set, no local Redis), `thread-create`, `thread-list`, `thread-close`, `summarize-thread` and `compact-thread` still try local Redis and fail. Until it is fixed, run those on the hub host. Elsewhere, `send --thread-id` and `read --thread-id` work, and they carry the convention.
+
+### C3. Directed questions need acks; overdue acks escalate (A3)
+
+- Any question that blocks your work and is addressed to one agent goes out with `--request-ack` (MCP: `request_ack: true`) and `--thread-id <item-thread>`. Use `--priority high` only when the work really is stopped.
+- The recipient acknowledges at once with `agent-bus ack --agent <id> --message-id <uuid> --body "<accepted|declined|eta>"`, even if the answer itself comes later.
+- **Escalation sweep:** the coordination lead (currently `claude-asus-hygiene`) runs `agent-bus overdue-acks --encoding json` and, as a cross-check, reads its own `--request-ack` messages in the window for a missing `ack`. A question unacknowledged after **2 h** is re-sent to the lead with `knock --request-ack`. After **8 h** it goes to the owner on `machine-hygiene` as `ESCALATED <thread-id>: <question>`.
+- An unattended or busy agent says so with `agent-bus presence --agent <id> --status busy` (valid values: `online|offline|busy`). The sweep skips recipients that are `busy` or `offline`, so they don't trigger false escalations. Implicit presence is proposed in [#168](https://github.com/David-Martel/agent-hub/issues/168).
+
+> **Known gap ([#166](https://github.com/David-Martel/agent-hub/issues/166)):** today an ack-deadline record expires at its own deadline, so `overdue-acks` rarely lists anything. `pending-acks` entries also expire after 300 s, and both commands need local Redis (#165). Until those land, the sweep relies on the durable messages: a `--request-ack` message with no `ack` whose `reply_to` is its id.
+
+### C4. Cite evidence by path and SHA-256; don't paste it (A5)
+
+- Put results, logs, diffs and receipts in a file. Cite them as `evidence: <host>:<absolute-or-~-path> sha256:<64-hex>`, for example `evidence: asuspro13:~/dev/evidence/run-42/manifest.json sha256:3f1c…` (write the full hash, not a shortened one).
+- Compute the hash with `sha256sum <file>` (Linux) or `Get-FileHash <file>` (Windows), and cite the hash of the exact bytes you mean.
+- The message body keeps only the conclusion, the decision needed and the citation. That keeps bodies readable within the 2000-character guidance with no space-stripping, and recipients can check what was cited.
+- If the reader has no access to the host, say how to fetch the file (repo path plus commit, artifact URL, or the governed cloud store).
+
+### Evidence for these conventions
+
+Proposal: `MS01:~/dev/evidence/agent-bus-proposals/proposal.md`, sha256:b50b9cb103c7a19e8951adb2f4600eeddc9b3a1a444af0289485aaa1ff9f38b4. It includes the measured sample (500 messages over about 3 h, 59 senders but 12 presence entries, 28% on `machine-hygiene`, 20 space-stripped bodies). A re-measurement on 2026-10-21 00:16Z found 57 senders, 11 presence entries and 23% on `machine-hygiene`.
+
 ## Channel System (v0.5)
 
 Beyond broadcast messages, the bus provides focused communication channels for coordinated multi-agent work.
