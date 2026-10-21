@@ -62,8 +62,8 @@ pub struct ProbeInfo {
     /// when the probe response carried one.
     pub build_version: Option<String>,
     /// The hub's `hub_identity`, when it reports one. Compared with a
-    /// candidate's configured `hub`: a mismatch rejects the route, a missing
-    /// value is accepted (older hubs do not report identity).
+    /// candidate's configured `hub`: a mismatch or missing value rejects a
+    /// named route. Unnamed candidates do not require a reported identity.
     pub hub_identity: Option<String>,
 }
 
@@ -641,6 +641,8 @@ mod tests {
         resolve_serial(settings, probe, authority_only, locations, "test-net", None)
     }
 
+    // Keep both candidate URL lists synchronized when changing fixtures:
+    // `effective_hub_candidates` treats divergence as a legacy-list override.
     fn configured_settings(urls: &[&str]) -> Settings {
         let mut settings = Settings::from_env();
         settings.server_urls = urls.iter().map(|url| (*url).to_owned()).collect();
