@@ -66,9 +66,8 @@ use agent_bus_core::output::{
     excerpt_body, format_health_toon, format_message_toon, format_presence_toon,
 };
 use agent_bus_core::redis_bus::{
-    RedisPool, SseSubscriberCount, bus_list_messages_from_redis,
-    bus_post_message_with_notifications, list_notifications, list_notifications_since_id,
-    list_resource_events as redis_list_resource_events,
+    RedisPool, SseSubscriberCount, bus_list_messages_from_redis, list_notifications,
+    list_notifications_since_id, list_resource_events as redis_list_resource_events,
 };
 use agent_bus_core::settings::{Settings, loopback_url_candidates};
 use agent_bus_core::validation::validate_priority;
@@ -1860,25 +1859,18 @@ pub(crate) async fn http_batch_ack_handler(
         let mut conn = state.redis.get_connection()?;
         let mut posted = Vec::with_capacity(ids.len());
         for message_id in &ids {
-            let meta = serde_json::json!({"ack_for": message_id});
-            posted.push(bus_post_message_with_notifications(
+            posted.push(post_ack(
                 &mut conn,
                 &state.settings,
-                &agent,
-                "all",
-                "ack",
-                &ack_body,
-                None,
-                &[],
-                "normal",
-                false,
-                Some(message_id.as_str()),
-                &meta,
-                agent_bus_core::pg_writer(),
-                has_sse_subscribers,
+                &AckMessageRequest {
+                    agent: &agent,
+                    message_id,
+                    body: &ack_body,
+                    has_sse_subscribers,
+                },
             )?);
         }
-        Ok::<Vec<agent_bus_core::redis_bus::PostedMessage>, anyhow::Error>(posted)
+        Ok::<_, anyhow::Error>(posted)
     })
     .await
     .map_err(|e| internal_error(anyhow::anyhow!("task join: {e}")))?
@@ -1886,7 +1878,7 @@ pub(crate) async fn http_batch_ack_handler(
 
     let acked_ids: Vec<String> = posted
         .into_iter()
-        .map(|posted| posted.message.reply_to.unwrap_or_default())
+        .map(|posted| posted.acked_message_id)
         .collect();
 
     Ok(Json(serde_json::json!({
