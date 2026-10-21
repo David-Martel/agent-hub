@@ -1,12 +1,12 @@
 param([string]$WatchdogPath = (Join-Path $PSScriptRoot 'agent-bus-watchdog.ps1'))
 $ErrorActionPreference = 'Stop'
 
-# Import only the actual four function definitions, never execute host bootstrap,
+# Import only the actual five function definitions, never execute host bootstrap,
 # real CLI/config discovery, EventLog registration or the watchdog's main block.
 $tokens = $null; $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($WatchdogPath, [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw ('Watchdog parse failed: ' + $parseErrors[0].Message) }
-foreach ($name in @('Get-WatchdogAssessment', 'Test-WatchdogNotificationDue', 'Write-Alert', 'Write-Ok')) {
+foreach ($name in @('Get-WatchdogAssessment', 'Test-WatchdogNotificationDue', 'Show-WatchdogToast', 'Write-Alert', 'Write-Ok')) {
     $matches = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | Where-Object { $_.Name -eq $name })
     if ($matches.Count -ne 1) { throw "Missing or ambiguous actual function: $name" }
     . ([scriptblock]::Create($matches[0].Extent.Text))
@@ -95,34 +95,106 @@ foreach ($case in $notificationCases) {
     }
 }
 
-# Protects: real alert persistence and recovery lifecycle. Detects: modal storms,
-# lost warning state, moving attempt time, stale flags or suppressed recurrence.
-# Needs: owned temporary directory; msg/EventLog are stubbed before function calls.
-# Breadcrumb: agent-bus-watchdog.ps1 Write-Alert and Write-Ok.
+# Protects: real alert persistence, the three-failure toast gate and the recovery
+# lifecycle. Detects: modal storms, lost warning state, a cooldown that restarts at the
+# first failure instead of the last toast, stale flags or suppressed recurrence.
+# Needs: owned temporary directory; the toast and EventLog are stubbed before any call.
+# Breadcrumb: agent-bus-watchdog.ps1 Write-Alert, Show-WatchdogToast and Write-Ok.
 $flagDir = Join-Path ([IO.Path]::GetTempPath()) ('agent-bus-watchdog-fixtures-' + [guid]::NewGuid().ToString('N'))
 $flagFile = Join-Path $flagDir 'alert.json'; $okFile = Join-Path $flagDir 'ok.json'; $logSource = 'fixture'
-$script:notifications = 0; $script:eventIds = @()
-function msg.exe { $script:notifications++ }
+$script:notifications = 0; $script:eventIds = @(); $script:toastTitles = @()
+function Show-WatchdogToast { param($Title, $Text) $script:notifications++; $script:toastTitles += $Title }
 function Write-EventLog { param($LogName, $Source, $EntryType, $EventId, $Message, $ErrorAction) $script:eventIds += $EventId }
+function Reset-AlertState {
+    Remove-Item -LiteralPath $flagFile, $okFile -ErrorAction SilentlyContinue
+    $script:notifications = 0; $script:eventIds = @(); $script:toastTitles = @()
+}
+function Read-AlertState { return (Get-Content $flagFile -Raw | ConvertFrom-Json) }
 try {
-    Invoke-Case 'lifecycle_repeat_recovery_and_recurrence_preserve_notifications' {
-        Write-Alert 'DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE' 'fixture-cloud' -Level Warning -Now $now | Out-Null
-        Assert-Equal $script:notifications 1 'First incident must notify'
-        Write-Alert 'DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE' 'fixture-cloud' -Level Warning -Now $now.AddMinutes(10) | Out-Null
-        Assert-Equal $script:notifications 1 'Identical incident must not repeat its popup'
-        $state = Get-Content $flagFile -Raw | ConvertFrom-Json
-        Assert-Equal ([DateTimeOffset]::Parse($state.last_notification_attempt_utc)) $now 'Repeat must not move notification clock'
+    # Why: msg.exe opened a modal box that stole focus; a regression back to it must fail CI.
+    Invoke-Case 'toast_watchdog_source_never_invokes_modal_msg_exe' {
+        $commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) |
+            Where-Object { $_.GetCommandName() -match '^msg(\.exe)?$' })
+        Assert-Equal $commands.Count 0 'The watchdog must not call msg.exe'
+    }
+
+    # Why: a single failed probe is usually a route flap; the first two failures only log.
+    Invoke-Case 'toast_first_two_failures_only_log_and_third_notifies_once' {
+        Reset-AlertState
+        Write-Alert 'hub unreachable' 'fixture' -Level Warning -Now $now | Out-Null
+        Assert-Equal $script:notifications 0 'First failure must not toast'
+        Assert-Equal (Read-AlertState).consecutive_failures 1 'First failure is counted'
+        Write-Alert 'hub unreachable' 'fixture' -Level Warning -Now $now.AddMinutes(10) | Out-Null
+        Assert-Equal $script:notifications 0 'Second failure must not toast'
+        Write-Alert 'hub unreachable' 'fixture' -Level Warning -Now $now.AddMinutes(20) | Out-Null
+        Assert-Equal $script:notifications 1 'Third consecutive failure must toast once'
+        Assert-Equal (Read-AlertState).consecutive_failures 3 'Third failure is counted'
+        Assert-Equal $script:toastTitles[0] 'Agent-bus watchdog' 'Toast carries the watchdog title'
+        Assert-Equal ([DateTimeOffset]::Parse((Read-AlertState).last_notified_utc)) $now.AddMinutes(20) 'Toast time is recorded'
+        Assert-Equal $script:eventIds.Count 3 'Every failure still reaches the Event Log'
+    }
+
+    # Why: the cooldown must suppress repeats after a toast, not re-toast on every failure.
+    Invoke-Case 'toast_five_failures_inside_cooldown_still_one_toast' {
+        Reset-AlertState
+        foreach ($minute in 0, 10, 20, 30, 40) {
+            Write-Alert 'hub unreachable' 'fixture' -Level Warning -Now $now.AddMinutes($minute) | Out-Null
+        }
+        Assert-Equal (Read-AlertState).consecutive_failures 5 'All five failures are counted'
+        Assert-Equal $script:notifications 1 'Failures 4 and 5 are inside the 30-minute cooldown'
+    }
+
+    # Why: the cooldown runs from the last toast shown; measured from the first failure it
+    # would have toasted again at +30 and on every poll afterwards.
+    Invoke-Case 'toast_cooldown_is_measured_from_last_toast_not_first_failure' {
+        Reset-AlertState
+        foreach ($minute in 0, 10, 20, 30, 40, 50) {
+            Write-Alert 'hub unreachable' 'fixture' -Level Warning -Now $now.AddMinutes($minute) | Out-Null
+        }
+        Assert-Equal $script:notifications 2 'Failure 6 is 30 minutes after the +20 toast and is due'
+        Assert-Equal ([DateTimeOffset]::Parse((Read-AlertState).last_notified_utc)) $now.AddMinutes(50) 'Second toast time is recorded'
+        Write-Alert 'hub unreachable' 'fixture' -Level Warning -Now $now.AddMinutes(60) | Out-Null
+        Assert-Equal $script:notifications 2 'The next poll restarts the cooldown at the second toast'
+    }
+
+    # Why: a different incident after three failures is new information and must not wait.
+    Invoke-Case 'toast_changed_incident_after_threshold_notifies_immediately' {
+        Reset-AlertState
+        foreach ($minute in 0, 10, 20) {
+            Write-Alert 'hub unreachable' 'fixture' -Level Warning -Now $now.AddMinutes($minute) | Out-Null
+        }
+        Write-Alert 'hub identity mismatch' 'fixture-unknown' -Now $now.AddMinutes(21) | Out-Null
+        Assert-Equal $script:notifications 2 'A changed incident past the threshold notifies at once'
+    }
+
+    # Why: flag files written before this change have no counter and must not crash or toast early.
+    Invoke-Case 'toast_legacy_flag_without_counter_counts_from_one' {
+        Reset-AlertState
+        New-Item -ItemType Directory -Path $flagDir -Force | Out-Null
+        Set-Content -Path $flagFile -Encoding UTF8 -Value (@{ timestamp_utc = $now.ToString('o'); message = 'hub unreachable'; detail = 'fixture'
+            last_notification_attempt_utc = $now.ToString('o'); notification_attempted = $true } | ConvertTo-Json -Compress)
+        Write-Alert 'hub unreachable' 'fixture' -Level Warning -Now $now.AddMinutes(10) | Out-Null
+        Assert-Equal (Read-AlertState).consecutive_failures 1 'A legacy flag starts the counter at one'
+        Assert-Equal $script:notifications 0 'A legacy flag must not toast before three failures'
+    }
+
+    # Why: recovery must clear the failure streak, otherwise one later blip would toast at once.
+    Invoke-Case 'lifecycle_recovery_resets_streak_and_recurrence_needs_three_failures' {
+        Reset-AlertState
+        foreach ($minute in 0, 10, 20) {
+            Write-Alert 'DEGRADED_ONSITE_AUTHORITY_UNAVAILABLE' 'fixture-cloud' -Level Warning -Now $now.AddMinutes($minute) | Out-Null
+        }
+        Assert-Equal $script:notifications 1 'Persistent incident toasts after three failures'
         Assert-Equal (Test-Path $flagFile) $true 'Throttled incident must retain its alert flag'
-        Write-Alert 'hub identity mismatch' 'fixture-unknown' -Now $now.AddMinutes(11) | Out-Null
-        Assert-Equal $script:notifications 2 'Changed incident must notify immediately'
         Write-Ok 'fixture authority recovered'
         Assert-Equal (Test-Path $flagFile) $false 'Recovery must clear incident state'
         Assert-Equal (Test-Path $okFile) $true 'Recovery must persist a good receipt'
         Assert-Equal $script:eventIds[-1] 8401 'Recovery must emit a recovery event'
-        Write-Alert 'hub identity mismatch' 'fixture-unknown' -Now $now.AddMinutes(12) | Out-Null
-        Assert-Equal $script:notifications 3 'Post-recovery recurrence must notify immediately'
-        Write-Alert 'hub identity mismatch' 'fixture-unknown' -Now $now.AddMinutes(42) | Out-Null
-        Assert-Equal $script:notifications 4 'Persistent incident must remind at the cooldown boundary'
+        Write-Alert 'hub identity mismatch' 'fixture-unknown' -Now $now.AddMinutes(30) | Out-Null
+        Write-Alert 'hub identity mismatch' 'fixture-unknown' -Now $now.AddMinutes(40) | Out-Null
+        Assert-Equal $script:notifications 1 'Recurrence must not toast before its third failure'
+        Write-Alert 'hub identity mismatch' 'fixture-unknown' -Now $now.AddMinutes(50) | Out-Null
+        Assert-Equal $script:notifications 2 'Recurrence toasts on its third consecutive failure'
     }
 } finally {
     if (Test-Path $flagDir) { Remove-Item -LiteralPath $flagDir -Recurse -Force }
