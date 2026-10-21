@@ -7,6 +7,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Instant;
 
+#[path = "http_lifecycle_process.rs"]
+mod process;
+use process::{bounded_test_process, complete_child_control};
+
 struct RedisFixture {
     addr: std::net::SocketAddr,
     stopped: Arc<AtomicBool>,
@@ -236,47 +240,10 @@ fn dropping_server_future_releases_pubsub_runtime() {
 fn shutdown_process_control(mode: &str, selector: &str) {
     if std::env::var_os("AGENT_BUS_LIFECYCLE_CHILD").is_some() {
         http_stop_fixture_child(mode);
+        complete_child_control(selector);
         return;
     }
-    bounded_test_process(selector);
-}
-
-fn bounded_test_process(selector: &str) {
-    let fixture = tempfile::tempdir().unwrap();
-    let config = fixture.path().join("config.json");
-    std::fs::write(&config, "{}").unwrap();
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    command.args([
-        "--exact",
-        &format!("http::pubsub_lifecycle_tests::{selector}"),
-        "--nocapture",
-    ]);
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("AGENT_BUS_") {
-            command.env_remove(key);
-        }
-    }
-    command
-        .env("AGENT_BUS_CONFIG", config)
-        .env("LOCALAPPDATA", fixture.path())
-        .env("AGENT_BUS_LIFECYCLE_CHILD", "1");
-    let mut child = command.spawn().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(8);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break Some(status);
-        }
-        if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
-            break None;
-        }
-        thread::sleep(Duration::from_millis(10));
-    };
-    assert!(
-        status.is_some_and(|status| status.success()),
-        "HTTP stop did not release the idle worker/runtime within 8s: {status:?}"
-    );
+    bounded_test_process(selector).unwrap();
 }
 
 // Protects/detects/needs: child half of the bounded process-exit selector above.
@@ -292,9 +259,31 @@ fn http_stop_fixture_child(mode: &str) {
     }
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    drop(listener);
+    let _occupied_listener = if mode.starts_with("occupied") {
+        Some(listener)
+    } else {
+        drop(listener);
+        None
+    };
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
+        if mode.starts_with("occupied") {
+            if mode == "occupied-fault" {
+                let url = redis.url();
+                // Deliberate regression control confined to this watchdog child:
+                // an unowned idle subscriber must prevent runtime exit.
+                tokio::task::spawn_blocking(move || {
+                    let mut conn = redis::Client::open(url).unwrap().get_connection().unwrap();
+                    let mut pubsub = conn.as_pubsub();
+                    pubsub.subscribe("fixture:events").unwrap();
+                    while pubsub.get_message().is_ok() {}
+                });
+                wait_for(|| redis.subscriptions.load(Ordering::Acquire) > 0).await;
+            }
+            let error = start_http_server(isolated_settings(redis.url()), port).await.unwrap_err();
+            assert!(error.to_string().contains("failed to bind HTTP server"));
+            return;
+        }
         let stop_request =
             async {
                 tokio::time::timeout(Duration::from_secs(3), async {
@@ -485,7 +474,7 @@ async fn stalled_redis_handshake_is_bounded_and_joined() {
 #[test]
 fn retry_wait_is_interrupted_by_stop() {
     if std::env::var_os("AGENT_BUS_LIFECYCLE_CHILD").is_none() {
-        bounded_test_process("retry_wait_is_interrupted_by_stop");
+        bounded_test_process("retry_wait_is_interrupted_by_stop").unwrap();
         return;
     }
     let control = Arc::new(PubSubControl::default());
@@ -493,8 +482,7 @@ fn retry_wait_is_interrupted_by_stop() {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let (done_tx, done_rx) = std::sync::mpsc::channel();
     let worker = thread::spawn(move || {
-        ready_tx.send(()).unwrap();
-        worker_control.wait_for_retry();
+        worker_control.wait_for_retry_ready(|| ready_tx.send(()).unwrap());
         done_tx.send(()).unwrap();
     });
     ready_rx.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -503,9 +491,10 @@ fn retry_wait_is_interrupted_by_stop() {
     done_rx.recv_timeout(Duration::from_millis(500)).unwrap();
     worker.join().unwrap();
     assert!(start.elapsed() < Duration::from_millis(500));
+    complete_child_control("retry_wait_is_interrupted_by_stop");
 }
 
-// Protects: a connected but non-reading SSE client cannot pin shutdown by backpressure.
+// Protects: cancellation releases a Pub/Sub worker blocked by a full SSE channel.
 // Detects: blocking_send or send().await without cancellation on a proven-full queue.
 // Needs: the exact production sender helper, a capacity-one full queue and persistent stop.
 // Breadcrumb: crates/agent-bus-http/src/http.rs (send_pubsub_event.)
@@ -577,26 +566,66 @@ async fn sse_forwards_actual_filtered_redis_payload() {
     state.pubsub_workers.shutdown().await.unwrap();
 }
 
-// Protects: failed listener startup cannot leave a background Redis subscription.
-// Detects: spawning persistent workers before the requested port is admitted.
-// Needs: a privately occupied loopback port and a healthy private RESP fixture.
+// Protects: failed listener startup returns its actual bind error and releases runtime ownership.
+// Detects: a failed-bind path retaining a blocking worker, rather than claiming unobservable spawn order.
+// Needs: an occupied private loopback port, healthy RESP fixture and reaped process watchdog.
 // Breadcrumb: crates/agent-bus-http/src/http.rs (start_http_server.)
-#[tokio::test]
-async fn occupied_listener_fails_before_pubsub_worker_creation() {
-    let redis = RedisFixture::new();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let error = start_http_server(
-        isolated_settings(redis.url()),
-        listener.local_addr().unwrap().port(),
-    )
-    .await
-    .unwrap_err();
-    assert!(error.to_string().contains("failed to bind HTTP server"));
-    assert!(
-        redis.connections.load(Ordering::Acquire) > 0,
-        "backend startup must have been reached"
+#[test]
+fn occupied_listener_returns_error_and_releases_runtime() {
+    shutdown_process_control(
+        "occupied",
+        "occupied_listener_returns_error_and_releases_runtime",
     );
-    assert_eq!(redis.subscriptions.load(Ordering::Acquire), 0);
+}
+
+// Protects: the failed-bind process gate can actually reject a retained worker.
+// Detects: replacing bounded process/runtime observation with an immediate counter assertion.
+// Needs: one deliberately unowned idle subscriber in a private child killed/reaped by the watchdog.
+// Breadcrumb: crates/agent-bus-http/src/http_lifecycle_process.rs (bounded_test_process).
+#[test]
+fn failed_bind_watchdog_rejects_retained_subscriber() {
+    if std::env::var_os("AGENT_BUS_LIFECYCLE_CHILD").is_some() {
+        http_stop_fixture_child("occupied-fault");
+        panic!("deliberately retained subscriber unexpectedly released runtime");
+    }
+    let error =
+        bounded_test_process("failed_bind_watchdog_rejects_retained_subscriber").unwrap_err();
+    assert_eq!(error, "Owned control exceeded 8s; child killed and reaped");
+}
+
+// Protects: an empty libtest --exact match cannot falsely certify lifecycle behavior.
+// Detects: accepting exit zero without proof that the exact intended selector completed.
+// Needs: an actual intentionally absent child selector and its missing private completion marker.
+// Breadcrumb: crates/agent-bus-http/src/http_lifecycle_process.rs (bounded_test_process / complete_child_control).
+#[test]
+fn absent_child_selector_is_rejected_despite_zero_exit() {
+    let error = bounded_test_process("deliberately_absent_lifecycle_selector").unwrap_err();
+    assert_eq!(error, "Exact selector did not record successful completion");
+}
+
+// Protects: a transport failure remains the primary cause when worker cleanup also fails.
+// Detects: returning cleanup failure first and losing the original listener error.
+// Needs: the exact result-combination helper with distinct synthetic simultaneous errors.
+// Breadcrumb: crates/agent-bus-http/src/http.rs (finish_http_server).
+#[test]
+fn simultaneous_transport_and_cleanup_errors_preserve_transport_cause() {
+    let error = finish_http_server(
+        Err(std::io::Error::other("synthetic transport failure")),
+        Err(anyhow::anyhow!("synthetic cleanup failure")),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().to_string(),
+        "synthetic transport failure"
+    );
+    assert!(format!("{error:#}").contains("synthetic cleanup failure"));
+    assert!(finish_http_server(Ok(()), Ok(())).is_ok());
+    assert!(
+        finish_http_server(Ok(()), Err(anyhow::anyhow!("cleanup-only")))
+            .unwrap_err()
+            .to_string()
+            .contains("cleanup-only")
+    );
 }
 
 // Protects: late SSE registrations after cancellation cannot leak their subscriber count.

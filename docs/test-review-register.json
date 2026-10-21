@@ -3205,293 +3205,455 @@
       "control": "Existing workflow-isolation selector retains assertIsNotNone plus explicit optional-index narrowing; verified runner/npm ordering and private CI bridge13/13."
     },
     {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::idle_pubsub_runtime_exits_after_http_stop",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "an accepted HTTP stop must let Tokio and the owned process exit.",
-        "detects": "an idle Redis bridge retained by Runtime::drop, not just a closed listener.",
-        "needs": "only a private loopback RESP fixture and a bounded, reaped test child.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::idle_pubsub_runtime_exits_after_http_stop",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::quiet_sse_runtime_exits_after_http_stop",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "quiet /events bodies cannot hold Axum graceful shutdown open.",
-        "detects": "cancelling only the bridge while an idle per-client worker survives.",
-        "needs": "the same private HTTP/RESP child, retaining a real authenticated SSE response.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::reconnecting_runtime_exits_after_http_stop",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "Redis loss during service stop must not leave an infinite reconnect loop.",
-        "detects": "cancellation omitted from the retry path after a real subscribed disconnect.",
-        "needs": "Private RESP fixture drops the subscribed socket, then proves a rejected subsequent connection before authenticated HTTP stop.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "an accepted HTTP stop must let Tokio and the owned process exit.",
+      "detects": "an idle Redis bridge retained by Runtime::drop, not just a closed listener.",
+      "needs": "only a private loopback RESP fixture and a bounded, reaped test child.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::quiet_sse_runtime_exits_after_http_stop",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::dropping_server_future_releases_pubsub_runtime",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "cancelling the HTTP server future still releases its blocking work.",
-        "detects": "ownership cleanup that only runs after a normal graceful-shutdown return.",
-        "needs": "the private actual server child, dropped after a proven Redis subscription.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::bridge_reconnects_and_forwards_actual_message",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "reconnect retains actual direct/broadcast notification forwarding.",
-        "detects": "a lifecycle fix that stops delivery or never reconnects after socket loss.",
-        "needs": "one forced private Redis disconnect, real RESP message and two agent receivers.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "quiet /events bodies cannot hold Axum graceful shutdown open.",
+      "detects": "cancelling only the bridge while an idle per-client worker survives.",
+      "needs": "the same private HTTP/RESP child, retaining a real authenticated SSE response.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::reconnecting_runtime_exits_after_http_stop",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::quiet_sse_disconnect_releases_workers_and_reaps_finished_entries",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "a quiet disconnected SSE client releases its worker and subscriber count.",
-        "detects": "idle get_message ignoring receiver closure, or accumulating completed handles.",
-        "needs": "repeated private /events handlers; no global stop until all disconnect controls pass.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::stalled_redis_handshake_is_bounded_and_joined",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "stop while Redis accepts TCP but never completes its handshake.",
-        "detects": "a bounded read loop paired with an unbounded initial connection/setup.",
-        "needs": "a private blackhole RESP fixture and a real registered bridge.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "Redis loss during service stop must not leave an infinite reconnect loop.",
+      "detects": "cancellation omitted from the retry path after a real subscribed disconnect.",
+      "needs": "private RESP fixture drops the subscribed socket, then proves a rejected reconnect before HTTP stop.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::dropping_server_future_releases_pubsub_runtime",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::retry_wait_is_interrupted_by_stop",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "stop wakes retry immediately rather than waiting for the reconnect delay.",
-        "detects": "replacing infinite retry with a non-interruptible fixed sleep.",
-        "needs": "only the shared cooperative control and one owned joined thread.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::full_sse_queue_is_cancelled_without_dropping_receiver",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "a connected but non-reading SSE client cannot pin shutdown by backpressure.",
-        "detects": "blocking_send or send().await without cancellation on a proven-full queue.",
-        "needs": "the exact production sender helper, a capacity-one full queue and persistent stop.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "cancelling the HTTP server future still releases its blocking work.",
+      "detects": "ownership cleanup that only runs after a normal graceful-shutdown return.",
+      "needs": "the private actual server child, dropped after a proven Redis subscription.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::bridge_reconnects_and_forwards_actual_message",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::sse_forwards_actual_filtered_redis_payload",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "/events still emits actual Redis payloads with the configured recipient filter.",
-        "detects": "cancellation plumbing that closes or suppresses an otherwise healthy SSE stream.",
-        "needs": "private real RESP SUBSCRIBE/message and the handler's actual response body stream.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::occupied_listener_fails_before_pubsub_worker_creation",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "failed listener startup cannot leave a background Redis subscription.",
-        "detects": "spawning persistent workers before the requested port is admitted.",
-        "needs": "a privately occupied loopback port and a healthy private RESP fixture.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "reconnect retains actual direct/broadcast notification forwarding.",
+      "detects": "a lifecycle fix that stops delivery or never reconnects after socket loss.",
+      "needs": "one forced private Redis disconnect, real RESP message and two agent receivers.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::quiet_sse_disconnect_releases_workers_and_reaps_finished_entries",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
       },
-      {
-        "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::stopped_registry_rejects_late_sse_without_counter_or_worker",
-        "reviewer": "codex-gen9-runtime-repair",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "disposition": "keep",
-        "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
-        "selector_source": {
-          "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-          "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
-          "hash_scope": "whole normalized Rust module including fixtures"
-        },
-        "code_under_test": {
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "a quiet disconnected SSE client releases its worker and subscriber count.",
+      "detects": "idle get_message ignoring receiver closure, or accumulating completed handles.",
+      "needs": "repeated private /events handlers; no global stop until all disconnect controls pass.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::stalled_redis_handshake_is_bounded_and_joined",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "stop while Redis accepts TCP but never completes its handshake.",
+      "detects": "a bounded read loop paired with an unbounded initial connection/setup.",
+      "needs": "a private blackhole RESP fixture and a real registered bridge.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::retry_wait_is_interrupted_by_stop",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "stop wakes retry immediately rather than waiting for the reconnect delay.",
+      "detects": "replacing infinite retry with a non-interruptible fixed sleep.",
+      "needs": "only the shared cooperative control and one owned joined thread.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::full_sse_queue_is_cancelled_without_dropping_receiver",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "cancellation releases a Pub/Sub worker blocked by a full SSE channel.",
+      "detects": "blocking_send or send().await without cancellation on a proven-full queue.",
+      "needs": "the exact production sender helper, a capacity-one full queue and persistent stop.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::sse_forwards_actual_filtered_redis_payload",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "/events still emits actual Redis payloads with the configured recipient filter.",
+      "detects": "cancellation plumbing that closes or suppresses an otherwise healthy SSE stream.",
+      "needs": "private real RESP SUBSCRIBE/message and the handler's actual response body stream.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::occupied_listener_returns_error_and_releases_runtime",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "failed listener startup returns its actual bind error and releases runtime ownership.",
+      "detects": "a failed-bind path retaining a blocking worker, rather than claiming unobservable spawn order.",
+      "needs": "an occupied private loopback port, healthy RESP fixture and reaped process watchdog.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::failed_bind_watchdog_rejects_retained_subscriber",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private watchdog negative: actual occupied-listener HTTP/RESP child with deliberately unowned blocking subscriber must exceed8s and be killed/reaped. This certifies gate sensitivity, not a production deployment.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+        "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+      },
+      "shared_sources": [
+        {
           "path": "crates/agent-bus-http/src/http.rs",
-          "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
-        },
-        "protections": "late SSE registrations after cancellation cannot leak their subscriber count.",
-        "detects": "a rejected spawn dropping neither its sender nor its counter guard.",
-        "needs": "a stopped worker registry and the actual /events handler with no external I/O.",
-        "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
-        "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls."
-      }
+          "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
+        }
+      ],
+      "protections": "the failed-bind process gate can actually reject a retained worker.",
+      "detects": "replacing bounded process/runtime observation with an immediate counter assertion.",
+      "needs": "one deliberately unowned idle subscriber in a private child killed/reaped by the watchdog.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::absent_child_selector_is_rejected_despite_zero_exit",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Only the private process gate with an intentionally absent libtest selector; exit0 without its exact completion marker must be refused. This selector does not execute production HTTP behavior.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+        "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http.rs",
+          "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
+        }
+      ],
+      "protections": "an empty libtest --exact match cannot falsely certify lifecycle behavior.",
+      "detects": "accepting exit zero without proof that the exact intended selector completed.",
+      "needs": "an actual intentionally absent child selector and its missing private completion marker.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::simultaneous_transport_and_cleanup_errors_preserve_transport_cause",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "a transport failure remains the primary cause when worker cleanup also fails.",
+      "detects": "returning cleanup failure first and losing the original listener error.",
+      "needs": "the exact result-combination helper with distinct synthetic simultaneous errors.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::stopped_registry_rejects_late_sse_without_counter_or_worker",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP and actual HTTP/runtime ownership, delivery, cancellation and error-priority controls. No live backend/cloud/fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "ead370899a66e0a07d90e3f76300e69b619762f6bd4d6c120a551bda60da23c3",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c0552f8486f7cee8978da9956c7e47b118ca6f1987340c15f6eb1b66c01da150"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "protections": "late SSE registrations after cancellation cannot leak their subscriber count.",
+      "detects": "a rejected spawn dropping neither its sender nor its counter guard.",
+      "needs": "a stopped worker registry and the actual /events handler with no external I/O.",
+      "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
+      "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    }
   ],
   "historical_reviews": [
     {
@@ -4267,6 +4429,306 @@
       "breaking_behavior": "Batch only controlled config/TEMP path conversions, reject malformed records, preserve first error alongside independent cleanup/retention evidence.",
       "additional_coverage_boundary": "Synthetic offline controls certify no current-head Wine binary, deployment, fleet state or production latency.",
       "superseded_reason": "Shared Wine lifecycle source changed; original synthetic review provenance retained."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::idle_pubsub_runtime_exits_after_http_stop",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "an accepted HTTP stop must let Tokio and the owned process exit.",
+      "detects": "an idle Redis bridge retained by Runtime::drop, not just a closed listener.",
+      "needs": "only a private loopback RESP fixture and a bounded, reaped test child.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::quiet_sse_runtime_exits_after_http_stop",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "quiet /events bodies cannot hold Axum graceful shutdown open.",
+      "detects": "cancelling only the bridge while an idle per-client worker survives.",
+      "needs": "the same private HTTP/RESP child, retaining a real authenticated SSE response.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::reconnecting_runtime_exits_after_http_stop",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "Redis loss during service stop must not leave an infinite reconnect loop.",
+      "detects": "cancellation omitted from the retry path after a real subscribed disconnect.",
+      "needs": "Private RESP fixture drops the subscribed socket, then proves a rejected subsequent connection before authenticated HTTP stop.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::dropping_server_future_releases_pubsub_runtime",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "cancelling the HTTP server future still releases its blocking work.",
+      "detects": "ownership cleanup that only runs after a normal graceful-shutdown return.",
+      "needs": "the private actual server child, dropped after a proven Redis subscription.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::bridge_reconnects_and_forwards_actual_message",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "reconnect retains actual direct/broadcast notification forwarding.",
+      "detects": "a lifecycle fix that stops delivery or never reconnects after socket loss.",
+      "needs": "one forced private Redis disconnect, real RESP message and two agent receivers.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::quiet_sse_disconnect_releases_workers_and_reaps_finished_entries",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "a quiet disconnected SSE client releases its worker and subscriber count.",
+      "detects": "idle get_message ignoring receiver closure, or accumulating completed handles.",
+      "needs": "repeated private /events handlers; no global stop until all disconnect controls pass.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::stalled_redis_handshake_is_bounded_and_joined",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "stop while Redis accepts TCP but never completes its handshake.",
+      "detects": "a bounded read loop paired with an unbounded initial connection/setup.",
+      "needs": "a private blackhole RESP fixture and a real registered bridge.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::retry_wait_is_interrupted_by_stop",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "stop wakes retry immediately rather than waiting for the reconnect delay.",
+      "detects": "replacing infinite retry with a non-interruptible fixed sleep.",
+      "needs": "only the shared cooperative control and one owned joined thread.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::full_sse_queue_is_cancelled_without_dropping_receiver",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "a connected but non-reading SSE client cannot pin shutdown by backpressure.",
+      "detects": "blocking_send or send().await without cancellation on a proven-full queue.",
+      "needs": "the exact production sender helper, a capacity-one full queue and persistent stop.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::sse_forwards_actual_filtered_redis_payload",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "/events still emits actual Redis payloads with the configured recipient filter.",
+      "detects": "cancellation plumbing that closes or suppresses an otherwise healthy SSE stream.",
+      "needs": "private real RESP SUBSCRIBE/message and the handler's actual response body stream.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::occupied_listener_fails_before_pubsub_worker_creation",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "failed listener startup cannot leave a background Redis subscription.",
+      "detects": "spawning persistent workers before the requested port is admitted.",
+      "needs": "a privately occupied loopback port and a healthy private RESP fixture.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::stopped_registry_rejects_late_sse_without_counter_or_worker",
+      "reviewer": "codex-gen9-runtime-repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Private loopback RESP fixtures and actual HTTP/runtime child processes; bounded cancellation, delivery and worker ownership. No production backend, cloud state, fleet deployment or DNS-stall qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "65200e80e5644ba9012cfcb0a7b69898d8534f0c1e7b85c5263bff4f3400ab49",
+        "hash_scope": "whole normalized Rust module including fixtures"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "8dc8585bd60668b0cdaa10b5769cdbd352e4f2909612cd4ff9877c2ba40e7ee8"
+      },
+      "protections": "late SSE registrations after cancellation cannot leak their subscriber count.",
+      "detects": "a rejected spawn dropping neither its sender nor its counter guard.",
+      "needs": "a stopped worker registry and the actual /events handler with no external I/O.",
+      "control": "Independent F195 test-source replay:12/12 PASS, exit0,3.09s; unchanged source and executable hashes before/after. Final65200 test source corrects only the reconnect Needs comment; the independently reviewed comment delta changes no fixture or assertion and is not claimed as recompilation of that artifact. Actual idle HTTP stop baseline RED/101 reproduced process non-exit within8s. F0 findings were strengthened with bounded broadcast/retry waits and an observed rejected reconnect handshake; finalF195 replay is separate from the historical F0 workspace run. Receipt: C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-qa.json SHA2565ba15e239a0dc47d786d064edfe2155093bac85da6f489cce49c260333884522; independent stdout E0CAD08086994CA95B4A4FC395520328EBB0A7AD22EBDC9103CB36ACE4907988, stderr4EF63FC0905306B81ECCE84F9BD5330AF0D1721AD4A42FDA556A32B07DB1CB68.",
+      "breaking_behavior": "Retains notification delivery while requiring cancellation to release registered workers and actual process/runtime ownership; no live transport or cloud-configuration change is authorized by these private controls.",
+      "superseded_reason": "Signed9da exact-source review retained. Genuine outside-Claude review D7F4DEE2FFCEE9C9DF589D03AE4526EE0546CB6C926642D1EA72DC5F7932A6C6 requested stronger failed-bind, selector-completion and retry-entry controls; C055/EAD/33F6 successor is separately independently reviewed and replayed."
     }
   ]
 }

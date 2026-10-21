@@ -130,10 +130,17 @@ impl PubSubControl {
     }
 
     fn wait_for_retry(&self) {
+        self.wait_for_retry_ready(|| {});
+    }
+
+    fn wait_for_retry_ready(&self, ready: impl FnOnce()) {
         let stopped = self
             .stopped
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The private callback runs under the same mutex, letting tests prove
+        // stop occurs after wait entry, without scheduler-dependent sleeps.
+        ready();
         let _guard = self
             .retry_wakeup
             .wait_timeout_while(stopped, PUBSUB_RETRY_DELAY, |stopped| !*stopped);
@@ -4051,9 +4058,17 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
     // drop (which waits indefinitely for started spawn_blocking work).
     pubsub_workers.control.stop();
     agent_connections.write().await.clear();
-    pubsub_workers.shutdown().await?;
-    result.context("HTTP server error")?;
-    Ok(())
+    finish_http_server(result, pubsub_workers.shutdown().await)
+}
+
+fn finish_http_server(transport: std::io::Result<()>, workers: Result<()>) -> Result<()> {
+    match (transport, workers) {
+        (Err(error), Err(cleanup)) => Err(error).context(format!(
+            "HTTP server error; Pub/Sub cleanup also failed: {cleanup:#}"
+        )),
+        (Err(error), Ok(())) => Err(error).context("HTTP server error"),
+        (Ok(()), cleanup) => cleanup,
+    }
 }
 
 // ---------------------------------------------------------------------------
