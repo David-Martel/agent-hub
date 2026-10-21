@@ -186,6 +186,14 @@ fn validated_task_body(task: &str) -> Result<&str> {
     Ok(non_empty(body, "body")?)
 }
 
+/// Reject thread identifiers that URL path construction would normalize away.
+fn validate_thread_command_id(thread_id: &str) -> Result<()> {
+    if matches!(non_empty(thread_id, "thread_id")?, "." | "..") {
+        anyhow::bail!("thread_id '.' and '..' are unsupported");
+    }
+    Ok(())
+}
+
 fn list_filtered_messages(
     settings: &Settings,
     agent: Option<&str>,
@@ -873,7 +881,7 @@ pub(crate) fn cmd_pending_acks(
         let url = build_hub_url(&base, &["pending-acks"], &query)?;
         let value = http_get(&url)?;
         let pending: Vec<agent_bus_core::redis_bus::PendingAck> =
-            serde_json::from_value(value).context("hub returned a malformed /pending-acks body")?;
+            decode_task_response(value, "hub returned a malformed /pending-acks body")?;
         render_pending_acks(&pending, encoding);
         return Ok(());
     }
@@ -2581,7 +2589,8 @@ pub(crate) fn cmd_inventory(
 ///
 /// # Errors
 ///
-/// Returns an error if `created_by` is empty, or the Redis connection fails.
+/// Returns an error if `created_by` is empty, a supplied thread ID is dot-only,
+/// or the Redis connection fails.
 pub(crate) fn cmd_thread_create(
     settings: &Settings,
     thread_id: Option<&str>,
@@ -2591,6 +2600,10 @@ pub(crate) fn cmd_thread_create(
     encoding: &Encoding,
 ) -> Result<()> {
     use crate::ops::thread::{CreateThreadRequest, create_thread as ops_create_thread};
+
+    if let Some(id) = thread_id.filter(|id| !id.trim().is_empty()) {
+        validate_thread_command_id(id)?;
+    }
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
@@ -2625,8 +2638,8 @@ pub(crate) fn cmd_thread_create(
 ///
 /// # Errors
 ///
-/// Returns an error if `thread_id` or `agent` is empty, the thread does not
-/// exist, or the Redis connection fails.
+/// Returns an error if `thread_id` or `agent` is empty, the ID is dot-only,
+/// the thread does not exist, or the Redis connection fails.
 pub(crate) fn cmd_thread_join(
     settings: &Settings,
     thread_id: &str,
@@ -2634,6 +2647,8 @@ pub(crate) fn cmd_thread_join(
     encoding: &Encoding,
 ) -> Result<()> {
     use crate::ops::thread::{ThreadMemberRequest, join_thread as ops_join_thread};
+
+    validate_thread_command_id(thread_id)?;
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
@@ -2650,8 +2665,8 @@ pub(crate) fn cmd_thread_join(
 ///
 /// # Errors
 ///
-/// Returns an error if `thread_id` or `agent` is empty, the thread does not
-/// exist, or the Redis connection fails.
+/// Returns an error if `thread_id` or `agent` is empty, the ID is dot-only,
+/// the thread does not exist, or the Redis connection fails.
 pub(crate) fn cmd_thread_leave(
     settings: &Settings,
     thread_id: &str,
@@ -2659,6 +2674,8 @@ pub(crate) fn cmd_thread_leave(
     encoding: &Encoding,
 ) -> Result<()> {
     use crate::ops::thread::{ThreadMemberRequest, leave_thread as ops_leave_thread};
+
+    validate_thread_command_id(thread_id)?;
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
@@ -2725,14 +2742,16 @@ pub(crate) fn cmd_thread_list(settings: &Settings, encoding: &Encoding) -> Resul
 ///
 /// # Errors
 ///
-/// Returns an error if `thread_id` is empty, the thread does not exist,
-/// or the Redis connection fails.
+/// Returns an error if `thread_id` is empty or dot-only, the thread does not
+/// exist, or the Redis connection fails.
 pub(crate) fn cmd_thread_close(
     settings: &Settings,
     thread_id: &str,
     encoding: &Encoding,
 ) -> Result<()> {
     use crate::ops::thread::close_thread as ops_close_thread;
+
+    validate_thread_command_id(thread_id)?;
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
@@ -3140,6 +3159,43 @@ mod tests {
         .expect_err("blank created_by must fail");
 
         assert!(err.to_string().contains("created_by"));
+    }
+
+    /// Protects: unsupported thread IDs are rejected consistently in local CLI mode.
+    /// Detects: create or membership commands reaching Redis for dot-only identifiers.
+    /// Needs: closed-port settings; the expected validation diagnostic must precede I/O.
+    /// Breadcrumb: crates/agent-bus-cli/src/ (commands.rs, `validate_thread_command_id`).
+    #[test]
+    fn thread_commands_reject_dot_only_ids_before_local_bus_access() {
+        for id in [".", "..", " . ", " .. "] {
+            let settings = test_settings();
+            for (command, result) in [
+                (
+                    "thread-create",
+                    cmd_thread_create(&settings, Some(id), "fixture", None, None, &Encoding::Json),
+                ),
+                (
+                    "thread-join",
+                    cmd_thread_join(&settings, id, "fixture", &Encoding::Json),
+                ),
+                (
+                    "thread-leave",
+                    cmd_thread_leave(&settings, id, "fixture", &Encoding::Json),
+                ),
+                (
+                    "thread-close",
+                    cmd_thread_close(&settings, id, &Encoding::Json),
+                ),
+            ] {
+                let diagnostic = result
+                    .expect_err("dot-only ID must fail before accessing a backend")
+                    .to_string();
+                assert!(
+                    diagnostic.contains("unsupported"),
+                    "{command} did not reject {id:?} before backend access: {diagnostic}"
+                );
+            }
+        }
     }
 
     #[test]

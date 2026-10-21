@@ -332,6 +332,12 @@ fn isolated_config_path(label: &str) -> std::path::PathBuf {
 /// config file. Never touches a real backend of any kind.
 fn isolated_agent_bus(label: &str) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-bus"));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Owned fixture children must not open terminals on a deployment host.
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
     // Parallel fixtures need bounded child pools, not one pool per host CPU.
     cmd.env("TOKIO_WORKER_THREADS", "2");
     cmd.env("AGENT_BUS_CONFIG", isolated_config_path(label));
@@ -1874,6 +1880,10 @@ fn run_ok(command: &mut Command, what: &str) -> String {
     stdout_of(&output)
 }
 
+/// Protects: configured-hub thread creation, membership, listing and closure semantics.
+/// Detects: wrong HTTP verbs, routes, query parameters or creation payload fields.
+/// Needs: owned loopback request capture and CLI children isolated from real stores.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (thread lifecycle commands).
 #[test]
 fn thread_lifecycle_commands_route_through_the_remote_hub() {
     let member_route = |method: &'static str, path: &'static str| MockRoute {
@@ -1978,6 +1988,10 @@ fn thread_lifecycle_commands_route_through_the_remote_hub() {
     assert_eq!(create_body["topic"], "review");
 }
 
+/// Protects: spaces and slashes in supported thread IDs remain one URL segment.
+/// Detects: raw interpolation changing the endpoint or rejecting valid encoded IDs.
+/// Needs: owned fixture accepting only the exact encoded close route.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`build_hub_url` and `cmd_thread_close`).
 #[test]
 fn thread_commands_percent_encode_ids_for_the_hub_path() {
     let hub = MockHub::spawn(vec![
@@ -2002,6 +2016,137 @@ fn thread_commands_percent_encode_ids_for_the_hub_path() {
     assert!(stdout.contains("closed"), "{stdout}");
 }
 
+/// Protects: a CLI cannot create a thread whose dot-only ID disappears from mutation URLs.
+/// Detects: creation accepting an ID that join, leave or close cannot address remotely.
+/// Needs: owned loopback HTTP fixture and isolated CLI children; no fleet backend.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (thread lifecycle commands).
+#[test]
+fn thread_commands_reject_dot_only_ids_before_hub_mutation() {
+    for id in [".", "..", " . ", " .. "] {
+        let hub = MockHub::spawn(vec![
+            health_route(),
+            MockRoute {
+                method: "POST",
+                path: "/threads",
+                status: 201,
+                body: thread_fixture(id, "open"),
+            },
+        ]);
+        // Exercise creation and all subsequent mutations even on the old source:
+        // a successful creation must not hide the later unaddressable URL.
+        let calls: [(&str, Vec<&str>); 4] = [
+            (
+                "thread-create",
+                vec!["--thread-id", id, "--created-by", "fixture"],
+            ),
+            ("thread-join", vec!["--thread-id", id, "--agent", "fixture"]),
+            (
+                "thread-leave",
+                vec!["--thread-id", id, "--agent", "fixture"],
+            ),
+            ("thread-close", vec!["--thread-id", id]),
+        ];
+        let outputs: Vec<_> = calls
+            .iter()
+            .map(|(command, args)| {
+                agent_bus_with_hub_candidates(&[hub.url()], "thread-dot-only")
+                    .arg(command)
+                    .args(args)
+                    .args(["--encoding", "json"])
+                    .output()
+                    .expect("run isolated thread lifecycle command")
+            })
+            .collect();
+        for ((command, _), output) in calls.iter().zip(&outputs) {
+            assert!(
+                !output.status.success(),
+                "{command} accepted dot-only ID {id:?}"
+            );
+            assert!(
+                stderr_of(output).contains("unsupported"),
+                "{command} must reject the ID before transport: {}",
+                stderr_of(output)
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "{command} printed a mutation result"
+            );
+        }
+        assert_eq!(
+            hub.hits(),
+            0,
+            "invalid IDs must be rejected before even a health probe"
+        );
+    }
+}
+
+/// Protects: validation preserves ordinary IDs requiring path-segment encoding.
+/// Detects: an overbroad ID rejection or creation-to-mutation identity mismatch.
+/// Needs: owned loopback fixture recording request paths and the creation body.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`build_hub_url` and thread commands).
+#[test]
+fn thread_lifecycle_preserves_encoded_ids_from_creation_through_mutation() {
+    let id = "a b/c";
+    let mut routes = vec![
+        health_route(),
+        MockRoute {
+            method: "POST",
+            path: "/threads",
+            status: 201,
+            body: thread_fixture(id, "open"),
+        },
+    ];
+    for path in [
+        "/threads/a%20b%2Fc/join",
+        "/threads/a%20b%2Fc/leave",
+        "/threads/a%20b%2Fc/close",
+    ] {
+        routes.push(MockRoute {
+            method: "PUT",
+            path,
+            status: 200,
+            body: thread_fixture(id, "open"),
+        });
+    }
+    let hub = MockHub::spawn(routes);
+    for (command, args) in [
+        (
+            "thread-create",
+            vec!["--thread-id", id, "--created-by", "fixture"],
+        ),
+        ("thread-join", vec!["--thread-id", id, "--agent", "fixture"]),
+        (
+            "thread-leave",
+            vec!["--thread-id", id, "--agent", "fixture"],
+        ),
+        ("thread-close", vec!["--thread-id", id]),
+    ] {
+        run_ok(
+            agent_bus_with_hub_candidates(&[hub.url()], "thread-valid-encoded")
+                .arg(command)
+                .args(args)
+                .args(["--encoding", "json"]),
+            command,
+        );
+    }
+    let requests = hub_requests_except_health(&hub);
+    assert_eq!(requests.len(), 4);
+    let body: serde_json::Value =
+        serde_json::from_str(requests[0]["body"].as_str().unwrap()).unwrap();
+    assert_eq!(body["thread_id"], id);
+    for (request, expected) in requests[1..].iter().zip([
+        "/threads/a%20b%2Fc/join?agent=fixture",
+        "/threads/a%20b%2Fc/leave?agent=fixture",
+        "/threads/a%20b%2Fc/close",
+    ]) {
+        assert_eq!(request["target"], expected);
+    }
+}
+
+/// Protects: a blank joining agent cannot trigger a remote thread mutation.
+/// Detects: forwarding invalid membership arguments instead of rejecting them locally.
+/// Needs: owned fixture recording non-health requests and a failing CLI result.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`thread_member_remote`).
 #[test]
 fn thread_commands_validate_before_any_hub_request() {
     let hub = MockHub::spawn(vec![health_route()]);
@@ -2029,6 +2174,10 @@ fn thread_commands_validate_before_any_hub_request() {
     );
 }
 
+/// Protects: thread summary and compaction use the configured remote hub and CLI output shape.
+/// Detects: local-store fallback, wrong endpoints, or exposing the compaction envelope.
+/// Needs: owned canned HTTP responses and closed local stores for isolated CLI children.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_summarize_thread` and `cmd_compact_thread`).
 #[test]
 fn summarize_and_compact_thread_route_through_the_remote_hub() {
     let hub = MockHub::spawn(vec![
@@ -2095,6 +2244,10 @@ fn summarize_and_compact_thread_route_through_the_remote_hub() {
     assert_eq!(compact_body["token_budget"], 2000);
 }
 
+/// Protects: pending ACK reads retain the agent filter and JSON/human output semantics remotely.
+/// Detects: missing query parameters, wrong paths, or omission of the human stale marker.
+/// Needs: owned typed-response fixture, captured request targets and isolated CLI children.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_pending_acks` and `render_pending_acks`).
 #[test]
 fn pending_acks_routes_through_the_remote_hub_with_the_agent_filter() {
     let hub = MockHub::spawn(vec![
@@ -2136,6 +2289,62 @@ fn pending_acks_routes_through_the_remote_hub_with_the_agent_filter() {
     assert_eq!(requests[1]["target"], "/pending-acks");
 }
 
+/// Protects: a malformed successful pending-ACK reply cannot disclose bearer credentials.
+/// Detects: Serde retaining a reflected invalid value in the printed error chain.
+/// Needs: authenticated owned mock response, fallback probe counter and isolated CLI.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_pending_acks` and `decode_task_response`).
+#[test]
+fn pending_acks_omits_reflected_bearer_from_malformed_success_response() {
+    let token = "disposable-pending-ack-sentinel";
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/pending-acks",
+            status: 200,
+            body: serde_json::json!([{
+                "message_id": "fixture-message",
+                "recipient": "fixture-agent",
+                "sent_at": "2026-10-21T00:00:00Z",
+                "stale": token,
+            }])
+            .to_string(),
+        },
+    ]);
+    let fallback = MockHub::spawn(vec![health_route()]);
+    let output = agent_bus_with_hub_candidates(
+        &[hub.url(), fallback.url()],
+        "pending-acks-typed-token-error",
+    )
+    .env("AGENT_BUS_AUTH_TOKEN", token)
+    .args(["pending-acks", "--encoding", "json"])
+    .output()
+    .expect("run malformed pending-ACK response");
+    assert!(!output.status.success(), "malformed typed reply must fail");
+    assert_eq!(output.stdout, [] as [u8; 0]);
+    let requests = hub.requests();
+    assert_eq!(requests.len(), 2, "must exercise the actual HTTP200 reply");
+    assert_eq!(requests[1]["authorization"], format!("Bearer {token}"));
+    assert_eq!(
+        fallback.hits(),
+        0,
+        "decode failure must not change authority"
+    );
+    let diagnostic = stderr_of(&output);
+    assert!(
+        diagnostic.contains("malformed /pending-acks"),
+        "{diagnostic}"
+    );
+    assert!(
+        !diagnostic.contains(token),
+        "reflected fixture bearer leaked: {diagnostic}"
+    );
+}
+
+/// Protects: overdue ACK inspection reads the configured remote hub instead of local Redis.
+/// Detects: an incorrect endpoint or loss of the returned overdue message record.
+/// Needs: owned overdue-response fixture and closed local stores.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_overdue_acks`).
 #[test]
 fn overdue_acks_routes_through_the_remote_hub() {
     let hub = MockHub::spawn(vec![
@@ -2186,6 +2395,10 @@ fn remote_mode_command_matrix() -> Vec<(&'static str, Vec<&'static str>)> {
     ]
 }
 
+/// Protects: unavailable configured hubs do not become a silent local thread/ACK view.
+/// Detects: local Redis fallback or missing offline diagnostics across the command matrix.
+/// Needs: closed remote candidate ports and independently closed local stores.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (remote thread and ACK command branches).
 #[test]
 fn thread_and_ack_sweep_commands_refuse_offline_hubs_without_opening_local_redis() {
     for (name, args) in remote_mode_command_matrix() {
@@ -2206,6 +2419,10 @@ fn thread_and_ack_sweep_commands_refuse_offline_hubs_without_opening_local_redis
     }
 }
 
+/// Protects: a responding hub's failure remains the diagnostic authority for these commands.
+/// Detects: hiding an HTTP failure behind a subsequent local Redis error.
+/// Needs: owned failing-response hub and isolated command-matrix subprocesses.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (remote thread and ACK error propagation).
 #[test]
 fn thread_and_ack_sweep_commands_report_the_hub_error_not_a_loopback_redis_error() {
     // The hub answers /health but has no route for the command, so every call
