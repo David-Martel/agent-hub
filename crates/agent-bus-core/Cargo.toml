@@ -39,6 +39,8 @@ winreg = "0.56"
 
 [dev-dependencies]
 tempfile = "3"
+# Real-socket controls coexist with deterministic virtual-time route ordering.
+tokio = { version = "1", features = ["net", "io-util", "test-util"] }
 criterion = { version = "0.8", features = ["html_reports"] }
 
 [[bench]]

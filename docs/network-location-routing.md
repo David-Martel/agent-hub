@@ -25,18 +25,27 @@ order. Each dead path costs a connect timeout on every CLI or hook call.
      only interfaces whose address is currently up.
 
    Each `network_locations` rule that matches contributes its `name`.
-2. **Orders candidates.** Candidates whose `sites` include a detected location
-   move to the front. Every other candidate follows in configured order, and
-   every candidate is still probed if earlier ones fail.
+2. **Keeps stores ordered, races their aliases.** The resolver exhausts the
+   authoritative tier before independent fallback stores, then the cloud tier.
+   Within a tier, independent stores retain their first configured position.
+   Only candidates with the same role and the same explicit, nonempty `hub`
+   name form an interchangeable route group. Each unnamed candidate is a
+   separate store; two healthy URLs alone do not prove shared storage.
+
+   Within one group, detected sites and link class order the primary routes.
+   Their probes race with the configured class stagger. If none succeeds, the
+   group's deferred routes are tried before moving to an independent store.
+   A faster cloud response cannot bypass a healthy authoritative store.
 
    DNS suffixes come from DHCP, so any network can claim to be any site.
-   Detection can therefore only *promote* a route the operator declared for
-   that site. It never demotes the configured preference among the rest, and
-   with no match the configured order is kept exactly.
+   Location hints only reorder the operator's declared aliases within a
+   store. They never change the role/store barrier or permanently discard a
+   deferred route.
 3. **Keeps authority fixed.** A candidate's role never depends on location.
    Several `authoritative` candidates are accepted only when they all name the
    same `hub`, which makes them alternate routes to one claims authority.
-   Claims probe every such route in location order.
+   Claims consider only authoritative routes and still verify the named hub's
+   reported identity; a successful route can end the remaining probe race.
 4. **Checks the route label.** A hub configured with `hub_identity` reports
    it in `/health`. A candidate that names a `hub` is used only when the
    probed hub reports exactly that identity. A missing identity counts as a
@@ -46,14 +55,34 @@ order. Each dead path costs a connect timeout on every CLI or hook call.
 
    This is a routing check, not authentication. The probe already carries the
    candidate's credential, and any process can report any identity.
-5. **Caches per location.** The last-good route is cached under the candidate
-   fingerprint plus the location set. A route learned at home is never tried
-   first on campus.
+5. **Caches route preferences within a store.** The last-good route cache uses
+   the candidates, detected location set and network-prefix fingerprint. A
+   changed attachment key causes a fresh resolution. A cache hit can promote
+   an alias inside its own store group, but cannot move a fallback or cloud
+   store ahead of authority.
+
+   The route-cache default remains 60 seconds. This is the entry age since
+   the last successful resolution, which refreshes its timestamp, rather than
+   a guaranteed periodic race. Repeated healthy cache hits can retain an alias
+   for longer. The fingerprint tracks distinct prefixes, not interface identity:
+   adding an Ethernet interface on the same prefix as an active Wi-Fi interface
+   need not change the key. This change does not guarantee detection of every
+   docking or interface transition.
+
+   Long-lived MCP dispatch also has a separate, process-wide backend cache in
+   [`remote_dispatch.rs`](../crates/agent-bus-core/src/remote_dispatch.rs). Its
+   existing 15-second lifetime is keyed by candidates, not network attachments.
+   A previously selected backend can therefore remain selected for up to that
+   lifetime after a network change, even though a newly run resolver would
+   choose a different route. An actual remote-call failure invalidates both
+   caches immediately; cache invalidation itself does not replay the failed call.
 
 `agent-bus health` and MCP `bus_health` report `network_locations` beside
 `backend`. They also report `network_location_error` when the rules were
-invalid and ignored. Location only orders probes, so a bad rule set falls
-back to configured order instead of taking the client offline.
+invalid and ignored. Invalid location hints leave the role/store barrier and
+within-store link-class ordering intact instead of taking the client offline.
+The shared implementation is in [`hub.rs`](../crates/agent-bus-core/src/hub.rs)
+and [`link_route.rs`](../crates/agent-bus-core/src/link_route.rs).
 
 ## Configuration
 

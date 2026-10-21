@@ -13,6 +13,7 @@ pub mod hub;
 pub mod hub_cache;
 pub mod hub_candidates;
 pub mod journal;
+pub mod link_route;
 pub mod mcp_dispatch;
 pub mod models;
 pub mod network_location;

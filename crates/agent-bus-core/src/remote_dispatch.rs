@@ -24,9 +24,11 @@ use serde_json::{Map, Value};
 
 use crate::error::{AgentBusError, Result};
 use crate::hub::{
-    HubBackend, ProbeInfo, invalidate_configured_cache, resolve_authoritative_hub,
-    resolve_configured_hub,
+    HubBackend, ProbeInfo, block_on_ambient, invalidate_configured_cache,
+    resolve_authoritative_hub, resolve_authoritative_hub_concurrent, resolve_configured_hub,
+    resolve_configured_hub_concurrent,
 };
+use crate::link_route::AsyncProbe;
 use crate::mcp_dispatch::McpToolDispatch;
 use crate::ops::admin::health as ops_health;
 use crate::settings::Settings;
@@ -100,6 +102,14 @@ pub trait RemoteMcpTransport {
     /// `None` on any failure (unreachable, timeout, non-2xx, malformed
     /// body) â€” this trait does not distinguish *why* a probe failed.
     fn probe_health(&self, url: &str) -> Option<ProbeInfo>;
+
+    /// An owned asynchronous equivalent of [`Self::probe_health`], when the
+    /// transport can run probes concurrently. [`RoutingDispatch`] then races
+    /// the candidates (see [`crate::link_route`]) instead of walking them one
+    /// by one; `None` keeps the sequential walk.
+    fn async_probe(&self) -> Option<AsyncProbe> {
+        None
+    }
 
     /// Forward a `tools/call` to the hub's `/mcp` JSON-RPC bridge and return
     /// the tool's JSON result value.
@@ -180,6 +190,7 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
         if self.settings.hub_config_error.is_some() {
             return HubBackend::Offline {
                 tried: self.settings.server_urls.clone(),
+                probes: Vec::new(),
             };
         }
         if let Ok(guard) = hub_cache().lock()
@@ -189,11 +200,35 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
             return backend.clone();
         }
 
-        let backend = resolve_configured_hub(self.settings, |url| self.transport.probe_health(url));
+        let backend = self.resolve_configured();
         if let Ok(mut guard) = hub_cache().lock() {
             guard.insert(candidates, (backend.clone(), Instant::now()));
         }
         backend
+    }
+
+    /// Resolve the configured hub, racing the candidates when the transport
+    /// and the ambient runtime allow it and walking them otherwise.
+    fn resolve_configured(&self) -> HubBackend {
+        if let Some(probe) = self.transport.async_probe()
+            && let Some(backend) =
+                block_on_ambient(resolve_configured_hub_concurrent(self.settings, &probe))
+        {
+            return backend;
+        }
+        resolve_configured_hub(self.settings, |url| self.transport.probe_health(url))
+    }
+
+    /// Resolve the claims authority, with the same racing as
+    /// [`Self::resolve_configured`].
+    fn resolve_authoritative(&self) -> HubBackend {
+        if let Some(probe) = self.transport.async_probe()
+            && let Some(backend) =
+                block_on_ambient(resolve_authoritative_hub_concurrent(self.settings, &probe))
+        {
+            return backend;
+        }
+        resolve_authoritative_hub(self.settings, |url| self.transport.probe_health(url))
     }
 
     /// Dispatch a tool call by name and arguments, returning the result as JSON.
@@ -291,9 +326,7 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
         // pending" answer, distinct from the generic offline error other
         // tools get.
         if is_claim_authority_tool(name) {
-            return match resolve_authoritative_hub(self.settings, |url| {
-                self.transport.probe_health(url)
-            }) {
+            return match self.resolve_authoritative() {
                 HubBackend::Remote {
                     url,
                     authoritative: true,
@@ -302,7 +335,7 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
                     invalidate_hub_cache(self.settings);
                     invalidate_configured_cache(self.settings);
                 }),
-                HubBackend::Remote { tried, .. } | HubBackend::Offline { tried } => {
+                HubBackend::Remote { tried, .. } | HubBackend::Offline { tried, .. } => {
                     Err(claim_pending_error(name, &tried))
                 }
                 HubBackend::Local => self.local.dispatch_tool(name, args),
@@ -320,7 +353,7 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
                     invalidate_configured_cache(self.settings);
                 })
             }
-            HubBackend::Offline { tried } => Err(AgentBusError::Internal(format!(
+            HubBackend::Offline { tried, .. } => Err(AgentBusError::Internal(format!(
                 "offline: no authoritative hub reachable (tried {tried:?}); refusing '{name}' \
                  rather than silently using a local store. This client is configured with \
                  remote hub candidates and has no local bus of its own."
@@ -357,10 +390,7 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
             }),
         };
         if let Value::Object(ref mut map) = report {
-            map.insert(
-                "backend".to_owned(),
-                serde_json::to_value(&backend).unwrap_or(Value::Null),
-            );
+            map.insert("backend".to_owned(), backend.to_report());
             if !backend.is_local() {
                 map.insert(
                     "network_locations".to_owned(),
