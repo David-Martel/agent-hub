@@ -161,119 +161,130 @@
   },
   "reviews": [
     {
-        "selector": "crates/agent-bus-core/src/redis_bus.rs::tests::ack_deadline_key_ttl_outlives_the_window_by_exactly_the_retention",
-        "reviewer": "codex-gen9-fleet",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "base_commit": "6885a580f2c89b326f125d710c1343b9fa48ee07",
-        "disposition": "keep",
-        "scope": "Independent review of existing test bodies and production change; reviewer adds rationale/this record only. Source-only root review, not a claim of root backend execution.",
-        "selector_source": {
-          "path": "crates/agent-bus-core/src/redis_bus.rs",
-          "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f",
-          "hash_scope": "whole normalized Rust module including fixtures and rationale"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-core/src/redis_bus.rs",
-          "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f"
-        },
-        "shared_sources": [
-          {
-            "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
-            "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
-          },
-          {
-            "path": "crates/agent-bus-core/src/models.rs",
-            "sha256": "896f8bc38e7988f80ab6009e65aa7cbcba467b4afbb47079386ebf96569da690"
-          }
-        ],
-        "relevance": "ACK deadlines must remain observable when overdue, with bounded retention and acknowledgement cleanup.",
-        "coverage": {
-          "failing_input_or_control": "Pure priority windows plus u64::MAX must yield window plus seven days or saturation; reverting to window-only TTL fails equality.",
-          "fresh_independent_selector_pass": false,
-          "source_review_boundary": "Pure arithmetic only; no storage or clock.",
-          "author_ci_evidence": "Existing unmodified test bodies passed run39532655496 at base6885a580: Unit Tests job119001957273; root checked actual named PASS log lines. New metadata head requires fresh CI."
-        },
-        "breaking_behavior": "Rationale and review record only; assertions, fixtures, skips, timing and runtime behavior unchanged. Batch retention is source-reviewed, not established by the direct-storage selector."
+      "selector": "crates/agent-bus-core/src/redis_bus.rs::tests::ack_deadline_key_ttl_outlives_the_window_by_exactly_the_retention",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "fc822792e0c5e31957ed150cb14eae1c4d77d91a",
+      "disposition": "keep",
+      "scope": "Independent review of existing test bodies and production change; reviewer adds rationale/this record only. Source-only root review, not a claim of root backend execution.",
+      "selector_source": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "744ca838d827267e4d0fe50805c14b3481c30a834e0ebcbc3295f933bd06e21d",
+        "hash_scope": "whole normalized Rust module including fixtures and rationale"
       },
-      {
-        "selector": "crates/agent-bus-core/src/redis_bus.rs::tests::unacked_deadline_is_listed_as_overdue_after_it_passes_until_acked",
-        "reviewer": "codex-gen9-fleet",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "base_commit": "6885a580f2c89b326f125d710c1343b9fa48ee07",
-        "disposition": "keep",
-        "scope": "Independent review of existing test bodies and production change; reviewer adds rationale/this record only. Source-only root review, not a claim of root backend execution.",
-        "selector_source": {
-          "path": "crates/agent-bus-core/src/redis_bus.rs",
-          "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f",
-          "hash_scope": "whole normalized Rust module including fixtures and rationale"
-        },
-        "code_under_test": {
-          "path": "crates/agent-bus-core/src/redis_bus.rs",
-          "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f"
-        },
-        "shared_sources": [
-          {
-            "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
-            "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
-          },
-          {
-            "path": "crates/agent-bus-core/src/models.rs",
-            "sha256": "896f8bc38e7988f80ab6009e65aa7cbcba467b4afbb47079386ebf96569da690"
-          }
-        ],
-        "relevance": "ACK deadlines must remain observable when overdue, with bounded retention and acknowledgement cleanup.",
-        "coverage": {
-          "failing_input_or_control": "A one-second record must be absent from overdue before its deadline, present after2500ms, and absent after clear; deadline-only expiry loses the middle assertion.",
-          "fresh_independent_selector_pass": false,
-          "source_review_boundary": "Disposable Redis required; scheduler delay before the first assertion remains a timing sensitivity.",
-          "author_ci_evidence": "Existing unmodified test bodies passed run39532655496 at base6885a580: Integration Tests job119003032819; root checked actual named PASS log lines. New metadata head requires fresh CI."
-        },
-        "breaking_behavior": "Rationale and review record only; assertions, fixtures, skips, timing and runtime behavior unchanged. Batch retention is source-reviewed, not established by the direct-storage selector."
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "744ca838d827267e4d0fe50805c14b3481c30a834e0ebcbc3295f933bd06e21d"
       },
-      {
-        "selector": "crates/agent-bus-core/src/redis_bus.rs::tests::stored_deadline_outlives_its_deadline_by_a_bounded_window",
-        "reviewer": "codex-gen9-fleet",
-        "reviewer_type": "independent_agent",
-        "reviewer_authored_test_or_fix": false,
-        "date": "2026-10-21",
-        "commit_reviewed": null,
-        "base_commit": "6885a580f2c89b326f125d710c1343b9fa48ee07",
-        "disposition": "keep",
-        "scope": "Independent review of existing test bodies and production change; reviewer adds rationale/this record only. Source-only root review, not a claim of root backend execution.",
-        "selector_source": {
-          "path": "crates/agent-bus-core/src/redis_bus.rs",
-          "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f",
-          "hash_scope": "whole normalized Rust module including fixtures and rationale"
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
+          "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
         },
-        "code_under_test": {
-          "path": "crates/agent-bus-core/src/redis_bus.rs",
-          "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f"
-        },
-        "shared_sources": [
-          {
-            "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
-            "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
-          },
-          {
-            "path": "crates/agent-bus-core/src/models.rs",
-            "sha256": "896f8bc38e7988f80ab6009e65aa7cbcba467b4afbb47079386ebf96569da690"
-          }
-        ],
-        "relevance": "ACK deadlines must remain observable when overdue, with bounded retention and acknowledgement cleanup.",
-        "coverage": {
-          "failing_input_or_control": "Direct ops storage must have TTL above the deadline and at most deadline plus retention; post_ack must remove the key.",
-          "fresh_independent_selector_pass": false,
-          "source_review_boundary": "Disposable Redis/backend settings required; this selector does not exercise the batched storage path.",
-          "author_ci_evidence": "Existing unmodified test bodies passed run39532655496 at base6885a580: Integration Tests job119003032819; root checked actual named PASS log lines. New metadata head requires fresh CI."
-        },
-        "breaking_behavior": "Rationale and review record only; assertions, fixtures, skips, timing and runtime behavior unchanged. Batch retention is source-reviewed, not established by the direct-storage selector."
+        {
+          "path": "crates/agent-bus-core/src/models.rs",
+          "sha256": "896f8bc38e7988f80ab6009e65aa7cbcba467b4afbb47079386ebf96569da690"
+        }
+      ],
+      "relevance": "ACK deadlines must remain observable when overdue, with bounded retention and acknowledgement cleanup.",
+      "coverage": {
+        "failing_input_or_control": "Pure priority windows plus u64::MAX must yield window plus the named retention constant or saturation; reverting to window-only TTL fails equality.",
+        "fresh_independent_selector_pass": false,
+        "source_review_boundary": "Pure arithmetic only; no storage or clock.",
+        "author_ci_evidence": "Existing unmodified test bodies passed run39532655496 at base6885a580: Unit Tests job119001957273; root checked actual named PASS log lines. New metadata head requires fresh CI."
       },
+      "breaking_behavior": "Rationale and review record only; assertions, fixtures, skips, timing and runtime behavior unchanged. Batch retention is source-reviewed, not established by the direct-storage selector.",
+      "supersedes_review_source": "Historical fc82279 rows retained below; correct priority-window wording, fixture breadcrumb and ACK operation dependency binding after actual outside-Claude review619DB1DB042D0F785FC2BEE31CEFA15EB5C8BF2B495DEFF96F8EB818FD0207CD."
+    },
+    {
+      "selector": "crates/agent-bus-core/src/redis_bus.rs::tests::unacked_deadline_is_listed_as_overdue_after_it_passes_until_acked",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "fc822792e0c5e31957ed150cb14eae1c4d77d91a",
+      "disposition": "keep",
+      "scope": "Independent review of existing test bodies and production change; reviewer adds rationale/this record only. Source-only root review, not a claim of root backend execution.",
+      "selector_source": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "744ca838d827267e4d0fe50805c14b3481c30a834e0ebcbc3295f933bd06e21d",
+        "hash_scope": "whole normalized Rust module including fixtures and rationale"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "744ca838d827267e4d0fe50805c14b3481c30a834e0ebcbc3295f933bd06e21d"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
+          "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
+        },
+        {
+          "path": "crates/agent-bus-core/src/models.rs",
+          "sha256": "896f8bc38e7988f80ab6009e65aa7cbcba467b4afbb47079386ebf96569da690"
+        },
+        {
+          "path": "crates/agent-bus-core/src/test_support.rs",
+          "sha256": "a0e036d6b5f114a5ada7efc8c954b997bc5f306b61d596f329905e56390833c6"
+        }
+      ],
+      "relevance": "ACK deadlines must remain observable when overdue, with bounded retention and acknowledgement cleanup.",
+      "coverage": {
+        "failing_input_or_control": "A one-second record must be absent from overdue before its deadline, present after2500ms, and absent after clear; deadline-only expiry loses the middle assertion.",
+        "fresh_independent_selector_pass": false,
+        "source_review_boundary": "Disposable Redis required; scheduler delay before the first assertion remains a timing sensitivity.",
+        "author_ci_evidence": "Existing unmodified test bodies passed run39532655496 at base6885a580: Integration Tests job119003032819; root checked actual named PASS log lines. New metadata head requires fresh CI."
+      },
+      "breaking_behavior": "Rationale and review record only; assertions, fixtures, skips, timing and runtime behavior unchanged. Batch retention is source-reviewed, not established by the direct-storage selector.",
+      "supersedes_review_source": "Historical fc82279 rows retained below; correct priority-window wording, fixture breadcrumb and ACK operation dependency binding after actual outside-Claude review619DB1DB042D0F785FC2BEE31CEFA15EB5C8BF2B495DEFF96F8EB818FD0207CD."
+    },
+    {
+      "selector": "crates/agent-bus-core/src/redis_bus.rs::tests::stored_deadline_outlives_its_deadline_by_a_bounded_window",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "fc822792e0c5e31957ed150cb14eae1c4d77d91a",
+      "disposition": "keep",
+      "scope": "Independent review of existing test bodies and production change; reviewer adds rationale/this record only. Source-only root review, not a claim of root backend execution.",
+      "selector_source": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "744ca838d827267e4d0fe50805c14b3481c30a834e0ebcbc3295f933bd06e21d",
+        "hash_scope": "whole normalized Rust module including fixtures and rationale"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "744ca838d827267e4d0fe50805c14b3481c30a834e0ebcbc3295f933bd06e21d"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
+          "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
+        },
+        {
+          "path": "crates/agent-bus-core/src/models.rs",
+          "sha256": "896f8bc38e7988f80ab6009e65aa7cbcba467b4afbb47079386ebf96569da690"
+        },
+        {
+          "path": "crates/agent-bus-core/src/ops/message.rs",
+          "sha256": "1aa4398e24e483c6369d7aec3f7d7857d3d7ca6b224cf00f2e5cbf940e97c78d"
+        }
+      ],
+      "relevance": "ACK deadlines must remain observable when overdue, with bounded retention and acknowledgement cleanup.",
+      "coverage": {
+        "failing_input_or_control": "Direct ops storage must have TTL above the deadline and at most deadline plus retention; post_ack must remove the key.",
+        "fresh_independent_selector_pass": false,
+        "source_review_boundary": "Disposable Redis/backend settings required; this selector does not exercise the batched storage path.",
+        "author_ci_evidence": "Existing unmodified test bodies passed run39532655496 at base6885a580: Integration Tests job119003032819; root checked actual named PASS log lines. New metadata head requires fresh CI."
+      },
+      "breaking_behavior": "Rationale and review record only; assertions, fixtures, skips, timing and runtime behavior unchanged. Batch retention is source-reviewed, not established by the direct-storage selector.",
+      "supersedes_review_source": "Historical fc82279 rows retained below; correct priority-window wording, fixture breadcrumb and ACK operation dependency binding after actual outside-Claude review619DB1DB042D0F785FC2BEE31CEFA15EB5C8BF2B495DEFF96F8EB818FD0207CD."
+    },
     {
       "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_success_without_error",
       "reviewer": "codex-p1-agenthub-integration-review",
@@ -3770,6 +3781,120 @@
     }
   ],
   "historical_reviews": [
+    {
+      "selector": "crates/agent-bus-core/src/redis_bus.rs::tests::ack_deadline_key_ttl_outlives_the_window_by_exactly_the_retention",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "6885a580f2c89b326f125d710c1343b9fa48ee07",
+      "disposition": "keep",
+      "scope": "Independent review of existing test bodies and production change; reviewer adds rationale/this record only. Source-only root review, not a claim of root backend execution.",
+      "selector_source": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f",
+        "hash_scope": "whole normalized Rust module including fixtures and rationale"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
+          "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
+        },
+        {
+          "path": "crates/agent-bus-core/src/models.rs",
+          "sha256": "896f8bc38e7988f80ab6009e65aa7cbcba467b4afbb47079386ebf96569da690"
+        }
+      ],
+      "relevance": "ACK deadlines must remain observable when overdue, with bounded retention and acknowledgement cleanup.",
+      "coverage": {
+        "failing_input_or_control": "Pure priority windows plus u64::MAX must yield window plus seven days or saturation; reverting to window-only TTL fails equality.",
+        "fresh_independent_selector_pass": false,
+        "source_review_boundary": "Pure arithmetic only; no storage or clock.",
+        "author_ci_evidence": "Existing unmodified test bodies passed run39532655496 at base6885a580: Unit Tests job119001957273; root checked actual named PASS log lines. New metadata head requires fresh CI."
+      },
+      "breaking_behavior": "Rationale and review record only; assertions, fixtures, skips, timing and runtime behavior unchanged. Batch retention is source-reviewed, not established by the direct-storage selector."
+    },
+    {
+      "selector": "crates/agent-bus-core/src/redis_bus.rs::tests::unacked_deadline_is_listed_as_overdue_after_it_passes_until_acked",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "6885a580f2c89b326f125d710c1343b9fa48ee07",
+      "disposition": "keep",
+      "scope": "Independent review of existing test bodies and production change; reviewer adds rationale/this record only. Source-only root review, not a claim of root backend execution.",
+      "selector_source": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f",
+        "hash_scope": "whole normalized Rust module including fixtures and rationale"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
+          "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
+        },
+        {
+          "path": "crates/agent-bus-core/src/models.rs",
+          "sha256": "896f8bc38e7988f80ab6009e65aa7cbcba467b4afbb47079386ebf96569da690"
+        }
+      ],
+      "relevance": "ACK deadlines must remain observable when overdue, with bounded retention and acknowledgement cleanup.",
+      "coverage": {
+        "failing_input_or_control": "A one-second record must be absent from overdue before its deadline, present after2500ms, and absent after clear; deadline-only expiry loses the middle assertion.",
+        "fresh_independent_selector_pass": false,
+        "source_review_boundary": "Disposable Redis required; scheduler delay before the first assertion remains a timing sensitivity.",
+        "author_ci_evidence": "Existing unmodified test bodies passed run39532655496 at base6885a580: Integration Tests job119003032819; root checked actual named PASS log lines. New metadata head requires fresh CI."
+      },
+      "breaking_behavior": "Rationale and review record only; assertions, fixtures, skips, timing and runtime behavior unchanged. Batch retention is source-reviewed, not established by the direct-storage selector."
+    },
+    {
+      "selector": "crates/agent-bus-core/src/redis_bus.rs::tests::stored_deadline_outlives_its_deadline_by_a_bounded_window",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "6885a580f2c89b326f125d710c1343b9fa48ee07",
+      "disposition": "keep",
+      "scope": "Independent review of existing test bodies and production change; reviewer adds rationale/this record only. Source-only root review, not a claim of root backend execution.",
+      "selector_source": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f",
+        "hash_scope": "whole normalized Rust module including fixtures and rationale"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/redis_bus.rs",
+        "sha256": "2d4d940d162871d61acafb65544f9a9cf58dced46760c40e2082896686dd4d6f"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
+          "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
+        },
+        {
+          "path": "crates/agent-bus-core/src/models.rs",
+          "sha256": "896f8bc38e7988f80ab6009e65aa7cbcba467b4afbb47079386ebf96569da690"
+        }
+      ],
+      "relevance": "ACK deadlines must remain observable when overdue, with bounded retention and acknowledgement cleanup.",
+      "coverage": {
+        "failing_input_or_control": "Direct ops storage must have TTL above the deadline and at most deadline plus retention; post_ack must remove the key.",
+        "fresh_independent_selector_pass": false,
+        "source_review_boundary": "Disposable Redis/backend settings required; this selector does not exercise the batched storage path.",
+        "author_ci_evidence": "Existing unmodified test bodies passed run39532655496 at base6885a580: Integration Tests job119003032819; root checked actual named PASS log lines. New metadata head requires fresh CI."
+      },
+      "breaking_behavior": "Rationale and review record only; assertions, fixtures, skips, timing and runtime behavior unchanged. Batch retention is source-reviewed, not established by the direct-storage selector."
+    },
     {
       "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_success_without_error",
       "reviewer": "codex-fleet-discovery",

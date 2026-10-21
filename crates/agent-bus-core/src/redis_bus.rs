@@ -4536,8 +4536,8 @@ mod tests {
 
     /// Protects: bounded retention of ACK records beyond their deadline (#166).
     /// Detects: using only the deadline window as TTL, or overflowing its extension.
-    /// Needs: pure TTL arithmetic for all priorities and the u64 saturation boundary.
-    /// Breadcrumb: crates/agent-bus-core/src/ops/ack_deadline.rs (`store_ack_deadline`).
+    /// Needs: pure TTL arithmetic for each distinct priority window and u64 saturation.
+    /// Breadcrumb: crates/agent-bus-core/src/models.rs (`ack_deadline_seconds`).
     #[test]
     fn ack_deadline_key_ttl_outlives_the_window_by_exactly_the_retention() {
         for priority in ["critical", "high", "normal"] {
@@ -4561,7 +4561,7 @@ mod tests {
     /// Protects: overdue visibility until acknowledgement clears the retained record.
     /// Detects: records disappearing at their deadline or remaining listed after ACK.
     /// Needs: disposable Redis from the isolated backend harness and a one-second window.
-    /// Breadcrumb: crates/agent-bus-core/src/ops/ack_deadline.rs (`check_overdue_acks`).
+    /// Breadcrumb: crates/agent-bus-core/src/test_support.rs (`backend_settings` fixture).
     #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
     #[test]
     fn unacked_deadline_is_listed_as_overdue_after_it_passes_until_acked() {
