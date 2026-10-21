@@ -160,9 +160,10 @@ mod tests {
     use super::*;
     use agent_bus_core::redis_bus::notification_cursor_key;
 
-    /// Why: #170 -- the instructions said "max 2000 chars" while the server
-    /// accepts 256 KB, so agents stripped spaces to fit. The stated budget must
-    /// be realistic, below the enforced limit, and point at path + SHA-256.
+    /// Protects: readable MCP guidance with an advisory budget above the old 2000 characters.
+    /// Detects: stale limits, missing evidence guidance, or advice to compress away spaces.
+    /// Needs: pure instruction text and the existing enforced byte-limit constant; no server.
+    /// Breadcrumb: crates/agent-bus-core/src/validation.rs (`MAX_BODY_LEN`).
     #[test]
     fn server_instructions_state_a_realistic_body_budget() {
         let text = server_instructions();
