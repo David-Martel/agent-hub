@@ -12,7 +12,8 @@ use crate::mcp_dispatch::McpToolDispatch;
 use crate::models::{AckDeadline, Message, PROTOCOL_VERSION, Presence, ack_deadline_seconds};
 use crate::outbox::{Operation, ReplayRequest, ReplayResponse};
 use crate::redis_bus::{
-    notification_reason, notification_stream_key, prepare_message, should_publish_message_event,
+    ack_deadline_key_ttl, notification_reason, notification_stream_key, prepare_message,
+    should_publish_message_event,
 };
 use crate::settings::Settings;
 
@@ -323,7 +324,7 @@ pub fn accept(
                     serde_json::to_string(&deadline)
                         .map_err(|_sanitized| ReplayHubError::Representation)?
                 );
-                input["ack_deadline_seconds"] = json!(ttl);
+                input["ack_deadline_seconds"] = json!(ack_deadline_key_ttl(ttl));
             }
         }
         Operation::ClaimRequest => {
@@ -940,6 +941,109 @@ mod backend_tests {
             row.get::<_, chrono::DateTime<Utc>>(1).timestamp_millis(),
             i64::try_from(now).unwrap()
         );
+    }
+
+    /// Protects: stable-ID sends retain overdue deadlines for every distinct priority window.
+    /// Detects: Lua replay receiving the short ACK window as its storage expiry, or retry retiming.
+    /// Needs: owned disposable Redis/PostgreSQL; only the stored deadline timestamp is advanced.
+    /// Breadcrumb: crates/agent-bus-core/src/outbox_replay.lua (deadline SET EX and cached replay).
+    /// Breadcrumb: crates/agent-bus-core/src/redis_bus.rs (`ack_deadline_key_ttl`, `check_overdue_acks`).
+    #[test]
+    #[ignore = "requires owned disposable Redis and PostgreSQL"]
+    fn outbox_replay_retains_overdue_ack_deadlines_until_acknowledged() {
+        let (mut settings, mut conn) = fixture();
+        settings.database_url = None;
+        for priority in ["urgent", "high", "normal"] {
+            let env = envelope(
+                &settings,
+                request(
+                    &mut conn,
+                    Operation::Send,
+                    json!({"sender":"fixture","recipient":"receiver","topic":"status",
+                        "body":"retain replay deadline","request_ack":true,"priority":priority}),
+                ),
+            );
+            let before = Utc::now();
+            let response = accept(&mut conn, &settings, &env, false).expect("replay send");
+            let after = Utc::now();
+            let ReplayResponse::Applied { result } = &response else {
+                panic!("send was not applied");
+            };
+            let id = result["id"].as_str().expect("message ID");
+            let key = format!("agent_bus:ack_deadline:{id}");
+            let raw: String = redis::cmd("GET")
+                .arg(&key)
+                .query(&mut conn)
+                .expect("deadline");
+            let mut deadline: AckDeadline = serde_json::from_str(&raw).expect("deadline JSON");
+            let window = ack_deadline_seconds(priority);
+            let due = DateTime::parse_from_rfc3339(&deadline.deadline_at).expect("deadline time");
+            let duration = chrono::Duration::seconds(i64::try_from(window).expect("small window"));
+            assert!(due >= before + duration && due <= after + duration);
+            let ttl: u64 = redis::cmd("TTL")
+                .arg(&key)
+                .query(&mut conn)
+                .expect("deadline TTL");
+            assert!(
+                ttl > window,
+                "{priority}: replay deadline expires at its {window}s ACK window"
+            );
+            assert!(ttl <= crate::redis_bus::ack_deadline_key_ttl(window));
+            assert!(
+                !crate::redis_bus::check_overdue_acks(&mut conn)
+                    .unwrap()
+                    .iter()
+                    .any(|d| d.message_id == id)
+            );
+
+            // Move only the deadline into the past; retain the actual Lua-assigned expiry.
+            deadline.deadline_at = (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339();
+            let overdue = serde_json::to_string(&deadline).unwrap();
+            let _: () = redis::cmd("SET")
+                .arg(&key)
+                .arg(&overdue)
+                .arg("KEEPTTL")
+                .query(&mut conn)
+                .unwrap();
+            assert_eq!(accept(&mut conn, &settings, &env, false).unwrap(), response);
+            assert_eq!(
+                redis::cmd("GET")
+                    .arg(&key)
+                    .query::<String>(&mut conn)
+                    .unwrap(),
+                overdue
+            );
+            let replay_ttl: u64 = redis::cmd("TTL").arg(&key).query(&mut conn).unwrap();
+            assert!(replay_ttl <= ttl, "cached replay must not extend retention");
+            assert!(
+                crate::redis_bus::check_overdue_acks(&mut conn)
+                    .unwrap()
+                    .iter()
+                    .any(|d| d.message_id == id)
+            );
+
+            let ack = envelope(
+                &settings,
+                request(
+                    &mut conn,
+                    Operation::Ack,
+                    json!({"agent":"receiver","message_id":id}),
+                ),
+            );
+            accept(&mut conn, &settings, &ack, false).expect("replay ACK");
+            assert!(
+                !redis::cmd("EXISTS")
+                    .arg(&key)
+                    .query::<bool>(&mut conn)
+                    .unwrap()
+            );
+            assert!(
+                !crate::redis_bus::check_overdue_acks(&mut conn)
+                    .unwrap()
+                    .iter()
+                    .any(|d| d.message_id == id)
+            );
+        }
     }
 
     #[test]

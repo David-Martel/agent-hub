@@ -1,8 +1,11 @@
 //! Ack deadline tracking operations wrapping [`crate::redis_bus`].
 //!
 //! When a message is posted with `request_ack = true`, a deadline record is
-//! stored in Redis with a priority-dependent TTL.  This module provides the
-//! ops-layer interface for creating, clearing, and querying those deadlines.
+//! stored in Redis.  The ack window is priority-dependent (60/120/300 s), and
+//! the record is retained for [`redis_bus::ACK_DEADLINE_RETENTION_SECS`] past
+//! the deadline so a missed ack stays listable (#166).  This module provides
+//! the ops-layer interface for creating, clearing, and querying those
+//! deadlines.
 
 use crate::error::Result;
 use chrono::Utc;
@@ -17,7 +20,9 @@ use crate::settings::Settings;
 
 /// Store an ack deadline for a message that has `request_ack = true`.
 ///
-/// The deadline timestamp and TTL are computed from the message priority.
+/// The deadline timestamp and ack window are computed from the message
+/// priority; the stored record outlives the deadline (see
+/// [`redis_bus::ack_deadline_key_ttl`]).
 ///
 /// # Errors
 ///
@@ -58,9 +63,9 @@ pub fn clear_deadline(conn: &mut redis::Connection, message_id: &str) -> Result<
 
 /// List all ack deadlines that are past their `deadline_at` timestamp.
 ///
-/// Records whose Redis key has already expired (TTL elapsed) are not returned
-/// since they no longer exist.  This returns records that are still live but
-/// whose deadline time has passed.
+/// A record stays listed from its deadline until it is acked (which clears it)
+/// or [`redis_bus::ACK_DEADLINE_RETENTION_SECS`] elapse; after that the key has
+/// expired and the record is gone.
 ///
 /// # Errors
 ///
