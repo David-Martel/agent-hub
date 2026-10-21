@@ -77,6 +77,19 @@ function Test-WatchdogNotificationDue {
     return (($Now - $parsed).TotalSeconds -ge $CooldownSeconds)
 }
 
+function Show-WatchdogToast {
+    param([string]$Title, [string]$Text)
+    # WinRT toast via Windows PowerShell's registered AppUserModelID; works from a hidden
+    # scheduled-task session and never activates a window.
+    $null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+    $xml = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+    $nodes = $xml.GetElementsByTagName('text')
+    $null = $nodes.Item(0).AppendChild($xml.CreateTextNode($Title))
+    $null = $nodes.Item(1).AppendChild($xml.CreateTextNode($Text.Substring(0, [Math]::Min(200, $Text.Length))))
+    $appId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe'
+    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($appId).Show([Windows.UI.Notifications.ToastNotification]::new($xml))
+}
+
 function Write-Alert {
     param([string]$Message, [string]$Detail,
         [ValidateSet('Error', 'Warning')][string]$Level = 'Error',
@@ -85,16 +98,31 @@ function Write-Alert {
     if (Test-Path $flagFile) {
         try { $previous = Get-Content $flagFile -Raw | ConvertFrom-Json } catch { }
     }
-    $notify = Test-WatchdogNotificationDue -Previous $previous -Message $Message -Detail $Detail -Now $Now
+    # A single failed probe is usually a transient route flap; the Event Log and flag file
+    # record every failure, but the user is only notified after three consecutive failures
+    # (30 min at the 10-min task interval).
+    $consecutive = 1
+    if ($previous -and $previous.consecutive_failures -as [int]) { $consecutive = [int]$previous.consecutive_failures + 1 }
+    # The cooldown runs from the last toast actually shown, not from the first failure.
+    $lastNotified = if ($previous) { $previous.last_notified_utc } else { $null }
+    $notify = $false
+    if ($consecutive -ge 3) {
+        $notify = (-not $lastNotified) -or
+            (Test-WatchdogNotificationDue -Previous ([pscustomobject]@{ message = $previous.message; detail = $previous.detail; last_notification_attempt_utc = $lastNotified }) -Message $Message -Detail $Detail -Now $Now)
+    }
+    $lastNotifiedOut = if ($notify) { $Now.ToString('o') } else { $lastNotified }
     $lastAttempt = if ($notify) { $Now.ToString('o') }
         elseif ($previous.last_notification_attempt_utc) { $previous.last_notification_attempt_utc }
         else { $previous.timestamp_utc }
     try { Write-EventLog -LogName Application -Source $logSource -EntryType $Level -EventId 8400 -Message "$Message`n$Detail" -ErrorAction SilentlyContinue } catch { }
     $payload = @{ timestamp_utc = $Now.ToString('o'); message = $Message; detail = $Detail
-        last_notification_attempt_utc = $lastAttempt; notification_attempted = $notify } | ConvertTo-Json -Compress
+        last_notification_attempt_utc = $lastAttempt; notification_attempted = $notify
+        consecutive_failures = $consecutive; last_notified_utc = $lastNotifiedOut } | ConvertTo-Json -Compress
     New-Item -ItemType Directory -Path $flagDir -Force -ErrorAction SilentlyContinue | Out-Null
     Set-Content -Path $flagFile -Value $payload -Encoding UTF8
-    if ($notify) { try { msg.exe * "AGENT-BUS WATCHDOG ALERT: $Message" 2>$null } catch { } }
+    # Non-modal toast instead of `msg.exe *`: msg.exe opened a modal box that stole focus
+    # (observed 2026-10-20 17:01 by the popup profiler). Toasts never take the foreground.
+    if ($notify) { try { Show-WatchdogToast -Title 'Agent-bus watchdog' -Text "$Message - $Detail" } catch { } }
     Write-Output "ALERT: $Message`n$Detail"
 }
 
