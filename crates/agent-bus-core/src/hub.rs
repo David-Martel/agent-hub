@@ -32,11 +32,13 @@
 //!
 //! Configured candidates are resolved in two ways over one shared plan
 //! ([`crate::link_route`]): [`resolve_configured_hub`] and
-//! [`resolve_authoritative_hub`] walk the plan in order with a synchronous
+//! [`resolve_authoritative_hub`] walk each store's plan with a synchronous
 //! probe (deterministic, used by tests and simple callers), while
 //! [`resolve_configured_hub_concurrent`] and
-//! [`resolve_authoritative_hub_concurrent`] *race* it with an [`AsyncProbe`] so
-//! a dead path never delays a live one. Both apply the same candidate set,
+//! [`resolve_authoritative_hub_concurrent`] race aliases of the same named store
+//! with an [`AsyncProbe`]. Authority primary and deferred routes are exhausted
+//! before independent fallback stores; a cached cloud route cannot bypass this
+//! barrier. Both apply the same candidate set,
 //! credential, identity and authority rules, and both report what they saw in
 //! [`HubBackend`]'s `probes`.
 
@@ -86,9 +88,10 @@ pub enum HubBackend {
         /// holds the ones started before the winner answered, so the winner
         /// is not necessarily last; see `probes` for what each one did.
         tried: Vec<String>,
-        /// What every planned candidate did: its link class and either the
-        /// round trip of a healthy answer or why it did not win. Empty for
-        /// the plain-string [`resolve_hub`]. Never carries credentials.
+        /// What routes in evaluated store groups did: their link class and
+        /// either healthy round trip or why they did not win. Later independent
+        /// groups are not contacted after success. Empty for the plain-string
+        /// [`resolve_hub`]. Never carries credentials.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         probes: Vec<ProbeReport>,
     },
@@ -313,7 +316,7 @@ fn system_network_fingerprint() -> String {
 /// walk and the concurrent race so both apply identical rules.
 struct Resolution {
     candidates: Vec<HubCandidate>,
-    plan: RoutePlan,
+    plans: Vec<RoutePlan>,
     auth: HubAuth,
     cache: Option<HubCache>,
     fingerprint: String,
@@ -324,6 +327,65 @@ struct Resolution {
 struct Tally {
     tried: Vec<String>,
     probes: Vec<ProbeReport>,
+}
+
+/// Plan interchangeable routes within one store before considering another store.
+///
+/// A role and explicit hub identity define a group. Unnamed URLs are separate
+/// stores, not evidence of shared state. Location and cache preferences only
+/// reorder routes inside a group; neither may promote cloud above authority.
+fn grouped_route_plans(
+    candidates: &[HubCandidate],
+    locations: Option<&[String]>,
+    cached: Option<usize>,
+    authority_only: bool,
+    stagger: Duration,
+) -> Vec<RoutePlan> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for role in [HubRole::Authoritative, HubRole::Fallback, HubRole::Cloud] {
+        if authority_only && role != HubRole::Authoritative {
+            continue;
+        }
+        for (index, candidate) in candidates.iter().enumerate() {
+            if candidate.role != role {
+                continue;
+            }
+            let existing = candidate
+                .hub
+                .as_deref()
+                .filter(|hub| !hub.is_empty())
+                .and_then(|hub| {
+                    groups.iter().position(|group| {
+                        let first = &candidates[group[0]];
+                        first.role == role && first.hub.as_deref() == Some(hub)
+                    })
+                });
+            if let Some(group) = existing {
+                groups[group].push(index);
+            } else {
+                groups.push(vec![index]);
+            }
+        }
+    }
+    groups
+        .into_iter()
+        .map(|indexes| {
+            let members: Vec<_> = indexes.iter().map(|&i| candidates[i].clone()).collect();
+            let cached = cached.and_then(|i| indexes.iter().position(|&member| member == i));
+            let mut plan = plan_routes(&PlanRequest {
+                candidates: &members,
+                locations,
+                cached,
+                authority_only,
+                stagger,
+            });
+            // Auth, diagnostics and acceptance use indexes in the original list.
+            for route in plan.primary.iter_mut().chain(&mut plan.deferred) {
+                route.index = indexes[route.index];
+            }
+            plan
+        })
+        .collect()
 }
 
 impl Resolution {
@@ -361,16 +423,16 @@ impl Resolution {
                     })
                 })
         };
-        let plan = plan_routes(&PlanRequest {
-            candidates: &candidates,
+        let plans = grouped_route_plans(
+            &candidates,
             locations,
             cached,
             authority_only,
-            stagger: Duration::from_millis(settings.probe_stagger_ms),
-        });
+            Duration::from_millis(settings.probe_stagger_ms),
+        );
         Ok(Self {
             candidates,
-            plan,
+            plans,
             auth,
             cache,
             fingerprint,
@@ -482,7 +544,7 @@ fn resolve_settings_hub(
     )
 }
 
-/// Walk the plan with a synchronous probe, primary stage then deferred.
+/// Walk each store's primary and deferred routes before moving to another store.
 fn resolve_serial(
     settings: &Settings,
     probe: &mut impl FnMut(&str) -> Option<ProbeInfo>,
@@ -496,17 +558,19 @@ fn resolve_serial(
         Err(backend) => return backend,
     };
     let mut tally = Tally::default();
-    for routes in [&resolution.plan.primary, &resolution.plan.deferred] {
-        if routes.is_empty() {
-            continue;
-        }
-        let slots = resolution.slots(routes);
-        let result = walk(&slots, probe, |slot, info| {
-            resolution.accepts(&routes[slot], info)
-        });
-        resolution.record(&mut tally, routes, &result);
-        if let Some(winner) = result.winner {
-            return resolution.succeed(&routes[winner.slot], winner, tally);
+    for plan in &resolution.plans {
+        for routes in [&plan.primary, &plan.deferred] {
+            if routes.is_empty() {
+                continue;
+            }
+            let slots = resolution.slots(routes);
+            let result = walk(&slots, probe, |slot, info| {
+                resolution.accepts(&routes[slot], info)
+            });
+            resolution.record(&mut tally, routes, &result);
+            if let Some(winner) = result.winner {
+                return resolution.succeed(&routes[winner.slot], winner, tally);
+            }
         }
     }
     resolution.exhausted(tally)
@@ -528,7 +592,7 @@ async fn resolve_settings_hub_concurrent(
     .await
 }
 
-/// Race the plan with an asynchronous probe, primary stage then deferred.
+/// Race aliases within each store, including its deferred routes before fallback.
 async fn resolve_concurrent(
     settings: &Settings,
     probe: &AsyncProbe,
@@ -543,18 +607,20 @@ async fn resolve_concurrent(
     };
     let budget = Duration::from_millis(settings.probe_connect_timeout_ms);
     let mut tally = Tally::default();
-    for routes in [&resolution.plan.primary, &resolution.plan.deferred] {
-        if routes.is_empty() {
-            continue;
-        }
-        let slots = resolution.slots(routes);
-        let result = race(&slots, probe, budget, |slot, info| {
-            resolution.accepts(&routes[slot], info)
-        })
-        .await;
-        resolution.record(&mut tally, routes, &result);
-        if let Some(winner) = result.winner {
-            return resolution.succeed(&routes[winner.slot], winner, tally);
+    for plan in &resolution.plans {
+        for routes in [&plan.primary, &plan.deferred] {
+            if routes.is_empty() {
+                continue;
+            }
+            let slots = resolution.slots(routes);
+            let result = race(&slots, probe, budget, |slot, info| {
+                resolution.accepts(&routes[slot], info)
+            })
+            .await;
+            resolution.record(&mut tally, routes, &result);
+            if let Some(winner) = result.winner {
+                return resolution.succeed(&routes[winner.slot], winner, tally);
+            }
         }
     }
     resolution.exhausted(tally)
@@ -1182,9 +1248,12 @@ mod tests {
         assert_eq!(backend.to_report()["selected"], fabric.url);
     }
 
+    /// Protects: same-store aliases race without waiting for a stalled route timeout.
+    /// Detects: serial probes or failure to cancel the in-flight losing socket.
+    /// Needs: private TCP listeners and matching explicit/legacy candidate lists.
+    /// Breadcrumb: crates/agent-bus-core/src/link_route.rs (`race`).
     #[tokio::test]
     async fn dead_and_slow_routes_do_not_delay_the_healthy_one() {
-        // Why: this is the bug being fixed: four dead candidates used to cost four timeouts.
         let slow = fake_hub(Duration::from_secs(5), "hub");
         let lan = fake_hub(Duration::ZERO, "hub");
         let mut settings = two_link_settings(&slow.url, &lan.url);
@@ -1195,14 +1264,13 @@ mod tests {
             sites: vec!["lab-lan".to_owned()],
             hub: Some("hub".to_owned()),
         });
-        let begun = std::time::Instant::now();
+        settings.server_urls = settings
+            .hub_candidates
+            .iter()
+            .map(|candidate| candidate.url.clone())
+            .collect();
         let backend = race_at(&settings, &both_links(), "net", None, false).await;
         assert_eq!(backend.url(), Some(lan.url.as_str()));
-        assert!(
-            begun.elapsed() < Duration::from_millis(400),
-            "took {:?}; the race must not wait out a stalled route",
-            begun.elapsed()
-        );
         let HubBackend::Remote { tried, probes, .. } = backend else {
             panic!("expected remote");
         };
@@ -1213,7 +1281,7 @@ mod tests {
         assert_eq!(
             probes[0].error,
             Some(ProbeFailure::Cancelled),
-            "the stalled route was in flight when the LAN won"
+            "the winner cancels the stalled route before its timeout"
         );
     }
 
@@ -1287,32 +1355,90 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    /// Protects: a cached dead alias cannot serialize or retain same-store probes.
+    /// Detects: waiting for its full timeout or failing to cancel the losing probe.
+    /// Needs: paused time, private cache and an observed loser-drop notification.
+    /// Breadcrumb: crates/agent-bus-core/src/link_route.rs (`race`).
+    #[tokio::test(start_paused = true)]
     async fn a_failed_cached_route_is_replaced_by_a_concurrent_re_probe() {
-        // Why: after a failure the stale route must not stick or force a sequential walk.
+        struct CancelOnDrop(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for CancelOnDrop {
+            fn drop(&mut self) {
+                if let Some(sender) = self.0.take() {
+                    let _ = sender.send(());
+                }
+            }
+        }
+
         let dir = tempfile::tempdir().expect("tempdir");
-        let dead = refusing_url();
-        let lan = fake_hub(Duration::ZERO, "hub");
-        let settings = two_link_settings(&dead, &lan.url);
+        let dead = "http://cached.lan:8400";
+        let lan = "http://alternate.lan:8400";
+        let settings = two_link_settings(dead, lan);
         let locations = both_links();
         let fingerprint = routing_fingerprint(&settings.hub_candidates, Some(&locations), "net");
         cache_in(&dir)
             .store_with_rtt(
                 &fingerprint,
-                &dead,
+                dead,
                 HubRole::Authoritative,
                 Some(1),
                 SystemTime::now(),
             )
             .expect("seed cache");
-        let begun = std::time::Instant::now();
-        let backend = race_at(&settings, &locations, "net", Some(cache_in(&dir)), false).await;
-        assert_eq!(backend.url(), Some(lan.url.as_str()));
-        assert!(begun.elapsed() < Duration::from_millis(300));
+        let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
+        let cancellation = Arc::new(std::sync::Mutex::new(Some(cancel_tx)));
+        let started = Arc::new(AtomicBool::new(false));
+        let observed_start = Arc::clone(&started);
+        let probe: AsyncProbe = Arc::new(move |url: String| -> ProbeFuture {
+            let is_cached = url == dead;
+            assert!(is_cached || url == lan, "unexpected fixture route");
+            let cancellation = Arc::clone(&cancellation);
+            let started = Arc::clone(&observed_start);
+            Box::pin(async move {
+                if is_cached {
+                    started.store(true, Ordering::SeqCst);
+                    let sender = cancellation.lock().expect("cancellation").take();
+                    let _guard = CancelOnDrop(sender);
+                    std::future::pending().await
+                } else {
+                    Some(ProbeInfo {
+                        build_version: None,
+                        hub_identity: Some("hub".to_owned()),
+                    })
+                }
+            })
+        });
+        let backend = resolve_concurrent(
+            &settings,
+            &probe,
+            false,
+            Some(&locations),
+            "net",
+            Some(cache_in(&dir)),
+        )
+        .await;
+        assert_eq!(backend.url(), Some(lan));
+        assert!(started.load(Ordering::SeqCst), "cached probe really began");
+        let HubBackend::Remote { probes, .. } = &backend else {
+            panic!("same-store alias must win");
+        };
+        assert_eq!(
+            probes
+                .iter()
+                .find(|probe| probe.url == dead)
+                .expect("cached route report")
+                .error,
+            Some(ProbeFailure::Cancelled),
+            "the winner cancels the pending alias before its timeout"
+        );
+        tokio::time::timeout(Duration::from_secs(2), cancel_rx)
+            .await
+            .expect("loser cancellation must complete")
+            .expect("cached pending probe was dropped");
         let remembered = cache_in(&dir)
             .load(&fingerprint, SystemTime::now())
             .expect("the new winner is cached");
-        assert_eq!(remembered.url, lan.url);
+        assert_eq!(remembered.url, lan);
         assert!(remembered.rtt_ms.is_some(), "the winning RTT is persisted");
     }
 
