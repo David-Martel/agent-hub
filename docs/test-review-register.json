@@ -7601,6 +7601,293 @@
         "commands_sha256": "18e6a502467e6c6103c4be5fe207eb1f795ee212c9e7de6942d454ebaea63bbd",
         "preservation": "Original complete review row is to be archived unchanged before this successor is installed"
       }
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_aliases_ignore_later_builds",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer delta/seven selectors reviewed; actual e04b4a Ubuntu WSL full fixture exit0/no deadline/all7groupsPASS/no SKIP, with real libacl ACL+os.xattr and simulated Darwin owner/mode/group stat mismatch+read-error negatives. Existing dry-run and no start/restart controls passed. Exact installer9D1B2079 and fixtureE0F2A357 unchanged before/after. No actual macOS/NTFS/live deployment or Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 61,
+        "sha256": "7528badfcc10d644fbd9581fe6e3ad2c4f80795922f9fc20baf4317c6c71a790",
+        "last_line": 77,
+        "hash_scope": "Inclusive first_line..last_line joined with LF without trailing newline; whole fixture shared_sources binds rationale/context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file.",
+        "root_replay": "Actuale04b4a: all seven groups plus existing service fixture PASS. Alias rebuild isolation, real security metadata retention, no new backups/existing backup sentinel, injected metadata failure, staged hash mismatch/read failure, simulated Darwin stat mismatch/read failure and unsupported-platform refusal.",
+        "root_control_assessment": "KEEP: actual failing inputs reject publication and preserve canonical bytes/remove stages; positives exercise installed aliases and real Linux ACL/xattrs. Simulated Darwin controls exercise refusal only, not successful macOS preservation."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Previous six current KEEP bindings retained unchanged in historical_reviews; earlier pending rows retained; this is the current independently executed source binding."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_upgrade_preserves_security_metadata",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer delta/seven selectors reviewed; actual e04b4a Ubuntu WSL full fixture exit0/no deadline/all7groupsPASS/no SKIP, with real libacl ACL+os.xattr and simulated Darwin owner/mode/group stat mismatch+read-error negatives. Existing dry-run and no start/restart controls passed. Exact installer9D1B2079 and fixtureE0F2A357 unchanged before/after. No actual macOS/NTFS/live deployment or Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 83,
+        "sha256": "56f10b57a74d503fe6e5c194b57c9232f50e63de9ee4adeda94c76ea35231fe2",
+        "last_line": 134,
+        "hash_scope": "Inclusive first_line..last_line joined with LF without trailing newline; whole fixture shared_sources binds rationale/context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file.",
+        "root_replay": "Actuale04b4a: all seven groups plus existing service fixture PASS. Alias rebuild isolation, real security metadata retention, no new backups/existing backup sentinel, injected metadata failure, staged hash mismatch/read failure, simulated Darwin stat mismatch/read failure and unsupported-platform refusal.",
+        "root_control_assessment": "KEEP: actual failing inputs reject publication and preserve canonical bytes/remove stages; positives exercise installed aliases and real Linux ACL/xattrs. Simulated Darwin controls exercise refusal only, not successful macOS preservation."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Previous six current KEEP bindings retained unchanged in historical_reviews; earlier pending rows retained; this is the current independently executed source binding."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_upgrade_creates_no_backups",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer delta/seven selectors reviewed; actual e04b4a Ubuntu WSL full fixture exit0/no deadline/all7groupsPASS/no SKIP, with real libacl ACL+os.xattr and simulated Darwin owner/mode/group stat mismatch+read-error negatives. Existing dry-run and no start/restart controls passed. Exact installer9D1B2079 and fixtureE0F2A357 unchanged before/after. No actual macOS/NTFS/live deployment or Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 139,
+        "sha256": "8d1fda89d303e15ca57894f031122b7d6e6da30f76a33d8067dd304c5cb9c90e",
+        "last_line": 149,
+        "hash_scope": "Inclusive first_line..last_line joined with LF without trailing newline; whole fixture shared_sources binds rationale/context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file.",
+        "root_replay": "Actuale04b4a: all seven groups plus existing service fixture PASS. Alias rebuild isolation, real security metadata retention, no new backups/existing backup sentinel, injected metadata failure, staged hash mismatch/read failure, simulated Darwin stat mismatch/read failure and unsupported-platform refusal.",
+        "root_control_assessment": "KEEP: actual failing inputs reject publication and preserve canonical bytes/remove stages; positives exercise installed aliases and real Linux ACL/xattrs. Simulated Darwin controls exercise refusal only, not successful macOS preservation."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Previous six current KEEP bindings retained unchanged in historical_reviews; earlier pending rows retained; this is the current independently executed source binding."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_metadata_failure_preserves_installation",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer delta/seven selectors reviewed; actual e04b4a Ubuntu WSL full fixture exit0/no deadline/all7groupsPASS/no SKIP, with real libacl ACL+os.xattr and simulated Darwin owner/mode/group stat mismatch+read-error negatives. Existing dry-run and no start/restart controls passed. Exact installer9D1B2079 and fixtureE0F2A357 unchanged before/after. No actual macOS/NTFS/live deployment or Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 154,
+        "sha256": "fa9936e066771d34ab21467c141e5d433669350d82f1c3c55784a615c614e750",
+        "last_line": 178,
+        "hash_scope": "Inclusive first_line..last_line joined with LF without trailing newline; whole fixture shared_sources binds rationale/context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file.",
+        "root_replay": "Actuale04b4a: all seven groups plus existing service fixture PASS. Alias rebuild isolation, real security metadata retention, no new backups/existing backup sentinel, injected metadata failure, staged hash mismatch/read failure, simulated Darwin stat mismatch/read failure and unsupported-platform refusal.",
+        "root_control_assessment": "KEEP: actual failing inputs reject publication and preserve canonical bytes/remove stages; positives exercise installed aliases and real Linux ACL/xattrs. Simulated Darwin controls exercise refusal only, not successful macOS preservation."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Previous six current KEEP bindings retained unchanged in historical_reviews; earlier pending rows retained; this is the current independently executed source binding."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_hash_failure_preserves_installation",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer delta/seven selectors reviewed; actual e04b4a Ubuntu WSL full fixture exit0/no deadline/all7groupsPASS/no SKIP, with real libacl ACL+os.xattr and simulated Darwin owner/mode/group stat mismatch+read-error negatives. Existing dry-run and no start/restart controls passed. Exact installer9D1B2079 and fixtureE0F2A357 unchanged before/after. No actual macOS/NTFS/live deployment or Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 183,
+        "sha256": "6e14d93e8be94f85f43be45997a3c19dc8fd348c0d8d14e8195320cbfbfb367f",
+        "last_line": 211,
+        "hash_scope": "Inclusive first_line..last_line joined with LF without trailing newline; whole fixture shared_sources binds rationale/context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file.",
+        "root_replay": "Actuale04b4a: all seven groups plus existing service fixture PASS. Alias rebuild isolation, real security metadata retention, no new backups/existing backup sentinel, injected metadata failure, staged hash mismatch/read failure, simulated Darwin stat mismatch/read failure and unsupported-platform refusal.",
+        "root_control_assessment": "KEEP: actual failing inputs reject publication and preserve canonical bytes/remove stages; positives exercise installed aliases and real Linux ACL/xattrs. Simulated Darwin controls exercise refusal only, not successful macOS preservation."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Previous six current KEEP bindings retained unchanged in historical_reviews; earlier pending rows retained; this is the current independently executed source binding."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_simulated_darwin_stat_failure_preserves_installation",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer delta/seven selectors reviewed; actual e04b4a Ubuntu WSL full fixture exit0/no deadline/all7groupsPASS/no SKIP, with real libacl ACL+os.xattr and simulated Darwin owner/mode/group stat mismatch+read-error negatives. Existing dry-run and no start/restart controls passed. Exact installer9D1B2079 and fixtureE0F2A357 unchanged before/after. No actual macOS/NTFS/live deployment or Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 217,
+        "sha256": "5ecc3ec1dbeb8ea3f38c2a03619551fae98849444f84d477a9299e0da82a88ed",
+        "last_line": 253,
+        "hash_scope": "Inclusive first_line..last_line joined with LF without trailing newline; whole fixture shared_sources binds rationale/context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file.",
+        "root_replay": "Actuale04b4a: all seven groups plus existing service fixture PASS. Alias rebuild isolation, real security metadata retention, no new backups/existing backup sentinel, injected metadata failure, staged hash mismatch/read failure, simulated Darwin stat mismatch/read failure and unsupported-platform refusal.",
+        "root_control_assessment": "KEEP: actual failing inputs reject publication and preserve canonical bytes/remove stages; positives exercise installed aliases and real Linux ACL/xattrs. Simulated Darwin controls exercise refusal only, not successful macOS preservation."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Previous six current KEEP bindings retained unchanged in historical_reviews; earlier pending rows retained; this is the current independently executed source binding."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_unsupported_platform_refuses_before_deployment",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer delta/seven selectors reviewed; actual e04b4a Ubuntu WSL full fixture exit0/no deadline/all7groupsPASS/no SKIP, with real libacl ACL+os.xattr and simulated Darwin owner/mode/group stat mismatch+read-error negatives. Existing dry-run and no start/restart controls passed. Exact installer9D1B2079 and fixtureE0F2A357 unchanged before/after. No actual macOS/NTFS/live deployment or Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 258,
+        "sha256": "0ca331c26fb75a8fc2f0609464e84032df38578b1658ef3d028c40d9aaa8dd66",
+        "last_line": 272,
+        "hash_scope": "Inclusive first_line..last_line joined with LF without trailing newline; whole fixture shared_sources binds rationale/context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file.",
+        "root_replay": "Actuale04b4a: all seven groups plus existing service fixture PASS. Alias rebuild isolation, real security metadata retention, no new backups/existing backup sentinel, injected metadata failure, staged hash mismatch/read failure, simulated Darwin stat mismatch/read failure and unsupported-platform refusal.",
+        "root_control_assessment": "KEEP: actual failing inputs reject publication and preserve canonical bytes/remove stages; positives exercise installed aliases and real Linux ACL/xattrs. Simulated Darwin controls exercise refusal only, not successful macOS preservation."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Previous six current KEEP bindings retained unchanged in historical_reviews; earlier pending rows retained; this is the current independently executed source binding."
     }
   ],
   "historical_reviews": [
@@ -11317,6 +11604,672 @@
         "sha256": "1dd321303ff3584cf83a779c61dd11e7433e8b25c1bd125ee8e81e68398dad6b",
         "scope": "Author actual targeted native Windows Clippy compile only; no runtime tests, root replay or release qualification"
       }
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_aliases_ignore_later_builds",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Owned Linux installer fixture; source-only, no live service or binary replacement",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 61,
+        "last_line": 77,
+        "sha256": "7528badfcc10d644fbd9581fe6e3ad2c4f80795922f9fc20baf4317c6c71a790"
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "c58cb0b145e4ebcaf29ca53da72812ddb2ce5c0868dd72e28c285a038154f398"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_upgrade_preserves_security_metadata",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Owned Linux installer fixture; source-only, no live service or binary replacement",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 83,
+        "last_line": 134,
+        "sha256": "56f10b57a74d503fe6e5c194b57c9232f50e63de9ee4adeda94c76ea35231fe2"
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "c58cb0b145e4ebcaf29ca53da72812ddb2ce5c0868dd72e28c285a038154f398"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_upgrade_creates_no_backups",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Owned Linux installer fixture; source-only, no live service or binary replacement",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 139,
+        "last_line": 149,
+        "sha256": "8d1fda89d303e15ca57894f031122b7d6e6da30f76a33d8067dd304c5cb9c90e"
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "c58cb0b145e4ebcaf29ca53da72812ddb2ce5c0868dd72e28c285a038154f398"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_metadata_failure_preserves_installation",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Owned Linux installer fixture; source-only, no live service or binary replacement",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 154,
+        "last_line": 178,
+        "sha256": "fa9936e066771d34ab21467c141e5d433669350d82f1c3c55784a615c614e750"
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "c58cb0b145e4ebcaf29ca53da72812ddb2ce5c0868dd72e28c285a038154f398"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_hash_failure_preserves_installation",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Owned Linux installer fixture; source-only, no live service or binary replacement",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 183,
+        "last_line": 211,
+        "sha256": "6e14d93e8be94f85f43be45997a3c19dc8fd348c0d8d14e8195320cbfbfb367f"
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "c58cb0b145e4ebcaf29ca53da72812ddb2ce5c0868dd72e28c285a038154f398"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_unsupported_platform_refuses_before_deployment",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Owned Linux installer fixture; source-only, no live service or binary replacement",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 216,
+        "last_line": 230,
+        "sha256": "0ca331c26fb75a8fc2f0609464e84032df38578b1658ef3d028c40d9aaa8dd66"
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "c58cb0b145e4ebcaf29ca53da72812ddb2ce5c0868dd72e28c285a038154f398"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_aliases_ignore_later_builds",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Current seven-control successor. Prior six KEEP records remain exact predecessor history, not current source qualification.",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 61,
+        "sha256": "7528badfcc10d644fbd9581fe6e3ad2c4f80795922f9fc20baf4317c6c71a790",
+        "last_line": 77
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_upgrade_preserves_security_metadata",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Current seven-control successor. Prior six KEEP records remain exact predecessor history, not current source qualification.",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 83,
+        "sha256": "56f10b57a74d503fe6e5c194b57c9232f50e63de9ee4adeda94c76ea35231fe2",
+        "last_line": 134
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_upgrade_creates_no_backups",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Current seven-control successor. Prior six KEEP records remain exact predecessor history, not current source qualification.",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 139,
+        "sha256": "8d1fda89d303e15ca57894f031122b7d6e6da30f76a33d8067dd304c5cb9c90e",
+        "last_line": 149
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_metadata_failure_preserves_installation",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Current seven-control successor. Prior six KEEP records remain exact predecessor history, not current source qualification.",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 154,
+        "sha256": "fa9936e066771d34ab21467c141e5d433669350d82f1c3c55784a615c614e750",
+        "last_line": 178
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_hash_failure_preserves_installation",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Current seven-control successor. Prior six KEEP records remain exact predecessor history, not current source qualification.",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 183,
+        "sha256": "6e14d93e8be94f85f43be45997a3c19dc8fd348c0d8d14e8195320cbfbfb367f",
+        "last_line": 211
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_simulated_darwin_stat_failure_preserves_installation",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Current seven-control successor. Prior six KEEP records remain exact predecessor history, not current source qualification.",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 217,
+        "sha256": "5ecc3ec1dbeb8ea3f38c2a03619551fae98849444f84d477a9299e0da82a88ed",
+        "last_line": 253
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_unsupported_platform_refuses_before_deployment",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Current seven-control successor. Prior six KEEP records remain exact predecessor history, not current source qualification.",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 258,
+        "sha256": "0ca331c26fb75a8fc2f0609464e84032df38578b1658ef3d028c40d9aaa8dd66",
+        "last_line": 272
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "9d1b2079f84a29986922efb0adfb45843d16c4648d56364fb234255ec8a6f1b9"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "e0f2a357e4c7f91764eaca9df348362575a5e72ea95731f4ec3fe7b42aafd071"
+        }
+      ],
+      "supersedes_source": {
+        "fixture_sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9",
+        "code_sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "relevance": "Protects installed artifact identity, security metadata and fail-before-publication behavior; no automatic backups or live service activation.",
+      "coverage": {
+        "author_actual_linux_fixture": "Full Ubuntu WSL fixture PASS, real libacl/os.xattr PASS, all seven named groups PASS, no SKIP. Windows parent/child launches hidden, no runtime deployment.",
+        "failing_controls": "Metadata-copy errors, staged hash mismatch/read errors, simulated Darwin stat mismatch/read errors and unsupported platform all refuse before publication with canonical unchanged/no leaked temporary file."
+      },
+      "breaking_behavior": "Darwin owner/group/mode mismatch or unreadable metadata now explicitly refuses, instead of trusting cp-p exit status. Darwin injected control is simulated Linux execution, not actual macOS qualification."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_aliases_ignore_later_builds",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer diff/six selector source review and actual Ubuntu WSL fixture replay b43e02: exit0/no deadline/all6newgroupsPASS/real libacl ACL+os.xattr/no SKIP; existing no-start/restart and dry-run boundaries PASS. Executed C58CB0 installer; final3A6E563D changes server-version comments only, executable logic/fixture unchanged and independently read. Not macOS/NTFS/live deployment or full Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 61,
+        "last_line": 77,
+        "sha256": "7528badfcc10d644fbd9581fe6e3ad2c4f80795922f9fc20baf4317c6c71a790",
+        "hash_scope": "Inclusive first_line..last_line joined with LF, without trailing newline; shared_sources separately binds rationale and fixture context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created.",
+        "root_replay": "b43e02: six positive/negative installer groups and existing fixture passed. Metadata-copy injection and staged-hash mismatch/read-error must fail; canonical bytes/staging cleanup checked. Unsupported platform refuses before home creation. Existing backup sentinel preserved/no new backups.",
+        "root_control_assessment": "KEEP: alias control mutates uninstalled build/checks installed bytes; real ACL/xattr snapshot includes named ACL; failure controls reject nonzero or mismatched stages; backup/platform controls assert concrete absence and preservation."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Original C58CB0 pending row remains unchanged under historical_reviews; this current independently reviewed binding is under reviews."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_upgrade_preserves_security_metadata",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer diff/six selector source review and actual Ubuntu WSL fixture replay b43e02: exit0/no deadline/all6newgroupsPASS/real libacl ACL+os.xattr/no SKIP; existing no-start/restart and dry-run boundaries PASS. Executed C58CB0 installer; final3A6E563D changes server-version comments only, executable logic/fixture unchanged and independently read. Not macOS/NTFS/live deployment or full Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 83,
+        "last_line": 134,
+        "sha256": "56f10b57a74d503fe6e5c194b57c9232f50e63de9ee4adeda94c76ea35231fe2",
+        "hash_scope": "Inclusive first_line..last_line joined with LF, without trailing newline; shared_sources separately binds rationale and fixture context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created.",
+        "root_replay": "b43e02: six positive/negative installer groups and existing fixture passed. Metadata-copy injection and staged-hash mismatch/read-error must fail; canonical bytes/staging cleanup checked. Unsupported platform refuses before home creation. Existing backup sentinel preserved/no new backups.",
+        "root_control_assessment": "KEEP: alias control mutates uninstalled build/checks installed bytes; real ACL/xattr snapshot includes named ACL; failure controls reject nonzero or mismatched stages; backup/platform controls assert concrete absence and preservation."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Original C58CB0 pending row remains unchanged under historical_reviews; this current independently reviewed binding is under reviews."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_upgrade_creates_no_backups",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer diff/six selector source review and actual Ubuntu WSL fixture replay b43e02: exit0/no deadline/all6newgroupsPASS/real libacl ACL+os.xattr/no SKIP; existing no-start/restart and dry-run boundaries PASS. Executed C58CB0 installer; final3A6E563D changes server-version comments only, executable logic/fixture unchanged and independently read. Not macOS/NTFS/live deployment or full Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 139,
+        "last_line": 149,
+        "sha256": "8d1fda89d303e15ca57894f031122b7d6e6da30f76a33d8067dd304c5cb9c90e",
+        "hash_scope": "Inclusive first_line..last_line joined with LF, without trailing newline; shared_sources separately binds rationale and fixture context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created.",
+        "root_replay": "b43e02: six positive/negative installer groups and existing fixture passed. Metadata-copy injection and staged-hash mismatch/read-error must fail; canonical bytes/staging cleanup checked. Unsupported platform refuses before home creation. Existing backup sentinel preserved/no new backups.",
+        "root_control_assessment": "KEEP: alias control mutates uninstalled build/checks installed bytes; real ACL/xattr snapshot includes named ACL; failure controls reject nonzero or mismatched stages; backup/platform controls assert concrete absence and preservation."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Original C58CB0 pending row remains unchanged under historical_reviews; this current independently reviewed binding is under reviews."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_metadata_failure_preserves_installation",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer diff/six selector source review and actual Ubuntu WSL fixture replay b43e02: exit0/no deadline/all6newgroupsPASS/real libacl ACL+os.xattr/no SKIP; existing no-start/restart and dry-run boundaries PASS. Executed C58CB0 installer; final3A6E563D changes server-version comments only, executable logic/fixture unchanged and independently read. Not macOS/NTFS/live deployment or full Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 154,
+        "last_line": 178,
+        "sha256": "fa9936e066771d34ab21467c141e5d433669350d82f1c3c55784a615c614e750",
+        "hash_scope": "Inclusive first_line..last_line joined with LF, without trailing newline; shared_sources separately binds rationale and fixture context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created.",
+        "root_replay": "b43e02: six positive/negative installer groups and existing fixture passed. Metadata-copy injection and staged-hash mismatch/read-error must fail; canonical bytes/staging cleanup checked. Unsupported platform refuses before home creation. Existing backup sentinel preserved/no new backups.",
+        "root_control_assessment": "KEEP: alias control mutates uninstalled build/checks installed bytes; real ACL/xattr snapshot includes named ACL; failure controls reject nonzero or mismatched stages; backup/platform controls assert concrete absence and preservation."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Original C58CB0 pending row remains unchanged under historical_reviews; this current independently reviewed binding is under reviews."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_hash_failure_preserves_installation",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer diff/six selector source review and actual Ubuntu WSL fixture replay b43e02: exit0/no deadline/all6newgroupsPASS/real libacl ACL+os.xattr/no SKIP; existing no-start/restart and dry-run boundaries PASS. Executed C58CB0 installer; final3A6E563D changes server-version comments only, executable logic/fixture unchanged and independently read. Not macOS/NTFS/live deployment or full Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 183,
+        "last_line": 211,
+        "sha256": "6e14d93e8be94f85f43be45997a3c19dc8fd348c0d8d14e8195320cbfbfb367f",
+        "hash_scope": "Inclusive first_line..last_line joined with LF, without trailing newline; shared_sources separately binds rationale and fixture context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created.",
+        "root_replay": "b43e02: six positive/negative installer groups and existing fixture passed. Metadata-copy injection and staged-hash mismatch/read-error must fail; canonical bytes/staging cleanup checked. Unsupported platform refuses before home creation. Existing backup sentinel preserved/no new backups.",
+        "root_control_assessment": "KEEP: alias control mutates uninstalled build/checks installed bytes; real ACL/xattr snapshot includes named ACL; failure controls reject nonzero or mismatched stages; backup/platform controls assert concrete absence and preservation."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Original C58CB0 pending row remains unchanged under historical_reviews; this current independently reviewed binding is under reviews."
+    },
+    {
+      "selector": "packaging/tests/install-http-service-test.sh::test_unsupported_platform_refuses_before_deployment",
+      "reviewer": "codex-gen9-fleet-via-vigil1",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "scope": "Independent root full installer diff/six selector source review and actual Ubuntu WSL fixture replay b43e02: exit0/no deadline/all6newgroupsPASS/real libacl ACL+os.xattr/no SKIP; existing no-start/restart and dry-run boundaries PASS. Executed C58CB0 installer; final3A6E563D changes server-version comments only, executable logic/fixture unchanged and independently read. Not macOS/NTFS/live deployment or full Rust qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "packaging/tests/install-http-service-test.sh",
+        "first_line": 216,
+        "last_line": 230,
+        "sha256": "0ca331c26fb75a8fc2f0609464e84032df38578b1658ef3d028c40d9aaa8dd66",
+        "hash_scope": "Inclusive first_line..last_line joined with LF, without trailing newline; shared_sources separately binds rationale and fixture context."
+      },
+      "code_under_test": {
+        "path": "install.sh",
+        "sha256": "3a6e563d6c0a7f44aad5edb7d80bd5b44b56cff75d7c49f9655c5b7d7aff4389"
+      },
+      "shared_sources": [
+        {
+          "path": "packaging/tests/install-http-service-test.sh",
+          "sha256": "10e8ceb5630a6338309b8657ea2d9884b791f3cb92785335a17ce14b3d3bafd9"
+        }
+      ],
+      "relevance": "Protects installed identity, security metadata, no unsolicited backups and fail-before-publication boundaries.",
+      "coverage": {
+        "author_fixture": "Actual Ubuntu WSL full Linux fixture PASS with real libacl ACL/os.xattr, no SKIP and existing no-start/restart controls. Python execution offline/no downloads.",
+        "failing_input_or_control": "Actual original alias RED; alias-only mode RED; injected metadata-copy failure; hash mismatch/read-error refusal; unsupported platform refusal. Operator-owned backup sentinel remains unchanged and no backup is created.",
+        "root_replay": "b43e02: six positive/negative installer groups and existing fixture passed. Metadata-copy injection and staged-hash mismatch/read-error must fail; canonical bytes/staging cleanup checked. Unsupported platform refuses before home creation. Existing backup sentinel preserved/no new backups.",
+        "root_control_assessment": "KEEP: alias control mutates uninstalled build/checks installed bytes; real ACL/xattr snapshot includes named ACL; failure controls reject nonzero or mismatched stages; backup/platform controls assert concrete absence and preservation."
+      },
+      "breaking_behavior": "Only intended payload replacement changes; aliases remain on installed siblings, destination security metadata remains, no automatic backups are retained. Existing operator backup data is untouched. Darwin runtime not qualified.",
+      "base_commit": "f5f003cb18104bf3641dd7c4a38861e796a2732e",
+      "predecessor_record": "Original C58CB0 pending row remains unchanged under historical_reviews; this current independently reviewed binding is under reviews."
     }
   ]
 }

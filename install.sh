@@ -3,17 +3,15 @@
 #
 # Builds the three release binaries (agent-bus, agent-bus-http, agent-bus-mcp),
 # deploys them as REAL FILES to ~/.local/bin/, and (re)creates ~/.local/bin/*.exe
-# symlinks pointing at target/release/ for Windows-parity tooling that expects a
+# relative symlinks pointing at the installed siblings for tooling that expects a
 # `.exe` suffix on this box.
 #
-# Safe to re-run: unchanged binaries (matched by sha256) are skipped, and any
-# binary about to be overwritten is preserved first in a single timestamped
-# backup directory (not scattered *.bak files).
+# Safe to re-run: unchanged binaries (matched by sha256) are skipped. Replacement
+# uses a validated same-directory temporary file, without automatic backups.
 #
-# agent-bus-http and agent-bus-mcp are SERVER binaries — they block in serve
-# mode and do not support `--version`. Version/health verification therefore
-# only ever invokes `agent-bus --version` / `agent-bus health`, never the
-# other two binaries.
+# HTTP supports --version, but --help starts its server; MCP ignores flags and
+# starts stdio serving. Installer checks use agent-bus --version / health only.
+# A version response from any binary does not qualify the server runtime.
 #
 # Usage:
 #   ./install.sh [OPTIONS]
@@ -236,18 +234,7 @@ sha256_of() {
     fi
 }
 
-# ── atomic deploy of real binaries + backup of anything overwritten ──────────
-BACKUP_DIR=""
-ensure_backup_dir() {
-    if [[ -z "$BACKUP_DIR" ]]; then
-        BACKUP_DIR="${BIN_DIR}/.agent-hub-installer-backups/$(date -u +%Y%m%dT%H%M%SZ)"
-        if [[ $DRY_RUN -eq 0 ]]; then
-            mkdir -p "$BACKUP_DIR"
-        fi
-        log "Backup directory for this run: $BACKUP_DIR"
-    fi
-}
-
+# ── atomic deploy of real binaries; no automatic backup copies ───────────────
 deploy_binaries() {
     if [[ $DRY_RUN -eq 1 ]]; then
         log "Deploying binaries to $BIN_DIR (would create if missing)"
@@ -281,17 +268,11 @@ deploy_binaries() {
 
         if [[ $DRY_RUN -eq 1 ]]; then
             if [[ -f "$dst" ]]; then
-                log "  [dry-run] Would back up existing $dst and replace with new build."
+                log "  [dry-run] Would replace $dst atomically, preserving security metadata."
             else
                 log "  [dry-run] Would install new $dst."
             fi
             continue
-        fi
-
-        if [[ -f "$dst" ]]; then
-            ensure_backup_dir
-            cp -p "$dst" "${BACKUP_DIR}/${bin}"
-            log "  $bin: backed up prior binary to ${BACKUP_DIR}/${bin}"
         fi
 
         # Atomic deploy: copy to a temp file in the same directory, then
@@ -300,20 +281,62 @@ deploy_binaries() {
         # inode open is unaffected and readers never see a partial file.
         local tmp
         tmp="$(mktemp "${dst}.XXXXXX")"
-        cp "$src" "$tmp"
-        chmod 755 "$tmp"
-        mv -f "$tmp" "$dst"
+        if [[ -f "$dst" ]]; then
+            # Preserve destination security metadata, not build-tree metadata.
+            # GNU's explicit xattr request fails on preservation errors (unlike
+            # --preserve=all). mode includes POSIX ACLs. Content timestamps and
+            # inode identity intentionally change on this atomic replacement.
+            case "$(uname -s)" in
+                Linux)
+                    if ! cp "$src" "$tmp" ||
+                        ! cp --attributes-only --preserve=mode,ownership,xattr "$dst" "$tmp"; then
+                        rm -f -- "$tmp"
+                        err "Could not preserve destination security metadata: $dst"
+                        return 1
+                    fi
+                    ;;
+                Darwin)
+                    # Native cp -p also retains macOS ACLs and extended attrs.
+                    # It can silently omit ownership; check after writing, which
+                    # may also clear set-ID bits. Denied writes never publish.
+                    local original_security staged_security
+                    if ! cp -p "$dst" "$tmp" || ! cat "$src" > "$tmp" ||
+                        ! original_security="$(stat -f '%Lp:%u:%g' "$dst")" ||
+                        ! staged_security="$(stat -f '%Lp:%u:%g' "$tmp")" ||
+                        [[ "$original_security" != "$staged_security" ]]; then
+                        rm -f -- "$tmp"
+                        err "Could not preserve destination security metadata: $dst"
+                        return 1
+                    fi
+                    ;;
+            esac
+        elif ! cp "$src" "$tmp" || ! chmod 755 "$tmp"; then
+            rm -f -- "$tmp"
+            err "Could not stage new executable: $dst"
+            return 1
+        fi
+        local staged_sha expected_sha
+        if ! staged_sha="$(sha256_of "$tmp")" ||
+            ! expected_sha="$(sha256_of "$src")" || [[ "$staged_sha" != "$expected_sha" ]]; then
+            rm -f -- "$tmp"
+            err "Staged executable does not match source: $dst"
+            return 1
+        fi
+        if ! mv -f "$tmp" "$dst"; then
+            rm -f -- "$tmp"
+            err "Could not publish staged executable: $dst"
+            return 1
+        fi
         ok "  $bin: deployed -> $dst"
     done
 }
 
 # ── .exe symlinks for Windows-parity tooling ──────────────────────────────────
-# Mirrors the existing on-disk convention on this box: ~/.local/bin/<bin>.exe is
-# an ABSOLUTE symlink to target/release/<bin> (not a relative symlink, and not
-# a copy of the deployed real file — it always tracks the freshest build).
+# Aliases select the same installed artifact as the unsuffixed command. A later
+# rebuild or checkout removal must not change a deployed executable implicitly.
 create_exe_symlinks() {
     for bin in "${BINARIES[@]}"; do
-        local target="${TARGET_DIR}/${bin}"
+        local target="$bin"
         local link="${BIN_DIR}/${bin}.exe"
 
         if [[ $DRY_RUN -eq 1 ]]; then
@@ -332,9 +355,8 @@ create_exe_symlinks() {
 }
 
 # ── post-install verification ──────────────────────────────────────────────────
-# IMPORTANT: only agent-bus supports --version. agent-bus-http and
-# agent-bus-mcp are server binaries that block in serve mode on launch, so
-# never invoke them here.
+# Keep installer smoke on the CLI. HTTP's --version is not runtime acceptance;
+# its --help and MCP's ignored flags can start a server, so do not invoke them.
 verify_install() {
     if [[ $NO_VERIFY -eq 1 ]]; then
         log "Skipping all post-install verification (--no-verify)."
@@ -650,6 +672,13 @@ install_relay_service() {
 main() {
     log "agent-hub installer starting (repo: $REPO_ROOT)"
     [[ $DRY_RUN -eq 1 ]] && warn "DRY RUN — no files, binaries, or services will be changed."
+
+    # This installer owns POSIX security metadata. Git Bash on NTFS is not
+    # evidence of Linux/macOS ACL preservation; Windows has separate tooling.
+    case "$(uname -s)" in
+        Linux | Darwin) ;;
+        *) err 'Unsupported installer platform; use native Windows deployment tooling'; return 1 ;;
+    esac
 
     preflight_http_service
     run_build
