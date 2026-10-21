@@ -1352,7 +1352,7 @@ pub fn bus_post_messages_batch_with_schema(
                 .arg(&key)
                 .arg(&json)
                 .arg("EX")
-                .arg(ttl);
+                .arg(ack_deadline_key_ttl(ttl));
         }
         if let Err(e) = deadline_pipe.query::<Vec<String>>(conn) {
             tracing::warn!("batch ack-deadline pipeline failed (non-fatal): {e:#}");
@@ -3319,7 +3319,29 @@ pub fn close_thread(
 /// Redis key prefix for ack deadline records.
 const ACK_DEADLINE_PREFIX: &str = "agent_bus:ack_deadline:";
 
-/// Store an ack deadline record in Redis with a TTL matching the deadline.
+/// How long an ack-deadline record is kept after its deadline passes (7 days).
+///
+/// The record used to expire at `deadline_at`, so by the time a message was
+/// overdue the record was already gone and `overdue-acks` could not list it
+/// (#166). The record now outlives its deadline by this bounded window and is
+/// removed earlier only by an ack ([`clear_ack_deadline`]).
+pub const ACK_DEADLINE_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Redis key TTL for a deadline record whose ack is due in `deadline_ttl_seconds`.
+///
+/// This is the deadline window plus [`ACK_DEADLINE_RETENTION_SECS`], so the
+/// record is still readable (and overdue) after the deadline passes.
+#[must_use]
+pub fn ack_deadline_key_ttl(deadline_ttl_seconds: u64) -> u64 {
+    deadline_ttl_seconds.saturating_add(ACK_DEADLINE_RETENTION_SECS)
+}
+
+/// Store an ack deadline record in Redis.
+///
+/// `ttl_seconds` is the ack window: `deadline.deadline_at` should be that far
+/// in the future. The Redis key is kept for [`ack_deadline_key_ttl`], i.e. past
+/// the deadline, so a missed ack stays listable by [`check_overdue_acks`]
+/// until it is acked or the retention window ends (#166).
 ///
 /// # Errors
 ///
@@ -3333,9 +3355,10 @@ pub fn track_ack_deadline(
     let json = serde_json::to_string(deadline).map_err(|e| {
         crate::error::AgentBusError::Internal(format!("serialize ack deadline: {e}"))
     })?;
-    let _: () = redis::Commands::set_ex(conn, &key, &json, ttl_seconds).map_err(|e| {
-        crate::error::AgentBusError::Internal(format!("SET EX ack_deadline failed: {e}"))
-    })?;
+    let _: () = redis::Commands::set_ex(conn, &key, &json, ack_deadline_key_ttl(ttl_seconds))
+        .map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("SET EX ack_deadline failed: {e}"))
+        })?;
     Ok(())
 }
 
@@ -3352,9 +3375,10 @@ pub fn clear_ack_deadline(conn: &mut redis::Connection, message_id: &str) -> Res
     Ok(())
 }
 
-/// List all ack deadlines that are still live in Redis.
+/// List all ack deadlines that are still stored in Redis.
 ///
-/// Returns records that have not yet expired (key still exists).
+/// Returns every record whose key still exists: not yet due, and overdue but
+/// within the [`ACK_DEADLINE_RETENTION_SECS`] window and not yet acked.
 ///
 /// # Errors
 ///
@@ -3397,6 +3421,8 @@ pub fn list_ack_deadlines(conn: &mut redis::Connection) -> Result<Vec<crate::mod
 }
 
 /// Return only the ack deadlines that are past their `deadline_at` timestamp.
+///
+/// A record stays listed until it is acked or the retention window ends.
 ///
 /// # Errors
 ///
@@ -4490,5 +4516,115 @@ mod tests {
         )
         .expect_err("NUL in presence status must be rejected before SET");
         assert!(err.to_string().contains("NUL"), "got: {err}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Ack deadline retention (#166)
+    // -----------------------------------------------------------------------
+
+    fn test_ack_deadline(message_id: &str, due_in: chrono::Duration) -> crate::models::AckDeadline {
+        crate::models::AckDeadline {
+            message_id: message_id.to_owned(),
+            recipient: "gemini".to_owned(),
+            deadline_at: (Utc::now() + due_in)
+                .format("%Y-%m-%dT%H:%M:%S%.6fZ")
+                .to_string(),
+            escalation_level: 0,
+            escalated_to: None,
+        }
+    }
+
+    /// Why: the key TTL must always exceed the ack window, or the record
+    /// expires before it can become overdue (#166), and it must stay bounded.
+    #[test]
+    fn ack_deadline_key_ttl_outlives_the_window_by_exactly_the_retention() {
+        for priority in ["critical", "high", "normal"] {
+            let window = crate::models::ack_deadline_seconds(priority);
+            assert_eq!(
+                ack_deadline_key_ttl(window),
+                window + ACK_DEADLINE_RETENTION_SECS
+            );
+        }
+        assert_eq!(ack_deadline_key_ttl(u64::MAX), u64::MAX, "must saturate");
+    }
+
+    fn overdue_ids(conn: &mut redis::Connection) -> Vec<String> {
+        check_overdue_acks(conn)
+            .expect("check_overdue_acks")
+            .into_iter()
+            .map(|d| d.message_id)
+            .collect()
+    }
+
+    /// Why: the record used to expire at `deadline_at`, so `overdue-acks` could
+    /// only match inside a sub-second window. An unacked record must stay
+    /// listable past its deadline, and an ack must remove it.
+    #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
+    #[test]
+    fn unacked_deadline_is_listed_as_overdue_after_it_passes_until_acked() {
+        let mut conn = test_conn();
+        let id = format!("overdue-test-{}", Uuid::new_v4());
+        // A 1 s deadline stands in for the 60-300 s production deadlines.
+        let deadline = test_ack_deadline(&id, chrono::Duration::seconds(1));
+        track_ack_deadline(&mut conn, &deadline, 1).expect("track_ack_deadline");
+        assert!(
+            !overdue_ids(&mut conn).contains(&id),
+            "a record that is not yet due must not be listed as overdue"
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(2_500));
+        assert!(
+            overdue_ids(&mut conn).contains(&id),
+            "an unacked record must still be listed once its deadline has passed"
+        );
+
+        clear_ack_deadline(&mut conn, &id).expect("clear_ack_deadline");
+        assert!(
+            !overdue_ids(&mut conn).contains(&id),
+            "an acked record must not be listed as overdue"
+        );
+    }
+
+    /// Why: retention must be bounded, otherwise records for messages that are
+    /// never acked would accumulate forever.
+    #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
+    #[test]
+    fn stored_deadline_outlives_its_deadline_by_a_bounded_window() {
+        let mut conn = test_conn();
+        let settings = crate::test_support::backend_settings();
+        let id = format!("retention-test-{}", Uuid::new_v4());
+        let deadline_ttl = crate::models::ack_deadline_seconds("normal");
+        crate::ops::ack_deadline::store_ack_deadline(&mut conn, &id, "gemini", "normal")
+            .expect("store_ack_deadline");
+
+        let key = format!("{ACK_DEADLINE_PREFIX}{id}");
+        let ttl: i64 = redis::cmd("TTL").arg(&key).query(&mut conn).expect("TTL");
+        let ttl = u64::try_from(ttl).expect("key must exist with an expiry");
+        assert!(
+            ttl > deadline_ttl,
+            "record expires at {ttl}s, no later than its {deadline_ttl}s deadline"
+        );
+        assert!(
+            ttl <= deadline_ttl + ACK_DEADLINE_RETENTION_SECS,
+            "retention must be bounded, got {ttl}s"
+        );
+
+        // Acking through the ops layer must remove the retained record.
+        crate::ops::message::post_ack(
+            &mut conn,
+            &settings,
+            &crate::ops::AckMessageRequest {
+                agent: "gemini",
+                message_id: &id,
+                body: "ack",
+                has_sse_subscribers: false,
+            },
+        )
+        .expect("post_ack");
+        let exists: bool = redis::cmd("EXISTS")
+            .arg(&key)
+            .query(&mut conn)
+            .expect("EXISTS");
+        assert!(!exists, "post_ack must clear the retained deadline record");
     }
 }
