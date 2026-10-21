@@ -286,10 +286,17 @@ deploy_binaries() {
             # GNU's explicit xattr request fails on preservation errors (unlike
             # --preserve=all). mode includes POSIX ACLs. Content timestamps and
             # inode identity intentionally change on this atomic replacement.
+            local original_security staged_security
             case "$(uname -s)" in
                 Linux)
-                    if ! cp "$src" "$tmp" ||
-                        ! cp --attributes-only --preserve=mode,ownership,xattr "$dst" "$tmp"; then
+                    # GNU cp may return success when chown is refused for an
+                    # unprivileged caller. Read back mode/owner/group instead
+                    # of treating a successful preservation request as proof.
+                    if ! original_security="$(stat -c '%a:%u:%g' "$dst")" ||
+                        ! cp "$src" "$tmp" ||
+                        ! cp --attributes-only --preserve=mode,ownership,xattr "$dst" "$tmp" ||
+                        ! staged_security="$(stat -c '%a:%u:%g' "$tmp")" ||
+                        [[ "$original_security" != "$staged_security" ]]; then
                         rm -f -- "$tmp"
                         err "Could not preserve destination security metadata: $dst"
                         return 1
@@ -299,7 +306,6 @@ deploy_binaries() {
                     # Native cp -p also retains macOS ACLs and extended attrs.
                     # It can silently omit ownership; check after writing, which
                     # may also clear set-ID bits. Denied writes never publish.
-                    local original_security staged_security
                     if ! cp -p "$dst" "$tmp" || ! cat "$src" > "$tmp" ||
                         ! original_security="$(stat -f '%Lp:%u:%g' "$dst")" ||
                         ! staged_security="$(stat -f '%Lp:%u:%g' "$tmp")" ||

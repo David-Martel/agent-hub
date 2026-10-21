@@ -32,7 +32,10 @@ rewritten.
 Replacement preserves the destination's owner, group, mode, ACLs and extended
 attributes rather than importing build-tree security metadata. Linux requires
 GNU `cp` built with ACL/xattr support and explicit attribute preservation; macOS
-uses native `cp -p` plus a staged owner/group/mode readback check.
+uses native `cp -p`. Both branches compare the staged owner/group/mode with the
+destination. GNU `cp` can return success after an unprivileged `chown` fails, so
+its exit status alone does not establish preservation of ownership. A different
+owner or group that the installer cannot retain causes refusal before publication.
 Preservation or staging failure leaves that destination unchanged and removes
 its temporary file. New executables use mode `755`. Payload timestamps and inode
 identity can change, and installation is atomic per binary, not across all three.

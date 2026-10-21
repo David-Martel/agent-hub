@@ -178,6 +178,49 @@ EOF
 }
 test_metadata_failure_preserves_installation
 
+# Protects Linux ownership retention even when GNU cp reports success after a
+# refused chown; detects publication on mismatched or unreadable stat metadata.
+# Needs simulated stat only; actual foreign-owner cp behavior is reviewed
+# separately. Breadcrumb: install.sh:deploy_binaries Linux branch.
+test_linux_stat_failure_preserves_installation() {
+    local installed="${fixture_home}/.local/bin/agent-bus" before mode
+    before="$(sha256sum "$installed" | awk '{print $1}')"
+    export INSTALL_TEST_REAL_STAT
+    INSTALL_TEST_REAL_STAT="$(command -v stat)"
+    cat > "${fake_bin}/stat" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == -c && "$2" == '%a:%u:%g' ]]; then
+    if [[ "${INSTALL_TEST_STAT_MODE:?}" == error ]]; then exit 76; fi
+    if [[ "$3" == */agent-bus.?????? ]]; then
+        # cp genuinely succeeded; change only the reported staged owner so
+        # this control remains effective for both root and ordinary users.
+        IFS=: read -r mode owner group <<< "$("${INSTALL_TEST_REAL_STAT:?}" "$@")"
+        if [[ "$owner" == 0 ]]; then owner=1; else owner=0; fi
+        printf '%s:%s:%s\n' "$mode" "$owner" "$group"
+    else
+        "${INSTALL_TEST_REAL_STAT:?}" "$@"
+    fi
+    exit 0
+fi
+exec "${INSTALL_TEST_REAL_STAT:?}" "$@"
+EOF
+    chmod 755 "${fake_bin}/stat"
+    printf '# rejected Linux metadata candidate\n' >> "${fixture_repo}/target/release/agent-bus"
+    for mode in mismatch error; do
+        if INSTALL_TEST_STAT_MODE="$mode" "${fixture_repo}/install.sh" --skip-build --no-verify > "${test_root}/linux-failure.log" 2>&1; then
+            printf 'installer accepted Linux stat failure: %s\n' "$mode" >&2
+            exit 1
+        fi
+        grep -Fq 'security metadata' "${test_root}/linux-failure.log"
+        test "$(sha256sum "$installed" | awk '{print $1}')" = "$before"
+        test -z "$(find "${fixture_home}/.local/bin" -maxdepth 1 -name 'agent-bus.??????' -print)"
+    done
+    rm -- "${fake_bin}/stat"
+    cp "$installed" "${fixture_repo}/target/release/agent-bus"
+    printf 'linux-stat-failure-preserves-installation: PASS\n'
+}
+test_linux_stat_failure_preserves_installation
+
 # Protects hash-bound publication; detects mismatched staging or unreadable
 # hashes treated as success. Needs fake hash tool; breadcrumb: deploy_binaries.
 test_hash_failure_preserves_installation() {
