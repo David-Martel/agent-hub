@@ -1195,6 +1195,110 @@ async fn batch_ack_valid_ids_returns_ok() {
     assert_eq!(ack_body["acked"], json!(2), "should have acked 2 messages");
 }
 
+/// Protects: HTTP batch ACK clears retained deadlines and pending ACKs only for acknowledged IDs.
+/// Detects: /ack/batch bypassing shared `post_ack` cleanup or clearing unrelated overdue records.
+/// Needs: owned authenticated HTTP/Redis/PostgreSQL from the isolated-services harness.
+/// Breadcrumb: crates/agent-bus-http/src/http.rs (`http_batch_ack_handler`).
+/// Breadcrumb: crates/agent-bus-core/src/ops/message.rs (`post_ack` deadline and pending cleanup).
+#[ignore = "backend test: needs owned AGENT_BUS_TEST_SERVER_URL/REDIS_URL/DATABASE_URL"]
+#[tokio::test]
+async fn batch_ack_clears_retained_deadlines_without_clearing_unacked_messages() {
+    let client = http_client();
+    require_service(&client).await;
+    let agent = format!("batch-retained-{}", uuid::Uuid::new_v4());
+    let mut conn = redis::Client::open(support::target().redis_url.as_str())
+        .expect("owned Redis URL")
+        .get_connection()
+        .expect("owned Redis connection");
+    let mut ids = Vec::new();
+    for priority in ["urgent", "high", "normal"] {
+        let response = client
+            .post(format!("{BASE_URL}/messages"))
+            .json(&json!({
+                "sender":agent,"recipient":agent,"topic":"retained-ack-test",
+                "body":"retain until acknowledged","request_ack":true,"priority":priority
+            }))
+            .send()
+            .await
+            .expect("send ACK-requesting message");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = response.json().await.expect("send response");
+        let id = body["id"].as_str().expect("message ID").to_owned();
+        let deadline_key = format!("agent_bus:ack_deadline:{id}");
+        let ttl: u64 = redis::cmd("TTL")
+            .arg(&deadline_key)
+            .query(&mut conn)
+            .expect("retained deadline TTL");
+        assert!(ttl > agent_bus_core::models::ack_deadline_seconds(priority));
+        assert!(
+            redis::cmd("EXISTS")
+                .arg(format!("agent_bus:pending_ack:{id}"))
+                .query::<bool>(&mut conn)
+                .unwrap()
+        );
+        let raw: String = redis::cmd("GET")
+            .arg(&deadline_key)
+            .query(&mut conn)
+            .unwrap();
+        let mut deadline: Value = serde_json::from_str(&raw).unwrap();
+        deadline["deadline_at"] =
+            json!((chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339());
+        let _: () = redis::cmd("SET")
+            .arg(&deadline_key)
+            .arg(deadline.to_string())
+            .arg("KEEPTTL")
+            .query(&mut conn)
+            .unwrap();
+        ids.push(id);
+    }
+    let overdue_before =
+        agent_bus_core::redis_bus::check_overdue_acks(&mut conn).expect("overdue before batch ACK");
+    assert!(
+        ids.iter()
+            .all(|id| overdue_before.iter().any(|d| &d.message_id == id))
+    );
+    let response = client
+        .post(format!("{BASE_URL}/ack/batch"))
+        .json(&json!({
+            "agent":agent,"message_ids":&ids[..2],"body":"batch acknowledged"
+        }))
+        .send()
+        .await
+        .expect("batch ACK");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = response.json().await.expect("batch ACK response");
+    assert_eq!(body["acked"], json!(2));
+    assert_eq!(body["message_ids"], json!(&ids[..2]));
+    for id in &ids[..2] {
+        for prefix in ["agent_bus:pending_ack:", "agent_bus:ack_deadline:"] {
+            assert!(
+                !redis::cmd("EXISTS")
+                    .arg(format!("{prefix}{id}"))
+                    .query::<bool>(&mut conn)
+                    .unwrap(),
+                "HTTP batch ACK left {prefix}{id}"
+            );
+        }
+    }
+    let overdue_after =
+        agent_bus_core::redis_bus::check_overdue_acks(&mut conn).expect("overdue after batch ACK");
+    assert!(
+        !overdue_after
+            .iter()
+            .any(|d| ids[..2].contains(&d.message_id))
+    );
+    assert!(
+        overdue_after.iter().any(|d| d.message_id == ids[2]),
+        "unacknowledged control must stay overdue"
+    );
+    assert!(
+        redis::cmd("EXISTS")
+            .arg(format!("agent_bus:pending_ack:{}", ids[2]))
+            .query::<bool>(&mut conn)
+            .unwrap()
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 6. Channel endpoint tests
 // ---------------------------------------------------------------------------
