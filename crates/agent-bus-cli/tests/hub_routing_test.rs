@@ -336,8 +336,8 @@ fn isolated_agent_bus(label: &str) -> Command {
     {
         use std::os::windows::process::CommandExt;
         // Owned fixture children must not open terminals on a deployment host.
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
+        cmd.creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+    };
     // Parallel fixtures need bounded child pools, not one pool per host CPU.
     cmd.env("TOKIO_WORKER_THREADS", "2");
     cmd.env("AGENT_BUS_CONFIG", isolated_config_path(label));
