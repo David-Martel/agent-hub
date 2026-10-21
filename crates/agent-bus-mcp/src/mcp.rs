@@ -31,6 +31,31 @@ fn to_rmcp_tool(def: ToolDefinition) -> Tool {
     Tool::new(def.name, def.description, schema_map)
 }
 
+/// Advisory body length, in characters, that the server instructions give agents.
+///
+/// The server enforces only [`agent_bus_core::validation::MAX_BODY_LEN`]
+/// (256 KB). The old "max 2000 chars" guidance was never enforced and led
+/// agents to strip spaces so a status fit under it (#170); this number is a
+/// readable-message budget, not a limit.
+const ADVISORY_BODY_CHARS: usize = 6_000;
+
+/// The `instructions` text returned in the MCP `initialize` result.
+fn server_instructions() -> String {
+    format!(
+        "Agent Hub coordination bus (Redis + PostgreSQL). MANDATORY PROTOCOL: \
+         (1) set_presence on session start with your agent ID and capabilities. \
+         (2) post_message topic=ownership BEFORE editing any file — claim it first, check for conflicts. \
+         (3) use check_inbox every 2-3 tool calls — it now reads durable per-agent notifications rather than replaying the raw bus. \
+         (4) Schema required: topic *-findings → schema=finding (needs FINDING:+SEVERITY:), \
+         topic status/ownership/coordination → schema=status, topic benchmark → schema=benchmark. \
+         (5) Batch 3-5 findings per message and keep a status/finding body under about \
+         {ADVISORY_BODY_CHARS} characters of normal prose with spaces (never strip spaces to fit). \
+         Cite long evidence by file path + SHA-256 instead of inlining it. Include tags=[repo:<name>]. \
+         (6) Post COMPLETE summary when done, then poll for follow-up tasks. \
+         HTTP alternative: POST http://localhost:8400/messages (faster for subagents without MCP)."
+    )
+}
+
 /// MCP server handler that exposes agent-bus operations as MCP tools.
 ///
 /// Settings are immutable after construction, so no `Mutex` is needed.
@@ -105,23 +130,9 @@ impl AgentBusMcpServer {
 
 impl ServerHandler for AgentBusMcpServer {
     fn get_info(&self) -> InitializeResult {
-        InitializeResult::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
-        )
-        .with_server_info(Implementation::new("agent-bus", env!("CARGO_PKG_VERSION")))
-        .with_instructions(
-            "Agent Hub coordination bus (Redis + PostgreSQL). MANDATORY PROTOCOL: \
-             (1) set_presence on session start with your agent ID and capabilities. \
-             (2) post_message topic=ownership BEFORE editing any file — claim it first, check for conflicts. \
-             (3) use check_inbox every 2-3 tool calls — it now reads durable per-agent notifications rather than replaying the raw bus. \
-             (4) Schema required: topic *-findings → schema=finding (needs FINDING:+SEVERITY:), \
-             topic status/ownership/coordination → schema=status, topic benchmark → schema=benchmark. \
-             (5) Batch 3-5 findings per message (max 2000 chars). Include tags=[repo:<name>]. \
-             (6) Post COMPLETE summary when done, then poll for follow-up tasks. \
-             HTTP alternative: POST http://localhost:8400/messages (faster for subagents without MCP).",
-        )
+        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(Implementation::new("agent-bus", env!("CARGO_PKG_VERSION")))
+            .with_instructions(server_instructions())
     }
 
     // Catalog construction is pure, so an already-completed future is safe.
@@ -148,6 +159,26 @@ impl ServerHandler for AgentBusMcpServer {
 mod tests {
     use super::*;
     use agent_bus_core::redis_bus::notification_cursor_key;
+
+    /// Protects: readable MCP guidance with an advisory budget above the old 2000 characters.
+    /// Detects: stale limits, missing evidence guidance, or advice to compress away spaces.
+    /// Needs: pure instruction text and the existing enforced byte-limit constant; no server.
+    /// Breadcrumb: crates/agent-bus-core/src/validation.rs (`MAX_BODY_LEN`).
+    #[test]
+    fn server_instructions_state_a_realistic_body_budget() {
+        let text = server_instructions();
+        const {
+            assert!(
+                ADVISORY_BODY_CHARS > 2_000
+                    && ADVISORY_BODY_CHARS < agent_bus_core::validation::MAX_BODY_LEN,
+                "advisory budget must sit between the old 2000 and the enforced limit"
+            );
+        }
+        assert!(text.contains(&ADVISORY_BODY_CHARS.to_string()), "{text}");
+        assert!(!text.contains("2000"), "stale 2000-char guidance: {text}");
+        assert!(text.contains("SHA-256"), "{text}");
+        assert!(text.contains("never strip spaces"), "{text}");
+    }
 
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::Mutex;
