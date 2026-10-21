@@ -16,19 +16,45 @@ From the repo root:
 
 This builds `agent-bus`, `agent-bus-http`, and `agent-bus-mcp`, then:
 
-1. Deploys the three binaries as **real files** to `~/.local/bin/` (atomic
-   copy-then-rename; any binary being replaced is first backed up into a
-   single timestamped directory under
-   `~/.local/bin/.agent-hub-installer-backups/<UTC timestamp>/`).
+1. Deploys the three binaries as **real files** to `~/.local/bin/` using
+   same-directory staging, source-hash validation and atomic rename.
+   No backup copies are created; existing backup files and directories are
+   left untouched. This is not a rollback guarantee.
 2. (Re)creates `~/.local/bin/{agent-bus,agent-bus-http,agent-bus-mcp}.exe`
-   as absolute symlinks into `target/release/` — this matches the existing
-   on-disk convention for Windows-parity tooling on this fleet that expects
-   a `.exe` suffix.
+   as relative symlinks to the installed sibling binaries. Rebuilding or
+   removing `target/release/` cannot silently change an installed alias.
 3. Verifies `agent-bus --version` and `agent-bus health`.
 
 Re-running is idempotent: binaries are compared by sha256 before copying,
 and unchanged binaries/symlinks are skipped with a log line rather than
 rewritten.
+
+Replacement preserves the destination's owner, group, mode, ACLs and extended
+attributes rather than importing build-tree security metadata. Linux requires
+GNU `cp` built with ACL/xattr support and explicit attribute preservation; macOS
+uses native `cp -p`. Both branches compare the staged owner/group/mode with the
+destination. GNU `cp` can return success after an unprivileged `chown` fails, so
+its exit status alone does not establish preservation of ownership. A different
+owner or group that the installer cannot retain causes refusal before publication.
+Preservation or staging failure leaves that destination unchanged and removes
+its temporary file. New executables use mode `755`. Payload timestamps and inode
+identity can change, and installation is atomic per binary, not across all three.
+The POSIX installer refuses native Git Bash; it does not claim NTFS ACL handling.
+
+The owned Linux fixture in
+[`tests/install-http-service-test.sh`](tests/install-http-service-test.sh)
+checks alias independence, security metadata retention, failed-copy containment,
+unsupported platforms, dry runs and service activation boundaries:
+
+```bash
+bash packaging/tests/install-http-service-test.sh
+```
+
+ACL/xattr controls need `uv` with an existing Python and `libacl.so.1`, or the
+`acl`/`attr` command-line tools; missing controls report `SKIP`. This fixture
+mocks service managers and never starts a live hub. Its Linux result does not
+qualify macOS metadata behavior; a macOS destination denying payload writes is
+refused without publishing the replacement.
 
 ## Adding the authoritative HTTP hub service
 
@@ -98,8 +124,9 @@ This box is a **client** of the agent-bus hub (currently hosted on
   itself.
 
 Only `agent-bus --version` is used for install-time version verification.
-`agent-bus-http` and `agent-bus-mcp` block in serve mode on launch and do not
-support `--version`, so never invoke them for a version/health check.
+The standalone HTTP binary supports `--version`, but `--help` starts its server;
+MCP ignores flags and starts stdio serving. Do not invoke those binaries during
+installer verification. A version response does not qualify server runtime health.
 
 ## Adding the relay service (optional)
 
