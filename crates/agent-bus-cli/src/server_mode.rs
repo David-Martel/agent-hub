@@ -746,6 +746,128 @@ mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
 
+    struct GatedDns {
+        gate: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+        started: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        finished: std::sync::mpsc::Sender<()>,
+    }
+
+    impl reqwest::dns::Resolve for GatedDns {
+        fn resolve(&self, _name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            let gate = self.gate.lock().unwrap().take().unwrap();
+            let started = self.started.lock().unwrap().take().unwrap();
+            let finished = self.finished.clone();
+            let worker = tokio::task::spawn_blocking(move || {
+                let _ = started.send(());
+                let _ = gate.recv_timeout(Duration::from_secs(10));
+                let _ = finished.send(());
+            });
+            Box::pin(async move {
+                let _ = worker.await;
+                Err(std::io::Error::other("owned gated DNS fixture completed").into())
+            })
+        }
+    }
+
+    fn assert_cli_runtime_releases_cancelled_dns(return_error: bool) {
+        let (release, gate) = std::sync::mpsc::channel();
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (finished, worker_finished) = std::sync::mpsc::channel();
+        let (action_done, action_returned) = std::sync::mpsc::channel();
+        let (owner_done, owner_returned) = std::sync::mpsc::channel();
+        let resolver = std::sync::Arc::new(GatedDns {
+            gate: std::sync::Mutex::new(Some(gate)),
+            started: std::sync::Mutex::new(Some(started)),
+            finished,
+        });
+        let owner = std::thread::Builder::new()
+            .stack_size(crate::MAIN_THREAD_STACK_BYTES)
+            .spawn(move || {
+                let result = crate::run_with_cli_runtime(|| {
+                    let client = reqwest::Client::builder()
+                        .no_proxy()
+                        .dns_resolver(resolver)
+                        .build()?;
+                    let raced = run_race_future(async {
+                        let request = client.get("http://owned-dns.invalid/health").send();
+                        tokio::pin!(request);
+                        tokio::select! {
+                            response = &mut request => anyhow::bail!(
+                                "request unexpectedly completed before gate release: {response:?}"
+                            ),
+                            started = ready => {
+                                started.context("DNS worker did not signal readiness")?;
+                                Ok(())
+                            }
+                        }
+                    })
+                    .context("ambient request race did not run")?;
+                    raced?;
+                    let _ = action_done.send(());
+                    if return_error {
+                        anyhow::bail!("synthetic command error");
+                    }
+                    Ok(())
+                });
+                let _ = owner_done.send(result.map_err(|error| error.to_string()));
+            })
+            .unwrap();
+
+        // Gather observations before releasing the owned worker, but defer all
+        // assertions until cleanup so a RED result cannot strand a DNS thread.
+        let action_ready = action_returned.recv_timeout(Duration::from_secs(3));
+        let returned = owner_returned.recv_timeout(Duration::from_secs(2));
+        let worker_still_gated = matches!(
+            worker_finished.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        );
+        let _ = release.send(());
+        let worker_reaped = worker_finished.recv_timeout(Duration::from_secs(12));
+        let eventual_return = returned
+            .is_err()
+            .then(|| owner_returned.recv_timeout(Duration::from_secs(3)));
+        let joined = owner.join();
+
+        assert!(
+            action_ready.is_ok(),
+            "actual DNS worker/race never became ready"
+        );
+        assert!(worker_reaped.is_ok(), "owned DNS worker failed to finish");
+        assert!(joined.is_ok(), "runtime owner thread panicked");
+        assert!(
+            worker_still_gated,
+            "DNS worker ended before the owner observation"
+        );
+        assert!(
+            returned.is_ok(),
+            "runtime destruction waited for cancelled DNS: {eventual_return:?}"
+        );
+        let result = returned.unwrap();
+        if return_error {
+            assert_eq!(result.unwrap_err(), "synthetic command error");
+        } else {
+            assert!(result.is_ok(), "{result:?}");
+        }
+    }
+
+    // Protects: successful CLI routing returns while a losing OS-style DNS worker is blocked.
+    // Detects: ambient runtime destruction waiting for cancelled reqwest blocking resolution.
+    // Needs: private gated resolver only; no live DNS, Redis, PostgreSQL or network endpoint.
+    // Breadcrumb: crates/agent-bus-cli/src/lib.rs (run_with_cli_runtime).
+    #[test]
+    fn cli_runtime_success_returns_before_cancelled_dns_finishes() {
+        assert_cli_runtime_releases_cancelled_dns(false);
+    }
+
+    // Protects: command errors propagate without waiting for a cancelled DNS worker.
+    // Detects: error-return runtime teardown blocking after the ambient request race ends.
+    // Needs: private gated resolver only; fixture always releases and joins its owned worker.
+    // Breadcrumb: crates/agent-bus-cli/src/lib.rs (run_with_cli_runtime).
+    #[test]
+    fn cli_runtime_error_returns_before_cancelled_dns_finishes() {
+        assert_cli_runtime_releases_cancelled_dns(true);
+    }
+
     #[test]
     fn durable_replay_transport_classifies_auth_shape_and_lost_reply() {
         use agent_bus_core::outbox::{ReplayFailure, ReplayRequest, ReplayResponse};

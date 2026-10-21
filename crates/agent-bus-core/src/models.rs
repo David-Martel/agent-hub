@@ -253,9 +253,10 @@ pub struct Thread {
 
 /// A deadline record for a message awaiting acknowledgement.
 ///
-/// Stored in Redis at `agent_bus:ack_deadline:<message_id>` with a TTL
-/// matching the deadline duration.  When the key expires, the deadline
-/// is considered missed.
+/// Stored in Redis at `agent_bus:ack_deadline:<message_id>`.  The key is kept
+/// for a bounded retention window past `deadline_at` and is deleted when the
+/// ack arrives, so a record that is still present after `deadline_at` is a
+/// missed (overdue) ack.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AckDeadline {
     /// The message ID awaiting acknowledgement.
