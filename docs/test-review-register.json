@@ -3265,11 +3265,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -3304,11 +3304,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -3338,11 +3338,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -3377,11 +3377,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -3411,11 +3411,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -3450,11 +3450,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -3484,11 +3484,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -3523,11 +3523,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -3557,11 +3557,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -3596,11 +3596,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -3630,11 +3630,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -3665,11 +3665,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -3699,11 +3699,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -3734,11 +3734,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -3768,11 +3768,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -3803,11 +3803,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -3837,11 +3837,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -3872,11 +3872,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -3906,11 +3906,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -3941,11 +3941,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -3975,11 +3975,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4010,11 +4010,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4044,11 +4044,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4079,11 +4079,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4113,11 +4113,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4148,11 +4148,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4182,11 +4182,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4217,11 +4217,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4251,11 +4251,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4286,11 +4286,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4320,11 +4320,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4355,11 +4355,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4389,11 +4389,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4424,11 +4424,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4458,11 +4458,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4493,11 +4493,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4527,11 +4527,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4562,11 +4562,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4596,11 +4596,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4631,11 +4631,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4665,11 +4665,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4700,11 +4700,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4734,11 +4734,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4769,11 +4769,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4803,11 +4803,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4838,11 +4838,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4857,13 +4857,13 @@
       "scope": "Independent root source review and bounded independent runtime-env agent review; frozen whole normalized source bindings including rationale. Actual author aggregate QA at496b is separate from source-only comment/main successors; final bound-source QA is recorded separately below.",
       "selector_source": {
         "path": "crates/agent-bus-core/src/hub_cache.rs",
-        "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097",
+        "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc",
         "hash_scope": "whole normalized Rust module including rationale, fixtures and assertions",
-        "shared_checker_selector_digest": "2b4967e64d40ecf8430afa1fb8bfa1b042367606de55b839d1812070137896ae"
+        "shared_checker_selector_digest": "463ffba9163dc590be39dd3842d0fb6f24942455a805719d2c6cb0b8f92ec61b"
       },
       "code_under_test": {
         "path": "crates/agent-bus-core/src/hub_cache.rs",
-        "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+        "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
       },
       "shared_sources": [
         {
@@ -4876,7 +4876,7 @@
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4907,11 +4907,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -4941,11 +4941,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -4976,11 +4976,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5010,11 +5010,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5045,11 +5045,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5079,11 +5079,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5114,11 +5114,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5148,11 +5148,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5183,11 +5183,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5217,11 +5217,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5252,11 +5252,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5286,11 +5286,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5321,11 +5321,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5355,11 +5355,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5390,11 +5390,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5424,11 +5424,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5459,11 +5459,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5493,11 +5493,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5528,11 +5528,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5562,11 +5562,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5597,11 +5597,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5631,11 +5631,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5666,11 +5666,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5700,11 +5700,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5735,11 +5735,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5769,11 +5769,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5804,11 +5804,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5838,11 +5838,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5873,11 +5873,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5907,11 +5907,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -5942,11 +5942,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -5976,11 +5976,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -6011,11 +6011,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6045,11 +6045,11 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/network_location.rs",
-          "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+          "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -6080,11 +6080,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6099,13 +6099,13 @@
       "scope": "Independent root source review and bounded independent runtime-env agent review; frozen whole normalized source bindings including rationale. Actual author aggregate QA at496b is separate from source-only comment/main successors; final bound-source QA is recorded separately below.",
       "selector_source": {
         "path": "crates/agent-bus-core/src/network_location.rs",
-        "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2",
+        "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a",
         "hash_scope": "whole normalized Rust module including rationale, fixtures and assertions",
-        "shared_checker_selector_digest": "7665b7da7c575b0135ad21e1f7fa67301adb2299e03e94a7eba31e64875245c1"
+        "shared_checker_selector_digest": "252d6dce43d96afac93b4fbb764b9b261024a6731701a166a6fd98a55d390481"
       },
       "code_under_test": {
         "path": "crates/agent-bus-core/src/network_location.rs",
-        "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+        "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
       },
       "shared_sources": [
         {
@@ -6118,7 +6118,7 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -6149,11 +6149,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6168,13 +6168,13 @@
       "scope": "Independent root source review and bounded independent runtime-env agent review; frozen whole normalized source bindings including rationale. Actual author aggregate QA at496b is separate from source-only comment/main successors; final bound-source QA is recorded separately below.",
       "selector_source": {
         "path": "crates/agent-bus-core/src/network_location.rs",
-        "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2",
+        "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a",
         "hash_scope": "whole normalized Rust module including rationale, fixtures and assertions",
-        "shared_checker_selector_digest": "6aecbe0f0d3b05b6246ac75d16c307a0f2e4fd4a12f5ee62e783920aa131dfdd"
+        "shared_checker_selector_digest": "4409e318af0747590429297dec0f72bb680fb3c15fd958ee89a5800b319138ee"
       },
       "code_under_test": {
         "path": "crates/agent-bus-core/src/network_location.rs",
-        "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+        "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
       },
       "shared_sources": [
         {
@@ -6187,7 +6187,7 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -6218,11 +6218,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6237,13 +6237,13 @@
       "scope": "Independent root source review and bounded independent runtime-env agent review; frozen whole normalized source bindings including rationale. Actual author aggregate QA at496b is separate from source-only comment/main successors; final bound-source QA is recorded separately below.",
       "selector_source": {
         "path": "crates/agent-bus-core/src/network_location.rs",
-        "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2",
+        "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a",
         "hash_scope": "whole normalized Rust module including rationale, fixtures and assertions",
-        "shared_checker_selector_digest": "3418d861403b1a299e3b161c4a66b8eaaf635d442ec7db9f24f8687b3627f096"
+        "shared_checker_selector_digest": "1e32196eceb39ae939dc2368faa47bdbf57c9a445edd7dea9da4af11a076137f"
       },
       "code_under_test": {
         "path": "crates/agent-bus-core/src/network_location.rs",
-        "sha256": "84c5c8d915bf1133ea8308432bf0df0f92495acbc57ef4b8cdf11d9125435aa2"
+        "sha256": "c8f2041195802c4ede60366de6b9181991aaaa84ce6289238045696dcb999c7a"
       },
       "shared_sources": [
         {
@@ -6256,7 +6256,7 @@
         },
         {
           "path": "crates/agent-bus-core/src/hub_cache.rs",
-          "sha256": "e100e0f60026790857d891fddb70a9fa0a8c7228da2a0021c37f487fd552e097"
+          "sha256": "5c7afa5748961eb55a36c9a4cb380b038d587db8604cedebb4857a778e095acc"
         },
         {
           "path": "crates/agent-bus-core/src/hub_candidates.rs",
@@ -6287,11 +6287,11 @@
         "No live multihomed unplug/sleep/throughput/fleet rollout qualification"
       ],
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6330,11 +6330,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6373,11 +6373,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6416,11 +6416,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6459,11 +6459,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6502,11 +6502,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6545,11 +6545,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6588,11 +6588,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6631,11 +6631,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6674,11 +6674,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6717,11 +6717,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6760,11 +6760,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6803,11 +6803,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6846,11 +6846,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6889,11 +6889,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     },
     {
@@ -6932,11 +6932,11 @@
         "historical_record": "Same selector plus original selector_source.sha256 in historical_reviews, retained without modification"
       },
       "final_source_qa": {
-        "head": "6bf88fa6d7fc80b3d27964c70e665334a8193ab3",
-        "receipt_sha256": "cd2537678f6679027927b4044ddc5d4397813e46f7776dca44191ea826f842b9",
-        "unit_log_sha256": "df630172603e8fabe884e64f0560e00e8973893a7f780ee5279db47176cae4ce",
+        "head": "88a864e78aabee9e27aa848035f98f27fe9e9d38",
+        "receipt_sha256": "8b6708633f05243defd657ad59a24478656bd1a32ddb6e5498c7e0c6b16d6720",
+        "unit_log_sha256": "e42aa0157d2d688ad8ba4d343c69be831622e7cebdfa26c3ae63a92ff294181f",
         "state": "PASS",
-        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and final rationale comments; root verified receipt and aggregate log. Not a fresh root named-selector run."
+        "scope": "Actual author immutable pre-push+audit of current bound executable/test sources, including main176 and restoration of the existing60-second cache default. Root inspected the narrow source/doc correction and verified receipt plus aggregate log; not a fresh root named-selector run."
       }
     }
   ],
