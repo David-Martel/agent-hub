@@ -729,6 +729,10 @@ mod tests {
         assert_eq!(backend.url(), None);
     }
 
+    /// Protects: legacy first-route authority and selected build reporting.
+    /// Detects: wrong authority flag, selected URL or attempted-route report.
+    /// Needs: deterministic injected probes without network access.
+    /// Breadcrumb: crates/agent-bus-core/src/remote_dispatch.rs (backend consumers).
     #[test]
     fn first_candidate_answering_is_authoritative() {
         let candidates = urls(&["http://a:8400", "http://b:8400"]);
@@ -753,6 +757,10 @@ mod tests {
         assert_eq!(backend.url(), Some("http://a:8400"));
     }
 
+    /// Protects: a later healthy legacy candidate remains a fallback.
+    /// Detects: promoting fallback to authority or probing past the winner.
+    /// Needs: a synthetic failed first route and healthy second route.
+    /// Breadcrumb: crates/agent-bus-core/src/remote_dispatch.rs (backend consumers).
     #[test]
     fn second_candidate_answering_is_a_fallback_not_authoritative() {
         let candidates = urls(&["http://dead:8400", "http://b:8400", "http://c:8400"]);
@@ -774,6 +782,10 @@ mod tests {
         );
     }
 
+    /// Protects: unreachable configured hubs never select local storage.
+    /// Detects: reporting local or remote after all injected probes fail.
+    /// Needs: deterministic failed probes and explicit candidate URLs.
+    /// Breadcrumb: crates/agent-bus-core/src/remote_dispatch.rs (offline handling).
     #[test]
     fn no_candidate_answering_is_offline_not_local() {
         let candidates = urls(&["http://dead-1:8400", "http://dead-2:8400"]);
@@ -828,6 +840,10 @@ mod tests {
         }
     }
 
+    /// Protects: HTTPS strings reach the injected legacy probe unchanged.
+    /// Detects: scheme rejection or wrong remote/offline result shapes.
+    /// Needs: synthetic successful/failed probes; no TLS qualification.
+    /// Breadcrumb: crates/agent-bus-core/src/remote_dispatch.rs (`probe_health` contract).
     #[test]
     fn https_candidate_is_accepted_by_resolution() {
         // `resolve_hub` does no I/O and no scheme filtering of its own -- it
@@ -868,6 +884,10 @@ mod tests {
         );
     }
 
+    /// Protects: remote, offline and local JSON mode compatibility.
+    /// Detects: missing mode tags or changed authority/build fields.
+    /// Needs: in-memory backend values and serde JSON serialization.
+    /// Breadcrumb: crates/agent-bus-core/src/remote_dispatch.rs (backend reporting).
     #[test]
     fn serializes_with_a_mode_tag_for_json_reporting() {
         let backend = HubBackend::Remote {
@@ -980,6 +1000,10 @@ mod tests {
         assert!(backend.is_offline());
     }
 
+    /// Protects: named authority routes reject a different reported hub.
+    /// Detects: accepting a reused tunnel port or hiding identity mismatch.
+    /// Needs: synthetic named candidates and a mismatching first answer.
+    /// Breadcrumb: crates/agent-bus-core/src/hub_candidates.rs (`HubCandidate` identity).
     #[test]
     fn a_route_reporting_another_hub_identity_is_rejected() {
         // Why: a dead tunnel whose port was reused must not be trusted; the next proven route wins.
@@ -1082,6 +1106,10 @@ mod tests {
         ));
     }
 
+    /// Protects: cache keys separate location sets and network attachments.
+    /// Detects: location-order sensitivity or attachment key collisions.
+    /// Needs: synthetic candidates, location sets and fixed network labels.
+    /// Breadcrumb: crates/agent-bus-core/src/network_location.rs (`network_fingerprint`).
     #[test]
     fn routing_fingerprint_separates_locations() {
         let candidates = routed_settings().hub_candidates;
@@ -1232,6 +1260,10 @@ mod tests {
         .await
     }
 
+    /// Protects: a healthy fabric alias wins before its LAN alias starts.
+    /// Detects: wrong selected class or an unnecessary LAN socket probe.
+    /// Needs: private healthy TCP listeners with explicit shared hub identity.
+    /// Breadcrumb: crates/agent-bus-core/src/link_route.rs (`plan_routes` and `race`).
     #[tokio::test]
     async fn the_preferred_link_class_wins_when_both_links_are_healthy() {
         // Why: with a fabric link and a LAN both up, the fabric must be selected.
@@ -1285,6 +1317,10 @@ mod tests {
         );
     }
 
+    /// Protects: a fresh same-store cached alias receives the first probe.
+    /// Detects: ignoring the cache or contacting the other healthy alias.
+    /// Needs: private TCP listeners, a temporary cache and fixed network key.
+    /// Breadcrumb: crates/agent-bus-core/src/hub_cache.rs (`HubCache::load`).
     #[tokio::test]
     async fn a_fresh_cache_hit_is_probed_first_and_wins_without_racing_the_rest() {
         // Why: after the first resolution the cached route should answer alone.
@@ -1308,6 +1344,10 @@ mod tests {
         assert_eq!(fabric.hits.load(Ordering::SeqCst), 0);
     }
 
+    /// Protects: a changed attachment key invalidates prior route preference.
+    /// Detects: cached LAN preference surviving a changed network fingerprint.
+    /// Needs: private TCP listeners and a seeded temporary route cache.
+    /// Breadcrumb: crates/agent-bus-core/src/hub_cache.rs (fingerprint validation).
     #[tokio::test]
     async fn a_changed_network_fingerprint_misses_the_cache_and_re_races() {
         // Why: plugging in a better link must not be masked by a route cached before it existed.
@@ -1442,6 +1482,10 @@ mod tests {
         assert!(remembered.rtt_ms.is_some(), "the winning RTT is persisted");
     }
 
+    /// Protects: explicit invalidation removes a just-resolved cache entry.
+    /// Detects: invalidation leaving the persisted winner readable.
+    /// Needs: private TCP resolution and a temporary cache; no request fault injection.
+    /// Breadcrumb: crates/agent-bus-core/src/hub_cache.rs (`HubCache::invalidate`).
     #[tokio::test]
     async fn invalidating_after_a_request_failure_forces_a_full_re_probe() {
         // Why: a connection failure against the cached route must drop it immediately.
@@ -1465,6 +1509,10 @@ mod tests {
         );
     }
 
+    /// Protects: claims require a genuine authority despite faster answers.
+    /// Detects: accepting an identity mismatch or fallback as authority.
+    /// Needs: private TCP listeners reporting genuine and foreign identities.
+    /// Breadcrumb: crates/agent-bus-core/src/hub_candidates.rs (authority and identity rules).
     #[tokio::test]
     async fn claims_never_go_to_a_faster_fallback_or_a_foreign_hub() {
         // Why: a fast route must not become a claims authority unless it is the named hub.
@@ -1492,6 +1540,10 @@ mod tests {
         assert!(refused.is_offline(), "no authoritative route proved itself");
     }
 
+    /// Protects: a wrong site guess retains deferred authority aliases.
+    /// Detects: discarding routes assigned to an unobserved location.
+    /// Needs: private refused/healthy TCP routes and an unrelated location.
+    /// Breadcrumb: crates/agent-bus-core/src/link_route.rs (deferred route plans).
     #[tokio::test]
     async fn a_wrong_location_guess_falls_back_to_the_deferred_routes() {
         // Why: a false-negative location must cost time, never reachability.
@@ -1506,6 +1558,10 @@ mod tests {
         );
     }
 
+    /// Protects: failed configured routes yield explicit offline diagnostics.
+    /// Detects: local fallback or missing per-route failure reports.
+    /// Needs: two private refused loopback endpoints, no live bus.
+    /// Breadcrumb: crates/agent-bus-core/src/link_route.rs (`ProbeReport`).
     #[tokio::test]
     async fn nothing_answering_is_offline_with_a_report_per_candidate() {
         // Why: offline must stay explicit and carry per-route reasons, never a local fallback.

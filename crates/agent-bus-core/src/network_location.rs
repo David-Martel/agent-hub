@@ -681,6 +681,10 @@ mod tests {
         );
     }
 
+    /// Protects: attachment keys ignore order, duplicates and host rotation.
+    /// Detects: same-prefix DHCP/privacy changes altering the cache key.
+    /// Needs: synthetic IPv4 interfaces sharing network prefixes.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (`system_network_fingerprint`).
     #[test]
     fn fingerprint_ignores_order_duplicates_and_host_bits() {
         // Why: DHCP renewals and v6 privacy rotation must not look like a new network.
@@ -689,6 +693,10 @@ mod tests {
         assert_eq!(network_fingerprint(&a), network_fingerprint(&b));
     }
 
+    /// Protects: attachment changes invalidate route selection cache keys.
+    /// Detects: identical keys after adding fabric or removing interfaces.
+    /// Needs: synthetic LAN/fabric prefixes and an empty set.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (`system_network_fingerprint`).
     #[test]
     fn fingerprint_changes_when_an_attachment_appears_or_disappears() {
         // Why: plugging in a Thunderbolt/USB-C Ethernet link must trigger a re-probe.
@@ -702,6 +710,10 @@ mod tests {
         assert_eq!(network_fingerprint(&lan).len(), 16);
     }
 
+    /// Protects: system discovery excludes the IPv4 loopback prefix.
+    /// Detects: an enumerated prefix containing the loopback address.
+    /// Needs: host interface enumeration; no nonempty or IPv6 claim.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (`system_network_fingerprint`).
     #[test]
     fn system_prefixes_are_never_loopback() {
         // Why: loopback is present on every host and would add no signal.

@@ -933,6 +933,10 @@ mod tests {
         assert!(cache.load("fp", t0()).is_none(), "absent file is a miss");
     }
 
+    /// Protects: RTT persistence without breaking pre-RTT cache entries.
+    /// Detects: lost winning RTT or rejecting a valid legacy file.
+    /// Needs: a temporary cache, fixed time and legacy entry.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (`Resolution::succeed`).
     #[test]
     fn the_winning_round_trip_is_persisted_and_old_entries_still_load() {
         // Why: the route cache records RTT, but files written before it existed must stay readable.

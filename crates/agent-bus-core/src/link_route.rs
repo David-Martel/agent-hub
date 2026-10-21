@@ -569,6 +569,10 @@ mod tests {
         stage.iter().map(|route| route.index).collect()
     }
 
+    /// Protects: fabric, LAN, tailnet and cloud classification boundaries.
+    /// Detects: substring fabric matches, missed tailnets or role override loss.
+    /// Needs: synthetic candidates, site words and tailnet address examples.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[test]
     fn classes_follow_site_names_roles_and_tailnet_addresses() {
         // Why: the preference order fabric > lan > tailnet > cloud depends on this mapping.
@@ -604,6 +608,10 @@ mod tests {
         assert_eq!(LinkClass::of(&cloud), LinkClass::Cloud, "role beats site");
     }
 
+    /// Protects: eligible route class ordering and deferred route retention.
+    /// Detects: discarding wrong-site aliases or mixing deferred/primary plans.
+    /// Needs: synthetic multi-link candidates and an explicit location.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[test]
     fn plan_keeps_site_matches_and_always_eligible_routes_best_class_first() {
         // Why: on the lab LAN only LAN routes, the tailnet and the cloud are worth racing.
@@ -628,6 +636,10 @@ mod tests {
         );
     }
 
+    /// Protects: a declared fabric location promotes its fabric alias.
+    /// Detects: selecting LAN before fabric or losing deferred routes.
+    /// Needs: synthetic LAN/fabric locations and candidate indexes.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[test]
     fn a_fabric_location_puts_the_fabric_route_first() {
         // Why: plugging in the Thunderbolt link must make it the preferred path.
@@ -639,6 +651,10 @@ mod tests {
         assert!(plan.deferred.iter().all(|route| route.index == 2));
     }
 
+    /// Protects: unknown detection never permanently hides declared routes.
+    /// Detects: omitting candidates from primary plus deferred plans.
+    /// Needs: synthetic absent, empty and unrelated location sets.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[test]
     fn unknown_or_undetected_location_includes_every_route() {
         // Why: a wrong guess must never hide a reachable authority.
@@ -658,6 +674,10 @@ mod tests {
         assert_eq!(indexes(&plan.deferred), vec![3, 0, 1, 2]);
     }
 
+    /// Protects: class-level stagger arithmetic and zero-stagger behavior.
+    /// Detects: wrong delay groups or delay when staggering is disabled.
+    /// Needs: pure route plans with fixed fixture stagger values.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[test]
     fn staggering_gives_each_worse_class_one_more_head_start() {
         // Why: a better link should win a tie, so a worse one starts later.
@@ -682,6 +702,10 @@ mod tests {
         );
     }
 
+    /// Protects: cached-first ordering within the supplied route group.
+    /// Detects: delayed cached probe or missing alternative head start.
+    /// Needs: synthetic cached candidate index and pure route plan.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[test]
     fn the_cached_route_leads_with_no_delay_and_others_follow() {
         // Why: a fresh last-good route is verified first, ahead of its own class.
@@ -695,6 +719,10 @@ mod tests {
         assert_eq!(plan.primary[1].delay, Duration::from_millis(75));
     }
 
+    /// Protects: authority-only plans exclude cloud and fallback roles.
+    /// Detects: a non-authority candidate included in claims plans.
+    /// Needs: synthetic role-labelled candidates with `authority_only` enabled.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[test]
     fn claims_race_only_authoritative_routes() {
         // Why: the cloud tier must never be probed as a claims authority.
@@ -706,6 +734,10 @@ mod tests {
         assert!(plan.primary.iter().all(|route| route.index != 5));
     }
 
+    /// Protects: role preference for otherwise equal link classes.
+    /// Detects: fallback preceding authority or missing configured stagger.
+    /// Needs: synthetic equal-class candidates with opposite roles.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[test]
     fn an_authority_leads_a_fallback_on_the_same_kind_of_link() {
         // Why: configured priority must survive when two routes are the same link class.
@@ -826,6 +858,10 @@ mod tests {
 
     const BUDGET: Duration = Duration::from_millis(400);
 
+    /// Protects: a healthy socket wins and cancels the stalled loser.
+    /// Detects: waiting for the losing timeout or retaining its probe.
+    /// Needs: private slow/healthy TCP listeners under the fixture budget.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[tokio::test]
     async fn the_first_healthy_answer_wins_and_the_slow_route_is_cancelled() {
         // Why: a stalled path must not delay a healthy one, and the loser must be dropped.
@@ -845,6 +881,10 @@ mod tests {
         );
     }
 
+    /// Protects: a refused socket cannot prevent another route winning.
+    /// Detects: offline result or an invalid refused-route outcome.
+    /// Needs: a private refused loopback port and healthy TCP listener.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[tokio::test]
     async fn a_dead_route_does_not_block_the_winner() {
         // Why: a route with nothing listening must never hold up a healthy one.
@@ -860,6 +900,10 @@ mod tests {
         ));
     }
 
+    /// Protects: head-start preference avoids an unnecessary worse-route probe.
+    /// Detects: wrong winner, missing skipped outcome or worse-route hit.
+    /// Needs: private healthy listeners and distinct fixture start delays.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[tokio::test]
     async fn a_better_class_wins_a_tie_because_the_worse_class_starts_later() {
         // Why: with two healthy routes the preferred link class must be chosen.
@@ -876,6 +920,10 @@ mod tests {
         assert_eq!(lan.hits.load(Ordering::SeqCst), 0);
     }
 
+    /// Protects: stagger preference does not lock in a slower link.
+    /// Detects: a slow preferred route winning over a faster alternate.
+    /// Needs: private slow/healthy listeners with explicit fixture delays.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[tokio::test]
     async fn a_much_slower_better_class_loses_to_a_healthy_worse_one() {
         // Why: the stagger is a tie-breaker, not a lock-in to a link that is slow right now.
@@ -886,6 +934,10 @@ mod tests {
         assert_eq!(result.winner.as_ref().map(|winner| winner.slot), Some(1));
     }
 
+    /// Protects: a stalled route is bounded by the probe budget.
+    /// Detects: missing timeout outcome, false winner or excessive wait.
+    /// Needs: a private stalled TCP listener and short fixture budget.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[tokio::test]
     async fn a_route_that_exceeds_the_budget_is_timed_out_and_not_waited_for() {
         // Why: the per-route budget is what bounds a hung (e.g. unresolvable) endpoint.
@@ -907,6 +959,10 @@ mod tests {
         assert!(begun.elapsed() < Duration::from_secs(2));
     }
 
+    /// Protects: the caller can reject a healthy but foreign identity.
+    /// Detects: identity rejection winning or losing its failure diagnostic.
+    /// Needs: private impostor/genuine listeners and an accept callback.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[tokio::test]
     async fn a_rejected_answer_is_not_a_win_and_the_next_route_is_used() {
         // Why: the caller's identity check must be able to veto a fast but wrong hub.
@@ -924,6 +980,10 @@ mod tests {
         );
     }
 
+    /// Protects: credential-unavailable routes receive no socket probe.
+    /// Detects: network contact, false winner or lost skip diagnostic.
+    /// Needs: a private counting listener and credential skip reason.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[tokio::test]
     async fn a_skipped_route_is_never_contacted() {
         // Why: a route without a usable credential must not receive a probe at all.
@@ -939,6 +999,10 @@ mod tests {
         assert_eq!(guarded.hits.load(Ordering::SeqCst), 0);
     }
 
+    /// Protects: serial resolution stops at its first accepted answer.
+    /// Detects: probing beyond the winner or selecting the wrong slot.
+    /// Needs: a deterministic injected probe and observed call list.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[test]
     fn walk_stops_at_the_first_accepted_answer_in_order() {
         // Why: the deterministic walk must keep the historical first-success-in-order behavior.
@@ -964,6 +1028,10 @@ mod tests {
         );
     }
 
+    /// Protects: probe JSON preserves class/RTT/error while redacting secrets.
+    /// Detects: credential leakage or incompatible probe report fields.
+    /// Needs: in-memory outcomes and a synthetic URL containing userinfo.
+    /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
     #[test]
     fn reports_carry_class_and_rtt_or_error_and_redact_userinfo() {
         // Why: `health` shows {url, class, rtt_ms|error} and must never echo credentials.
