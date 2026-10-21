@@ -225,12 +225,15 @@ deterministic serial walk over the same per-store plans):
   `probe_connect_timeout_ms` (default 750 ms). The first healthy answer that
   passes the unchanged identity, credential and authority checks wins; the rest
   are dropped. Claims consider only `authoritative` routes.
-- **Route cache** (`hub-resolution.json`, TTL `hub_cache_ttl_seconds`, default
-  600 s): winner URL, role and RTT, keyed by candidate list, location set and a
+- **Route cache** (`hub-resolution.json`, TTL `hub_cache_ttl_seconds`, unchanged
+  default 60 s): winner URL, role and RTT, keyed by candidate list, location set and a
   fingerprint of the local interface prefixes. A changed attachment key makes
   a newly run resolver re-probe. A cached alias is still health-probed first
   inside its own store group (no stagger); it cannot reorder independent
-  stores. Failed remote calls invalidate the route cache.
+  stores. Failed remote calls invalidate the route cache. Successful resolutions
+  refresh its timestamp, so this TTL is not a guaranteed periodic race under
+  continuous use. The key ignores duplicate prefixes: a newly added interface
+  sharing an existing prefix need not invalidate it.
 - **MCP backend-cache limit**: `remote_dispatch.rs` also retains a resolved
   backend for up to the existing 15 seconds, keyed only by candidates. A
   network change can therefore wait for that cache to expire before the inner

@@ -42,10 +42,10 @@ struct CacheEntry {
 
 /// Default time-to-live of a cached resolution, in seconds.
 ///
-/// Ten minutes is safe because the cache key also carries the local network
-/// fingerprint (a new interface forces a re-probe) and every failed request
-/// invalidates the entry; a cached route is still health-probed before use.
-pub const DEFAULT_TTL_SECONDS: u64 = 600;
+/// Preserve the existing default. Prefix changes and failed remote calls can
+/// invalidate sooner, but adding an interface on an existing prefix need not
+/// change the key. A successful resolution refreshes the entry's timestamp.
+pub const DEFAULT_TTL_SECONDS: u64 = 60;
 
 /// A cached resolution that is still fresh.
 #[derive(Debug, Clone, PartialEq, Eq)]

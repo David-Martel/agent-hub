@@ -61,13 +61,21 @@ order. Each dead path costs a connect timeout on every CLI or hook call.
    an alias inside its own store group, but cannot move a fallback or cloud
    store ahead of authority.
 
+   The route-cache default remains 60 seconds. This is the entry age since
+   the last successful resolution, which refreshes its timestamp, rather than
+   a guaranteed periodic race. Repeated healthy cache hits can retain an alias
+   for longer. The fingerprint tracks distinct prefixes, not interface identity:
+   adding an Ethernet interface on the same prefix as an active Wi-Fi interface
+   need not change the key. This change does not guarantee detection of every
+   docking or interface transition.
+
    Long-lived MCP dispatch also has a separate, process-wide backend cache in
    [`remote_dispatch.rs`](../crates/agent-bus-core/src/remote_dispatch.rs). Its
    existing 15-second lifetime is keyed by candidates, not network attachments.
    A previously selected backend can therefore remain selected for up to that
    lifetime after a network change, even though a newly run resolver would
    choose a different route. An actual remote-call failure invalidates both
-   caches immediately; it does not automatically replay the failed call.
+   caches immediately; cache invalidation itself does not replay the failed call.
 
 `agent-bus health` and MCP `bus_health` report `network_locations` beside
 `backend`. They also report `network_location_error` when the rules were

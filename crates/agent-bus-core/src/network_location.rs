@@ -233,12 +233,10 @@ pub trait NetworkProbe {
 
 /// A short, stable hash of the local interface prefixes.
 ///
-/// Order and duplicates do not matter. A route learned on one network
-/// attachment (lab LAN only) must not be replayed after another attachment
-/// appears (a Thunderbolt/USB4 fabric link or a direct Ethernet cable is
-/// plugged in), because a better path may now exist. Hashing the prefixes, not
-/// the host addresses, keeps DHCP lease renewals and IPv6 privacy rotation
-/// from invalidating the cache while a plugged or unplugged link still does.
+/// Order and duplicates do not matter. Changing the prefix set invalidates
+/// route preference, while same-prefix DHCP renewals and IPv6 privacy rotation
+/// do not. This is not an interface-identity fingerprint: adding another link
+/// on an already-present prefix can leave the key unchanged.
 #[must_use]
 pub fn network_fingerprint(prefixes: &[Cidr]) -> String {
     use sha2::{Digest, Sha256};
