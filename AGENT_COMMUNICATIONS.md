@@ -7,9 +7,10 @@
 > Protocol Version: v0.5 | Implementation: Rust native (zero Python)
 > Storage: Redis (realtime) + PostgreSQL (durable history)
 >
-> **Single source of truth (owner decision, 2026-10-20).** Every `AGENT_COORDINATION.md`
-> (in `~/.agents`, `~/.claude`, `~/.codex`, `~/.gemini` and at repo roots) is now a short
-> pointer to this file. Rules that existed only in those copies are in
+> **Canonical coordination source (owner decision, 2026-10-20).** Maintained
+> `AGENT_COORDINATION.md` copies in `~/.agents`, `~/.claude`, `~/.codex`, `~/.gemini`
+> and repository roots should point to this file. Per-host rollout remains to be
+> verified. Rules collected from those copies are in
 > [Fleet Operating Rules](#fleet-operating-rules-consolidated-2026-10-20).
 
 ## Code-Grounded Status (2026-06-22)
@@ -820,10 +821,10 @@ Status: `status:complete|fixed|verified`
 
 ## Fleet Operating Rules (consolidated 2026-10-20)
 
-These rules were written only in the per-agent `AGENT_COORDINATION.md` copies. Those copies are
-now pointers to this file, so the rules live here. Each rule names the copy it came from, and
-each was checked against `agent-bus 0.5.0 (df1807e)` on 2026-10-20. The copies are named
-by host and by the first 7 hex digits of their SHA-256:
+These rules consolidate the per-agent `AGENT_COORDINATION.md` copies. Each rule names its
+source copy. The original consolidation recorded checks against `agent-bus 0.5.0 (df1807e)`
+on 2026-10-20; the source links below describe current behavior where it differs. The recorded
+source-copy identifiers use the host and the first 7 hex digits of their SHA-256:
 
 - `agents-p1gen7`: `~/.agents/AGENT_COORDINATION.md` on dtm-p1gen7 and dtm-p1gen9 (`3585c75`, written 2026-10-14).
 - `agents-spark`: `~/.agents/AGENT_COORDINATION.md` on spark-0060 and spark-3066 (`5fcdb07`, 2026-03-24).
@@ -832,8 +833,10 @@ by host and by the first 7 hex digits of their SHA-256:
 - `dtm-claude-root`: the git-tracked `AGENT_COORDINATION.md` in dtm-claude, finance-warehouse,
   decibel-gen3 and STM32-USB-Audio (blob `8cf90ef`).
 
-Byte-for-byte backups of every replaced copy are on each host under
-`~/.local/state/git-guard/preserve/coordination-doc/`.
+The original consolidation reported preserved copies under
+`~/.local/state/git-guard/preserve/coordination-doc/`; that per-host inventory has not been
+reverified here. Do not create redundant backups for this rollout. After a replacement is
+validated, remove redundant copies while preserving unique work.
 
 ### Hub and client configuration
 
@@ -842,26 +845,37 @@ Byte-for-byte backups of every replaced copy are on each host under
   reported `backend.mode=remote` and `hub_identity=asuspro13`. No Windows workstation listened
   on `:8400`. Check yours with `agent-bus health --encoding compact` and read `backend.url` and
   `hub_identity`. Source: `agents-p1gen7`.
-- **Where the client finds the hub.** The client tries, in order, `AGENT_BUS_SERVER_URLS`,
+- **Where the client finds the hub.** The client selects one complete configuration tier,
+  in order: `AGENT_BUS_SERVER_CANDIDATES` (JSON), `AGENT_BUS_SERVER_URLS`,
   `AGENT_BUS_SERVER_URL`, then `server_urls` and `server_url` in `~/.config/agent-bus/config.json`
-  (override the path with `AGENT_BUS_CONFIG`). With none of them set it runs in local-only
-  mode. The order is defined in `crates/agent-bus-core/src/settings.rs`. Link-aware ordering and
+  (override the path with `AGENT_BUS_CONFIG`). With no candidates configured it runs locally;
+  an invalid explicit candidate tier fails closed rather than falling back to local stores.
+  The order is defined in [settings.rs](./crates/agent-bus-core/src/settings.rs). Link-aware ordering and
   SSH forwards are described in [docs/network-location-routing.md](./docs/network-location-routing.md).
   Source: `agents-p1gen7`.
 - **Bearer auth.** The hub requires a token on every route except `/health`. The client reads
   it from `AGENT_BUS_AUTH_TOKEN`, then from `auth_token` in config.json. Per-hub `token_file` /
   `token_env` entries are described in [docs/per-candidate-hub-auth-20261004.md](./docs/per-candidate-hub-auth-20261004.md).
-  On a Windows host, `scripts/sync-agent-bus-client-auth.ps1` fixes a client that gets
-  `HTTP 401` (see [docs/agent-client-installation.md](./docs/agent-client-installation.md#same-machine-auth-alignment)).
+  For a Windows client of the **same-machine** `AgentHub` service,
+  [sync-agent-bus-client-auth.ps1](./scripts/sync-agent-bus-client-auth.ps1) aligns its token
+  (see [same-machine auth alignment](./docs/agent-client-installation.md#same-machine-auth-alignment)).
+  It reads the local service registry and rewrites client hub and storage URLs; do not use
+  it to repair a remote-hub `HTTP 401`. For remote clients, repair the selected hub's configured
+  credential source using that hub's existing protected credential, preserving the candidate
+  and route configuration. Verify an authenticated operation; `/health` alone does not verify auth.
   `config.json` holds a secret: never paste it into a message, a doc or a commit.
   Source: `agents-p1gen7`, `codex-p1gen7`.
 - **Hostnames in agent-facing URLs.** Write `localhost` on the same machine and the hub's
   hostname across machines. Do not hard-code private LAN addresses. Storage backends keep
   `127.0.0.1`, as [docs/agent-client-installation.md](./docs/agent-client-installation.md#recommended-defaults)
   explains. Source: every copy.
-- **A stdio MCP server needs a local Redis.** On a host without one, the MCP handshake
-  succeeds, but every tool call fails. Agents on such a host use the CLI in remote mode or the
-  hub's HTTP `/mcp` endpoint. Source: the dtm-claude `CLAUDE.md` "Agent bus coordination" section.
+- **Stdio MCP supports configured remote hubs.** The current
+  [MCP handler](./crates/agent-bus-mcp/src/mcp.rs) uses
+  [remote-aware dispatch](./crates/agent-bus-core/src/remote_dispatch.rs): configured candidates
+  route tool calls to the hub, and unavailable configured hubs fail visibly without a silent
+  local fallback. Local Redis is needed for local-mode store operations when no hub is
+  configured. A successful handshake alone proves neither mode's tool operations. This
+  supersedes the universal local-Redis requirement in the dtm-claude `CLAUDE.md` source copy.
 
 ### Identity and presence
 
@@ -913,14 +927,25 @@ messages on 2026-10-20).
 
 ### Sessions
 
-Set `AGENT_BUS_SESSION_ID=<id>` to tag every message with `session:<id>` automatically. After
-the session:
+For remote sends, pass `--tag session:<id>` explicitly; MCP callers include `session:<id>`
+in `tags`. The [remote CLI send paths](./crates/agent-bus-cli/src/commands.rs) forward explicit
+tags, and [durable hub replay](./crates/agent-bus-core/src/outbox_hub.rs) uses the hub's
+settings for automatic injection, not the remote client's `AGENT_BUS_SESSION_ID`.
+Local sends can use `AGENT_BUS_SESSION_ID=<id>` for automatic tagging through
+[local message preparation](./crates/agent-bus-core/src/redis_bus.rs).
+
+After the session:
 
 - `agent-bus session-summary --session <id>` summarizes it.
 - `agent-bus dedup --session <id>` groups its findings by file path.
 - `agent-bus token-count --text "..."` estimates the size of a body before you send it.
 
-Source: `dtm-claude-root`.
+`session-summary` and `dedup` query the configured Redis/PostgreSQL history directly; setting
+`server_url` does not route them to the hub. Run them on the hub with its store configuration
+to report fleet history. See the [CLI commands](./crates/agent-bus-cli/src/commands.rs) and
+[session summary operation](./crates/agent-bus-core/src/ops/inbox.rs). A remote client's
+unrelated local history is not a fleet report. `token-count` does not need the hub's stores.
+Source: `dtm-claude-root`, corrected against the linked implementation.
 
 ### Superseded guidance in the old copies
 
