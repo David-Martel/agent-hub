@@ -3778,6 +3778,40 @@
       "needs": "a stopped worker registry and the actual /events handler with no external I/O.",
       "control": "Root independent final source/delta review and hidden executableb0d8d9b85a97d302ccb985e48f1ed7348e5e6a98847e1031eccc6fa160003a2b replay:15/15 PASS, exit0,8041ms, all source/executable hashes stable. Actual retained-subscriber8s watchdog kill/reap and absent-selector0-exit rejection demonstrate negative sensitivity; actual retry-ready callback holds the stop mutex. Exact-selector completion markers must exist. Review receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/final.json SHA25604d749e66c8ab3f724571d9e1c5919023c76e1dd787745dd643fadc4e300afc9. Author RED/F5 and successor QA receipt C:/codedev/evidence/fleet-unification/artifacts/agent-bus-http-lifecycle-lint-successor-qa.json SHA2568bf1a9b3d1d464d3e688874894a644fd18f54968a0062476513c222b09313080. Historical9da/F195/652 execution and Claude REQUEST_CHANGES provenance remain separate.",
       "breaking_behavior": "Strengthens failed-bind observation to actual runtime/process exit; refuses0-match success; requires mutex-serialized retry entry; scopes full-queue proof to worker release; preserves original transport cause together with cleanup context. New controls authorize no production configuration or deployment change."
+    },
+    {
+      "selector": "crates/agent-bus-mcp/src/mcp.rs::tests::server_instructions_state_a_realistic_body_budget",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commit": "31cbeae74acc6ab733b562396133449d648f8cef",
+      "disposition": "keep",
+      "scope": "Independent source review of existing budget test and production instructions; only rationale and this record added by reviewer. No fresh root MCP execution claimed.",
+      "selector_source": {
+        "path": "crates/agent-bus-mcp/src/mcp.rs",
+        "sha256": "736ecf5dbad5135f773c66e2e5edef151ba266e3fcc9ed36be13742eac264f7e",
+        "hash_scope": "whole normalized Rust module including fixtures and rationale"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-mcp/src/mcp.rs",
+        "sha256": "736ecf5dbad5135f773c66e2e5edef151ba266e3fcc9ed36be13742eac264f7e"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/src/validation.rs",
+          "sha256": "1e1b0131d254c28541eb0b3cacc9392211d8809cd02cb87353833ccd2e589f5c"
+        }
+      ],
+      "relevance": "Shipping MCP initialize instructions should give readable guidance without claiming the advisory number is the enforced byte limit.",
+      "coverage": {
+        "failing_input_or_control": "Restoring old 2000 guidance fails the constant/text controls; omitting evidence or never-strip-spaces guidance fails the text assertions.",
+        "fresh_independent_selector_pass": false,
+        "author_ci_evidence": "Root checked named PASS in run39532650921 Unit Tests job119010010556 at31cbeae7; the new metadata head requires fresh CI.",
+        "boundary": "Pure instructions only; does not test actual payload admission, fleet deployment, or whether prose is objectively readable."
+      },
+      "breaking_behavior": "Rationale and review only; existing numeric/text assertions, runtime instructions, template, byte enforcement, skips and fixtures unchanged."
     }
   ],
   "historical_reviews": [
