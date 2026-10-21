@@ -4534,8 +4534,10 @@ mod tests {
         }
     }
 
-    /// Why: the key TTL must always exceed the ack window, or the record
-    /// expires before it can become overdue (#166), and it must stay bounded.
+    /// Protects: bounded retention of ACK records beyond their deadline (#166).
+    /// Detects: using only the deadline window as TTL, or overflowing its extension.
+    /// Needs: pure TTL arithmetic for all priorities and the u64 saturation boundary.
+    /// Breadcrumb: crates/agent-bus-core/src/ops/ack_deadline.rs (`store_ack_deadline`).
     #[test]
     fn ack_deadline_key_ttl_outlives_the_window_by_exactly_the_retention() {
         for priority in ["critical", "high", "normal"] {
@@ -4556,9 +4558,10 @@ mod tests {
             .collect()
     }
 
-    /// Why: the record used to expire at `deadline_at`, so `overdue-acks` could
-    /// only match inside a sub-second window. An unacked record must stay
-    /// listable past its deadline, and an ack must remove it.
+    /// Protects: overdue visibility until acknowledgement clears the retained record.
+    /// Detects: records disappearing at their deadline or remaining listed after ACK.
+    /// Needs: disposable Redis from the isolated backend harness and a one-second window.
+    /// Breadcrumb: crates/agent-bus-core/src/ops/ack_deadline.rs (`check_overdue_acks`).
     #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
     #[test]
     fn unacked_deadline_is_listed_as_overdue_after_it_passes_until_acked() {
@@ -4585,8 +4588,10 @@ mod tests {
         );
     }
 
-    /// Why: retention must be bounded, otherwise records for messages that are
-    /// never acked would accumulate forever.
+    /// Protects: bounded direct ACK-deadline storage and removal through the ACK operation.
+    /// Detects: deadline-only TTLs, unbounded keys, or ACKs leaving retained records behind.
+    /// Needs: disposable Redis and backend settings supplied by the isolated harness.
+    /// Breadcrumb: crates/agent-bus-core/src/ops/ack_deadline.rs (`store_ack_deadline`).
     #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
     #[test]
     fn stored_deadline_outlives_its_deadline_by_a_bounded_window() {
