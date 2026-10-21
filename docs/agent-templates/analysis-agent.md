@@ -53,7 +53,7 @@ curl -s -X POST http://localhost:8400/messages \
 ## Rules
 
 - **Schema is mandatory.** Topic `*-findings` → `"schema":"finding"`. Topic `*-status` → `"schema":"status"`.
-- **Batch findings.** Group 3–5 related findings per message; max 2000 chars per body.
+- **Batch findings.** Group 3–5 related findings per message and keep each body under about 6000 characters of normal prose (the server accepts up to 256 KB; never strip spaces to fit). Cite long evidence by file path + SHA-256 instead of inlining it.
 - **Always tag** with `repo:{{REPO}}` and `session:{{SESSION_ID}}`.
 - **Claim before reading** any file another agent may modify.
 - **Send COMPLETE** when done, then poll inbox every 3 calls for follow-up tasks.
