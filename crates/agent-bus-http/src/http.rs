@@ -17,6 +17,7 @@ use axum::{
     response::sse::{Event, Sse},
     routing::{get, post, put},
 };
+use axum_extra::extract::Query as ReadQuery;
 use serde::Deserialize;
 use tokio::sync::{Notify, RwLock};
 use tokio_stream::wrappers::ReceiverStream;
@@ -666,17 +667,19 @@ pub(crate) async fn http_send_handler(
 /// Query parameters for GET /messages.
 #[derive(Debug, Deserialize)]
 pub(crate) struct HttpReadQuery {
+    #[serde(default, deserialize_with = "deserialize_present_read_option")]
     pub(crate) agent: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_read_option")]
     pub(crate) from: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_present_read_option")]
     pub(crate) topic: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_present_read_option")]
     pub(crate) repo: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_present_read_option")]
     pub(crate) session: Option<String>,
     #[serde(default)]
     pub(crate) tag: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_present_read_option")]
     pub(crate) thread_id: Option<String>,
     #[serde(default = "default_since_minutes")]
     pub(crate) since: u64,
@@ -685,11 +688,22 @@ pub(crate) struct HttpReadQuery {
     #[serde(default = "default_true")]
     pub(crate) broadcast: bool,
     /// Optional encoding override. `toon` returns `text/plain` TOON lines.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_present_read_option")]
     pub(crate) encoding: Option<String>,
     /// Optional excerpt mode: truncate message bodies to at most N characters.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_present_read_option")]
     pub(crate) excerpt: Option<usize>,
+}
+
+// The sequence-capable extractor treats an empty Option<T> as absent. Preserve
+// the previous scalar contract: a present string may be empty, while a present
+// numeric value must parse. Missing fields still use #[serde(default)] => None.
+fn deserialize_present_read_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
 }
 
 fn default_since_minutes() -> u64 {
@@ -706,7 +720,7 @@ fn default_true() -> bool {
 
 pub(crate) async fn http_read_handler(
     State(state): State<AppState>,
-    Query(params): Query<HttpReadQuery>,
+    ReadQuery(params): ReadQuery<HttpReadQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<serde_json::Value>)> {
     let since = params.since.min(MAX_HISTORY_MINUTES);
     let limit = params.limit.clamp(1, 500);
@@ -4077,6 +4091,194 @@ mod tests {
     use agent_bus_core::models::{Health, PROTOCOL_VERSION};
     use axum::body::to_bytes;
     use axum::http::{HeaderName, HeaderValue};
+
+    // Protects: the CLI's existing --tag filter reaches GET /messages.
+    // Detects: scalar URL-encoded tags being rejected before the storage read.
+    // Needs: only the real handler extractor; no state, credentials or backend.
+    // Breadcrumb: http_read_handler and commands.rs::cmd_read append_pair("tag", ...).
+    #[test]
+    fn read_query_extracts_single_encoded_tag() {
+        let uri = "/messages?since=1000&limit=500&tag=host%3Aminisforum"
+            .parse()
+            .unwrap();
+        let params = ReadQuery::<HttpReadQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(params.tag, ["host:minisforum"]);
+        assert_eq!(params.since, 1000);
+        assert_eq!(params.limit, 500);
+    }
+
+    // Protects: every repeatable CLI tag remains an independent filter value.
+    // Detects: duplicate-field rejection, last-value wins or tag deduplication.
+    // Needs: only the real handler extractor and an encoded request URI.
+    // Breadcrumb: http_read_handler passes params.tag to MessageFilters::tags.
+    #[test]
+    fn read_query_preserves_repeated_tags_in_order() {
+        let uri = "/messages?tag=host%3Aminisforum&tag=role%3Abuilder&tag=host%3Aminisforum"
+            .parse()
+            .unwrap();
+        let params = ReadQuery::<HttpReadQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(
+            params.tag,
+            ["host:minisforum", "role:builder", "host:minisforum"]
+        );
+    }
+
+    // Protects: untagged reads retain their original defaults and optional filters.
+    // Detects: requiring tag or changing absent scalar and unknown-key behavior.
+    // Needs: the actual handler extractor, without a router or storage fixture.
+    // Breadcrumb: HttpReadQuery serde defaults and default_* functions.
+    #[test]
+    fn read_query_keeps_untagged_defaults() {
+        for text in ["/messages", "/messages?unknown=ignored"] {
+            let uri = text.parse().unwrap();
+            let params = ReadQuery::<HttpReadQuery>::try_from_uri(&uri).unwrap().0;
+            assert_eq!(params.tag, Vec::<String>::new());
+            assert_eq!(params.since, 60);
+            assert_eq!(params.limit, 50);
+            assert!(params.broadcast);
+            assert_eq!(params.agent, None);
+            assert_eq!(params.from, None);
+            assert_eq!(params.topic, None);
+            assert_eq!(params.repo, None);
+            assert_eq!(params.session, None);
+            assert_eq!(params.thread_id, None);
+            assert_eq!(params.encoding, None);
+            assert_eq!(params.excerpt, None);
+        }
+    }
+
+    // Protects: existing scalar scoping, bounds input and output controls.
+    // Detects: changing non-tag field parsing while repairing repeatable tags.
+    // Needs: only the real handler extractor; numeric clamping remains in handler.
+    // Breadcrumb: HttpReadQuery and http_read_handler scalar field projection.
+    #[test]
+    fn read_query_preserves_scalar_filters_and_controls() {
+        let uri = "/messages?agent=codex&from=claude&topic=status&repo=agent-bus&session=scope%3A1&thread_id=read%2Btags&since=1000&limit=500&broadcast=false&encoding=toon&excerpt=80"
+            .parse()
+            .unwrap();
+        let params = ReadQuery::<HttpReadQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(params.agent.as_deref(), Some("codex"));
+        assert_eq!(params.from.as_deref(), Some("claude"));
+        assert_eq!(params.topic.as_deref(), Some("status"));
+        assert_eq!(params.repo.as_deref(), Some("agent-bus"));
+        assert_eq!(params.session.as_deref(), Some("scope:1"));
+        assert_eq!(params.thread_id.as_deref(), Some("read+tags"));
+        assert_eq!(params.since, 1000);
+        assert_eq!(params.limit, 500);
+        assert!(!params.broadcast);
+        assert_eq!(params.encoding.as_deref(), Some("toon"));
+        assert_eq!(params.excerpt, Some(80));
+        assert_eq!(params.tag, Vec::<String>::new());
+    }
+
+    // Protects: explicitly supplied empty string filters remain present strings.
+    // Detects: a replacement extractor treating empty Option<String> as absent.
+    // Needs: the actual handler extractor; this is existing axum Query behavior.
+    // Breadcrumb: HttpReadQuery optional string fields; tag is the only sequence.
+    #[test]
+    fn read_query_preserves_present_empty_string_filters() {
+        let uri = "/messages?agent=&from=&topic=&repo=&session=&thread_id=&encoding="
+            .parse()
+            .unwrap();
+        let params = ReadQuery::<HttpReadQuery>::try_from_uri(&uri).unwrap().0;
+        for value in [
+            params.agent,
+            params.from,
+            params.topic,
+            params.repo,
+            params.session,
+            params.thread_id,
+            params.encoding,
+        ] {
+            assert_eq!(value.as_deref(), Some(""));
+        }
+    }
+
+    // Protects: scalar filters cannot be ambiguously overridden by repeated keys.
+    // Detects: a tag parser silently broadening duplicate scalar acceptance.
+    // Needs: only the handler extractor; checks each scalar field's HTTP status.
+    // Breadcrumb: HttpReadQuery scalar fields retain their original rejection.
+    #[test]
+    fn read_query_rejects_duplicate_scalar_fields() {
+        for pair in [
+            "agent=a&agent=b",
+            "from=a&from=b",
+            "topic=a&topic=b",
+            "repo=a&repo=b",
+            "session=a&session=b",
+            "thread_id=a&thread_id=b",
+            "since=1&since=2",
+            "limit=1&limit=2",
+            "broadcast=true&broadcast=false",
+            "encoding=json&encoding=toon",
+            "excerpt=1&excerpt=2",
+        ] {
+            let uri = format!("/messages?{pair}").parse().unwrap();
+            let rejection = ReadQuery::<HttpReadQuery>::try_from_uri(&uri).unwrap_err();
+            assert_eq!(
+                rejection.into_response().status(),
+                StatusCode::BAD_REQUEST,
+                "{pair}"
+            );
+        }
+    }
+
+    // Protects: malformed numeric and boolean controls still fail before storage.
+    // Detects: defaulting invalid/empty values or accepting overflowing integers.
+    // Needs: only the handler extractor; no connection or runtime settings.
+    // Breadcrumb: HttpReadQuery since/limit/broadcast/excerpt serde validation.
+    #[test]
+    fn read_query_rejects_malformed_scalar_controls() {
+        for pair in [
+            "since=",
+            "since=-1",
+            "since=not-a-number",
+            "since=18446744073709551616",
+            "limit=",
+            "limit=-1",
+            "limit=1.5",
+            "limit=18446744073709551616",
+            "broadcast=",
+            "broadcast=1",
+            "broadcast=perhaps",
+            "excerpt=",
+            "excerpt=-1",
+            "excerpt=%ZZ",
+            "excerpt=18446744073709551616",
+        ] {
+            let uri = format!("/messages?{pair}").parse().unwrap();
+            let rejection = ReadQuery::<HttpReadQuery>::try_from_uri(&uri).unwrap_err();
+            assert_eq!(
+                rejection.into_response().status(),
+                StatusCode::BAD_REQUEST,
+                "{pair}"
+            );
+        }
+    }
+
+    // Protects: tags use ordinary form decoding once without comma splitting.
+    // Detects: losing plus signs, percent escapes, Unicode or explicit empty tags.
+    // Needs: the actual handler extractor and percent-encoded URI only.
+    // Breadcrumb: cmd_read URL encoding and http_read_handler MessageFilters tags.
+    #[test]
+    fn read_query_decodes_tag_values_once() {
+        let uri = "/messages?tag=label%3Aa+b&tag=label%3Aa%2Bb&tag=label%3Aa%26b&tag=label%3A%253A&tag=label%3A%E6%B5%8B%E8%AF%95&tag=&tag=literal%2Ccomma"
+            .parse()
+            .unwrap();
+        let params = ReadQuery::<HttpReadQuery>::try_from_uri(&uri).unwrap().0;
+        assert_eq!(
+            params.tag,
+            [
+                "label:a b",
+                "label:a+b",
+                "label:a&b",
+                "label:%3A",
+                "label:测试",
+                "",
+                "literal,comma"
+            ]
+        );
+    }
 
     #[test]
     fn format_socket_addr_brackets_ipv6_literals() {

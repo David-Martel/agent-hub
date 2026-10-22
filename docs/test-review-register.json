@@ -6464,605 +6464,6 @@
       "breaking_behavior": "Apply retained-deadline storage TTL to replay without changing due times or idempotence."
     },
     {
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "base_commit": "ac205a4cb3605ad0bad5a8abe7c8da5a47414491",
-      "commit_reviewed": null,
-      "disposition": "keep",
-      "scope": "Independent root source review and fresh native execution of this exact named backend selector with owned disposable Redis/PostgreSQL and authenticated HTTP. No live backend/fleet deployment.",
-      "control": "Author failing-first: each exact selector selected1/failed1 on old production, receiptDD42B916023E87F01721DA0BA97CFBDE3A8B2BADC02A768A06E61B81657BA3F1. Author GREEN002DD3507F085332C9CED4BCA6559354F71D41BC2461BB66F0F7F3B89F7740E8. Root fresh replay5B84E36F8B94B3D4105EE81F875FEE14C5496142BD7BC56E4242E8F530347F06: exactly1selected/test, both pass,3native binaries/source/helper hashes stable, cleanup_errors[], owned HTTP exited. Final source differs from initial GREEN only in rationale backticks; root replay used final exact bytes.",
-      "limits": [
-        "Stored deadline_at moves into the past with actual Lua key TTL kept; no seven-day wall-clock expiry test.",
-        "Shared post_ack cleanup remains nonfatal on Redis failure; no failure-atomicity claim.",
-        "No live service, physical unplug/sleep, throughput or fleet deployment acceptance."
-      ],
-      "selector": "crates/agent-bus-cli/tests/http_integration_test.rs::batch_ack_clears_retained_deadlines_without_clearing_unacked_messages",
-      "selector_source": {
-        "path": "crates/agent-bus-cli/tests/http_integration_test.rs",
-        "sha256": "c8f562ba7701a81da797bdb9d833295d3ba7548897581626b457c5be34e72745",
-        "hash_scope": "whole normalized Rust module including rationale, fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-core/src/ops/message.rs",
-          "sha256": "1aa4398e24e483c6369d7aec3f7d7857d3d7ca6b224cf00f2e5cbf940e97c78d"
-        },
-        {
-          "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
-          "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
-        },
-        {
-          "path": "crates/agent-bus-core/src/redis_bus.rs",
-          "sha256": "744ca838d827267e4d0fe50805c14b3481c30a834e0ebcbc3295f933bd06e21d"
-        }
-      ],
-      "protections": "Real HTTP batch ACK clears only acknowledged pending/deadline records.",
-      "detects": "3genuine ACK-requesting sends become overdue; endpoint ACKs2, removes only their keys, preserves third pending and overdue.",
-      "needs": "Owned authenticated HTTP/Redis/PostgreSQL and private IDs.",
-      "breaking_behavior": "Use shared post_ack cleanup while preserving response IDs/schema and message posting semantics."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::absent_child_selector_is_rejected_despite_zero_exit",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "an empty libtest --exact match cannot falsely certify lifecycle behavior.",
-      "detects": "accepting exit zero without proof that the exact intended selector completed.",
-      "needs": "an actual intentionally absent child selector and its missing private completion marker."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::bridge_reconnects_and_forwards_actual_message",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "reconnect retains actual direct/broadcast notification forwarding.",
-      "detects": "a lifecycle fix that stops delivery or never reconnects after socket loss.",
-      "needs": "one forced private Redis disconnect, real RESP message and two agent receivers."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::dropping_server_future_releases_pubsub_runtime",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "cancelling the HTTP server future still releases its blocking work.",
-      "detects": "ownership cleanup that only runs after a normal graceful-shutdown return.",
-      "needs": "the private actual server child, dropped after a proven Redis subscription."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::failed_bind_watchdog_rejects_retained_subscriber",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "the failed-bind process gate can actually reject a retained worker.",
-      "detects": "replacing bounded process/runtime observation with an immediate counter assertion.",
-      "needs": "one deliberately unowned idle subscriber in a private child killed/reaped by the watchdog."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::full_sse_queue_is_cancelled_without_dropping_receiver",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "cancellation releases a Pub/Sub worker blocked by a full SSE channel.",
-      "detects": "blocking_send or send().await without cancellation on a proven-full queue.",
-      "needs": "the exact production sender helper, a capacity-one full queue and persistent stop."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::idle_pubsub_runtime_exits_after_http_stop",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "an accepted HTTP stop must let Tokio and the owned process exit.",
-      "detects": "an idle Redis bridge retained by Runtime::drop, not just a closed listener.",
-      "needs": "only a private loopback RESP fixture and a bounded, reaped test child."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::occupied_listener_returns_error_and_releases_runtime",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "failed listener startup returns its actual bind error and releases runtime ownership.",
-      "detects": "a failed-bind path retaining a blocking worker, rather than claiming unobservable spawn order.",
-      "needs": "an occupied private loopback port, healthy RESP fixture and reaped process watchdog."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::quiet_sse_disconnect_releases_workers_and_reaps_finished_entries",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "a quiet disconnected SSE client releases its worker and subscriber count.",
-      "detects": "idle get_message ignoring receiver closure, or accumulating completed handles.",
-      "needs": "repeated private /events handlers; no global stop until all disconnect controls pass."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::quiet_sse_runtime_exits_after_http_stop",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "quiet /events bodies cannot hold Axum graceful shutdown open.",
-      "detects": "cancelling only the bridge while an idle per-client worker survives.",
-      "needs": "the same private HTTP/RESP child, retaining a real authenticated SSE response."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::reconnecting_runtime_exits_after_http_stop",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "Redis loss during service stop must not leave an infinite reconnect loop.",
-      "detects": "cancellation omitted from the retry path after a real subscribed disconnect.",
-      "needs": "private RESP fixture drops the subscribed socket, then proves a rejected reconnect before HTTP stop."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::retry_wait_is_interrupted_by_stop",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "stop wakes retry immediately rather than waiting for the reconnect delay.",
-      "detects": "replacing infinite retry with a non-interruptible fixed sleep.",
-      "needs": "only the shared cooperative control and one owned joined thread."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::simultaneous_transport_and_cleanup_errors_preserve_transport_cause",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "a transport failure remains the primary cause when worker cleanup also fails.",
-      "detects": "returning cleanup failure first and losing the original listener error.",
-      "needs": "the exact result-combination helper with distinct synthetic simultaneous errors."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::sse_forwards_actual_filtered_redis_payload",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "/events still emits actual Redis payloads with the configured recipient filter.",
-      "detects": "cancellation plumbing that closes or suppresses an otherwise healthy SSE stream.",
-      "needs": "private real RESP SUBSCRIBE/message and the handler's actual response body stream."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::stalled_redis_handshake_is_bounded_and_joined",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "stop while Redis accepts TCP but never completes its handshake.",
-      "detects": "a bounded read loop paired with an unbounded initial connection/setup.",
-      "needs": "a private blackhole RESP fixture and a real registered bridge."
-    },
-    {
-      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::stopped_registry_rejects_late_sse_without_counter_or_worker",
-      "reviewer": "codex-gen9-fleet",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-21",
-      "commit_reviewed": null,
-      "base_commits": [
-        "34c7d12e20700736b329f6e7d0d15ef811256912",
-        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
-      ],
-      "disposition": "keep",
-      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
-      "selector_source": {
-        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
-        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
-        "hash_scope": "whole normalized Rust module including fixtures and assertions"
-      },
-      "code_under_test": {
-        "path": "crates/agent-bus-http/src/http.rs",
-        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
-      },
-      "shared_sources": [
-        {
-          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
-          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
-        }
-      ],
-      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
-      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
-      "supersedes": {
-        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
-      },
-      "protections": "late SSE registrations after cancellation cannot leak their subscriber count.",
-      "detects": "a rejected spawn dropping neither its sender nor its counter guard.",
-      "needs": "a stopped worker registry and the actual /events handler with no external I/O."
-    },
-    {
       "selector": "crates/agent-bus-cli/src/server_mode.rs::tests::cli_runtime_success_returns_before_cancelled_dns_finishes",
       "reviewer": "codex-gen9-fleet",
       "reviewer_type": "independent_agent",
@@ -8317,6 +7718,414 @@
       "reviewer": "codex-gen9-fleet-resume",
       "date": "2026-10-22",
       "relevance": "Windows path normalization must not reinterpret Unix literal backslashes or symlink-sensitive parent components."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::tests::read_query_extracts_single_encoded_tag",
+      "reviewer": "codex-gen9-fleet-resume",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "70b763f8111da6610883b46d01ccb739eaf13d74",
+      "disposition": "keep",
+      "scope": "Root independent d3e04 read the complete production/test/dependency diff; reviewer authored none of the fix or eight tests. Actual independent e7411a replay selected all eight pure handler-extractor tests at stable C56BE5D1 source. Hash-bound working-tree review based on 70b763f; no fabricated reviewed commit SHA, full-package pass or deployed hub qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "first_line": 4095,
+        "last_line": 4108,
+        "sha256": "d576af649bc222eb4e5ad88807f8d5b2601af0af919cf26bfdc06071e85bce74",
+        "hash_scope": "Inclusive rationale comments, test attribute and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c56be5d169cb2a743f7f05442ae348d3b801422fced3e9e422454926bca85c22"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/Cargo.toml",
+          "sha256": "d288dd8cfa4e680540e9fda9714be1ada5465ad605561f14694b6914512dc0d3"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "efa9da239fefb8bdea6923f57169c300bfac33792edf66095ec17abfba2f3c00"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "fb8da9c41bc24c28bddb2a3ee2c5eb6c2a03dad105615fe04d9a9851f86b4a4d"
+        }
+      ],
+      "protections": "the CLI's existing --tag filter reaches GET /messages.",
+      "detects": "scalar URL-encoded tags being rejected before the storage read.",
+      "needs": "only the real handler extractor; no state, credentials or backend.",
+      "coverage": {
+        "failing_first": "Actual224c1f: original axum handler ReadQuery alias selected8, five scalar/default controls PASS and three tag controls FAIL with invalid type string, expected a sequence; native22.416s/exit101.",
+        "compatibility_control": "Actualad8a7b: sequence-capable extractor alone selected8, sixPASS/twoFAIL; present empty optional string becameNone and emptyexcerpt becameaccepted. The present-option adapter restores both prior scalar contracts.",
+        "focused_native": "Actual457fd7 final formatted C56BE5D1 source stable before/after:8PASS/0fail/0ignored/83filtered,5.6435342s. Child auth/routes cleared, closed-port stores, no Settings/backend invocation; absent-config sentinel remains absent. Earlierde4a1d8PASS is preserved as pre-format provenance.",
+        "format": "Actual34a6e4: final cargo fmt --all PASS, empty stdout/stderr.",
+        "full_http_package": "NOT EXECUTED: automatic review rejected the full native HTTP package test plus owned private config/LOCALAPPDATA fixture creation and cleanup before execution; no reason supplied. Exact command SHA256e2ca6e683658d1e52ba9bb6aa0cead862b9dc4d4c9ec0c9b088b4afbff66d618,3329characters. No retry, decomposition or proxy.",
+        "strict_lint": "Actualf67a51: cargo clippy --offline --locked -p agent-bus-http --all-targets -- -D warnings PASS2.2525242s/exit0/no diagnostics. Earlier ee863f rejected2test-only assert_is_empty uses; replaced with typedempty equality, no lint suppression.",
+        "independent_focused": "Actual root e7411a:8PASS/0fail/0ignored/83filtered,0.3636913s child (8.33s including CargoTools environment precheck), sourceC56BE5D1 stable before/after, no fixture creation or live calls.",
+        "register_integrity": "Actual root7c7ce5 independently verified all308 original review objects and baseline top-level metadata retain exact string values, including timestamp timezone/precision; all eight inclusive selector hashes match. Author restore d2c8a8 used ConvertFrom-Json -AsHashtable -DateKind String after the initial default-date parser rewrote historical strings; prior preservation claims superseded."
+      },
+      "breaking_behavior": "Only GET /messages uses the sequence-capable extractor; ordered repeated tag values now parse. Missing defaults, explicit empty strings, malformed numeric/boolean values and duplicate scalar rejection retain the old contract.",
+      "limits": "Pure actual-handler-extractor selection only;83 unrelated HTTP tests unselected. No router/storage matching, end-to-end delivery, live hub or deployment claim. The separate full native Windows HTTP-package/private-fixture command remains automatically rejected before execution; no reason, retry or proxy. Normal immutable-snapshot Linux hook/CI QA is recorded separately."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::tests::read_query_preserves_repeated_tags_in_order",
+      "reviewer": "codex-gen9-fleet-resume",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "70b763f8111da6610883b46d01ccb739eaf13d74",
+      "disposition": "keep",
+      "scope": "Root independent d3e04 read the complete production/test/dependency diff; reviewer authored none of the fix or eight tests. Actual independent e7411a replay selected all eight pure handler-extractor tests at stable C56BE5D1 source. Hash-bound working-tree review based on 70b763f; no fabricated reviewed commit SHA, full-package pass or deployed hub qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "first_line": 4110,
+        "last_line": 4124,
+        "sha256": "d406e970a579eb08d5ee65f72803a04abc28f635a64a2671b8a9d70e4d8206c3",
+        "hash_scope": "Inclusive rationale comments, test attribute and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c56be5d169cb2a743f7f05442ae348d3b801422fced3e9e422454926bca85c22"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/Cargo.toml",
+          "sha256": "d288dd8cfa4e680540e9fda9714be1ada5465ad605561f14694b6914512dc0d3"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "efa9da239fefb8bdea6923f57169c300bfac33792edf66095ec17abfba2f3c00"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "fb8da9c41bc24c28bddb2a3ee2c5eb6c2a03dad105615fe04d9a9851f86b4a4d"
+        }
+      ],
+      "protections": "every repeatable CLI tag remains an independent filter value.",
+      "detects": "duplicate-field rejection, last-value wins or tag deduplication.",
+      "needs": "only the real handler extractor and an encoded request URI.",
+      "coverage": {
+        "failing_first": "Actual224c1f: original axum handler ReadQuery alias selected8, five scalar/default controls PASS and three tag controls FAIL with invalid type string, expected a sequence; native22.416s/exit101.",
+        "compatibility_control": "Actualad8a7b: sequence-capable extractor alone selected8, sixPASS/twoFAIL; present empty optional string becameNone and emptyexcerpt becameaccepted. The present-option adapter restores both prior scalar contracts.",
+        "focused_native": "Actual457fd7 final formatted C56BE5D1 source stable before/after:8PASS/0fail/0ignored/83filtered,5.6435342s. Child auth/routes cleared, closed-port stores, no Settings/backend invocation; absent-config sentinel remains absent. Earlierde4a1d8PASS is preserved as pre-format provenance.",
+        "format": "Actual34a6e4: final cargo fmt --all PASS, empty stdout/stderr.",
+        "full_http_package": "NOT EXECUTED: automatic review rejected the full native HTTP package test plus owned private config/LOCALAPPDATA fixture creation and cleanup before execution; no reason supplied. Exact command SHA256e2ca6e683658d1e52ba9bb6aa0cead862b9dc4d4c9ec0c9b088b4afbff66d618,3329characters. No retry, decomposition or proxy.",
+        "strict_lint": "Actualf67a51: cargo clippy --offline --locked -p agent-bus-http --all-targets -- -D warnings PASS2.2525242s/exit0/no diagnostics. Earlier ee863f rejected2test-only assert_is_empty uses; replaced with typedempty equality, no lint suppression.",
+        "independent_focused": "Actual root e7411a:8PASS/0fail/0ignored/83filtered,0.3636913s child (8.33s including CargoTools environment precheck), sourceC56BE5D1 stable before/after, no fixture creation or live calls.",
+        "register_integrity": "Actual root7c7ce5 independently verified all308 original review objects and baseline top-level metadata retain exact string values, including timestamp timezone/precision; all eight inclusive selector hashes match. Author restore d2c8a8 used ConvertFrom-Json -AsHashtable -DateKind String after the initial default-date parser rewrote historical strings; prior preservation claims superseded."
+      },
+      "breaking_behavior": "Only GET /messages uses the sequence-capable extractor; ordered repeated tag values now parse. Missing defaults, explicit empty strings, malformed numeric/boolean values and duplicate scalar rejection retain the old contract.",
+      "limits": "Pure actual-handler-extractor selection only;83 unrelated HTTP tests unselected. No router/storage matching, end-to-end delivery, live hub or deployment claim. The separate full native Windows HTTP-package/private-fixture command remains automatically rejected before execution; no reason, retry or proxy. Normal immutable-snapshot Linux hook/CI QA is recorded separately."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::tests::read_query_keeps_untagged_defaults",
+      "reviewer": "codex-gen9-fleet-resume",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "70b763f8111da6610883b46d01ccb739eaf13d74",
+      "disposition": "keep",
+      "scope": "Root independent d3e04 read the complete production/test/dependency diff; reviewer authored none of the fix or eight tests. Actual independent e7411a replay selected all eight pure handler-extractor tests at stable C56BE5D1 source. Hash-bound working-tree review based on 70b763f; no fabricated reviewed commit SHA, full-package pass or deployed hub qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "first_line": 4126,
+        "last_line": 4148,
+        "sha256": "7a6bb3e422d03af278feeff6e33d01465ca0f8f7fd02714d4ec7dd58ed74330b",
+        "hash_scope": "Inclusive rationale comments, test attribute and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c56be5d169cb2a743f7f05442ae348d3b801422fced3e9e422454926bca85c22"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/Cargo.toml",
+          "sha256": "d288dd8cfa4e680540e9fda9714be1ada5465ad605561f14694b6914512dc0d3"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "efa9da239fefb8bdea6923f57169c300bfac33792edf66095ec17abfba2f3c00"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "fb8da9c41bc24c28bddb2a3ee2c5eb6c2a03dad105615fe04d9a9851f86b4a4d"
+        }
+      ],
+      "protections": "untagged reads retain their original defaults and optional filters.",
+      "detects": "requiring tag or changing absent scalar and unknown-key behavior.",
+      "needs": "the actual handler extractor, without a router or storage fixture.",
+      "coverage": {
+        "failing_first": "Actual224c1f: original axum handler ReadQuery alias selected8, five scalar/default controls PASS and three tag controls FAIL with invalid type string, expected a sequence; native22.416s/exit101.",
+        "compatibility_control": "Actualad8a7b: sequence-capable extractor alone selected8, sixPASS/twoFAIL; present empty optional string becameNone and emptyexcerpt becameaccepted. The present-option adapter restores both prior scalar contracts.",
+        "focused_native": "Actual457fd7 final formatted C56BE5D1 source stable before/after:8PASS/0fail/0ignored/83filtered,5.6435342s. Child auth/routes cleared, closed-port stores, no Settings/backend invocation; absent-config sentinel remains absent. Earlierde4a1d8PASS is preserved as pre-format provenance.",
+        "format": "Actual34a6e4: final cargo fmt --all PASS, empty stdout/stderr.",
+        "full_http_package": "NOT EXECUTED: automatic review rejected the full native HTTP package test plus owned private config/LOCALAPPDATA fixture creation and cleanup before execution; no reason supplied. Exact command SHA256e2ca6e683658d1e52ba9bb6aa0cead862b9dc4d4c9ec0c9b088b4afbff66d618,3329characters. No retry, decomposition or proxy.",
+        "strict_lint": "Actualf67a51: cargo clippy --offline --locked -p agent-bus-http --all-targets -- -D warnings PASS2.2525242s/exit0/no diagnostics. Earlier ee863f rejected2test-only assert_is_empty uses; replaced with typedempty equality, no lint suppression.",
+        "independent_focused": "Actual root e7411a:8PASS/0fail/0ignored/83filtered,0.3636913s child (8.33s including CargoTools environment precheck), sourceC56BE5D1 stable before/after, no fixture creation or live calls.",
+        "register_integrity": "Actual root7c7ce5 independently verified all308 original review objects and baseline top-level metadata retain exact string values, including timestamp timezone/precision; all eight inclusive selector hashes match. Author restore d2c8a8 used ConvertFrom-Json -AsHashtable -DateKind String after the initial default-date parser rewrote historical strings; prior preservation claims superseded."
+      },
+      "breaking_behavior": "Only GET /messages uses the sequence-capable extractor; ordered repeated tag values now parse. Missing defaults, explicit empty strings, malformed numeric/boolean values and duplicate scalar rejection retain the old contract.",
+      "limits": "Pure actual-handler-extractor selection only;83 unrelated HTTP tests unselected. No router/storage matching, end-to-end delivery, live hub or deployment claim. The separate full native Windows HTTP-package/private-fixture command remains automatically rejected before execution; no reason, retry or proxy. Normal immutable-snapshot Linux hook/CI QA is recorded separately."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::tests::read_query_preserves_scalar_filters_and_controls",
+      "reviewer": "codex-gen9-fleet-resume",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "70b763f8111da6610883b46d01ccb739eaf13d74",
+      "disposition": "keep",
+      "scope": "Root independent d3e04 read the complete production/test/dependency diff; reviewer authored none of the fix or eight tests. Actual independent e7411a replay selected all eight pure handler-extractor tests at stable C56BE5D1 source. Hash-bound working-tree review based on 70b763f; no fabricated reviewed commit SHA, full-package pass or deployed hub qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "first_line": 4150,
+        "last_line": 4172,
+        "sha256": "4400af4814a789459e4f9b674a0fd6d796ddb2efbd2be4aa26ff906eaefaf9b8",
+        "hash_scope": "Inclusive rationale comments, test attribute and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c56be5d169cb2a743f7f05442ae348d3b801422fced3e9e422454926bca85c22"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/Cargo.toml",
+          "sha256": "d288dd8cfa4e680540e9fda9714be1ada5465ad605561f14694b6914512dc0d3"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "efa9da239fefb8bdea6923f57169c300bfac33792edf66095ec17abfba2f3c00"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "fb8da9c41bc24c28bddb2a3ee2c5eb6c2a03dad105615fe04d9a9851f86b4a4d"
+        }
+      ],
+      "protections": "existing scalar scoping, bounds input and output controls.",
+      "detects": "changing non-tag field parsing while repairing repeatable tags.",
+      "needs": "only the real handler extractor; numeric clamping remains in handler.",
+      "coverage": {
+        "failing_first": "Actual224c1f: original axum handler ReadQuery alias selected8, five scalar/default controls PASS and three tag controls FAIL with invalid type string, expected a sequence; native22.416s/exit101.",
+        "compatibility_control": "Actualad8a7b: sequence-capable extractor alone selected8, sixPASS/twoFAIL; present empty optional string becameNone and emptyexcerpt becameaccepted. The present-option adapter restores both prior scalar contracts.",
+        "focused_native": "Actual457fd7 final formatted C56BE5D1 source stable before/after:8PASS/0fail/0ignored/83filtered,5.6435342s. Child auth/routes cleared, closed-port stores, no Settings/backend invocation; absent-config sentinel remains absent. Earlierde4a1d8PASS is preserved as pre-format provenance.",
+        "format": "Actual34a6e4: final cargo fmt --all PASS, empty stdout/stderr.",
+        "full_http_package": "NOT EXECUTED: automatic review rejected the full native HTTP package test plus owned private config/LOCALAPPDATA fixture creation and cleanup before execution; no reason supplied. Exact command SHA256e2ca6e683658d1e52ba9bb6aa0cead862b9dc4d4c9ec0c9b088b4afbff66d618,3329characters. No retry, decomposition or proxy.",
+        "strict_lint": "Actualf67a51: cargo clippy --offline --locked -p agent-bus-http --all-targets -- -D warnings PASS2.2525242s/exit0/no diagnostics. Earlier ee863f rejected2test-only assert_is_empty uses; replaced with typedempty equality, no lint suppression.",
+        "independent_focused": "Actual root e7411a:8PASS/0fail/0ignored/83filtered,0.3636913s child (8.33s including CargoTools environment precheck), sourceC56BE5D1 stable before/after, no fixture creation or live calls.",
+        "register_integrity": "Actual root7c7ce5 independently verified all308 original review objects and baseline top-level metadata retain exact string values, including timestamp timezone/precision; all eight inclusive selector hashes match. Author restore d2c8a8 used ConvertFrom-Json -AsHashtable -DateKind String after the initial default-date parser rewrote historical strings; prior preservation claims superseded."
+      },
+      "breaking_behavior": "Only GET /messages uses the sequence-capable extractor; ordered repeated tag values now parse. Missing defaults, explicit empty strings, malformed numeric/boolean values and duplicate scalar rejection retain the old contract.",
+      "limits": "Pure actual-handler-extractor selection only;83 unrelated HTTP tests unselected. No router/storage matching, end-to-end delivery, live hub or deployment claim. The separate full native Windows HTTP-package/private-fixture command remains automatically rejected before execution; no reason, retry or proxy. Normal immutable-snapshot Linux hook/CI QA is recorded separately."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::tests::read_query_preserves_present_empty_string_filters",
+      "reviewer": "codex-gen9-fleet-resume",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "70b763f8111da6610883b46d01ccb739eaf13d74",
+      "disposition": "keep",
+      "scope": "Root independent d3e04 read the complete production/test/dependency diff; reviewer authored none of the fix or eight tests. Actual independent e7411a replay selected all eight pure handler-extractor tests at stable C56BE5D1 source. Hash-bound working-tree review based on 70b763f; no fabricated reviewed commit SHA, full-package pass or deployed hub qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "first_line": 4174,
+        "last_line": 4195,
+        "sha256": "6c622ed8bc5a9751a9b8d205a1101b585b767046aaebdf86e1821775e39eae3c",
+        "hash_scope": "Inclusive rationale comments, test attribute and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c56be5d169cb2a743f7f05442ae348d3b801422fced3e9e422454926bca85c22"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/Cargo.toml",
+          "sha256": "d288dd8cfa4e680540e9fda9714be1ada5465ad605561f14694b6914512dc0d3"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "efa9da239fefb8bdea6923f57169c300bfac33792edf66095ec17abfba2f3c00"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "fb8da9c41bc24c28bddb2a3ee2c5eb6c2a03dad105615fe04d9a9851f86b4a4d"
+        }
+      ],
+      "protections": "explicitly supplied empty string filters remain present strings.",
+      "detects": "a replacement extractor treating empty Option<String> as absent.",
+      "needs": "the actual handler extractor; this is existing axum Query behavior.",
+      "coverage": {
+        "failing_first": "Actual224c1f: original axum handler ReadQuery alias selected8, five scalar/default controls PASS and three tag controls FAIL with invalid type string, expected a sequence; native22.416s/exit101.",
+        "compatibility_control": "Actualad8a7b: sequence-capable extractor alone selected8, sixPASS/twoFAIL; present empty optional string becameNone and emptyexcerpt becameaccepted. The present-option adapter restores both prior scalar contracts.",
+        "focused_native": "Actual457fd7 final formatted C56BE5D1 source stable before/after:8PASS/0fail/0ignored/83filtered,5.6435342s. Child auth/routes cleared, closed-port stores, no Settings/backend invocation; absent-config sentinel remains absent. Earlierde4a1d8PASS is preserved as pre-format provenance.",
+        "format": "Actual34a6e4: final cargo fmt --all PASS, empty stdout/stderr.",
+        "full_http_package": "NOT EXECUTED: automatic review rejected the full native HTTP package test plus owned private config/LOCALAPPDATA fixture creation and cleanup before execution; no reason supplied. Exact command SHA256e2ca6e683658d1e52ba9bb6aa0cead862b9dc4d4c9ec0c9b088b4afbff66d618,3329characters. No retry, decomposition or proxy.",
+        "strict_lint": "Actualf67a51: cargo clippy --offline --locked -p agent-bus-http --all-targets -- -D warnings PASS2.2525242s/exit0/no diagnostics. Earlier ee863f rejected2test-only assert_is_empty uses; replaced with typedempty equality, no lint suppression.",
+        "independent_focused": "Actual root e7411a:8PASS/0fail/0ignored/83filtered,0.3636913s child (8.33s including CargoTools environment precheck), sourceC56BE5D1 stable before/after, no fixture creation or live calls.",
+        "register_integrity": "Actual root7c7ce5 independently verified all308 original review objects and baseline top-level metadata retain exact string values, including timestamp timezone/precision; all eight inclusive selector hashes match. Author restore d2c8a8 used ConvertFrom-Json -AsHashtable -DateKind String after the initial default-date parser rewrote historical strings; prior preservation claims superseded."
+      },
+      "breaking_behavior": "Only GET /messages uses the sequence-capable extractor; ordered repeated tag values now parse. Missing defaults, explicit empty strings, malformed numeric/boolean values and duplicate scalar rejection retain the old contract.",
+      "limits": "Pure actual-handler-extractor selection only;83 unrelated HTTP tests unselected. No router/storage matching, end-to-end delivery, live hub or deployment claim. The separate full native Windows HTTP-package/private-fixture command remains automatically rejected before execution; no reason, retry or proxy. Normal immutable-snapshot Linux hook/CI QA is recorded separately."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::tests::read_query_rejects_duplicate_scalar_fields",
+      "reviewer": "codex-gen9-fleet-resume",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "70b763f8111da6610883b46d01ccb739eaf13d74",
+      "disposition": "keep",
+      "scope": "Root independent d3e04 read the complete production/test/dependency diff; reviewer authored none of the fix or eight tests. Actual independent e7411a replay selected all eight pure handler-extractor tests at stable C56BE5D1 source. Hash-bound working-tree review based on 70b763f; no fabricated reviewed commit SHA, full-package pass or deployed hub qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "first_line": 4197,
+        "last_line": 4224,
+        "sha256": "3465d4c4e9540de11ac200dd4ec4a6cfcd6553c1e3514f8efbbeb228ed70a448",
+        "hash_scope": "Inclusive rationale comments, test attribute and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c56be5d169cb2a743f7f05442ae348d3b801422fced3e9e422454926bca85c22"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/Cargo.toml",
+          "sha256": "d288dd8cfa4e680540e9fda9714be1ada5465ad605561f14694b6914512dc0d3"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "efa9da239fefb8bdea6923f57169c300bfac33792edf66095ec17abfba2f3c00"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "fb8da9c41bc24c28bddb2a3ee2c5eb6c2a03dad105615fe04d9a9851f86b4a4d"
+        }
+      ],
+      "protections": "scalar filters cannot be ambiguously overridden by repeated keys.",
+      "detects": "a tag parser silently broadening duplicate scalar acceptance.",
+      "needs": "only the handler extractor; checks each scalar field's HTTP status.",
+      "coverage": {
+        "failing_first": "Actual224c1f: original axum handler ReadQuery alias selected8, five scalar/default controls PASS and three tag controls FAIL with invalid type string, expected a sequence; native22.416s/exit101.",
+        "compatibility_control": "Actualad8a7b: sequence-capable extractor alone selected8, sixPASS/twoFAIL; present empty optional string becameNone and emptyexcerpt becameaccepted. The present-option adapter restores both prior scalar contracts.",
+        "focused_native": "Actual457fd7 final formatted C56BE5D1 source stable before/after:8PASS/0fail/0ignored/83filtered,5.6435342s. Child auth/routes cleared, closed-port stores, no Settings/backend invocation; absent-config sentinel remains absent. Earlierde4a1d8PASS is preserved as pre-format provenance.",
+        "format": "Actual34a6e4: final cargo fmt --all PASS, empty stdout/stderr.",
+        "full_http_package": "NOT EXECUTED: automatic review rejected the full native HTTP package test plus owned private config/LOCALAPPDATA fixture creation and cleanup before execution; no reason supplied. Exact command SHA256e2ca6e683658d1e52ba9bb6aa0cead862b9dc4d4c9ec0c9b088b4afbff66d618,3329characters. No retry, decomposition or proxy.",
+        "strict_lint": "Actualf67a51: cargo clippy --offline --locked -p agent-bus-http --all-targets -- -D warnings PASS2.2525242s/exit0/no diagnostics. Earlier ee863f rejected2test-only assert_is_empty uses; replaced with typedempty equality, no lint suppression.",
+        "independent_focused": "Actual root e7411a:8PASS/0fail/0ignored/83filtered,0.3636913s child (8.33s including CargoTools environment precheck), sourceC56BE5D1 stable before/after, no fixture creation or live calls.",
+        "register_integrity": "Actual root7c7ce5 independently verified all308 original review objects and baseline top-level metadata retain exact string values, including timestamp timezone/precision; all eight inclusive selector hashes match. Author restore d2c8a8 used ConvertFrom-Json -AsHashtable -DateKind String after the initial default-date parser rewrote historical strings; prior preservation claims superseded."
+      },
+      "breaking_behavior": "Only GET /messages uses the sequence-capable extractor; ordered repeated tag values now parse. Missing defaults, explicit empty strings, malformed numeric/boolean values and duplicate scalar rejection retain the old contract.",
+      "limits": "Pure actual-handler-extractor selection only;83 unrelated HTTP tests unselected. No router/storage matching, end-to-end delivery, live hub or deployment claim. The separate full native Windows HTTP-package/private-fixture command remains automatically rejected before execution; no reason, retry or proxy. Normal immutable-snapshot Linux hook/CI QA is recorded separately."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::tests::read_query_rejects_malformed_scalar_controls",
+      "reviewer": "codex-gen9-fleet-resume",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "70b763f8111da6610883b46d01ccb739eaf13d74",
+      "disposition": "keep",
+      "scope": "Root independent d3e04 read the complete production/test/dependency diff; reviewer authored none of the fix or eight tests. Actual independent e7411a replay selected all eight pure handler-extractor tests at stable C56BE5D1 source. Hash-bound working-tree review based on 70b763f; no fabricated reviewed commit SHA, full-package pass or deployed hub qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "first_line": 4226,
+        "last_line": 4257,
+        "sha256": "fdcbc1426f0b7076aff6301b7d1323cf5abd5b77273e4057804203d09fae5adb",
+        "hash_scope": "Inclusive rationale comments, test attribute and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c56be5d169cb2a743f7f05442ae348d3b801422fced3e9e422454926bca85c22"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/Cargo.toml",
+          "sha256": "d288dd8cfa4e680540e9fda9714be1ada5465ad605561f14694b6914512dc0d3"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "efa9da239fefb8bdea6923f57169c300bfac33792edf66095ec17abfba2f3c00"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "fb8da9c41bc24c28bddb2a3ee2c5eb6c2a03dad105615fe04d9a9851f86b4a4d"
+        }
+      ],
+      "protections": "malformed numeric and boolean controls still fail before storage.",
+      "detects": "defaulting invalid/empty values or accepting overflowing integers.",
+      "needs": "only the handler extractor; no connection or runtime settings.",
+      "coverage": {
+        "failing_first": "Actual224c1f: original axum handler ReadQuery alias selected8, five scalar/default controls PASS and three tag controls FAIL with invalid type string, expected a sequence; native22.416s/exit101.",
+        "compatibility_control": "Actualad8a7b: sequence-capable extractor alone selected8, sixPASS/twoFAIL; present empty optional string becameNone and emptyexcerpt becameaccepted. The present-option adapter restores both prior scalar contracts.",
+        "focused_native": "Actual457fd7 final formatted C56BE5D1 source stable before/after:8PASS/0fail/0ignored/83filtered,5.6435342s. Child auth/routes cleared, closed-port stores, no Settings/backend invocation; absent-config sentinel remains absent. Earlierde4a1d8PASS is preserved as pre-format provenance.",
+        "format": "Actual34a6e4: final cargo fmt --all PASS, empty stdout/stderr.",
+        "full_http_package": "NOT EXECUTED: automatic review rejected the full native HTTP package test plus owned private config/LOCALAPPDATA fixture creation and cleanup before execution; no reason supplied. Exact command SHA256e2ca6e683658d1e52ba9bb6aa0cead862b9dc4d4c9ec0c9b088b4afbff66d618,3329characters. No retry, decomposition or proxy.",
+        "strict_lint": "Actualf67a51: cargo clippy --offline --locked -p agent-bus-http --all-targets -- -D warnings PASS2.2525242s/exit0/no diagnostics. Earlier ee863f rejected2test-only assert_is_empty uses; replaced with typedempty equality, no lint suppression.",
+        "independent_focused": "Actual root e7411a:8PASS/0fail/0ignored/83filtered,0.3636913s child (8.33s including CargoTools environment precheck), sourceC56BE5D1 stable before/after, no fixture creation or live calls.",
+        "register_integrity": "Actual root7c7ce5 independently verified all308 original review objects and baseline top-level metadata retain exact string values, including timestamp timezone/precision; all eight inclusive selector hashes match. Author restore d2c8a8 used ConvertFrom-Json -AsHashtable -DateKind String after the initial default-date parser rewrote historical strings; prior preservation claims superseded."
+      },
+      "breaking_behavior": "Only GET /messages uses the sequence-capable extractor; ordered repeated tag values now parse. Missing defaults, explicit empty strings, malformed numeric/boolean values and duplicate scalar rejection retain the old contract.",
+      "limits": "Pure actual-handler-extractor selection only;83 unrelated HTTP tests unselected. No router/storage matching, end-to-end delivery, live hub or deployment claim. The separate full native Windows HTTP-package/private-fixture command remains automatically rejected before execution; no reason, retry or proxy. Normal immutable-snapshot Linux hook/CI QA is recorded separately."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::tests::read_query_decodes_tag_values_once",
+      "reviewer": "codex-gen9-fleet-resume",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "70b763f8111da6610883b46d01ccb739eaf13d74",
+      "disposition": "keep",
+      "scope": "Root independent d3e04 read the complete production/test/dependency diff; reviewer authored none of the fix or eight tests. Actual independent e7411a replay selected all eight pure handler-extractor tests at stable C56BE5D1 source. Hash-bound working-tree review based on 70b763f; no fabricated reviewed commit SHA, full-package pass or deployed hub qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "first_line": 4259,
+        "last_line": 4281,
+        "sha256": "072b92ed7a644dd63018cf459be575dbce8dbe89fc67c849fe0f740cdd627cb2",
+        "hash_scope": "Inclusive rationale comments, test attribute and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "c56be5d169cb2a743f7f05442ae348d3b801422fced3e9e422454926bca85c22"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/Cargo.toml",
+          "sha256": "d288dd8cfa4e680540e9fda9714be1ada5465ad605561f14694b6914512dc0d3"
+        },
+        {
+          "path": "Cargo.lock",
+          "sha256": "efa9da239fefb8bdea6923f57169c300bfac33792edf66095ec17abfba2f3c00"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "fb8da9c41bc24c28bddb2a3ee2c5eb6c2a03dad105615fe04d9a9851f86b4a4d"
+        }
+      ],
+      "protections": "tags use ordinary form decoding once without comma splitting.",
+      "detects": "losing plus signs, percent escapes, Unicode or explicit empty tags.",
+      "needs": "the actual handler extractor and percent-encoded URI only.",
+      "coverage": {
+        "failing_first": "Actual224c1f: original axum handler ReadQuery alias selected8, five scalar/default controls PASS and three tag controls FAIL with invalid type string, expected a sequence; native22.416s/exit101.",
+        "compatibility_control": "Actualad8a7b: sequence-capable extractor alone selected8, sixPASS/twoFAIL; present empty optional string becameNone and emptyexcerpt becameaccepted. The present-option adapter restores both prior scalar contracts.",
+        "focused_native": "Actual457fd7 final formatted C56BE5D1 source stable before/after:8PASS/0fail/0ignored/83filtered,5.6435342s. Child auth/routes cleared, closed-port stores, no Settings/backend invocation; absent-config sentinel remains absent. Earlierde4a1d8PASS is preserved as pre-format provenance.",
+        "format": "Actual34a6e4: final cargo fmt --all PASS, empty stdout/stderr.",
+        "full_http_package": "NOT EXECUTED: automatic review rejected the full native HTTP package test plus owned private config/LOCALAPPDATA fixture creation and cleanup before execution; no reason supplied. Exact command SHA256e2ca6e683658d1e52ba9bb6aa0cead862b9dc4d4c9ec0c9b088b4afbff66d618,3329characters. No retry, decomposition or proxy.",
+        "strict_lint": "Actualf67a51: cargo clippy --offline --locked -p agent-bus-http --all-targets -- -D warnings PASS2.2525242s/exit0/no diagnostics. Earlier ee863f rejected2test-only assert_is_empty uses; replaced with typedempty equality, no lint suppression.",
+        "independent_focused": "Actual root e7411a:8PASS/0fail/0ignored/83filtered,0.3636913s child (8.33s including CargoTools environment precheck), sourceC56BE5D1 stable before/after, no fixture creation or live calls.",
+        "register_integrity": "Actual root7c7ce5 independently verified all308 original review objects and baseline top-level metadata retain exact string values, including timestamp timezone/precision; all eight inclusive selector hashes match. Author restore d2c8a8 used ConvertFrom-Json -AsHashtable -DateKind String after the initial default-date parser rewrote historical strings; prior preservation claims superseded."
+      },
+      "breaking_behavior": "Only GET /messages uses the sequence-capable extractor; ordered repeated tag values now parse. Missing defaults, explicit empty strings, malformed numeric/boolean values and duplicate scalar rejection retain the old contract.",
+      "limits": "Pure actual-handler-extractor selection only;83 unrelated HTTP tests unselected. No router/storage matching, end-to-end delivery, live hub or deployment claim. The separate full native Windows HTTP-package/private-fixture command remains automatically rejected before execution; no reason, retry or proxy. Normal immutable-snapshot Linux hook/CI QA is recorded separately."
     }
   ],
   "historical_reviews": [
@@ -13166,6 +12975,605 @@
       "reviewer": "/root/bus_installer_resume",
       "reviewer_authored_test_or_fix": false,
       "limits": "An expired helper allows one initial open; filesystem latency/suspension are not real-time bounded. Native250ms release controls retain a scheduler limitation despite explicit Busy preconditions; actual legacy RED confirms relevance."
+    },
+    {
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "base_commit": "ac205a4cb3605ad0bad5a8abe7c8da5a47414491",
+      "commit_reviewed": null,
+      "disposition": "keep",
+      "scope": "Independent root source review and fresh native execution of this exact named backend selector with owned disposable Redis/PostgreSQL and authenticated HTTP. No live backend/fleet deployment.",
+      "control": "Author failing-first: each exact selector selected1/failed1 on old production, receiptDD42B916023E87F01721DA0BA97CFBDE3A8B2BADC02A768A06E61B81657BA3F1. Author GREEN002DD3507F085332C9CED4BCA6559354F71D41BC2461BB66F0F7F3B89F7740E8. Root fresh replay5B84E36F8B94B3D4105EE81F875FEE14C5496142BD7BC56E4242E8F530347F06: exactly1selected/test, both pass,3native binaries/source/helper hashes stable, cleanup_errors[], owned HTTP exited. Final source differs from initial GREEN only in rationale backticks; root replay used final exact bytes.",
+      "limits": [
+        "Stored deadline_at moves into the past with actual Lua key TTL kept; no seven-day wall-clock expiry test.",
+        "Shared post_ack cleanup remains nonfatal on Redis failure; no failure-atomicity claim.",
+        "No live service, physical unplug/sleep, throughput or fleet deployment acceptance."
+      ],
+      "selector": "crates/agent-bus-cli/tests/http_integration_test.rs::batch_ack_clears_retained_deadlines_without_clearing_unacked_messages",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/http_integration_test.rs",
+        "sha256": "c8f562ba7701a81da797bdb9d833295d3ba7548897581626b457c5be34e72745",
+        "hash_scope": "whole normalized Rust module including rationale, fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/src/ops/message.rs",
+          "sha256": "1aa4398e24e483c6369d7aec3f7d7857d3d7ca6b224cf00f2e5cbf940e97c78d"
+        },
+        {
+          "path": "crates/agent-bus-core/src/ops/ack_deadline.rs",
+          "sha256": "043fe7a01e7faf5607b768e8550a182a3f35c916be7c31221ad0a3cc91c9a2ee"
+        },
+        {
+          "path": "crates/agent-bus-core/src/redis_bus.rs",
+          "sha256": "744ca838d827267e4d0fe50805c14b3481c30a834e0ebcbc3295f933bd06e21d"
+        }
+      ],
+      "protections": "Real HTTP batch ACK clears only acknowledged pending/deadline records.",
+      "detects": "3genuine ACK-requesting sends become overdue; endpoint ACKs2, removes only their keys, preserves third pending and overdue.",
+      "needs": "Owned authenticated HTTP/Redis/PostgreSQL and private IDs.",
+      "breaking_behavior": "Use shared post_ack cleanup while preserving response IDs/schema and message posting semantics."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::absent_child_selector_is_rejected_despite_zero_exit",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "an empty libtest --exact match cannot falsely certify lifecycle behavior.",
+      "detects": "accepting exit zero without proof that the exact intended selector completed.",
+      "needs": "an actual intentionally absent child selector and its missing private completion marker."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::bridge_reconnects_and_forwards_actual_message",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "reconnect retains actual direct/broadcast notification forwarding.",
+      "detects": "a lifecycle fix that stops delivery or never reconnects after socket loss.",
+      "needs": "one forced private Redis disconnect, real RESP message and two agent receivers."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::dropping_server_future_releases_pubsub_runtime",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "cancelling the HTTP server future still releases its blocking work.",
+      "detects": "ownership cleanup that only runs after a normal graceful-shutdown return.",
+      "needs": "the private actual server child, dropped after a proven Redis subscription."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::failed_bind_watchdog_rejects_retained_subscriber",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "the failed-bind process gate can actually reject a retained worker.",
+      "detects": "replacing bounded process/runtime observation with an immediate counter assertion.",
+      "needs": "one deliberately unowned idle subscriber in a private child killed/reaped by the watchdog."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::full_sse_queue_is_cancelled_without_dropping_receiver",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "cancellation releases a Pub/Sub worker blocked by a full SSE channel.",
+      "detects": "blocking_send or send().await without cancellation on a proven-full queue.",
+      "needs": "the exact production sender helper, a capacity-one full queue and persistent stop."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::idle_pubsub_runtime_exits_after_http_stop",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "an accepted HTTP stop must let Tokio and the owned process exit.",
+      "detects": "an idle Redis bridge retained by Runtime::drop, not just a closed listener.",
+      "needs": "only a private loopback RESP fixture and a bounded, reaped test child."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::occupied_listener_returns_error_and_releases_runtime",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "failed listener startup returns its actual bind error and releases runtime ownership.",
+      "detects": "a failed-bind path retaining a blocking worker, rather than claiming unobservable spawn order.",
+      "needs": "an occupied private loopback port, healthy RESP fixture and reaped process watchdog."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::quiet_sse_disconnect_releases_workers_and_reaps_finished_entries",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "a quiet disconnected SSE client releases its worker and subscriber count.",
+      "detects": "idle get_message ignoring receiver closure, or accumulating completed handles.",
+      "needs": "repeated private /events handlers; no global stop until all disconnect controls pass."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::quiet_sse_runtime_exits_after_http_stop",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "quiet /events bodies cannot hold Axum graceful shutdown open.",
+      "detects": "cancelling only the bridge while an idle per-client worker survives.",
+      "needs": "the same private HTTP/RESP child, retaining a real authenticated SSE response."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::reconnecting_runtime_exits_after_http_stop",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "Redis loss during service stop must not leave an infinite reconnect loop.",
+      "detects": "cancellation omitted from the retry path after a real subscribed disconnect.",
+      "needs": "private RESP fixture drops the subscribed socket, then proves a rejected reconnect before HTTP stop."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::retry_wait_is_interrupted_by_stop",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "stop wakes retry immediately rather than waiting for the reconnect delay.",
+      "detects": "replacing infinite retry with a non-interruptible fixed sleep.",
+      "needs": "only the shared cooperative control and one owned joined thread."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::simultaneous_transport_and_cleanup_errors_preserve_transport_cause",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "a transport failure remains the primary cause when worker cleanup also fails.",
+      "detects": "returning cleanup failure first and losing the original listener error.",
+      "needs": "the exact result-combination helper with distinct synthetic simultaneous errors."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::sse_forwards_actual_filtered_redis_payload",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "/events still emits actual Redis payloads with the configured recipient filter.",
+      "detects": "cancellation plumbing that closes or suppresses an otherwise healthy SSE stream.",
+      "needs": "private real RESP SUBSCRIBE/message and the handler's actual response body stream."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::stalled_redis_handshake_is_bounded_and_joined",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "stop while Redis accepts TCP but never completes its handshake.",
+      "detects": "a bounded read loop paired with an unbounded initial connection/setup.",
+      "needs": "a private blackhole RESP fixture and a real registered bridge."
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::pubsub_lifecycle_tests::stopped_registry_rejects_late_sse_without_counter_or_worker",
+      "reviewer": "codex-gen9-fleet",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-21",
+      "commit_reviewed": null,
+      "base_commits": [
+        "34c7d12e20700736b329f6e7d0d15ef811256912",
+        "7b12277e6bae92d6d55ec937aed7fc3933edf931"
+      ],
+      "disposition": "keep",
+      "scope": "Independent root review and fresh native replay of the merged B171 fixture / 910 HTTP module / E992 child-helper tuple. Private loopback RESP and owned HTTP/runtime lifecycle controls only; no live backend, fleet deployment, hotplug or DNS-settings qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http_pubsub_tests.rs",
+        "sha256": "b171027cc20f8f14eded22d06617b5936ead6845c589557656fba5969294025f",
+        "hash_scope": "whole normalized Rust module including fixtures and assertions"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "910558b7aed99a55e3c2c251b23740dd49b153050279c6b471e7984e29275544"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http_lifecycle_process.rs",
+          "sha256": "e992dc36cb63e2ce36a8f8a5f4b355aa3555b2c5fa7ca7bc3cade7ec8610fbed"
+        }
+      ],
+      "control": "Root independent combined replay tool54396c:15 selected/15 passed/0 failed/0 ignored; native executable8AB1149E3C1F25FE92361031EAFF1C7DB6ABEFA48E1E21A27E173E61B52B7B9D and source pins stable before/after. Receipt C:/codedev/evidence/fleet-unification/artifacts/http-pubsub-root-review/combined-integration.json SHA2562D24BE7AAC3F88EE9EB67FAF5863368546B948E703E7F71644730D761451E979. Private config{} and LOCALAPPDATA, owned fixture cleanup completed. Expected negative controls may emit stderr; no empty-stderr claim.",
+      "breaking_behavior": "Combines the required Settings fixture stagger field from PR162 with the reviewed batch-ACK cleanup from main175; pubsub lifecycle assertions and implementation preserved. Both parent review rows and original runtime provenance remain unchanged in historical_reviews.",
+      "supersedes": {
+        "historical_record": "Both parent rows for this selector retained unchanged in historical_reviews; this is a fresh combined-tuple acceptance, not relabeling either parent execution."
+      },
+      "protections": "late SSE registrations after cancellation cannot leak their subscriber count.",
+      "detects": "a rejected spawn dropping neither its sender nor its counter guard.",
+      "needs": "a stopped worker registry and the actual /events handler with no external I/O."
     }
   ]
 }
