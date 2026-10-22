@@ -8176,6 +8176,82 @@
         "execution_evidence": "Publisher retained actual RED and GREEN receipts; full existing isolation harness323 pass/1 platform skip. Reviewer inspected exact source/diff and log totals, did not rerun."
       },
       "breaking_behavior": "Admits the reviewed CI whose sole producer diff is Node26.12.0 to26.12.1. Does not change job membership, routing, skips, assertions or gate implementation."
+    },
+    {
+      "selector": "scripts/test-agent-bus-fleet-fixtures.ps1::Test-LocalWindowsHostMismatch",
+      "reviewer": "cloud_worker_source_repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "8aa29c21610ca6936dc06777bc89fe09d9ef79be",
+      "reviewed_source_state": "Frozen exact source/test bindings independently reviewed; full native PowerShell7 fixture replay passed (55030e), immutable baseline product reproduced the new refusal assertion RED (85e865), post-replay pins unchanged (a90494).",
+      "scope": "Only the named PowerShell fixture group and explicitly bound shared source; no live fleet, deployment, backend, full Rust, PowerShell5.1 runtime or coverage qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-fleet-fixtures.ps1",
+        "first_line": 160,
+        "last_line": 215,
+        "sha256": "24cd545ca091675a815cf621fd8d321f2226d557098c5eaa995ffd6402388b1e",
+        "span_kind": "Complete LF-normalized PowerShell function or named case group physical lines, including indentation and terminal newline"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-fleet.ps1",
+        "sha256": "6e9214f3c1fa6de81f44030a59945f24be9a44f879a562d6bcbdaeaf1319b21f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-fleet-fixtures.ps1",
+          "sha256": "b1ed574f4f70e72922062cbe2d320fae34e040dbd06d2f74fa81cd64796c15eb"
+        }
+      ],
+      "rationale": "Protects: local fleet results belong to the native host. Detects: a different manifest host triggering CLI, configuration or service observations before identity refusal, or Strict/SkipLive changing that boundary. Needs: owned synthetic manifest/CLI, scoped observation counters and no real bus or credentials. Breadcrumb: scripts/test-agent-bus-fleet.ps1 local-windows guard before version/config/service probes.",
+      "relevance": "A fleet doctor invoked from Gen9 must refuse to label local observations as Gen7; observed immutable-baseline reproduction cc699e returned 11/11 OK under the wrong host.",
+      "coverage": {
+        "fresh_independent_selector_pass": true,
+        "failing_input_or_control": "Wrong manifest host must produce one live identity failure and no CLI/config/service observations; a matching native host remains accepted irrespective of case and spoofed COMPUTERNAME.",
+        "independent_replay": "55030e full canonical native PowerShell7 fixture passed; 85e865 immutable8aa product failed the exact new pre-probe assertion; no source rollback or live service calls."
+      },
+      "breaking_behavior": "Live local-windows manifests whose ID differs from native Environment.MachineName now fail before probes; case-insensitive matching and structural SkipLive remain supported.",
+      "additional_coverage_boundary": "Source-only observation guard; no manifest pin/host-list update or running binary replacement."
+    },
+    {
+      "selector": "scripts/test-agent-bus-fleet-fixtures.ps1::local-windows-host-match",
+      "reviewer": "cloud_worker_source_repair",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "8aa29c21610ca6936dc06777bc89fe09d9ef79be",
+      "reviewed_source_state": "Frozen exact source/test bindings independently reviewed; full native PowerShell7 fixture replay passed (55030e), immutable baseline product reproduced the new refusal assertion RED (85e865), post-replay pins unchanged (a90494).",
+      "scope": "Only the named PowerShell fixture group and explicitly bound shared source; no live fleet, deployment, backend, full Rust, PowerShell5.1 runtime or coverage qualification.",
+      "disposition": "keep",
+      "selector_source": {
+        "path": "scripts/test-agent-bus-fleet-fixtures.ps1",
+        "first_line": 218,
+        "last_line": 269,
+        "sha256": "e335c1888890a95e79f06f5c4183594e87f6abe5ba36f587ab518803f6f9c116",
+        "span_kind": "Complete LF-normalized PowerShell function or named case group physical lines, including indentation and terminal newline"
+      },
+      "code_under_test": {
+        "path": "scripts/test-agent-bus-fleet.ps1",
+        "sha256": "6e9214f3c1fa6de81f44030a59945f24be9a44f879a562d6bcbdaeaf1319b21f"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/test-agent-bus-fleet-fixtures.ps1",
+          "sha256": "b1ed574f4f70e72922062cbe2d320fae34e040dbd06d2f74fa81cd64796c15eb"
+        }
+      ],
+      "rationale": "Protects: legitimate local fleet diagnostics after identity admission. Detects: case-sensitive native-host comparison, trust in mutable COMPUTERNAME, altered inherited routing or leaked environment overrides. Needs: the actual native machine name and owned synthetic CLI/config only. Breadcrumb: scripts/test-agent-bus-fleet.ps1 local-windows identity admission and real-configuration route observation.",
+      "relevance": "A fleet doctor invoked from Gen9 must refuse to label local observations as Gen7; observed immutable-baseline reproduction cc699e returned 11/11 OK under the wrong host.",
+      "coverage": {
+        "fresh_independent_selector_pass": true,
+        "failing_input_or_control": "Wrong manifest host must produce one live identity failure and no CLI/config/service observations; a matching native host remains accepted irrespective of case and spoofed COMPUTERNAME.",
+        "independent_replay": "55030e full canonical native PowerShell7 fixture passed; 85e865 immutable8aa product failed the exact new pre-probe assertion; no source rollback or live service calls."
+      },
+      "breaking_behavior": "Live local-windows manifests whose ID differs from native Environment.MachineName now fail before probes; case-insensitive matching and structural SkipLive remain supported.",
+      "additional_coverage_boundary": "Source-only observation guard; no manifest pin/host-list update or running binary replacement."
     }
   ],
   "historical_reviews": [
