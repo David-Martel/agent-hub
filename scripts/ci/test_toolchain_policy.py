@@ -45,6 +45,10 @@ class ToolchainPolicyTests(unittest.TestCase):
         path.write_text(path.read_text().replace("rust:1.99.0", "rust:1.98.1", 1))
         self.assertTrue(POLICY_MODULE.verify_sources(self.root, self.policy))
 
+    # Protects: CI uses the exact Node version declared by the source policy.
+    # Detects: A floating Node pin or a stale mutation that changes no fixture bytes.
+    # Needs: Temporary tracked-source fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py verify_sources Node workflow check.
     def test_floating_node_pin_fails(self):
         path = self.root / ".github/workflows/ci.yml"
         needle = f'node-version: "{self.policy["node"]}"'

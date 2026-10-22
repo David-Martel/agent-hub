@@ -2877,46 +2877,6 @@
       "additional_coverage_boundary": "Native real popup delivery, scheduled wrapper exit propagation, overlapping watchdog processes and tunnel restoration remain unqualified."
     },
     {
-      "selector": "scripts/ci/test_dependabot_admission.py::AdmissionTests::test_trusted_policy_inventory_matches_independent_producer_oracle",
-      "reviewer": "codex-ms01-closeout-evidence",
-      "reviewer_type": "independent_agent",
-      "reviewer_authored_test_or_fix": false,
-      "date": "2026-10-17",
-      "commit_reviewed": null,
-      "base_commit": "dfcc837aa67e0f4727e627dc1ba79a83dc74827b",
-      "disposition": "keep",
-      "scope": "ONLY the updated reviewed CI producer hash binding after independent review of the six added dual-runtime watchdog fixture lines. Static source review and actual hash verification; no independent replay or legacy inventory certification.",
-      "selector_source": {
-        "path": "scripts/ci/test_dependabot_admission.py",
-        "first_line": 432,
-        "last_line": 456,
-        "sha256": "dd3925017fa83443b7f7f06b0bcf326e48543a305658ec9df7eaa7a5101773b6"
-      },
-      "code_under_test": {
-        "path": ".github/workflows/dependabot-automerge.yml",
-        "sha256": "89170051f1e57fec152bfc58174bd99e821b3bbf8ec91e246515a681b9b1dcd8"
-      },
-      "shared_sources": [
-        {
-          "path": "scripts/ci/test_dependabot_admission.py",
-          "sha256": "ad2cbb3a68b2edb4e994115fec3c6028f376f8d79fcbff08aa1f6609f1f05012"
-        },
-        {
-          "path": ".github/workflows/ci.yml",
-          "sha256": "be36166db7c9021a2325abfe78a4ab27f414651b8169fdb79a7198338ff823d6"
-        }
-      ],
-      "rationale": "Protects: reviewed exact CI producer identity and independent job/skip oracle. Detects: stale producer admission after a reviewed workflow change, or unreviewed changed source admitted by hash-only manipulation. Needs: closed credential-free API fixtures and reviewed source bytes. Breadcrumb: test_dependabot_admission.py REVIEWED_HASH/SKIPS and dependabot-automerge.yml reviewed producer declarations.",
-      "relevance": "The release/admission gate intentionally refused the first PR head after the six CI fixture lines changed producer bytes. Refreshing only reviewed identity bindings retains that refusal for future unreviewed changes.",
-      "coverage": {
-        "failing_input_or_control": "Original CI run38988859844 refused expected53b102 versus actualbe36166. Existing future_hash_only, source_changed and merge_changed_source negative controls are unchanged.",
-        "fresh_independent_selector_pass": false,
-        "independent_review": "Reviewer verified the exact four literal replacements, producer/oracle/policy hashes and unchanged sixteen jobs/manual-skip declarations. No independent test replay claimed."
-      },
-      "breaking_behavior": "Only the independently reviewed six-line CI addition is newly admitted. Required sixteen jobs, exact-head checks, manual skip semantics and changed-source negative controls remain unchanged.",
-      "additional_coverage_boundary": "This record does not certify every legacy selector, host deployment, artifact binary or current-head CI success."
-    },
-    {
       "selector": "crates/agent-bus-http/src/cloud_sync.rs::tests::invalid_push_dispositions_retain_the_entire_batch_and_restart_cursor",
       "reviewer": "codex-ms01",
       "reviewer_type": "independent_agent",
@@ -8126,6 +8086,96 @@
       },
       "breaking_behavior": "Only GET /messages uses the sequence-capable extractor; ordered repeated tag values now parse. Missing defaults, explicit empty strings, malformed numeric/boolean values and duplicate scalar rejection retain the old contract.",
       "limits": "Pure actual-handler-extractor selection only;83 unrelated HTTP tests unselected. No router/storage matching, end-to-end delivery, live hub or deployment claim. The separate full native Windows HTTP-package/private-fixture command remains automatically rejected before execution; no reason, retry or proxy. Normal immutable-snapshot Linux hook/CI QA is recorded separately."
+    },
+    {
+      "reviewer": "codex-asus-backlog-plan",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "b28a4f70639d54f2919b45833da156909f44fed8",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-22T16:48:42Z",
+      "reviewed_source_state": "Frozen working successor; exact canonical selector and shared source hashes below. Reviewer wrote metadata only.",
+      "selector": "scripts/ci/test_toolchain_policy.py::ToolchainPolicyTests::test_floating_node_pin_fails",
+      "scope": "Existing floating Node mutation and its reviewed policy/source inputs; no new selector or runtime qualification.",
+      "selector_source": {
+        "path": "scripts/ci/test_toolchain_policy.py",
+        "first_line": 52,
+        "last_line": 57,
+        "sha256": "addeee178a1162059cf196ee6de00eff6843d6238ad5f08861e1a297b4343258"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/toolchain_policy.py",
+        "sha256": "580f65450b4d20368d2604be932f2f5dec25e0dfa3414569dcdb06dda7384151"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_toolchain_policy.py",
+          "sha256": "eb8e687fbc07067657c2bc4d783f59ecd0e9554e8185ca1ea01f3b8773ab3815"
+        },
+        {
+          "path": "scripts/ci/toolchain-policy.json",
+          "sha256": "c0eed523870753e7c10e1b54b0915ddd46b3919650179ac068da79c02b6b4ad7"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "80377abd88b78d000c1d9ca544ad776f4dbe862001ffc563719c46443ad6ac8b"
+        }
+      ],
+      "relevance": "The shipping CI source check requires the exact Node pin.",
+      "protections": "Keep CI Node selection exact and policy-consistent.",
+      "detects": "A floating Node pin; assertIn also detects a stale mutation that changes no bytes.",
+      "needs": "Temporary source fixture; no external services, network or hardware.",
+      "coverage": {
+        "failing_input_or_control": "Replace the reviewed current literal with Node26; require nonempty verify_sources findings. Existing conserved-source control requires no findings.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Publisher retained 11 policy controls passing and full existing isolation harness323 pass/1 platform skip; reviewer inspected receipts and source, did not rerun."
+      },
+      "breaking_behavior": "Derives the mutation needle from policy and asserts it exists; does not permit floating versions or relax the production verifier."
+    },
+    {
+      "reviewer": "codex-asus-backlog-plan",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "b28a4f70639d54f2919b45833da156909f44fed8",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-22T16:48:42Z",
+      "reviewed_source_state": "Frozen working successor; exact canonical selector and shared source hashes below. Reviewer wrote metadata only.",
+      "selector": "scripts/ci/test_dependabot_admission.py::AdmissionTests::test_trusted_policy_inventory_matches_independent_producer_oracle",
+      "scope": "Reviewed CI producer Node patch, unchanged16 required jobs/manual-only skip, independent oracle constants and unchanged negative assertions.",
+      "selector_source": {
+        "path": "scripts/ci/test_dependabot_admission.py",
+        "first_line": 436,
+        "last_line": 460,
+        "sha256": "dd3925017fa83443b7f7f06b0bcf326e48543a305658ec9df7eaa7a5101773b6"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/dependabot-automerge.yml",
+        "sha256": "3e62d440de5a8370b7c6876ec0fec1b9f97e1180b2c245fb8e7b5ba34b9c13f5"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_dependabot_admission.py",
+          "sha256": "af343a2e1b0200eb875f26313e32c2c28ba94ac9824202edcabf8c5b179f0f57"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "80377abd88b78d000c1d9ca544ad776f4dbe862001ffc563719c46443ad6ac8b"
+        }
+      ],
+      "relevance": "Dependabot admission consumes exact-source CI inventory and manual-job skip evidence.",
+      "protections": "Only the reviewed current CI producer can satisfy the complete independent16-job oracle and manual-only skip.",
+      "detects": "Unknown/changed producers, missing jobs and hash-only manipulations remain rejected.",
+      "needs": "Existing independent fixture harness; no live GitHub changes or credentials.",
+      "coverage": {
+        "failing_input_or_control": "Existing admission controls produced44 pass/6 fail after the real Node change with stale source hashes; reviewed hash refresh restores50 pass. Future producer hash inequality and manual-only assertion remain unchanged.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Publisher retained actual RED and GREEN receipts; full existing isolation harness323 pass/1 platform skip. Reviewer inspected exact source/diff and log totals, did not rerun."
+      },
+      "breaking_behavior": "Admits the reviewed CI whose sole producer diff is Node26.12.0 to26.12.1. Does not change job membership, routing, skips, assertions or gate implementation."
     }
   ],
   "historical_reviews": [
@@ -13574,6 +13624,46 @@
       "protections": "late SSE registrations after cancellation cannot leak their subscriber count.",
       "detects": "a rejected spawn dropping neither its sender nor its counter guard.",
       "needs": "a stopped worker registry and the actual /events handler with no external I/O."
+    },
+    {
+      "selector": "scripts/ci/test_dependabot_admission.py::AdmissionTests::test_trusted_policy_inventory_matches_independent_producer_oracle",
+      "reviewer": "codex-ms01-closeout-evidence",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-17",
+      "commit_reviewed": null,
+      "base_commit": "dfcc837aa67e0f4727e627dc1ba79a83dc74827b",
+      "disposition": "keep",
+      "scope": "ONLY the updated reviewed CI producer hash binding after independent review of the six added dual-runtime watchdog fixture lines. Static source review and actual hash verification; no independent replay or legacy inventory certification.",
+      "selector_source": {
+        "path": "scripts/ci/test_dependabot_admission.py",
+        "first_line": 432,
+        "last_line": 456,
+        "sha256": "dd3925017fa83443b7f7f06b0bcf326e48543a305658ec9df7eaa7a5101773b6"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/dependabot-automerge.yml",
+        "sha256": "89170051f1e57fec152bfc58174bd99e821b3bbf8ec91e246515a681b9b1dcd8"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_dependabot_admission.py",
+          "sha256": "ad2cbb3a68b2edb4e994115fec3c6028f376f8d79fcbff08aa1f6609f1f05012"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "be36166db7c9021a2325abfe78a4ab27f414651b8169fdb79a7198338ff823d6"
+        }
+      ],
+      "rationale": "Protects: reviewed exact CI producer identity and independent job/skip oracle. Detects: stale producer admission after a reviewed workflow change, or unreviewed changed source admitted by hash-only manipulation. Needs: closed credential-free API fixtures and reviewed source bytes. Breadcrumb: test_dependabot_admission.py REVIEWED_HASH/SKIPS and dependabot-automerge.yml reviewed producer declarations.",
+      "relevance": "The release/admission gate intentionally refused the first PR head after the six CI fixture lines changed producer bytes. Refreshing only reviewed identity bindings retains that refusal for future unreviewed changes.",
+      "coverage": {
+        "failing_input_or_control": "Original CI run38988859844 refused expected53b102 versus actualbe36166. Existing future_hash_only, source_changed and merge_changed_source negative controls are unchanged.",
+        "fresh_independent_selector_pass": false,
+        "independent_review": "Reviewer verified the exact four literal replacements, producer/oracle/policy hashes and unchanged sixteen jobs/manual-skip declarations. No independent test replay claimed."
+      },
+      "breaking_behavior": "Only the independently reviewed six-line CI addition is newly admitted. Required sixteen jobs, exact-head checks, manual skip semantics and changed-source negative controls remain unchanged.",
+      "additional_coverage_boundary": "This record does not certify every legacy selector, host deployment, artifact binary or current-head CI success."
     }
   ]
 }
