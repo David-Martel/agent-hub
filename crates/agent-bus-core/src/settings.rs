@@ -277,7 +277,22 @@ impl ConfigFile {
     /// state paths inherited from a profile's `.config/agent-bus/config.json`
     /// resolve inside that profile even when `USERPROFILE` or `HOME` points at
     /// an unconfigured sandbox.
+    /// Windows normalizes the profile prefix without resolving filesystem aliases;
+    /// the configured suffix keeps its original spelling and credential scope.
+    /// A normalization error records a configuration refusal before any mutation.
     fn anchor_tilde_paths(&mut self, profile: &std::path::Path) {
+        #[cfg(windows)]
+        let native_profile = match std::path::absolute(profile) {
+            Ok(profile) => profile,
+            Err(_sanitized) => {
+                self.configuration_error =
+                    Some("agent-bus profile path could not be normalized".to_owned());
+                return;
+            }
+        };
+        #[cfg(windows)]
+        let profile = native_profile.as_path();
+
         if let Some(token_file) = self.cloud_token_file.as_deref() {
             self.cloud_token_file = Some(expand_tilde_with(token_file, profile));
         }
@@ -1486,6 +1501,208 @@ mod tests {
             .expect("candidate token from real profile must resolve despite sandboxed home_dir")
             .expect("bearer token present");
         assert_eq!(token.expose(), "real-profile-token-value");
+    }
+
+    /// Protects: one Windows config keeps one scope across separator spellings.
+    /// Detects: lexical profile separators changing anchored credential-source bytes.
+    /// Needs: one owned private profile/config; token files stay absent, without env overrides.
+    /// Breadcrumb: `load_config_file_at`, `anchor_tilde_paths`, `candidates_fingerprint`.
+    #[cfg(windows)]
+    #[test]
+    fn windows_config_separator_spelling_preserves_native_scope_and_missing_tokens() {
+        let root = tempfile::tempdir().expect("owned fixture root");
+        let profile = root.path().join("private-profile");
+        crate::outbox_private::create_directory(&profile).expect("private profile directory");
+        let native_path = config_path_under(&profile);
+        std::fs::create_dir_all(native_path.parent().unwrap()).expect("config directory");
+        let bytes = br#"{
+            "server_urls": [
+                {"url":"http://localhost:8484","role":"authoritative","hub":"fixture-hub"},
+                {"url":"https://cloud.example.com","role":"cloud",
+                 "token_file":"~/.config/agent-bus/cloud.token"}
+            ],
+            "cloud_token_file":"~/.config/agent-bus/sync.token"
+        }"#;
+        std::fs::write(&native_path, bytes).expect("one synthetic config file");
+        let forward_path =
+            std::path::PathBuf::from(native_path.to_string_lossy().replace('\\', "/"));
+        assert_ne!(native_path.as_os_str(), forward_path.as_os_str());
+        assert_eq!(
+            std::fs::canonicalize(&native_path).unwrap(),
+            std::fs::canonicalize(&forward_path).unwrap(),
+            "both spellings must read the same existing fixture file"
+        );
+        let native = load_config_file_at(&native_path);
+        let forward = load_config_file_at(&forward_path);
+        let (native_candidates, native_error) = resolve_candidate_tiers(&native, None, None, None);
+        let (forward_candidates, forward_error) =
+            resolve_candidate_tiers(&forward, None, None, None);
+        assert_eq!((native_error, forward_error), (None, None));
+        assert_eq!(
+            crate::hub_cache::candidates_fingerprint(&native_candidates),
+            crate::hub_cache::candidates_fingerprint(&forward_candidates),
+            "one physical config must not split the durable outbox scope"
+        );
+        assert_eq!(native_candidates.len(), 2);
+        let expected_source = profile
+            .join(".config/agent-bus/cloud.token")
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            native_candidates[1].auth,
+            crate::hub_candidates::CandidateAuth::TokenFile(expected_source)
+        );
+        assert_eq!(native_candidates, forward_candidates);
+        assert_eq!(
+            native.cloud_token_file.as_deref(),
+            Some(
+                profile
+                    .join(".config/agent-bus/sync.token")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert_eq!(native.cloud_token_file, forward.cloud_token_file);
+        assert_eq!(native.cloud_sync_state_file, forward.cloud_sync_state_file);
+        assert_eq!(
+            native.cloud_sync_state_file.as_deref(),
+            Some(
+                profile
+                    .join(".config")
+                    .join("agent-bus")
+                    .join("cloud-sync-state.json")
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+        assert!(!profile.join(".config/agent-bus/cloud.token").exists());
+        assert!(!profile.join(".config/agent-bus/sync.token").exists());
+        assert!(
+            !profile
+                .join(".config/agent-bus/cloud-sync-state.json")
+                .exists()
+        );
+        assert_eq!(std::fs::read(&native_path).unwrap(), bytes);
+        assert_eq!(std::fs::read(&forward_path).unwrap(), bytes);
+    }
+
+    /// Protects: profile normalization cannot merge distinct destinations or providers.
+    /// Detects: dropping hub, URL, source-path suffix or provider-kind scope inputs.
+    /// Needs: an owned temporary root and absent profile; no providers or network access.
+    /// Breadcrumb: `anchor_tilde_paths`, `resolve_candidate_tiers`, `candidates_fingerprint`.
+    #[test]
+    fn anchored_profile_keeps_distinct_destinations_and_credential_sources_in_distinct_scopes() {
+        let root = tempfile::tempdir().expect("owned fixture root");
+        let profile = root.path().join("absent-profile");
+        let anchored = |entry: serde_json::Value| {
+            let mut config: ConfigFile = serde_json::from_value(serde_json::json!({
+                "server_urls": [entry]
+            }))
+            .unwrap();
+            config.anchor_tilde_paths(&profile);
+            let (candidates, error) = resolve_candidate_tiers(&config, None, None, None);
+            assert_eq!(error, None);
+            assert_eq!(candidates.len(), 1);
+            crate::hub_cache::candidates_fingerprint(&candidates)
+        };
+        let original = serde_json::json!({
+            "url":"http://localhost:8484", "role":"authoritative", "hub":"fixture-hub",
+            "token_file":"~/.config/agent-bus/first.token"
+        });
+        let baseline = anchored(original.clone());
+        for (field, value) in [
+            ("url", "http://localhost:8485"),
+            ("hub", "different-hub"),
+            ("token_file", "~/.config/agent-bus/second.token"),
+        ] {
+            let mut changed = original.clone();
+            changed[field] = serde_json::json!(value);
+            assert_ne!(
+                baseline,
+                anchored(changed),
+                "changed {field} must retain its own scope"
+            );
+        }
+        let mut changed_provider = original;
+        changed_provider
+            .as_object_mut()
+            .unwrap()
+            .remove("token_file");
+        changed_provider["token_env"] = serde_json::json!("SYNTHETIC_TOKEN_SOURCE");
+        assert_ne!(baseline, anchored(changed_provider));
+        assert!(
+            !profile.exists(),
+            "anchoring must not create or require the profile"
+        );
+    }
+
+    /// Protects: invalid Windows profiles fail closed before changing file settings.
+    /// Detects: fallback to an unnormalized profile, partial mutation or raw-path disclosure.
+    /// Needs: synthetic metadata and a NUL-bearing path; no files or providers are accessed.
+    /// Breadcrumb: `anchor_tilde_paths` and `resolve_candidate_tiers`' configuration-error guard.
+    #[cfg(windows)]
+    #[test]
+    fn windows_invalid_profile_anchor_refuses_candidates_without_mutating_paths() {
+        let mut config: ConfigFile = serde_json::from_value(serde_json::json!({
+            "server_urls": [{"url":"https://cloud.example.com","role":"cloud",
+                             "token_file":"~/.config/agent-bus/cloud.token"}],
+            "cloud_token_file":"~/.config/agent-bus/sync.token",
+            "cloud_sync_state_file":"~/.config/agent-bus/state.json"
+        }))
+        .unwrap();
+        let original_candidates = config.server_urls.clone();
+        let original_token = config.cloud_token_file.clone();
+        let original_state = config.cloud_sync_state_file.clone();
+        config.anchor_tilde_paths(std::path::Path::new(
+            "C:\\SYNTHETIC_PROFILE_MUST_NOT_LEAK\0profile",
+        ));
+        let error = config
+            .configuration_error
+            .as_deref()
+            .expect("normalization refusal");
+        assert!(error.contains("profile path could not be normalized"));
+        assert!(!error.contains("SYNTHETIC_PROFILE_MUST_NOT_LEAK"));
+        assert!(!error.contains('\0'));
+        assert_eq!(config.server_urls, original_candidates);
+        assert_eq!(config.cloud_token_file, original_token);
+        assert_eq!(config.cloud_sync_state_file, original_state);
+        let (candidates, refusal) = resolve_candidate_tiers(&config, None, None, None);
+        assert_eq!(candidates, [] as [HubCandidate; 0]);
+        assert_eq!(refusal.as_deref(), Some(error));
+    }
+
+    /// Protects: Unix profile spelling and literal backslashes keep their existing meaning.
+    /// Detects: Windows normalization leaking onto Unix or collapsing a symlink-sensitive parent.
+    /// Needs: synthetic candidate metadata only; no filesystem or credential access.
+    /// Breadcrumb: the Windows-only normalization in `anchor_tilde_paths`.
+    #[cfg(unix)]
+    #[test]
+    fn unix_profile_anchor_preserves_backslashes_and_parent_components() {
+        let profile = std::path::Path::new("/synthetic/profile\\literal/link/..");
+        let mut config: ConfigFile = serde_json::from_value(serde_json::json!({
+            "server_urls": [{"url":"https://cloud.example.com","role":"cloud",
+                             "token_file":"~/.config/agent-bus/cloud.token"}],
+            "cloud_token_file":"~/.config/agent-bus/sync.token"
+        }))
+        .unwrap();
+        config.anchor_tilde_paths(profile);
+        assert_eq!(config.configuration_error, None);
+        let (candidates, error) = resolve_candidate_tiers(&config, None, None, None);
+        assert_eq!(error, None);
+        assert_eq!(
+            candidates[0].auth,
+            crate::hub_candidates::CandidateAuth::TokenFile(
+                "/synthetic/profile\\literal/link/../.config/agent-bus/cloud.token".to_owned()
+            )
+        );
+        assert_eq!(
+            config.cloud_token_file.as_deref(),
+            Some("/synthetic/profile\\literal/link/../.config/agent-bus/sync.token")
+        );
+        assert_eq!(
+            config.cloud_sync_state_file.as_deref(),
+            Some("/synthetic/profile\\literal/link/../.config/agent-bus/cloud-sync-state.json")
+        );
     }
 
     #[test]

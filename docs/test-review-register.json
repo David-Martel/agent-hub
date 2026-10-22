@@ -8161,6 +8161,162 @@
       },
       "limits": "The negative control protects exhausted-budget/no-extra-sleep behavior; it is not claimed to fail the old premature guard. Filesystem latency and process suspension are not real-time bounded.",
       "scope": "Root independently read the exact production helper, both complete new tests and documentation (7ae4ea/14662d). Test/fix authored by bus_installer_resume. Runtime evidence below is author execution, not a root rerun; no deployment qualification."
+    },
+    {
+      "coverage": {
+        "linux_runtime": "Not executed at this static review. Normal isolated pre-push remains the required execution gate; its later result is recorded separately in the PR and hook receipt.",
+        "failing_first": "Actual author 03b005: native same-file fixture proved both aliases reference one file, then scope equality failed before production normalization (one behavioral failure, exit101).",
+        "linux_compile": "Root5068a4 normal isolated precommit fmt/Clippy all-targets PASS33.85s; index tree1943744ded05339b5f0ca2fed9731ddb58bd9814. This compiled the Unix test; it did not execute it.",
+        "strict": "Author final5202d5 strict core lib/tests Clippy and formatting PASS. Earlier typed-empty assertion lint failure corrected without changing product behavior.",
+        "native": "Actual author 588ead:83 Settings selectors PASS; f9328a full core921PASS/18 existing backend ignored. Unix-only selector compiled out on Windows, not claimed passed there.",
+        "review_assessment": "Native positive asserts actual file identity, exact native provider spelling, equal complete candidate lists and state paths, absent files and unchanged config bytes. Distinction controls vary independent scope inputs. Invalid-profile control checks unchanged settings, sanitized error and empty refused candidates. Unix control checks literal separator and parent-component bytes."
+      },
+      "commit_reviewed": null,
+      "selector": "crates/agent-bus-core/src/settings.rs::tests::windows_config_separator_spelling_preserves_native_scope_and_missing_tokens",
+      "scope": "Root independently read the complete 217-line Settings diff and each new selector (568476). Source and tests authored by bus_installer_resume; root authored operator documentation only. Reviewer did not execute native Rust tests. No fleet deployment or outside-family approval implied.",
+      "reviewer_type": "independent_agent",
+      "base_commit": "f31772b880b0cbb7e96f1e51f7280243f9ba287c",
+      "limits": "Platform: Windows. std::path::absolute does not collapse case, filesystem junctions or verbatim aliases. Legacy forward-spelling retained debt still requires original matching settings before migration; fingerprint v1 and refusal guards remain intact.",
+      "shared_sources": [
+        {
+          "sha256": "3d98b5950dfca61096c0e521a8163bc5cf6fa2f4bd7dc72cc2eb53fc77a58464",
+          "path": "README.md"
+        }
+      ],
+      "reviewer_authored_test_or_fix": false,
+      "code_under_test": {
+        "sha256": "517d699711ad21ab6b27a4b8b36e7ba9a7e099d8122c0495eb960982ed457873",
+        "path": "crates/agent-bus-core/src/settings.rs"
+      },
+      "disposition": "keep",
+      "breaking_behavior": "Equivalent Windows config-path separators no longer split the outbox scope. Credentials, config bytes and missing-token state remain untouched.",
+      "selector_source": {
+        "hash_scope": "Inclusive rationale+test physical lines normalized to LF, including terminal newline.",
+        "sha256": "8837171955042f25858c445584ecd03b640bd21b4f718a833f6b1e51b1d96e49",
+        "last_line": 1587,
+        "first_line": 1506,
+        "path": "crates/agent-bus-core/src/settings.rs"
+      },
+      "reviewer": "codex-gen9-fleet-resume",
+      "date": "2026-10-22",
+      "relevance": "Same physical configuration referenced through native or forward separators selects identical anchored providers and scope, preserving the existing native byte baseline."
+    },
+    {
+      "coverage": {
+        "linux_runtime": "Not executed at this static review. Normal isolated pre-push remains the required execution gate; its later result is recorded separately in the PR and hook receipt.",
+        "failing_first": "Actual author 03b005: native same-file fixture proved both aliases reference one file, then scope equality failed before production normalization (one behavioral failure, exit101).",
+        "linux_compile": "Root5068a4 normal isolated precommit fmt/Clippy all-targets PASS33.85s; index tree1943744ded05339b5f0ca2fed9731ddb58bd9814. This compiled the Unix test; it did not execute it.",
+        "strict": "Author final5202d5 strict core lib/tests Clippy and formatting PASS. Earlier typed-empty assertion lint failure corrected without changing product behavior.",
+        "native": "Actual author 588ead:83 Settings selectors PASS; f9328a full core921PASS/18 existing backend ignored. Unix-only selector compiled out on Windows, not claimed passed there.",
+        "review_assessment": "Native positive asserts actual file identity, exact native provider spelling, equal complete candidate lists and state paths, absent files and unchanged config bytes. Distinction controls vary independent scope inputs. Invalid-profile control checks unchanged settings, sanitized error and empty refused candidates. Unix control checks literal separator and parent-component bytes."
+      },
+      "commit_reviewed": null,
+      "selector": "crates/agent-bus-core/src/settings.rs::tests::anchored_profile_keeps_distinct_destinations_and_credential_sources_in_distinct_scopes",
+      "scope": "Root independently read the complete 217-line Settings diff and each new selector (568476). Source and tests authored by bus_installer_resume; root authored operator documentation only. Reviewer did not execute native Rust tests. No fleet deployment or outside-family approval implied.",
+      "reviewer_type": "independent_agent",
+      "base_commit": "f31772b880b0cbb7e96f1e51f7280243f9ba287c",
+      "limits": "Platform: Windows and Unix. std::path::absolute does not collapse case, filesystem junctions or verbatim aliases. Legacy forward-spelling retained debt still requires original matching settings before migration; fingerprint v1 and refusal guards remain intact.",
+      "shared_sources": [
+        {
+          "sha256": "3d98b5950dfca61096c0e521a8163bc5cf6fa2f4bd7dc72cc2eb53fc77a58464",
+          "path": "README.md"
+        }
+      ],
+      "reviewer_authored_test_or_fix": false,
+      "code_under_test": {
+        "sha256": "517d699711ad21ab6b27a4b8b36e7ba9a7e099d8122c0495eb960982ed457873",
+        "path": "crates/agent-bus-core/src/settings.rs"
+      },
+      "disposition": "keep",
+      "breaking_behavior": "No widening of admitted replay destinations; URL, hub, token-file suffix and token-env differences still produce distinct fingerprints.",
+      "selector_source": {
+        "hash_scope": "Inclusive rationale+test physical lines normalized to LF, including terminal newline.",
+        "sha256": "93037f7542a59931dfd3284bab33ab263ec1b9c58de505f32948fe287e641547",
+        "last_line": 1637,
+        "first_line": 1589,
+        "path": "crates/agent-bus-core/src/settings.rs"
+      },
+      "reviewer": "codex-gen9-fleet-resume",
+      "date": "2026-10-22",
+      "relevance": "Normalizing a profile prefix must not erase genuine destination, provider kind or configured file-suffix distinctions."
+    },
+    {
+      "coverage": {
+        "linux_runtime": "Not executed at this static review. Normal isolated pre-push remains the required execution gate; its later result is recorded separately in the PR and hook receipt.",
+        "failing_first": "Actual author 03b005: native same-file fixture proved both aliases reference one file, then scope equality failed before production normalization (one behavioral failure, exit101).",
+        "linux_compile": "Root5068a4 normal isolated precommit fmt/Clippy all-targets PASS33.85s; index tree1943744ded05339b5f0ca2fed9731ddb58bd9814. This compiled the Unix test; it did not execute it.",
+        "strict": "Author final5202d5 strict core lib/tests Clippy and formatting PASS. Earlier typed-empty assertion lint failure corrected without changing product behavior.",
+        "native": "Actual author 588ead:83 Settings selectors PASS; f9328a full core921PASS/18 existing backend ignored. Unix-only selector compiled out on Windows, not claimed passed there.",
+        "review_assessment": "Native positive asserts actual file identity, exact native provider spelling, equal complete candidate lists and state paths, absent files and unchanged config bytes. Distinction controls vary independent scope inputs. Invalid-profile control checks unchanged settings, sanitized error and empty refused candidates. Unix control checks literal separator and parent-component bytes."
+      },
+      "commit_reviewed": null,
+      "selector": "crates/agent-bus-core/src/settings.rs::tests::windows_invalid_profile_anchor_refuses_candidates_without_mutating_paths",
+      "scope": "Root independently read the complete 217-line Settings diff and each new selector (568476). Source and tests authored by bus_installer_resume; root authored operator documentation only. Reviewer did not execute native Rust tests. No fleet deployment or outside-family approval implied.",
+      "reviewer_type": "independent_agent",
+      "base_commit": "f31772b880b0cbb7e96f1e51f7280243f9ba287c",
+      "limits": "Platform: Windows. std::path::absolute does not collapse case, filesystem junctions or verbatim aliases. Legacy forward-spelling retained debt still requires original matching settings before migration; fingerprint v1 and refusal guards remain intact.",
+      "shared_sources": [
+        {
+          "sha256": "3d98b5950dfca61096c0e521a8163bc5cf6fa2f4bd7dc72cc2eb53fc77a58464",
+          "path": "README.md"
+        }
+      ],
+      "reviewer_authored_test_or_fix": false,
+      "code_under_test": {
+        "sha256": "517d699711ad21ab6b27a4b8b36e7ba9a7e099d8122c0495eb960982ed457873",
+        "path": "crates/agent-bus-core/src/settings.rs"
+      },
+      "disposition": "keep",
+      "breaking_behavior": "Invalid Windows profile paths now yield a sanitized configuration refusal rather than an unnormalized provider binding.",
+      "selector_source": {
+        "hash_scope": "Inclusive rationale+test physical lines normalized to LF, including terminal newline.",
+        "sha256": "f09c11c014aa9904d4c90d9adb4236cba42e9d36b449212321e499be0ab58d1f",
+        "last_line": 1672,
+        "first_line": 1639,
+        "path": "crates/agent-bus-core/src/settings.rs"
+      },
+      "reviewer": "codex-gen9-fleet-resume",
+      "date": "2026-10-22",
+      "relevance": "Invalid profile normalization must refuse candidates before mutating any file setting and must withhold raw path data."
+    },
+    {
+      "coverage": {
+        "linux_runtime": "Not executed at this static review. Normal isolated pre-push remains the required execution gate; its later result is recorded separately in the PR and hook receipt.",
+        "failing_first": "Actual author 03b005: native same-file fixture proved both aliases reference one file, then scope equality failed before production normalization (one behavioral failure, exit101).",
+        "linux_compile": "Root5068a4 normal isolated precommit fmt/Clippy all-targets PASS33.85s; index tree1943744ded05339b5f0ca2fed9731ddb58bd9814. This compiled the Unix test; it did not execute it.",
+        "strict": "Author final5202d5 strict core lib/tests Clippy and formatting PASS. Earlier typed-empty assertion lint failure corrected without changing product behavior.",
+        "native": "Actual author 588ead:83 Settings selectors PASS; f9328a full core921PASS/18 existing backend ignored. Unix-only selector compiled out on Windows, not claimed passed there.",
+        "review_assessment": "Native positive asserts actual file identity, exact native provider spelling, equal complete candidate lists and state paths, absent files and unchanged config bytes. Distinction controls vary independent scope inputs. Invalid-profile control checks unchanged settings, sanitized error and empty refused candidates. Unix control checks literal separator and parent-component bytes."
+      },
+      "commit_reviewed": null,
+      "selector": "crates/agent-bus-core/src/settings.rs::tests::unix_profile_anchor_preserves_backslashes_and_parent_components",
+      "scope": "Root independently read the complete 217-line Settings diff and each new selector (568476). Source and tests authored by bus_installer_resume; root authored operator documentation only. Reviewer did not execute native Rust tests. No fleet deployment or outside-family approval implied.",
+      "reviewer_type": "independent_agent",
+      "base_commit": "f31772b880b0cbb7e96f1e51f7280243f9ba287c",
+      "limits": "Platform: Unix. std::path::absolute does not collapse case, filesystem junctions or verbatim aliases. Legacy forward-spelling retained debt still requires original matching settings before migration; fingerprint v1 and refusal guards remain intact.",
+      "shared_sources": [
+        {
+          "sha256": "3d98b5950dfca61096c0e521a8163bc5cf6fa2f4bd7dc72cc2eb53fc77a58464",
+          "path": "README.md"
+        }
+      ],
+      "reviewer_authored_test_or_fix": false,
+      "code_under_test": {
+        "sha256": "517d699711ad21ab6b27a4b8b36e7ba9a7e099d8122c0495eb960982ed457873",
+        "path": "crates/agent-bus-core/src/settings.rs"
+      },
+      "disposition": "keep",
+      "breaking_behavior": "Unix anchoring behavior remains byte-identical; no Windows normalization runs on Unix.",
+      "selector_source": {
+        "hash_scope": "Inclusive rationale+test physical lines normalized to LF, including terminal newline.",
+        "sha256": "0c75217ad2363c4e8594ea2e02e1ce8ca76008bff2f8e0f0f87b4a05a3bb0e7c",
+        "last_line": 1706,
+        "first_line": 1674,
+        "path": "crates/agent-bus-core/src/settings.rs"
+      },
+      "reviewer": "codex-gen9-fleet-resume",
+      "date": "2026-10-22",
+      "relevance": "Windows path normalization must not reinterpret Unix literal backslashes or symlink-sensitive parent components."
     }
   ],
   "historical_reviews": [

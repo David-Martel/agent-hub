@@ -13,6 +13,19 @@ route, credential and replication gates pass. The hub-side sync task is off by
 default; see [cloud sync](docs/cloud-sync.md).
 
 Test selector review: [review register](docs/test-review-register.json).
+Windows configuration identity is defined by
+[profile anchoring](crates/agent-bus-core/src/settings.rs). The selected profile
+prefix uses native absolute spelling before expanding credential-file references
+that start with a tilde. Forward and backward slashes in the same configuration
+path therefore preserve the native candidate scope. Configured suffixes, hub
+identity, URLs and credential-source distinctions retain their existing meaning;
+Unix path spelling stays unchanged.
+
+During a rolling client update, inspect `outbox status` before changing scopes.
+Retained work must settle through its original matching configuration; preserve
+its request IDs and journal header. MCP keeps its startup settings, so its owner
+must reconnect after accepted client updates and verify that CLI and MCP select
+the same scope. See [durable outbox recovery](docs/durable-outbox.md).
 
 ## Crate Map
 
