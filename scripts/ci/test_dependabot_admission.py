@@ -27,7 +27,7 @@ HEAD = "a" * 40
 MERGE = "c" * 40
 PRODUCER = b""
 FUTURE_PRODUCER = b""
-REVIEWED_HASH = "be36166db7c9021a2325abfe78a4ab27f414651b8169fdb79a7198338ff823d6"
+REVIEWED_HASH = "80377abd88b78d000c1d9ca544ad776f4dbe862001ffc563719c46443ad6ac8b"
 JOBS = [
     "Format Check",
     "Cloud Agentbus (TypeScript)",
@@ -52,7 +52,7 @@ SKIPS = {
     "CI": {
         "path": ".github/workflows/ci.yml",
         "source_sha256": (
-            "be36166db7c9021a2325abfe78a4ab27f414651b8169fdb79a7198338ff823d6"
+            "80377abd88b78d000c1d9ca544ad776f4dbe862001ffc563719c46443ad6ac8b"
         ),
         "job_name": "Windows Native Validation (manual)",
         "if_expression": "github.event_name == 'workflow_dispatch'",
@@ -429,6 +429,10 @@ class AdmissionTests(unittest.TestCase):
         # the job env pins it empty.
         self.assertEqual(run_policy(script, "/ambient"), "hold")
 
+    # Protects: Reviewed CI producer identity and explicit job/skip inventory.
+    # Detects: Stale source identity or hash-only admission of an unreviewed producer.
+    # Needs: Closed credential-free API fixtures and exact reviewed CI source bytes.
+    # Breadcrumb: dependabot-automerge.yml reviewed producer declarations.
     def test_trusted_policy_inventory_matches_independent_producer_oracle(self) -> None:
         policy = declared_json(self.workflow_text, "REVIEWED_JOB_INVENTORY_JSON")
         self.assertEqual(
