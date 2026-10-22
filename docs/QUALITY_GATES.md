@@ -42,7 +42,16 @@ A change is **not done** if only green unit counts move. Require receipts:
 3. **MCP claims** need initialize + tools/list + `bus_health` with the same
    identity as CLI.
 4. **Message claims** need send + read with a nonce (prefer `--repo` /
-   `--thread-id` / `--from-agent`; note `read --tag` may 400 until SHAs align).
+   `--thread-id` / `--from-agent`). `read --tag` is repeatable: HTTP
+   `GET /messages?tag=host%3Aminisforum&tag=role%3Abuilder` must retain both
+   filter values. The handler's sequence-capable extractor and storage-free
+   `read_query_*` tests in [http.rs](../crates/agent-bus-http/src/http.rs) protect
+   URL decoding, absent-tag defaults and the existing strict scalar contract.
+   Empty optional strings remain present; empty numeric values and duplicate
+   scalar keys still return HTTP 400. Their [review bindings](test-review-register.json)
+   distinguish the focused controls from broader runtime qualification.
+   Historical hubs may require the accepted
+   server update before tag-scoped reads work; client encoding is unchanged.
 5. **Service claims** need the correct supervisor scope (ASUS:
    `systemctl --user`; Windows: NSSM `AgentHub` on **18400** is island-only).
 6. **Cloud claims** need separate cloud tokens (`AGENT_BUS_TOKENS`), never the
