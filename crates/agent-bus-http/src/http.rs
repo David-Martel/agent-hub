@@ -4092,6 +4092,38 @@ mod tests {
     use axum::body::to_bytes;
     use axum::http::{HeaderName, HeaderValue};
 
+    // Protects: expected missing-lease errors are HTTP 400 while storage faults remain 500.
+    // Detects: treating all claim errors as retryable server faults or hiding backend failures.
+    // Needs: only the real classifier and typed core errors; no HTTP server or live backend.
+    // Breadcrumb: crates/agent-bus-core/src/channels.rs renew_claim and release_claim; classify_core_error.
+    #[test]
+    fn claim_domain_error_is_400_while_backend_error_remains_500() {
+        use agent_bus_core::error::AgentBusError;
+
+        let domain = classify_core_error(AgentBusError::InvalidParams(
+            "no active claim found for agent on resource".to_owned(),
+        ));
+        assert_eq!(domain.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            domain.1.0["error"],
+            "no active claim found for agent on resource"
+        );
+
+        let backend = classify_core_error(AgentBusError::from(redis::RedisError::from(
+            std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "fixture backend unavailable",
+            ),
+        )));
+        assert_eq!(backend.0, StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            backend.1.0["error"]
+                .as_str()
+                .unwrap()
+                .contains("Bus/Redis error")
+        );
+    }
+
     // Protects: the CLI's existing --tag filter reaches GET /messages.
     // Detects: scalar URL-encoded tags being rejected before the storage read.
     // Needs: only the real handler extractor; no state, credentials or backend.

@@ -1718,7 +1718,7 @@ pub fn renew_claim(
     }
 
     let renewed = renewed.ok_or_else(|| {
-        crate::error::AgentBusError::Internal(
+        crate::error::AgentBusError::InvalidParams(
             "no active claim found for agent on resource".to_string(),
         )
     })?;

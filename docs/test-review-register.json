@@ -161,6 +161,186 @@
   },
   "reviews": [
     {
+      "selector": "crates/agent-bus-core/tests/cloud_sync_backend.rs::claim_renewal_rejects_absent_lease_without_creating_ownership",
+      "reviewer": "codex-gen9-managed-migration",
+      "reviewer_type": "independent_agent",
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "8aa29c21610ca6936dc06777bc89fe09d9ef79be",
+      "disposition": "keep",
+      "scope": "Independent static KEEP52549a/d9f448 and current comment-only KEEP65f381/9e7b0f, exact selector/source hashes. ROOT actual independent Linux controls8993c0:12 selected PASS before breadcrumb-only repair; exact reverse repair reproduces tested files. Source working tree on base8aa29c; no live HTTP/Windows/deployment qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-core/tests/cloud_sync_backend.rs",
+        "first_line": 449,
+        "last_line": 470,
+        "sha256": "caf7d8cf51728c119c8702193a09e9f9202d07f9a71613d4a83257058fbe189b",
+        "hash_scope": "Inclusive rationale comments, test attributes and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/channels.rs",
+        "sha256": "64f94d191db51bea43f6f9490ef368e00f8bb195851aa09fd273b5810bb68be5"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/tests/cloud_sync_backend.rs",
+          "sha256": "2aab142a44396e10d200df9891beb78b463ec188696ea0183e2b05d9af7cdaec"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "2bba2e3ca909165bea148d6a5ca838574db60887ae4b884728765dae1e72532f"
+        }
+      ],
+      "protections": "An absent lease is a caller-state error and never an implicit acquisition.",
+      "detects": "Internal/HTTP500 classification or ownership creation after a stale renewal.",
+      "needs": "Owned disposable Redis, explicit AGENT_BUS_TEST_REDIS_URL on a non-live port; no live config or backend.",
+      "coverage": {
+        "failing_first": "Final unchanged-production RED fails InvalidParams after the no-ownership assertion passes.",
+        "author_red": "target/claim-renewal/red-final-receipt.json: core selected4,2failed/2passed; classifier1PASS, unsupported-outbox1PASS, claims-key6PASS. Both missing-renew failures are the expected InvalidParams assertions; earlier fixture/API errors retained separately.",
+        "author_green": "target/claim-renewal/green-receipt.json: core4PASS (3 new plus legacy); classifier1PASS; unsupported-outbox1PASS; claims-key6PASS; exit0/no deadline. Identical final selector bytes RED to GREEN; only production Internal to InvalidParams changed.",
+        "outbox_control": "Existing outbox::tests::invalid_arguments_and_unsupported_operations_are_never_retained directly verifies renewal/release Operation::from_tool is None and unsupported/invalid enqueue does not change journal bytes.",
+        "independent_green": "ROOT8993c0: core4PASS, pure HTTP classifier1PASS, unsupported-outbox1PASS, claims-key6PASS; exit0/no deadline; both owned containers removed0. Runtime stderr contains a temporary starter-config warning; not an empty-stderr claim. Tested prior comment pins07BCCF/9F0032; current2AAB/CDB5 differ only in four breadcrumb comments, independently reconstructed9e7b0f.",
+        "rationale_check": "Shared test-rationale CLI in existing offline environment: exit0,10 files examined,115 selectors,0 failing,443 legacy warnings. No claim that legacy rationale debt is closed."
+      },
+      "breaking_behavior": "Only missing or expired renewal changes from Internal to InvalidParams, matching release. Claim identity and acquisition semantics, backend errors and outbox operation support are unchanged.",
+      "limits": "No live claims/journals, Windows fullHTTP/private-config fixture, runtime promotion or fleet deployment. HTTP uses a pure classifier test within its bin test harness, not a serving HTTP process.",
+      "reviewer_authored_test_or_fix": false
+    },
+    {
+      "selector": "crates/agent-bus-core/tests/cloud_sync_backend.rs::claim_renewal_rejects_expired_lease_without_recreating_ownership",
+      "reviewer": "codex-gen9-managed-migration",
+      "reviewer_type": "independent_agent",
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "8aa29c21610ca6936dc06777bc89fe09d9ef79be",
+      "disposition": "keep",
+      "scope": "Independent static KEEP52549a/d9f448 and current comment-only KEEP65f381/9e7b0f, exact selector/source hashes. ROOT actual independent Linux controls8993c0:12 selected PASS before breadcrumb-only repair; exact reverse repair reproduces tested files. Source working tree on base8aa29c; no live HTTP/Windows/deployment qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-core/tests/cloud_sync_backend.rs",
+        "first_line": 472,
+        "last_line": 506,
+        "sha256": "a07bc029150c805f9d05ea7015affbb99ae7c381ab809c8f41dd754c04cbbd5d",
+        "hash_scope": "Inclusive rationale comments, test attributes and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/channels.rs",
+        "sha256": "64f94d191db51bea43f6f9490ef368e00f8bb195851aa09fd273b5810bb68be5"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/tests/cloud_sync_backend.rs",
+          "sha256": "2aab142a44396e10d200df9891beb78b463ec188696ea0183e2b05d9af7cdaec"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "2bba2e3ca909165bea148d6a5ca838574db60887ae4b884728765dae1e72532f"
+        }
+      ],
+      "protections": "Expiration ends ownership and a stale renewal does not resurrect it.",
+      "detects": "An expired claim key recreated by renewal or expiration misclassified as an internal fault.",
+      "needs": "Owned disposable Redis and an explicitly expired fixture record; no sleeps or live config.",
+      "coverage": {
+        "failing_first": "Final unchanged-production RED fails InvalidParams after the expired Redis key is confirmed absent.",
+        "author_red": "target/claim-renewal/red-final-receipt.json: core selected4,2failed/2passed; classifier1PASS, unsupported-outbox1PASS, claims-key6PASS. Both missing-renew failures are the expected InvalidParams assertions; earlier fixture/API errors retained separately.",
+        "author_green": "target/claim-renewal/green-receipt.json: core4PASS (3 new plus legacy); classifier1PASS; unsupported-outbox1PASS; claims-key6PASS; exit0/no deadline. Identical final selector bytes RED to GREEN; only production Internal to InvalidParams changed.",
+        "outbox_control": "Existing outbox::tests::invalid_arguments_and_unsupported_operations_are_never_retained directly verifies renewal/release Operation::from_tool is None and unsupported/invalid enqueue does not change journal bytes.",
+        "independent_green": "ROOT8993c0: core4PASS, pure HTTP classifier1PASS, unsupported-outbox1PASS, claims-key6PASS; exit0/no deadline; both owned containers removed0. Runtime stderr contains a temporary starter-config warning; not an empty-stderr claim. Tested prior comment pins07BCCF/9F0032; current2AAB/CDB5 differ only in four breadcrumb comments, independently reconstructed9e7b0f.",
+        "rationale_check": "Shared test-rationale CLI in existing offline environment: exit0,10 files examined,115 selectors,0 failing,443 legacy warnings. No claim that legacy rationale debt is closed."
+      },
+      "breaking_behavior": "Only missing or expired renewal changes from Internal to InvalidParams, matching release. Claim identity and acquisition semantics, backend errors and outbox operation support are unchanged.",
+      "limits": "No live claims/journals, Windows fullHTTP/private-config fixture, runtime promotion or fleet deployment. HTTP uses a pure classifier test within its bin test harness, not a serving HTTP process.",
+      "reviewer_authored_test_or_fix": false
+    },
+    {
+      "selector": "crates/agent-bus-core/tests/cloud_sync_backend.rs::claim_slash_alias_release_removes_only_the_same_agents_lease",
+      "reviewer": "codex-gen9-managed-migration",
+      "reviewer_type": "independent_agent",
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "8aa29c21610ca6936dc06777bc89fe09d9ef79be",
+      "disposition": "keep",
+      "scope": "Independent static KEEP52549a/d9f448 and current comment-only KEEP65f381/9e7b0f, exact selector/source hashes. ROOT actual independent Linux controls8993c0:12 selected PASS before breadcrumb-only repair; exact reverse repair reproduces tested files. Source working tree on base8aa29c; no live HTTP/Windows/deployment qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-core/tests/cloud_sync_backend.rs",
+        "first_line": 508,
+        "last_line": 554,
+        "sha256": "5767f29a4403dae53c53962085ad3c3d49d5ac20012df46902de6b182e637ee4",
+        "hash_scope": "Inclusive rationale comments, test attributes and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-core/src/channels.rs",
+        "sha256": "64f94d191db51bea43f6f9490ef368e00f8bb195851aa09fd273b5810bb68be5"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-core/tests/cloud_sync_backend.rs",
+          "sha256": "2aab142a44396e10d200df9891beb78b463ec188696ea0183e2b05d9af7cdaec"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "2bba2e3ca909165bea148d6a5ca838574db60887ae4b884728765dae1e72532f"
+        }
+      ],
+      "protections": "Slash variants address the same lease and releasing self preserves another claimant.",
+      "detects": "Independent alias leases or deletion of another agent claim.",
+      "needs": "Owned disposable Redis, explicit 300-second fixture leases and two fixture agents.",
+      "coverage": {
+        "failing_first": "Positive compatibility control passes on the unchanged baseline and corrected production source; initial legacy default-TTL fixture failure is retained separately.",
+        "author_red": "target/claim-renewal/red-final-receipt.json: core selected4,2failed/2passed; classifier1PASS, unsupported-outbox1PASS, claims-key6PASS. Both missing-renew failures are the expected InvalidParams assertions; earlier fixture/API errors retained separately.",
+        "author_green": "target/claim-renewal/green-receipt.json: core4PASS (3 new plus legacy); classifier1PASS; unsupported-outbox1PASS; claims-key6PASS; exit0/no deadline. Identical final selector bytes RED to GREEN; only production Internal to InvalidParams changed.",
+        "outbox_control": "Existing outbox::tests::invalid_arguments_and_unsupported_operations_are_never_retained directly verifies renewal/release Operation::from_tool is None and unsupported/invalid enqueue does not change journal bytes.",
+        "independent_green": "ROOT8993c0: core4PASS, pure HTTP classifier1PASS, unsupported-outbox1PASS, claims-key6PASS; exit0/no deadline; both owned containers removed0. Runtime stderr contains a temporary starter-config warning; not an empty-stderr claim. Tested prior comment pins07BCCF/9F0032; current2AAB/CDB5 differ only in four breadcrumb comments, independently reconstructed9e7b0f.",
+        "rationale_check": "Shared test-rationale CLI in existing offline environment: exit0,10 files examined,115 selectors,0 failing,443 legacy warnings. No claim that legacy rationale debt is closed."
+      },
+      "breaking_behavior": "Only missing or expired renewal changes from Internal to InvalidParams, matching release. Claim identity and acquisition semantics, backend errors and outbox operation support are unchanged.",
+      "limits": "No live claims/journals, Windows fullHTTP/private-config fixture, runtime promotion or fleet deployment. HTTP uses a pure classifier test within its bin test harness, not a serving HTTP process.",
+      "reviewer_authored_test_or_fix": false
+    },
+    {
+      "selector": "crates/agent-bus-http/src/http.rs::tests::claim_domain_error_is_400_while_backend_error_remains_500",
+      "reviewer": "codex-gen9-managed-migration",
+      "reviewer_type": "independent_agent",
+      "date": "2026-10-22",
+      "commit_reviewed": null,
+      "base_commit": "8aa29c21610ca6936dc06777bc89fe09d9ef79be",
+      "disposition": "keep",
+      "scope": "Independent static KEEP52549a/d9f448 and current comment-only KEEP65f381/9e7b0f, exact selector/source hashes. ROOT actual independent Linux controls8993c0:12 selected PASS before breadcrumb-only repair; exact reverse repair reproduces tested files. Source working tree on base8aa29c; no live HTTP/Windows/deployment qualification.",
+      "selector_source": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "first_line": 4095,
+        "last_line": 4125,
+        "sha256": "e9e957d5381a2cfb0ea953096d38b46c55394e58a05fe113d02ddf87a17e3a3c",
+        "hash_scope": "Inclusive rationale comments, test attributes and complete Rust function physical lines, normalized to LF including terminal newline."
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-http/src/http.rs",
+        "sha256": "cdb564cf294e2a2cc04fe3f77c1c769b4be67c823687bdb976be1d96a11d50b4"
+      },
+      "shared_sources": [
+        {
+          "path": "crates/agent-bus-http/src/http.rs",
+          "sha256": "cdb564cf294e2a2cc04fe3f77c1c769b4be67c823687bdb976be1d96a11d50b4"
+        },
+        {
+          "path": "docs/QUALITY_GATES.md",
+          "sha256": "2bba2e3ca909165bea148d6a5ca838574db60887ae4b884728765dae1e72532f"
+        }
+      ],
+      "protections": "Missing-lease InvalidParams errors map to HTTP400 and typed Redis IO failures remain HTTP500.",
+      "detects": "Treating domain errors as server failures or masking backend errors as caller faults.",
+      "needs": "Only the actual classifier and constructed typed errors; no HTTP server, Settings or backend.",
+      "coverage": {
+        "failing_first": "Actual targeted classifier test passes for both InvalidParams and RedisError converted from ConnectionRefused; no real backend failure is induced.",
+        "author_red": "target/claim-renewal/red-final-receipt.json: core selected4,2failed/2passed; classifier1PASS, unsupported-outbox1PASS, claims-key6PASS. Both missing-renew failures are the expected InvalidParams assertions; earlier fixture/API errors retained separately.",
+        "author_green": "target/claim-renewal/green-receipt.json: core4PASS (3 new plus legacy); classifier1PASS; unsupported-outbox1PASS; claims-key6PASS; exit0/no deadline. Identical final selector bytes RED to GREEN; only production Internal to InvalidParams changed.",
+        "outbox_control": "Existing outbox::tests::invalid_arguments_and_unsupported_operations_are_never_retained directly verifies renewal/release Operation::from_tool is None and unsupported/invalid enqueue does not change journal bytes.",
+        "independent_green": "ROOT8993c0: core4PASS, pure HTTP classifier1PASS, unsupported-outbox1PASS, claims-key6PASS; exit0/no deadline; both owned containers removed0. Runtime stderr contains a temporary starter-config warning; not an empty-stderr claim. Tested prior comment pins07BCCF/9F0032; current2AAB/CDB5 differ only in four breadcrumb comments, independently reconstructed9e7b0f.",
+        "rationale_check": "Shared test-rationale CLI in existing offline environment: exit0,10 files examined,115 selectors,0 failing,443 legacy warnings. No claim that legacy rationale debt is closed."
+      },
+      "breaking_behavior": "Only missing or expired renewal changes from Internal to InvalidParams, matching release. Claim identity and acquisition semantics, backend errors and outbox operation support are unchanged.",
+      "limits": "No live claims/journals, Windows fullHTTP/private-config fixture, runtime promotion or fleet deployment. HTTP uses a pure classifier test within its bin test harness, not a serving HTTP process.",
+      "reviewer_authored_test_or_fix": false
+    },
+    {
       "selector": "scripts/ci/test_mcp_smoke.py::McpSmokeTests.test_success_without_error",
       "reviewer": "codex-p1-agenthub-integration-review",
       "reviewer_type": "independent_agent",

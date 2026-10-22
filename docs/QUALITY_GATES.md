@@ -61,6 +61,14 @@ A change is **not done** if only green unit counts move. Require receipts:
 
 - Prefer typed ops in `agent-bus-core`; surfaces parse → call → render only.
 - Fail closed on unknown MCP args (`additionalProperties: false`).
+- Renewing an absent or expired claim is `InvalidParams`, matching a missing
+  release: HTTP 400 rather than a backend 500. Renewal never acquires ownership.
+  Slash and backslash resource spellings identify the same local claim key;
+  releasing either spelling removes only that agent's lease. The targeted
+  [disposable Redis regressions](../crates/agent-bus-core/tests/cloud_sync_backend.rs)
+  and [storage-free HTTP classifier control](../crates/agent-bus-http/src/http.rs)
+  protect these boundaries. Renew/release remain excluded from the durable
+  outbox by the [unsupported-operation control](../crates/agent-bus-core/src/outbox.rs).
 - HTTP errors must not be reported as success with null admin/status.
 - New filters (topic/tag/repo) must either work on **all** surfaces or reject
   explicitly — silent ignore is a defect class.

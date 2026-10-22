@@ -14,7 +14,10 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use agent_bus_core::channels::{ClaimStatus, get_arbitration_state, release_claim, renew_claim};
+use agent_bus_core::channels::{
+    ClaimOptions, ClaimStatus, claim_resource_with_options, get_arbitration_state, release_claim,
+    renew_claim,
+};
 use agent_bus_core::models::{Message, PROTOCOL_VERSION, Presence, Sensitivity};
 use agent_bus_core::postgres_store::{
     connect_postgres, list_messages_postgres_with_filters, list_presence_events_after,
@@ -439,6 +442,113 @@ fn legacy_uppercase_claim_can_be_read_renewed_and_released() {
     );
     let _: () = redis::cmd("DEL")
         .arg(&history_key)
+        .query(&mut conn)
+        .unwrap();
+}
+
+// Protects: an absent lease is a caller-state error, never an implicit acquisition.
+// Detects: HTTP-500-producing Internal errors or renewal creating ownership after release.
+// Needs: only disposable Redis; the production ports are refused by backend_env.
+// Breadcrumb: crates/agent-bus-core/src/channels.rs renew_claim and HTTP classification.
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL (disposable Redis)"]
+#[test]
+fn claim_renewal_rejects_absent_lease_without_creating_ownership() {
+    let settings = redis_settings(&unique());
+    let resource = format!("renewal/absent/{}", unique());
+    let result = renew_claim(&settings, &resource, "absent-owner", Some(600));
+    assert!(
+        get_arbitration_state(&settings, &resource)
+            .unwrap()
+            .claims
+            .is_empty(),
+        "renewal must not acquire ownership"
+    );
+    assert!(matches!(
+        result,
+        Err(agent_bus_core::error::AgentBusError::InvalidParams(_))
+    ));
+}
+
+// Protects: expiration ends ownership even when a stale renewal arrives later.
+// Detects: resurrecting an expired lease or reporting expected expiration as a server fault.
+// Needs: disposable Redis and an explicitly expired record; no sleeps or live configuration.
+// Breadcrumb: crates/agent-bus-core/src/channels.rs load_active_claims and renew_claim.
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL (disposable Redis)"]
+#[test]
+fn claim_renewal_rejects_expired_lease_without_recreating_ownership() {
+    let settings = redis_settings(&unique());
+    let resource = format!("renewal/expired/{}", unique());
+    let key = format!("bus:claims:{resource}");
+    let mut conn = connect(&settings).unwrap();
+    let expired = serde_json::json!({
+        "resource": resource, "agent": "expired-owner", "priority_argument": "expired fixture",
+        "timestamp": now_ts(), "status": "granted", "lease_ttl_seconds": 300,
+        "expires_at": (Utc::now() - chrono::Duration::seconds(1)).to_rfc3339()
+    });
+    let _: () = redis::cmd("HSET")
+        .arg(&key)
+        .arg("expired-owner")
+        .arg(expired.to_string())
+        .query(&mut conn)
+        .unwrap();
+    let result = renew_claim(&settings, &resource, "expired-owner", Some(600));
+    assert!(
+        !redis::cmd("EXISTS")
+            .arg(&key)
+            .query::<bool>(&mut conn)
+            .unwrap(),
+        "expired lease must not be recreated"
+    );
+    assert!(matches!(
+        result,
+        Err(agent_bus_core::error::AgentBusError::InvalidParams(_))
+    ));
+}
+
+// Protects: slash aliases address one lease and releasing self leaves another claimant intact.
+// Detects: treating a Windows path spelling as a second lease or deleting a peer's claim.
+// Needs: only disposable Redis and two fixture-owned agents on a unique resource.
+// Breadcrumb: crates/agent-bus-core/src/channels.rs claims_key, claim_resource_with_options and release_claim.
+#[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL (disposable Redis)"]
+#[test]
+fn claim_slash_alias_release_removes_only_the_same_agents_lease() {
+    let settings = redis_settings(&unique());
+    let resource = format!("C:/renewal-fixture/{}/Main.RS", unique());
+    let alias = resource.replace('/', "\\");
+    let options = ClaimOptions {
+        lease_ttl_seconds: 300,
+        ..ClaimOptions::default()
+    };
+    claim_resource_with_options(
+        &settings,
+        &resource,
+        "alias-owner",
+        "first fixture",
+        &options,
+    )
+    .unwrap();
+    claim_resource_with_options(&settings, &resource, "peer-owner", "peer fixture", &options)
+        .unwrap();
+    assert_eq!(
+        get_arbitration_state(&settings, &alias)
+            .unwrap()
+            .claims
+            .len(),
+        2
+    );
+    let released = release_claim(&settings, &alias, "alias-owner").unwrap();
+    assert_eq!(released.claims.len(), 1);
+    assert_eq!(released.claims[0].agent, "peer-owner");
+    let canonical = get_arbitration_state(&settings, &resource).unwrap();
+    assert_eq!(canonical.claims.len(), 1);
+    assert_eq!(canonical.claims[0].agent, "peer-owner");
+    release_claim(&settings, &resource, "peer-owner").unwrap();
+    let mut conn = connect(&settings).unwrap();
+    let _: () = redis::cmd("DEL")
+        .arg(agent_bus_core::redis_bus::resource_event_stream_key(
+            &resource,
+        ))
+        .arg(agent_bus_core::redis_bus::resource_event_stream_key(&alias))
         .query(&mut conn)
         .unwrap();
 }
