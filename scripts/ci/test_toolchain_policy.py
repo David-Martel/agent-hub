@@ -47,9 +47,9 @@ class ToolchainPolicyTests(unittest.TestCase):
 
     def test_floating_node_pin_fails(self):
         path = self.root / ".github/workflows/ci.yml"
-        path.write_text(
-            path.read_text().replace('node-version: "26.12.0"', 'node-version: "26"')
-        )
+        needle = f'node-version: "{self.policy["node"]}"'
+        self.assertIn(needle, path.read_text(), "mutation must change the fixture")
+        path.write_text(path.read_text().replace(needle, 'node-version: "26"'))
         self.assertTrue(POLICY_MODULE.verify_sources(self.root, self.policy))
 
     def test_unqualified_vigil1_docker_or_windows_routing_fails(self):
