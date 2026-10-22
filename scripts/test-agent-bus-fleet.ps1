@@ -414,6 +414,11 @@ else {
         $machineId = [string]$machine.id
         try {
             if ($machine.connection -eq "local-windows") {
+                $observedMachine = [Environment]::MachineName
+                if ([string]::IsNullOrWhiteSpace($observedMachine) -or
+                    -not [string]::Equals($machineId, $observedMachine, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "Local Windows machine identity mismatch: manifest '$machineId'; observed '$observedMachine'."
+                }
                 $versionText = (& $machine.cli_path --version 2>&1 | Out-String).Trim()
                 if ($LASTEXITCODE -ne 0) { throw "CLI version command failed ($LASTEXITCODE)" }
                 Test-BuildRevision -Machine $machineId -VersionText $versionText -Revision $revision
