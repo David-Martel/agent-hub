@@ -158,6 +158,41 @@ fn journal_present(path: &Path) -> Result<bool> {
     }
 }
 
+/// Retry busy journals without scheduling waits beyond the original deadline.
+fn open_journal_until(
+    path: &Path,
+    scope: &str,
+    deadline: Instant,
+) -> std::result::Result<Journal, OutboxError> {
+    open_journal_until_with(path, scope, deadline, Instant::now, std::thread::sleep)
+}
+
+fn open_journal_until_with(
+    path: &Path,
+    scope: &str,
+    deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> std::result::Result<Journal, OutboxError> {
+    let mut delay = Duration::from_millis(10);
+    let jitter = Duration::from_millis(u64::from(uuid::Uuid::new_v4().as_bytes()[0] % 17));
+    loop {
+        // Always acquire after a capped wait, even if the scheduler woke late:
+        // the previous writer may have released custody during that wait.
+        match Journal::open(path, scope) {
+            Err(OutboxError::Busy) => {
+                let remaining = deadline.saturating_duration_since(now());
+                if remaining.is_zero() {
+                    return Err(OutboxError::Busy);
+                }
+                sleep((delay + jitter).min(remaining));
+                delay = (delay * 2).min(Duration::from_millis(100));
+            }
+            opened => return opened,
+        }
+    }
+}
+
 /// Submit a retained request, then flush in durable order.
 ///
 /// An offline result is explicitly queued, with a stable request ID and pending
@@ -190,17 +225,23 @@ pub fn submit<T: NativeReplayTransport>(
         })?;
         path
     };
-    let mut journal = match Journal::open(&path, &scope) {
+    let mut journal = match open_journal_until(&path, &scope, route.deadline) {
         // Editing the candidate list rebinds a journal that owes nothing to
         // its previous destination; retained requests still refuse below.
         Err(OutboxError::ScopeChanged) => {
             retire_previous_scope(&path, &scope, now_ms()?, RetirePolicy::SettledOnly)?;
-            Journal::open(&path, &scope)
+            open_journal_until(&path, &scope, route.deadline)
         }
         opened => opened,
     }
-    .map_err(|_sanitized| {
-        AgentBusError::Internal("private durable outbox could not be opened".to_owned())
+    .map_err(|error| match error {
+        OutboxError::Busy => AgentBusError::Internal(
+            "durable outbox is busy; no new request was retained; retry after the current writer finishes"
+                .to_owned(),
+        ),
+        _sanitized => {
+            AgentBusError::Internal("private durable outbox could not be opened".to_owned())
+        }
     })?;
     submit_journal(
         &mut journal,
@@ -461,7 +502,7 @@ fn flush_pending_with_hook<T: NativeReplayTransport>(
         return Ok(json!({"remaining":0,"applied":0,"requests_submitted":0}));
     }
     let (scope, route) = replay_context(settings, transport)?;
-    let mut journal = match Journal::open(&path, &scope) {
+    let mut journal = match open_journal_until(&path, &scope, route.deadline) {
         // Nothing owed to the previous destination: retire it and report an
         // empty queue rather than a recovery state.
         Err(OutboxError::ScopeChanged) => {
@@ -473,13 +514,20 @@ fn flush_pending_with_hook<T: NativeReplayTransport>(
             }
             // Another caller can already have rebound the active journal and
             // enqueued current-scope debt. Reopen once under custody and drain;
-            // contention or another scope move fails visibly rather than looping.
-            Journal::open(&path, &scope)
+            // contention shares the original deadline; another scope move
+            // still fails visibly rather than repeating namespace disposition.
+            open_journal_until(&path, &scope, route.deadline)
         }
         opened => opened,
     }
-    .map_err(|_sanitized| {
-        AgentBusError::Internal("private durable outbox unavailable; preserve journal".to_owned())
+    .map_err(|error| match error {
+        OutboxError::Busy => AgentBusError::Internal(
+            "durable outbox is busy; preserve the journal and original request IDs, then retry outbox flush"
+                .to_owned(),
+        ),
+        _sanitized => AgentBusError::Internal(
+            "private durable outbox unavailable; preserve journal".to_owned(),
+        ),
     })?;
     let report = journal.flush(&route, now_ms()?, 16).map_err(|_sanitized| {
         AgentBusError::Internal(
@@ -669,6 +717,291 @@ mod tests {
                 result: json!({"id":request.request_id}),
             })
         }
+    }
+
+    /// Protects: concurrent native submissions and one stable retained identity.
+    /// Detects: fail-fast contention, duplicate submission or lost replay debt.
+    /// Needs: an owned private journal and synthetic transport; no hub or production state.
+    /// Breadcrumb: `submit`, `submit_journal` and `flush_pending` in this module.
+    #[test]
+    fn contended_submission_waits_then_retains_one_original_request() {
+        struct Offline(RefCell<Vec<uuid::Uuid>>);
+        impl NativeReplayTransport for Offline {
+            fn replay(
+                &self,
+                _url: &str,
+                _hub_identity: &str,
+                request: &ReplayRequest,
+                _timeout: Duration,
+            ) -> std::result::Result<ReplayResponse, ReplayFailure> {
+                self.0.borrow_mut().push(request.request_id);
+                Err(ReplayFailure::Transport)
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let settings = authority_settings(&["http://localhost:8484"]);
+        let scope = candidates_fingerprint(&settings.effective_hub_candidates());
+        let held = Journal::open(&path, &scope).unwrap();
+        assert!(matches!(
+            Journal::open(&path, &scope),
+            Err(OutboxError::Busy)
+        ));
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            drop(held);
+        });
+        let transport = Offline(RefCell::new(Vec::new()));
+        let response = submit(
+            &settings,
+            &transport,
+            Operation::Send,
+            ClientSurface::Cli,
+            args("one retained request after contention"),
+            Some(&path),
+        );
+        release.join().unwrap();
+        let response = response.expect("a short-lived writer must not reject a new submission");
+        assert_eq!(response["status"], "queued");
+        let retained = {
+            let inspection = Journal::inspect(&path).unwrap();
+            assert_eq!(inspection.pending.len(), 1);
+            inspection.pending[0].request_id
+        };
+        assert_eq!(response["request_id"], retained.to_string());
+        assert_eq!(*transport.0.borrow(), vec![retained]);
+        let report = flush_pending(&settings, &Applied, Some(&path)).unwrap();
+        assert_eq!(
+            (report["applied"].as_u64(), report["remaining"].as_u64()),
+            (Some(1), Some(0))
+        );
+        assert_eq!(
+            Journal::inspect(&path).unwrap().pending,
+            [] as [ReplayRequest; 0]
+        );
+    }
+
+    /// Protects: a finite lock budget and existing private journal bytes.
+    /// Detects: a reset deadline, unbounded waiting or mutation before acquisition.
+    /// Needs: an owned locked journal; no transport or production state.
+    /// Breadcrumb: `open_journal_until` in this module.
+    #[test]
+    fn contended_journal_exhausts_original_deadline_without_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        // Windows byte-range locks also reject reads through a second handle.
+        // Snapshot outside the held lock lifetime instead of weakening custody.
+        drop(Journal::open(&path, "fixture-scope").unwrap());
+        let before = std::fs::read(&path).unwrap();
+        let held = Journal::open(&path, "fixture-scope").unwrap();
+        let started = Instant::now();
+        let deadline = started + Duration::from_millis(70);
+        assert!(matches!(
+            open_journal_until(&path, "fixture-scope", deadline),
+            Err(OutboxError::Busy)
+        ));
+        assert!(Instant::now() >= deadline);
+        assert!(matches!(
+            open_journal_until(&path, "fixture-scope", deadline),
+            Err(OutboxError::Busy)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(held.pending().count(), 0);
+        drop(held);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// Protects: a released writer remains acquirable after the final capped sleep.
+    /// Detects: reporting stale contention when a scheduler wakes beyond the deadline.
+    /// Needs: a real owned journal lock and injected time; no real sleep or transport.
+    /// Breadcrumb: `open_journal_until_with`, called by `open_journal_until`.
+    #[test]
+    fn journal_acquires_after_capped_sleep_even_if_scheduler_passes_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        drop(Journal::open(&path, "fixture-scope").unwrap());
+        let before = std::fs::read(&path).unwrap();
+        let mut held = Some(Journal::open(&path, "fixture-scope").unwrap());
+        assert!(matches!(
+            Journal::open(&path, "fixture-scope"),
+            Err(OutboxError::Busy)
+        ));
+        let started = Instant::now();
+        let budget = Duration::from_millis(5);
+        let deadline = started + budget;
+        let clock = std::cell::Cell::new(started);
+        let mut sleeps = 0;
+        let opened = open_journal_until_with(
+            &path,
+            "fixture-scope",
+            deadline,
+            || clock.get(),
+            |duration| {
+                assert_eq!(
+                    duration, budget,
+                    "the last sleep must use the remaining budget"
+                );
+                sleeps += 1;
+                drop(held.take());
+                clock.set(deadline + Duration::from_millis(1));
+            },
+        )
+        .expect("a released writer must be acquired on the final attempt");
+        assert_eq!(sleeps, 1);
+        assert!(clock.get() > deadline);
+        assert_eq!(opened.pending().count(), 0);
+        drop(opened);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// Protects: an exhausted lock budget never schedules an additional sleep.
+    /// Detects: a reset budget or retry loop after the final acquisition remains busy.
+    /// Needs: a real owned held journal and injected time; no real sleep or transport.
+    /// Breadcrumb: `open_journal_until_with`, called by `open_journal_until`.
+    #[test]
+    fn journal_stops_after_final_busy_acquisition_when_scheduler_passes_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        drop(Journal::open(&path, "fixture-scope").unwrap());
+        let before = std::fs::read(&path).unwrap();
+        let held = Journal::open(&path, "fixture-scope").unwrap();
+        assert!(matches!(
+            Journal::open(&path, "fixture-scope"),
+            Err(OutboxError::Busy)
+        ));
+        let started = Instant::now();
+        let budget = Duration::from_millis(5);
+        let deadline = started + budget;
+        let clock = std::cell::Cell::new(started);
+        let mut sleeps = 0;
+        let result = open_journal_until_with(
+            &path,
+            "fixture-scope",
+            deadline,
+            || clock.get(),
+            |duration| {
+                assert_eq!(
+                    duration, budget,
+                    "the last sleep must use the remaining budget"
+                );
+                sleeps += 1;
+                clock.set(deadline + Duration::from_millis(1));
+            },
+        );
+        assert!(matches!(result, Err(OutboxError::Busy)));
+        assert_eq!(sleeps, 1);
+        assert_eq!(held.pending().count(), 0);
+        drop(held);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// Protects: callers can distinguish exhausted contention from failed private custody.
+    /// Detects: a generic error, early rejection or retention before lock acquisition.
+    /// Needs: an owned journal held for the existing twelve-second request budget.
+    /// Breadcrumb: `submit` and `open_journal_until` in this module.
+    #[test]
+    fn contended_submission_deadline_reports_that_no_request_was_retained() {
+        struct NoCall;
+        impl NativeReplayTransport for NoCall {
+            fn replay(
+                &self,
+                _url: &str,
+                _hub_identity: &str,
+                _request: &ReplayRequest,
+                _timeout: Duration,
+            ) -> std::result::Result<ReplayResponse, ReplayFailure> {
+                panic!("exhausted lock acquisition must never reach transport");
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let settings = authority_settings(&["http://localhost:8484"]);
+        let scope = candidates_fingerprint(&settings.effective_hub_candidates());
+        drop(Journal::open(&path, &scope).unwrap());
+        let before = std::fs::read(&path).unwrap();
+        let held = Journal::open(&path, &scope).unwrap();
+        let started = Instant::now();
+        let error = submit(
+            &settings,
+            &NoCall,
+            Operation::Send,
+            ClientSurface::Cli,
+            args("must not be retained"),
+            Some(&path),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("busy"));
+        assert!(error.contains("no new request was retained"));
+        assert!(started.elapsed() >= Duration::from_secs(12));
+        assert!(started.elapsed() < Duration::from_secs(20));
+        assert_eq!(held.pending().count(), 0);
+        drop(held);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// Protects: corruption remains a fail-closed storage failure.
+    /// Detects: retrying non-contention errors or rewriting the invalid journal.
+    /// Needs: only an owned private journal with synthetic invalid bytes.
+    /// Breadcrumb: `open_journal_until` and `Journal::open`.
+    #[test]
+    fn corrupt_journal_is_not_retried_or_rewritten() {
+        use std::io::Write;
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        drop(Journal::open(&path, "fixture-scope").unwrap());
+        OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"not a journal record\n")
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let started = Instant::now();
+        assert!(matches!(
+            open_journal_until(&path, "fixture-scope", started + Duration::from_secs(10)),
+            Err(OutboxError::Corrupt)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// Protects: an existing queue drains after a concurrent writer releases custody.
+    /// Detects: fail-fast flush contention, new submission or lost stable IDs.
+    /// Needs: one owned retained request and a synthetic accepting transport.
+    /// Breadcrumb: `flush_pending_with_hook` and `open_journal_until`.
+    #[test]
+    fn contended_flush_waits_without_submitting_another_request() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let settings = authority_settings(&["http://localhost:8484"]);
+        let scope = candidates_fingerprint(&settings.effective_hub_candidates());
+        let mut held = Journal::open(&path, &scope).unwrap();
+        held.enqueue(
+            Operation::Send,
+            ClientSurface::Cli,
+            args("existing request only"),
+            100,
+        )
+        .unwrap();
+        assert!(matches!(
+            Journal::open(&path, &scope),
+            Err(OutboxError::Busy)
+        ));
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            drop(held);
+        });
+        let report = flush_pending(&settings, &Applied, Some(&path));
+        release.join().unwrap();
+        let report = report.expect("flush must wait for a short-lived writer");
+        assert_eq!(report["applied"], 1);
+        assert_eq!(report["remaining"], 0);
+        let mut reopened = Journal::open(&path, &scope).unwrap();
+        let next = reopened
+            .enqueue(Operation::Send, ClientSurface::Cli, args("next"), 101)
+            .unwrap();
+        assert_eq!(next.sequence, 2, "flush must not enqueue a replacement");
     }
 
     // dtm-p1gen7, 2026-10-14: adding one tailnet URL to the same hub's

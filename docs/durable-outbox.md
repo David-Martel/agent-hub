@@ -4,6 +4,21 @@ Named on-site authoritative hubs support a current-user private, typed journal f
 
 Writes append and sync a stable request ID before attempting transport. Ordered replay stops at an indeterminate request. `outbox status` shows retained IDs, `outbox flush` drains the existing queue without submitting a second operation. MCP calls also attempt a drain on reconnect. A retained or indeterminate result includes its request ID and explicitly warns against retrying as a new submission. Authentication and validation failures are permanent failures, not offline transport success. Capacity errors are visible; the journal is never silently pruned.
 
+Concurrent native submissions and flushes wait for an existing journal writer
+using their original twelve-second transport deadline. Lock acquisition uses
+bounded exponential backoff with jitter, with each sleep capped to the remaining
+budget. Acquisition is attempted once more after the final sleep, even if the
+scheduler wakes after the deadline, because the writer may have released its
+lock while the caller waited. If that attempt is still busy, no further sleep
+is scheduled. Waiting, successful acquisition and a scope-rebind reopen do not
+start another transport deadline; an exhausted budget permits no new outbound
+attempt. Exhausted submission contention explicitly reports
+that no new request was retained. A flush keeps the original retained request
+IDs. Only lock contention is retried: custody, corruption and scope failures
+keep their existing refusal semantics, and no enqueue or transport result is
+retried as a new submission. The finite budget bounds retry scheduling; it is
+not a real-time guarantee for filesystem calls or a suspended process.
+
 Send and acknowledgment entries have no automatic age cutoff. Presence and claim requests retain their intrinsic deadlines. Never-attempted expired requests cannot introduce effects. Attempted presence requests can retrieve their original cached result after expiration to repair PostgreSQL history without resurrecting live presence. Claim replay atomically checks the actual returned lease expiry and exact current authoritative lease record, including original timestamp, status and scope. Release, same-agent replacement, contention and resolution cannot revive a cached grant. The check observes authority at that instant; it cannot promise a lease remains unchanged after the response. An ambiguous grant remains pending; replay does not grant it again or assert ownership offline.
 
 The native hub retains permanent Redis replay memos for send, acknowledgment and presence. This avoids losing deduplication or delayed PostgreSQL repair identity. These memos contain replay results and payload fingerprints and consume storage; operators must budget capacity. There is no automatic memo maintenance subsystem in this change. Removing memos while journals can still replay, evicting them under memory pressure, losing Redis persistence, or restoring an older Redis snapshot can invalidate the at-most-once guarantee. The journal does not compensate for loss of the hub's accepted-request record.
