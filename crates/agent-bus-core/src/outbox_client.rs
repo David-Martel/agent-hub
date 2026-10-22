@@ -158,28 +158,35 @@ fn journal_present(path: &Path) -> Result<bool> {
     }
 }
 
-/// Retry only a busy journal, within the caller's original transport deadline.
+/// Retry busy journals without scheduling waits beyond the original deadline.
 fn open_journal_until(
     path: &Path,
     scope: &str,
     deadline: Instant,
 ) -> std::result::Result<Journal, OutboxError> {
-    let mut waited = false;
+    open_journal_until_with(path, scope, deadline, Instant::now, std::thread::sleep)
+}
+
+fn open_journal_until_with(
+    path: &Path,
+    scope: &str,
+    deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+    mut sleep: impl FnMut(Duration),
+) -> std::result::Result<Journal, OutboxError> {
     let mut delay = Duration::from_millis(10);
     let jitter = Duration::from_millis(u64::from(uuid::Uuid::new_v4().as_bytes()[0] % 17));
     loop {
-        if waited && Instant::now() >= deadline {
-            return Err(OutboxError::Busy);
-        }
+        // Always acquire after a capped wait, even if the scheduler woke late:
+        // the previous writer may have released custody during that wait.
         match Journal::open(path, scope) {
             Err(OutboxError::Busy) => {
-                let remaining = deadline.saturating_duration_since(Instant::now());
+                let remaining = deadline.saturating_duration_since(now());
                 if remaining.is_zero() {
                     return Err(OutboxError::Busy);
                 }
-                std::thread::sleep((delay + jitter).min(remaining));
+                sleep((delay + jitter).min(remaining));
                 delay = (delay * 2).min(Duration::from_millis(100));
-                waited = true;
             }
             opened => return opened,
         }
@@ -799,6 +806,90 @@ mod tests {
             Err(OutboxError::Busy)
         ));
         assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(held.pending().count(), 0);
+        drop(held);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// Protects: a released writer remains acquirable after the final capped sleep.
+    /// Detects: reporting stale contention when a scheduler wakes beyond the deadline.
+    /// Needs: a real owned journal lock and injected time; no real sleep or transport.
+    /// Breadcrumb: `open_journal_until_with`, called by `open_journal_until`.
+    #[test]
+    fn journal_acquires_after_capped_sleep_even_if_scheduler_passes_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        drop(Journal::open(&path, "fixture-scope").unwrap());
+        let before = std::fs::read(&path).unwrap();
+        let mut held = Some(Journal::open(&path, "fixture-scope").unwrap());
+        assert!(matches!(
+            Journal::open(&path, "fixture-scope"),
+            Err(OutboxError::Busy)
+        ));
+        let started = Instant::now();
+        let budget = Duration::from_millis(5);
+        let deadline = started + budget;
+        let clock = std::cell::Cell::new(started);
+        let mut sleeps = 0;
+        let opened = open_journal_until_with(
+            &path,
+            "fixture-scope",
+            deadline,
+            || clock.get(),
+            |duration| {
+                assert_eq!(
+                    duration, budget,
+                    "the last sleep must use the remaining budget"
+                );
+                sleeps += 1;
+                drop(held.take());
+                clock.set(deadline + Duration::from_millis(1));
+            },
+        )
+        .expect("a released writer must be acquired on the final attempt");
+        assert_eq!(sleeps, 1);
+        assert!(clock.get() > deadline);
+        assert_eq!(opened.pending().count(), 0);
+        drop(opened);
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    /// Protects: an exhausted lock budget never schedules an additional sleep.
+    /// Detects: a reset budget or retry loop after the final acquisition remains busy.
+    /// Needs: a real owned held journal and injected time; no real sleep or transport.
+    /// Breadcrumb: `open_journal_until_with`, called by `open_journal_until`.
+    #[test]
+    fn journal_stops_after_final_busy_acquisition_when_scheduler_passes_deadline() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        drop(Journal::open(&path, "fixture-scope").unwrap());
+        let before = std::fs::read(&path).unwrap();
+        let held = Journal::open(&path, "fixture-scope").unwrap();
+        assert!(matches!(
+            Journal::open(&path, "fixture-scope"),
+            Err(OutboxError::Busy)
+        ));
+        let started = Instant::now();
+        let budget = Duration::from_millis(5);
+        let deadline = started + budget;
+        let clock = std::cell::Cell::new(started);
+        let mut sleeps = 0;
+        let result = open_journal_until_with(
+            &path,
+            "fixture-scope",
+            deadline,
+            || clock.get(),
+            |duration| {
+                assert_eq!(
+                    duration, budget,
+                    "the last sleep must use the remaining budget"
+                );
+                sleeps += 1;
+                clock.set(deadline + Duration::from_millis(1));
+            },
+        );
+        assert!(matches!(result, Err(OutboxError::Busy)));
+        assert_eq!(sleeps, 1);
         assert_eq!(held.pending().count(), 0);
         drop(held);
         assert_eq!(std::fs::read(&path).unwrap(), before);

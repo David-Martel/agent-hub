@@ -5,9 +5,14 @@ Named on-site authoritative hubs support a current-user private, typed journal f
 Writes append and sync a stable request ID before attempting transport. Ordered replay stops at an indeterminate request. `outbox status` shows retained IDs, `outbox flush` drains the existing queue without submitting a second operation. MCP calls also attempt a drain on reconnect. A retained or indeterminate result includes its request ID and explicitly warns against retrying as a new submission. Authentication and validation failures are permanent failures, not offline transport success. Capacity errors are visible; the journal is never silently pruned.
 
 Concurrent native submissions and flushes wait for an existing journal writer
-within their original twelve-second transport deadline. Lock acquisition uses
-bounded exponential backoff with jitter; waiting and a scope-rebind reopen do
-not start another deadline. Exhausted submission contention explicitly reports
+using their original twelve-second transport deadline. Lock acquisition uses
+bounded exponential backoff with jitter, with each sleep capped to the remaining
+budget. Acquisition is attempted once more after the final sleep, even if the
+scheduler wakes after the deadline, because the writer may have released its
+lock while the caller waited. If that attempt is still busy, no further sleep
+is scheduled. Waiting, successful acquisition and a scope-rebind reopen do not
+start another transport deadline; an exhausted budget permits no new outbound
+attempt. Exhausted submission contention explicitly reports
 that no new request was retained. A flush keeps the original retained request
 IDs. Only lock contention is retried: custody, corruption and scope failures
 keep their existing refusal semantics, and no enqueue or transport result is
