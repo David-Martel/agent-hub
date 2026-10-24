@@ -155,6 +155,71 @@ if (-not $unsafePathRejected) {
         throw "Fleet doctor rejected the legacy global credential source."
     }
 
+    # Protects local result attribution; detects probing another manifest host.
+    # Needs only owned synthetic files; exercises test-agent-bus-fleet.ps1's local-windows branch.
+    function Test-LocalWindowsHostMismatch {
+        $observed = [Environment]::MachineName
+        $wrongHost = if ($observed -ieq 'wrong-fleet-host') { 'other-fleet-host' } else { 'wrong-fleet-host' }
+        $probeMarker = Join-Path $fixtureRoot 'unexpected-local-probe'
+        $refusalCli = Join-Path $fixtureRoot 'identity-refusal-cli.ps1'
+        $markerLiteral = $probeMarker.Replace("'", "''")
+        "[IO.File]::WriteAllText('$markerLiteral', 'synthetic CLI invoked'); throw 'Unexpected local probe'" |
+            Set-Content -LiteralPath $refusalCli -Encoding utf8
+        $identityManifest = Join-Path $fixtureRoot 'local-identity-mismatch.json'
+        $blockedConfigPath = Join-Path $fixtureRoot 'must-not-read-config.json'
+        $probeCounts = [pscustomobject]@{ ConfigReads = 0; ServiceReads = 0 }
+        function Get-Content {
+            param([string]$LiteralPath, [switch]$Raw)
+            if ($LiteralPath -ceq $blockedConfigPath) { $probeCounts.ConfigReads++ }
+            Microsoft.PowerShell.Management\Get-Content -LiteralPath $LiteralPath -Raw:$Raw
+        }
+        function Get-Service {
+            param([string]$Name, [string]$ErrorAction)
+            $probeCounts.ServiceReads++
+            throw 'Unexpected service observation in the identity fixture'
+        }
+        @{
+            schema_version = 1; authority_machine = $wrongHost; expected_protocol_version = '1.0'
+            expected_build_revision = $fullRevision
+            machines = @(@{
+                id = $wrongHost; connection = 'local-windows'; os = 'windows'; architecture = 'x86_64'
+                role = 'authority'; canonical_repo = $fixtureRoot; cli_path = $refusalCli
+                config_path = $blockedConfigPath
+                auth_source = 'client-config'; client_server_url = 'http://authority.invalid:8400'
+                required_active_services = @('FleetFixtureMustNotProbe'); required_inactive_services = @()
+            })
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $identityManifest -Encoding utf8
+        $identityReport = (& $doctor -ManifestPath $identityManifest -Json | Out-String) | ConvertFrom-Json
+        if ((Test-Path -LiteralPath $probeMarker) -or $probeCounts.ConfigReads -ne 0 -or $probeCounts.ServiceReads -ne 0) {
+            throw 'Wrong-host local validation invoked a CLI, configuration or service probe before refusing identity.'
+        }
+        $failure = @($identityReport | Where-Object { $_.check -eq 'live' -and $_.status -eq 'fail' })
+        if ($identityReport.Count -ne 2 -or $failure.Count -ne 1 -or
+            -not $failure[0].detail.Contains($wrongHost) -or -not $failure[0].detail.Contains($observed)) {
+            throw 'Wrong-host local validation did not report the requested and observed identities.'
+        }
+        $strictRefused = $false
+        try { & $doctor -ManifestPath $identityManifest -Strict -Json | Out-Null }
+        catch {
+            if ($_.Exception.Message -ne 'Fleet doctor found 1 failure(s).') { throw }
+            $strictRefused = $true
+        }
+        if (-not $strictRefused -or (Test-Path -LiteralPath $probeMarker) -or
+            $probeCounts.ConfigReads -ne 0 -or $probeCounts.ServiceReads -ne 0) {
+            throw 'Strict wrong-host validation did not refuse before local probes.'
+        }
+        & $doctor -ManifestPath $identityManifest -SkipLive -Strict | Out-Null
+        if ((Test-Path -LiteralPath $probeMarker) -or $probeCounts.ConfigReads -ne 0 -or $probeCounts.ServiceReads -ne 0) {
+            throw 'SkipLive invoked a local probe.'
+        }
+    }
+    Test-LocalWindowsHostMismatch
+
+    # CASE local-windows-host-match
+    # Protects valid local routing diagnostics; detects case-sensitive identity checks
+    # or trust in a spoofed COMPUTERNAME. Needs owned fake CLI/config only.
+    # Breadcrumb: test-agent-bus-fleet.ps1 local-windows identity admission.
+    $localMachineId = ([Environment]::MachineName).ToLowerInvariant()
     $cliPath = Join-Path $fixtureRoot "fixture-cli.ps1"
     @'
 if ($env:AGENT_BUS_SERVER_URL -cne "http://caller-route.invalid:8400") {
@@ -163,33 +228,44 @@ if ($env:AGENT_BUS_SERVER_URL -cne "http://caller-route.invalid:8400") {
 if ($args[0] -eq "--version") {
     Write-Output "agent-bus 0.5.0 (53292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)"
 } elseif (($args -join " ") -eq "health --encoding json") {
-    Write-Output '{"ok":true,"storage_ready":true,"protocol_version":"1.0","build_version":"0.5.0 (53292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)","hub_identity":"authority-a","pg_dropped_writes":0,"pg_write_errors":0,"backend":{"mode":"remote","url":"http://authority.invalid:8400","authoritative":true,"hub_build":"0.5.0 (53292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)"}}'
+    $health = '{"ok":true,"storage_ready":true,"protocol_version":"1.0","build_version":"0.5.0 (53292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)","hub_identity":"authority-a","pg_dropped_writes":0,"pg_write_errors":0,"backend":{"mode":"remote","url":"http://authority.invalid:8400","authoritative":true,"hub_build":"0.5.0 (53292d9d706217994d1791227d60be6ed1f7f79f 2026-10-08)"}}' | ConvertFrom-Json
+    $health.hub_identity = ([Environment]::MachineName).ToLowerInvariant()
+    $health | ConvertTo-Json -Depth 6 -Compress
 } else { throw "Unexpected fixture CLI command" }
 $global:LASTEXITCODE = 0
 '@ | Set-Content -LiteralPath $cliPath -Encoding utf8
     $configPath = Join-Path $fixtureRoot "candidate-config.json"
     $candidateConfig | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $configPath -Encoding utf8
     $liveFixturePath = Join-Path $fixtureRoot "synthetic-live.json"
-    @{
-        schema_version = 1; authority_machine = "authority-a"; expected_protocol_version = "1.0"
+    $localFixtureManifest = @{
+        schema_version = 1; authority_machine = $localMachineId; expected_protocol_version = "1.0"
         expected_build_revision = $fullRevision
         machines = @(@{
-            id = "authority-a"; connection = "local-windows"; os = "windows"; architecture = "x86_64"
+            id = $localMachineId; connection = "local-windows"; os = "windows"; architecture = "x86_64"
             role = "authority"; canonical_repo = $fixtureRoot; cli_path = $cliPath; config_path = $configPath
             auth_source = "client-config"; client_server_url = "http://authority.invalid:8400"
             required_active_services = @(); required_inactive_services = @()
         })
-    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $liveFixturePath -Encoding utf8
+    }
     $previousUrl = $env:AGENT_BUS_SERVER_URL
+    $previousComputerName = $env:COMPUTERNAME
     try {
         $env:AGENT_BUS_SERVER_URL = "http://caller-route.invalid:8400"
-        $report = (& $doctor -ManifestPath $liveFixturePath -Strict -Json | Out-String) | ConvertFrom-Json
-        if (@($report | Where-Object status -ne "ok").Count -or @($report | Where-Object check -eq "route").Count -ne 1) {
-            throw "Synthetic live doctor did not qualify the candidate route."
+        $env:COMPUTERNAME = 'not-the-native-host'
+        foreach ($matchingId in @($localMachineId, $localMachineId.ToUpperInvariant())) {
+            $localFixtureManifest.machines[0].id = $matchingId
+            $localFixtureManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $liveFixturePath -Encoding utf8
+            $report = (& $doctor -ManifestPath $liveFixturePath -Strict -Json | Out-String) | ConvertFrom-Json
+            if (@($report | Where-Object status -ne "ok").Count -or @($report | Where-Object check -eq "route").Count -ne 1 -or
+                @($report | Where-Object { $_.machine -cne $matchingId }).Count) {
+                throw "Synthetic live doctor did not qualify the matching host and candidate route."
+            }
         }
     } finally {
         if ($null -eq $previousUrl) { Remove-Item Env:AGENT_BUS_SERVER_URL -ErrorAction SilentlyContinue }
         else { $env:AGENT_BUS_SERVER_URL = $previousUrl }
+        if ($null -eq $previousComputerName) { Remove-Item Env:COMPUTERNAME -ErrorAction SilentlyContinue }
+        else { $env:COMPUTERNAME = $previousComputerName }
     }
 
 $doctorText = Get-Content -LiteralPath $doctor -Raw
