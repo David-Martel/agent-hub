@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "review_status": "REVIEWED",
+  "scope": "Existing interactive native AgentHub task startup prerequisite and finite CLI ownership; no logon/reboot, host deployment or full repository-suite acceptance",
+  "recorded_at_utc": "2026-10-25T00:56:39.711839+00:00",
+  "source_file": "scripts/ci/Start-NativeWindowsRunner.ps1",
+  "source_sha256": "d8a826ec7c1b39234ae115cc4b4c646422480f44855c29be03084fc53a240d17",
+  "test_file": "scripts/ci/Start-NativeWindowsRunner.Tests.ps1",
+  "test_sha256": "a6a8b1733fb4e171dfdf9d70c74d218a309971c003476a52e3d46be4ebec3f70",
+  "selectors": [
+    "refuses another account before issuing any Docker or runner command",
+    "preserves an existing listener instead of creating a duplicate",
+    "does not start or switch Docker when a different engine is healthy",
+    "starts only the listener when Linux Docker is already ready",
+    "fails closed when the supported Desktop startup fails",
+    "requires a fresh Linux API response after successful Desktop startup",
+    "settles a bounded real CLI probe without leaking output into its result",
+    "removes ambient Docker connection overrides only from its child",
+    "terminates only its owned finite CLI client on timeout",
+    "does not issue lifecycle commands during WhatIf",
+    "refuses a listener that appears after Docker readiness",
+    "preserves Desktop appearing during the local API probe",
+    "launches only the qualified application through a bounded hidden native helper",
+    "rejects a timed-out application launch helper",
+    "qualifies an unreadable foreign listener by its registered service parent",
+    "refuses an unreadable listener without registered service parent proof"
+  ],
+  "rationale": "Each selector has inline Protects/Detects/Needs and implementation/review breadcrumbs. Failure controls exercise identity, duplicate/late listener ownership, wrong engine, startup failure, actual local daemon selection and child environment isolation. Positive and real finite-process controls prevent blanket refusal or fake mocked process acceptance.",
+  "validation": {
+    "pester_passed": 16,
+    "failed": 0,
+    "skipped": 0,
+    "includes_real_child_exit_output": true,
+    "includes_real_owned_timeout": true
+  },
+  "independent_review": {
+    "reviewer": "codex-nuc-agenthub-runner-review",
+    "current_disposition": "keep all16selectors at these exact hashes",
+    "receipt": "optimization-agenthub-runner-review-final.json",
+    "accepted_source_sha256": "d8a826ec7c1b39234ae115cc4b4c646422480f44855c29be03084fc53a240d17",
+    "accepted_test_sha256": "a6a8b1733fb4e171dfdf9d70c74d218a309971c003476a52e3d46be4ebec3f70",
+    "deadline_qualification": "Configured wait budget is followed by bounded1s reap and500ms-per-pipe settlement; this is not an exact wall-clock SLA. No real Docker application/registration/task launch was exercised by reviewer."
+  },
+  "needs": "Windows, PowerShell7, Pester5; mocks for Docker/runner decisions and real finite PowerShell CLI child controls",
+  "breadcrumb": "docs/fleet-build-runners.md#native-windows-owner-task",
+  "prior_independent_review": {
+    "reviewer": "/root",
+    "initial_disposition": "blocked until explicit local Docker endpoint and child environment override guards",
+    "current_disposition": "keep all11selectors; corrected local daemon and environment guards accepted",
+    "receipt": "C:/Users/david/Maintenance/fleet-sync/optimization-runner-independent-review.json",
+    "accepted_source_sha256": "8aad00682ec8f0d9fe65f69d5253050000386a781bdcc50bc53960e05a39a2a1",
+    "accepted_test_sha256": "cdd8a9918199f859bf3d04d2a06365508c2e26fc3b5ff19a354612ad51685777",
+    "reviewed_at_utc": "2026-10-25T00:11:32.059588+00:00"
+  },
+  "hash_basis": "SHA256 of authored LF bytes and canonical Git blobs; normalize CRLF worktree copies to LF for review comparison"
+}
