@@ -1,5 +1,53 @@
 # Fleet build runners
 
+## Native Windows owner task
+
+The existing `AgentHub Windows Runner` logon task on dtm-p1gen7 uses
+[`Start-NativeWindowsRunner.ps1`](../scripts/ci/Start-NativeWindowsRunner.ps1) to
+require the configured Windows owner and an existing AgentHub registration before
+launching its listener. If the Linux Docker API is absent and Desktop is stopped,
+it rechecks for another Desktop/backend owner and launches the installed
+`Docker Desktop.exe` hidden through a finite native helper without a shell.
+The application receives only an explicitly allowlisted Windows NUL handle for
+its standard streams; it cannot inherit the helper's captured diagnostic pipes.
+No undrained replacement pipe is left attached to the surviving application.
+The helper's deadline covers process creation itself; an already launched
+application is preserved if the helper times out. It waits within the shared startup deadline for an
+actual `docker info` response of `linux` through the explicit local Desktop Linux
+named pipe; ambient remote Docker settings cannot satisfy readiness. Failures
+refuse the runner start and leave an inspectable, registration-qualified receipt.
+Running engines, containers and other runner processes are preserved. The task
+keeps its existing interactive principal, logon trigger, unlimited runtime,
+IgnoreNew policy and bounded restart-on-failure settings; no second scheduler is
+installed. Readiness evidence is `startup-readiness.json` in the runner directory.
+An unreadable listener image is accepted as foreign only when its exact parent
+PID matches a running registered runner service with a qualified sibling binary
+path. Unqualified images still block startup.
+
+Run the Windows-only focused controls with:
+
+```powershell
+Invoke-Pester scripts/ci/Start-NativeWindowsRunner.Tests.ps1 -Output Detailed
+```
+
+The immutable [pipe-isolation test review](../scripts/ci/NATIVE_WINDOWS_RUNNER_PIPE_TEST_REVIEW.json)
+links the preserved [original startup review](../scripts/ci/NATIVE_WINDOWS_RUNNER_TEST_REVIEW.json).
+
+The real surviving-child control requires the installed Windows Framework64
+`v4.0.30319/csc.exe` compiler. It writes more than a pipe buffer to both standard
+streams, verifies helper completion while the child remains alive, and cleans up
+only the fixture with the recorded PID, exact image/command line and start time.
+
+Before replacing the existing task action, export its exact XML and retain the
+previous wrapper hash. Set its action to PowerShell 7 with `-NoLogo -NoProfile
+-File <installed-wrapper> -ExpectedIdentity <configured-owner>`; preserve the
+remaining task XML and existing registration. Roll back through the original XML
+and retained wrapper. Do not restart a busy runner to test installation. A demand
+start, actual Linux API readback and GitHub runner availability qualify the
+current session. The next real logon/reboot remains a separate acceptance gate;
+this interactive Docker Desktop arrangement does not provide a runner before
+user logon.
+
 Linux build jobs and the Windows cross-build use the fleet. Workflows selecting
 fleet runners must use all default labels rather than the ambiguous
 `self-hosted` label. The Windows build, unit and smoke jobs run on the Linux
