@@ -2,11 +2,11 @@
   "schema_version": 1,
   "review_status": "REVIEWED",
   "scope": "Existing interactive native AgentHub task startup prerequisite and finite CLI ownership; no logon/reboot, host deployment or full repository-suite acceptance",
-  "recorded_at_utc": "2026-10-25T01:36:43.088034+00:00",
+  "recorded_at_utc": "2026-10-25T00:56:39.711839+00:00",
   "source_file": "scripts/ci/Start-NativeWindowsRunner.ps1",
-  "source_sha256": "033a1db515fe08279a4446bbb9d69c6819e198300af7e0d172aa1bc89311237c",
+  "source_sha256": "d8a826ec7c1b39234ae115cc4b4c646422480f44855c29be03084fc53a240d17",
   "test_file": "scripts/ci/Start-NativeWindowsRunner.Tests.ps1",
-  "test_sha256": "de943f5e3a89cfc4b9600644d71828e631455ef1bf204c4d61cd68cb6bd3a81d",
+  "test_sha256": "a6a8b1733fb4e171dfdf9d70c74d218a309971c003476a52e3d46be4ebec3f70",
   "selectors": [
     "refuses another account before issuing any Docker or runner command",
     "preserves an existing listener instead of creating a duplicate",
@@ -22,22 +22,26 @@
     "preserves Desktop appearing during the local API probe",
     "launches only the qualified application through a bounded hidden native helper",
     "rejects a timed-out application launch helper",
-    "rejects a launch result whose captured error pipe did not settle",
-    "settles captured helper pipes while a real noisy application survives",
     "qualifies an unreadable foreign listener by its registered service parent",
     "refuses an unreadable listener without registered service parent proof"
   ],
-  "rationale": "Each selector has inline Protects/Detects/Needs and implementation/review breadcrumbs. Failure controls exercise identity, duplicate/late listener ownership, wrong engine, startup failure, actual local daemon selection and child environment isolation. Positive and real finite-process controls prevent blanket refusal or fake mocked process acceptance. The surviving child writes 1MiB on each stream before readiness; the published implementation fails that exact real control. Native startup receives only an allowlisted inheritable NUL handle while finite helper diagnostics remain captured.",
+  "rationale": "Each selector has inline Protects/Detects/Needs and implementation/review breadcrumbs. Failure controls exercise identity, duplicate/late listener ownership, wrong engine, startup failure, actual local daemon selection and child environment isolation. Positive and real finite-process controls prevent blanket refusal or fake mocked process acceptance.",
   "validation": {
-    "pester_passed": 18,
+    "pester_passed": 16,
     "failed": 0,
     "skipped": 0,
     "includes_real_child_exit_output": true,
-    "includes_real_owned_timeout": true,
-    "includes_real_noisy_surviving_child": true,
-    "published_implementation_negative_control_failed": true
+    "includes_real_owned_timeout": true
   },
-  "needs": "Windows, PowerShell7, Pester5; mocks for Docker/runner decisions and real finite PowerShell CLI child controls; installed Windows Framework64 v4.0.30319/csc.exe for the surviving console-child fixture",
+  "independent_review": {
+    "reviewer": "codex-nuc-agenthub-runner-review",
+    "current_disposition": "keep all16selectors at these exact hashes",
+    "receipt": "optimization-agenthub-runner-review-final.json",
+    "accepted_source_sha256": "d8a826ec7c1b39234ae115cc4b4c646422480f44855c29be03084fc53a240d17",
+    "accepted_test_sha256": "a6a8b1733fb4e171dfdf9d70c74d218a309971c003476a52e3d46be4ebec3f70",
+    "deadline_qualification": "Configured wait budget is followed by bounded1s reap and500ms-per-pipe settlement; this is not an exact wall-clock SLA. No real Docker application/registration/task launch was exercised by reviewer."
+  },
+  "needs": "Windows, PowerShell7, Pester5; mocks for Docker/runner decisions and real finite PowerShell CLI child controls",
   "breadcrumb": "docs/fleet-build-runners.md#native-windows-owner-task",
   "prior_independent_review": {
     "reviewer": "/root",
@@ -48,28 +52,5 @@
     "accepted_test_sha256": "cdd8a9918199f859bf3d04d2a06365508c2e26fc3b5ff19a354612ad51685777",
     "reviewed_at_utc": "2026-10-25T00:11:32.059588+00:00"
   },
-  "hash_basis": "SHA256 of authored LF bytes and canonical Git blobs; normalize CRLF worktree copies to LF for review comparison",
-  "previous_review": {
-    "reviewer": "codex-nuc-agenthub-runner-review",
-    "current_disposition": "keep all16selectors at these exact hashes",
-    "receipt": "optimization-agenthub-runner-review-final.json",
-    "accepted_source_sha256": "d8a826ec7c1b39234ae115cc4b4c646422480f44855c29be03084fc53a240d17",
-    "accepted_test_sha256": "a6a8b1733fb4e171dfdf9d70c74d218a309971c003476a52e3d46be4ebec3f70",
-    "deadline_qualification": "Configured wait budget is followed by bounded1s reap and500ms-per-pipe settlement; this is not an exact wall-clock SLA. No real Docker application/registration/task launch was exercised by reviewer."
-  },
-  "independent_review": {
-    "reviewer": "codex-nuc-agenthub-runner-pipe-review",
-    "current_disposition": "keep all18selectors at these exact hashes",
-    "receipt": "optimization-agenthub-runner-pipe-review-final.json",
-    "receipt_sha256": "5bc7f64c91f9fb9d730b45b194c34d5b0bdd6e932d3f81929bba3b094b815ca7",
-    "accepted_source_sha256": "033a1db515fe08279a4446bbb9d69c6819e198300af7e0d172aa1bc89311237c",
-    "accepted_test_sha256": "de943f5e3a89cfc4b9600644d71828e631455ef1bf204c4d61cd68cb6bd3a81d",
-    "pester_passed": 18,
-    "failed": 0,
-    "skipped": 0,
-    "analyzer_warning_error_count": 0,
-    "retained_information_count": 2,
-    "owned_fixture_leaks": 0,
-    "scope": "Native surviving-child and decision controls; live Docker/task/listener/logon acceptance remains separate."
-  }
+  "hash_basis": "SHA256 of authored LF bytes and canonical Git blobs; normalize CRLF worktree copies to LF for review comparison"
 }

@@ -30,6 +30,9 @@ Run the Windows-only focused controls with:
 Invoke-Pester scripts/ci/Start-NativeWindowsRunner.Tests.ps1 -Output Detailed
 ```
 
+The immutable [pipe-isolation test review](../scripts/ci/NATIVE_WINDOWS_RUNNER_PIPE_TEST_REVIEW.json)
+links the preserved [original startup review](../scripts/ci/NATIVE_WINDOWS_RUNNER_TEST_REVIEW.json).
+
 The real surviving-child control requires the installed Windows Framework64
 `v4.0.30319/csc.exe` compiler. It writes more than a pipe buffer to both standard
 streams, verifies helper completion while the child remains alive, and cleans up
