@@ -86,21 +86,91 @@ function Start-RunnerDesktopApplication {
         # that helper on deadline does not kill an application already launched.
         $launch = @'
 $ErrorActionPreference = 'Stop'
-$info = [Diagnostics.ProcessStartInfo]::new()
-$info.FileName = '__APPLICATION__'
-$info.UseShellExecute = $false
-$info.CreateNoWindow = $true
-$info.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
-$process = [Diagnostics.Process]::Start($info)
-if (-not $process) { throw 'Application launch returned no process' }
-[Console]::WriteLine($process.Id)
-$process.Dispose()
+# Only NUL may cross into the surviving application. In particular, it must
+# never inherit this finite helper's captured stdout/stderr pipe handles.
+Add-Type -TypeDefinition @"
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class NativeRunnerDesktopLaunch {
+    [StructLayout(LayoutKind.Sequential)] struct SecurityAttributes {
+        public int Length; public IntPtr Descriptor; public int Inherit;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct StartupInfo {
+        public int Size; public string Reserved, Desktop, Title;
+        public int X, Y, Width, Height, XChars, YChars, Fill, Flags;
+        public short Show, ReservedBytes; public IntPtr ReservedPointer, Input, Output, Error;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct StartupInfoEx {
+        public StartupInfo Info; public IntPtr Attributes;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct ProcessInfo {
+        public IntPtr Process, Thread; public int Pid, Tid;
+    }
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateFileW(string name, uint access, uint sharing,
+        ref SecurityAttributes security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute,
+        IntPtr value, IntPtr size, IntPtr previous, IntPtr returnedSize);
+    [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool CreateProcessW(string application, StringBuilder command,
+        IntPtr processSecurity, IntPtr threadSecurity, bool inherit, uint flags,
+        IntPtr environment, string directory, ref StartupInfoEx startup, out ProcessInfo process);
+    public static int Start(string executable) {
+        var security = new SecurityAttributes { Length = Marshal.SizeOf<SecurityAttributes>(), Inherit = 1 };
+        IntPtr sink = CreateFileW("NUL", 0xC0000000, 3, ref security, 3, 0, IntPtr.Zero);
+        if (sink == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        IntPtr list = IntPtr.Zero, handles = IntPtr.Zero, size = IntPtr.Zero;
+        bool initialized = false;
+        ProcessInfo process = new ProcessInfo();
+        try {
+            InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+            if (size == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+            list = Marshal.AllocHGlobal(size);
+            if (!InitializeProcThreadAttributeList(list, 1, 0, ref size))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            initialized = true;
+            handles = Marshal.AllocHGlobal(IntPtr.Size);
+            Marshal.WriteIntPtr(handles, sink);
+            // PROC_THREAD_ATTRIBUTE_HANDLE_LIST permits only the stable NUL handle.
+            if (!UpdateProcThreadAttribute(list, 0, new IntPtr(0x20002), handles,
+                new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            var startup = new StartupInfoEx();
+            startup.Info.Size = Marshal.SizeOf<StartupInfoEx>();
+            startup.Info.Flags = 0x101; // STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW
+            startup.Info.Show = 0; // SW_HIDE
+            startup.Info.Input = startup.Info.Output = startup.Info.Error = sink;
+            startup.Attributes = list;
+            // EXTENDED_STARTUPINFO_PRESENT | CREATE_NO_WINDOW; no shell/elevation.
+            if (!CreateProcessW(executable, new StringBuilder("\"" + executable + "\""),
+                IntPtr.Zero, IntPtr.Zero, true, 0x08080000, IntPtr.Zero, null, ref startup, out process))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            return process.Pid;
+        } finally {
+            if (process.Thread != IntPtr.Zero) CloseHandle(process.Thread);
+            if (process.Process != IntPtr.Zero) CloseHandle(process.Process);
+            if (initialized) DeleteProcThreadAttributeList(list);
+            if (handles != IntPtr.Zero) Marshal.FreeHGlobal(handles);
+            if (list != IntPtr.Zero) Marshal.FreeHGlobal(list);
+            CloseHandle(sink);
+        }
+    }
+}
+"@
+[Console]::WriteLine([NativeRunnerDesktopLaunch]::Start('__APPLICATION__'))
 '@.Replace('__APPLICATION__', $Executable.Replace("'", "''"))
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($launch))
         $result = Invoke-RunnerProbe -Executable (Get-Process -Id $PID).Path -Arguments @(
             '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded
         ) -TimeoutSeconds $TimeoutSeconds
-        if ($result.Code -ne 0 -or $result.Output -notmatch '^\d+$') {
+        if ($result.Code -ne 0 -or $result.Error -or $result.Output -notmatch '^\d+$') {
             throw 'Supported Docker Desktop application launch failed or exceeded its deadline'
         }
         return [int]$result.Output

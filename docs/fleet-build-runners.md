@@ -7,7 +7,10 @@ The existing `AgentHub Windows Runner` logon task on dtm-p1gen7 uses
 require the configured Windows owner and an existing AgentHub registration before
 launching its listener. If the Linux Docker API is absent and Desktop is stopped,
 it rechecks for another Desktop/backend owner and launches the installed
-`Docker Desktop.exe` hidden through a finite helper with shell execution disabled.
+`Docker Desktop.exe` hidden through a finite native helper without a shell.
+The application receives only an explicitly allowlisted Windows NUL handle for
+its standard streams; it cannot inherit the helper's captured diagnostic pipes.
+No undrained replacement pipe is left attached to the surviving application.
 The helper's deadline covers process creation itself; an already launched
 application is preserved if the helper times out. It waits within the shared startup deadline for an
 actual `docker info` response of `linux` through the explicit local Desktop Linux
@@ -26,6 +29,11 @@ Run the Windows-only focused controls with:
 ```powershell
 Invoke-Pester scripts/ci/Start-NativeWindowsRunner.Tests.ps1 -Output Detailed
 ```
+
+The real surviving-child control requires the installed Windows Framework64
+`v4.0.30319/csc.exe` compiler. It writes more than a pipe buffer to both standard
+streams, verifies helper completion while the child remains alive, and cleans up
+only the fixture with the recorded PID, exact image/command line and start time.
 
 Before replacing the existing task action, export its exact XML and retain the
 previous wrapper hash. Set its action to PowerShell 7 with `-NoLogo -NoProfile

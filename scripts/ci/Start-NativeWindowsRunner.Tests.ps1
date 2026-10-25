@@ -193,10 +193,10 @@ Describe 'Supported owner application launch' {
         Should -Invoke Invoke-RunnerProbe -Times 1 -ParameterFilter {
             $scriptText = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($Arguments[-1]))
             $TimeoutSeconds -eq 3 -and $Arguments -contains '-NonInteractive' -and
-                $scriptText.Contains('$info.UseShellExecute = $false') -and
-                $scriptText.Contains('$info.CreateNoWindow = $true') -and
+                $scriptText.Contains('CreateProcessW(executable,') -and
+                $scriptText.Contains('PROC_THREAD_ATTRIBUTE_HANDLE_LIST') -and
                 $scriptText.Contains($application) -and
-                $scriptText.Contains('[Diagnostics.ProcessWindowStyle]::Hidden')
+                $scriptText.Contains('startup.Info.Show = 0')
         }
     }
 
@@ -208,6 +208,86 @@ Describe 'Supported owner application launch' {
         Mock Invoke-RunnerProbe { @{ Code = 124; Output = ''; TimedOut = $true } }
         { Start-RunnerDesktopApplication -Executable $application -TimeoutSeconds 1 } |
             Should -Throw '*launch failed or exceeded its deadline*'
+    }
+
+    # Protects helper diagnostics; detects accepting success with an inherited unsettled pipe.
+    # Needs a probe-result double. Breadcrumb: strict captured-error admission after native launch.
+    It 'rejects a launch result whose captured error pipe did not settle' {
+        $application = Join-Path $TestDrive 'Docker Desktop.exe'
+        Set-Content -LiteralPath $application -Value 'fixture'
+        Mock Invoke-RunnerProbe { @{ Code = 0; Output = '4242'; Error = 'CLI pipe did not settle' } }
+        { Start-RunnerDesktopApplication -Executable $application -TimeoutSeconds 1 } |
+            Should -Throw '*launch failed or exceeded its deadline*'
+    }
+}
+
+Describe 'Real surviving application handle isolation' {
+    # Protects bounded helper capture without poisoning the surviving application's output.
+    # Detects inherited probe pipes or undrained replacement pipes: a real console child writes
+    # 1MiB to EACH stream before its ready marker, then remains alive after helper EOF.
+    # Needs Windows Framework csc/PowerShell7; cleanup verifies exact image and start interval.
+    # Breadcrumb: NativeRunnerDesktopLaunch handle allowlist; review register selectors.
+    It 'settles captured helper pipes while a real noisy application survives' {
+        $application = Join-Path $TestDrive 'surviving application.exe'
+        $source = Join-Path $TestDrive 'surviving-application.cs'
+        $ready = $application + '.ready'
+        $identity = $application + '.identity'
+        [IO.File]::WriteAllText($source, @'
+using System;
+using System.Diagnostics;
+using System.IO;
+using System.Threading;
+class SurvivingApplication {
+    static void Main() {
+        var current = Process.GetCurrentProcess();
+        string path = current.MainModule.FileName;
+        File.WriteAllText(path + ".identity", current.Id.ToString());
+        string noise = new string('x', 8192);
+        for (int i = 0; i < 128; i++) { Console.Out.Write(noise); Console.Error.Write(noise); }
+        Console.Out.Flush(); Console.Error.Flush();
+        File.WriteAllText(path + ".ready", current.Id.ToString());
+        Thread.Sleep(30000);
+    }
+}
+'@)
+        $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework64/v4.0.30319/csc.exe'
+        Test-Path -LiteralPath $compiler -PathType Leaf | Should -BeTrue
+        & $compiler /nologo /target:exe "/out:$application" $source
+        $LASTEXITCODE | Should -Be 0
+        $startedAfter = [DateTime]::UtcNow
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            $applicationPid = Start-RunnerDesktopApplication -Executable $application -TimeoutSeconds 10
+            # Ten-second launch budget plus bounded pipe settlement/scheduling margin;
+            # still substantially shorter than the fixture's thirty-second lifetime.
+            $watch.Elapsed.TotalSeconds | Should -BeLessThan 12
+            $readyDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            while (-not (Test-Path -LiteralPath $ready) -and [DateTime]::UtcNow -lt $readyDeadline) {
+                Start-Sleep -Milliseconds 50
+            }
+            [IO.File]::ReadAllText($ready) | Should -Be ([string]$applicationPid)
+            $child = Get-Process -Id $applicationPid -ErrorAction Stop
+            $child.Path | Should -Be $application
+            $child.HasExited | Should -BeFalse
+            $child.StartTime.ToUniversalTime() | Should -BeGreaterOrEqual $startedAfter
+        } finally {
+            # The helper can fail before returning PID; the fixture itself records its identity.
+            if (Test-Path -LiteralPath $identity) {
+                $ownedPid = [int][IO.File]::ReadAllText($identity)
+                $owned = Get-Process -Id $ownedPid -ErrorAction SilentlyContinue
+                # Pin the process object before validating identity; a recycled PID must
+                # never retarget cleanup after the fixture exits during these checks.
+                $ownedHandle = if ($owned) { $owned.SafeHandle } else { $null }
+                $command = Get-CimInstance Win32_Process -Filter "ProcessId=$ownedPid" -ErrorAction Stop
+                if ($owned -and -not $ownedHandle.IsInvalid -and $owned.Path -eq $application -and
+                    $owned.StartTime.ToUniversalTime() -ge $startedAfter -and
+                    $command.CommandLine -ceq ('"' + $application + '"')) {
+                    $owned.Kill()
+                    $owned.WaitForExit(3000) | Should -BeTrue
+                    $owned.Dispose()
+                } elseif ($owned) { throw 'Fixture process identity changed; preserve it' }
+            }
+        }
     }
 }
 
