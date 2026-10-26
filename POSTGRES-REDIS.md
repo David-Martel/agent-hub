@@ -20,7 +20,7 @@
 The guide below was measured on a Windows host. On the Linux hub, Redis (port 6380) and
 PostgreSQL (port 5300) are system services, and two failure guards for them are packaged
 under [`packaging/`](packaging/README.md#backend-hardening-root-opt-in), installed with
-`./install.sh --with-backend-hardening`:
+`packaging/backend-hardening.sh`:
 
 - a Redis `ExecStartPre` check that repairs a small torn AOF tail after copying it aside, with
   a restart delay and start limit that leave time to recover. It exists because a power cut

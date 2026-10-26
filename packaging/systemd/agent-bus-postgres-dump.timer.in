@@ -1,6 +1,6 @@
 # agent-bus-postgres-dump.timer.in -- daily trigger for agent-bus-postgres-dump.service.
 # Rendered, enabled and started (the timer only, never the dump) by:
-#   ./install.sh --with-backend-hardening
+#   packaging/backend-hardening.sh (or ./install.sh --with-backend-hardening)
 # Persistent=true runs a missed dump at the next boot. See packaging/README.md.
 [Unit]
 Description=Daily dump of the agent-bus hub's PostgreSQL databases

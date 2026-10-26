@@ -19,8 +19,8 @@
 #   5. Re-check. Anything but exit 0 refuses the start.
 # Every outcome goes to stderr, so it lands in the unit's journal.
 #
-# Installed by `install.sh --with-backend-hardening` (packaging/README.md, "Backend
-# hardening"). Tests: packaging/tests/backend-hardening-test.sh.
+# Installed by packaging/backend-hardening.sh (packaging/README.md, "Backend hardening").
+# Tests: packaging/tests/backend-hardening-test.sh.
 #
 # Usage: agent-bus-redis-aof-preflight <appendonlydir> <manifest-name> <max-fix-bytes>
 set -eu

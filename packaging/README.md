@@ -106,10 +106,15 @@ hardening therefore needs root, unlike the user-unit HTTP hub above. It is never
 unless asked for, and it never starts, stops or restarts Redis or PostgreSQL.
 
 ```bash
-./install.sh --skip-build --no-verify --with-backend-hardening --dry-run   # review
-./install.sh --skip-build --no-verify --with-backend-hardening             # install (sudo)
-packaging/backend-hardening.sh --help                                      # same, standalone
+packaging/backend-hardening.sh --dry-run   # review every file and root command
+packaging/backend-hardening.sh             # install (sudo)
+packaging/backend-hardening.sh --help      # options
 ```
+
+The standalone script needs no build. `./install.sh --with-backend-hardening` runs the same
+script after the normal build, deploy and verify steps. `--skip-build` there still (re)deploys
+whatever is in `target/release/` to `~/.local/bin`, and fails if nothing is built, so use the
+standalone script when only the hardening is wanted.
 
 **Why.** On 2026-10-26 at 22:32Z a power cut left 1155 bad bytes at the tail of the hub's AOF
 INCR file. `redis-server` refused to load it, the packaged unit (`Restart=always`, 100 ms
@@ -148,7 +153,8 @@ renders or runs anything, and refuses:
   plus `appenddirname`, and the manifest is `appendfilename` plus `.manifest`.
 
 The dry run prints every target with its rendered content and every root command, and never
-calls sudo. After installing, check the drop-in and run one dump:
+calls sudo. It is a preview: its `install` lines name a staging directory that is removed on
+exit, so run the script without `--dry-run` rather than pasting them. After installing, check the drop-in and run one dump:
 
 ```bash
 systemctl show redis-server.service -p DropInPaths,ExecStartPre,RestartUSec

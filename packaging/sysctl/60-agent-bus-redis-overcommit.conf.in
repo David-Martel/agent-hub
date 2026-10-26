@@ -1,5 +1,5 @@
 # 60-agent-bus-redis-overcommit.conf.in -- rendered and installed (root) by:
-#   ./install.sh --with-backend-hardening
+#   packaging/backend-hardening.sh (or ./install.sh --with-backend-hardening)
 # Redis's background save and AOF rewrite fork the server. With the kernel default (0) that
 # fork can fail under memory pressure, and Redis logs "Memory overcommit must be enabled" at
 # every start. See packaging/README.md, "Backend hardening".

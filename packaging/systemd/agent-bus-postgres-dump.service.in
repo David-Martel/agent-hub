@@ -1,6 +1,6 @@
 # agent-bus-postgres-dump.service.in -- system oneshot that dumps the hub's PostgreSQL
 # databases. Rendered and installed (root) by:
-#   ./install.sh --with-backend-hardening
+#   packaging/backend-hardening.sh (or ./install.sh --with-backend-hardening)
 # It runs as @PG_USER@ over the local socket (peer authentication, so no password is stored)
 # and can write only @DUMP_DIR@. PrivateTmp hides /tmp and /var/tmp, so the installer refuses
 # a dump directory there (systemd fails such a unit with status 226). The installer never

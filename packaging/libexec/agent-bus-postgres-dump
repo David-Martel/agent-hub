@@ -14,8 +14,8 @@
 # A failed database is counted and reported, and the others are still dumped; any failure
 # exits 1, so the unit lands in `systemctl --failed`. Every outcome goes to stderr.
 #
-# Installed by `install.sh --with-backend-hardening` (packaging/README.md, "Backend
-# hardening"). Tests: packaging/tests/backend-hardening-test.sh.
+# Installed by packaging/backend-hardening.sh (packaging/README.md, "Backend hardening").
+# Tests: packaging/tests/backend-hardening-test.sh.
 #
 # Usage: agent-bus-postgres-dump <dest-dir> <port> <keep> <database>...
 set -eu

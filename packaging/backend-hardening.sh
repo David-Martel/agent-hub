@@ -18,9 +18,9 @@
 # next start; the dump first runs when the timer fires.
 #
 # Usage:
-#   packaging/backend-hardening.sh [OPTIONS]
-#   ./install.sh --skip-build --no-verify --with-backend-hardening [--dry-run]
-#                (install.sh forwards --backend-<option> <value> as --<option> <value>)
+#   packaging/backend-hardening.sh [OPTIONS]          (no build needed; the usual entry point)
+#   ./install.sh --with-backend-hardening [--dry-run]  (after install.sh's build and deploy;
+#                forwards --backend-<option> <value> as --<option> <value>)
 #
 # Options (defaults match the asuspro13 hub):
 #   --dry-run                           Render everything and print every target file (with its

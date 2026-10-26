@@ -46,7 +46,9 @@
 #                            daily PostgreSQL dump timer for the SYSTEM services behind an
 #                            authoritative hub. Needs root (runs sudo unless already root);
 #                            never starts, stops or restarts Redis or PostgreSQL. Linux only.
-#                            Combine with --skip-build --no-verify to do only this.
+#                            The binary build/deploy steps still run first (--skip-build still
+#                            deploys target/release); for the hardening alone run
+#                            packaging/backend-hardening.sh directly.
 #   --backend-<option> <v>   Forward --<option> <v> to backend-hardening.sh, e.g.
 #                            --backend-pg-port 5432 (see its --help for the options).
 #   --dry-run                Print planned actions; make no changes.

@@ -1,6 +1,6 @@
 # agent-bus-aof-preflight.conf.in -- drop-in for the system redis-server unit that backs the
 # agent-bus hub. Rendered and installed (root) by:
-#   ./install.sh --with-backend-hardening
+#   packaging/backend-hardening.sh (or ./install.sh --with-backend-hardening)
 # Takes effect at Redis's next start; the installer never starts, stops or restarts Redis.
 #
 # The packaged unit restarts after 100 ms with a 5-in-10 s start limit, so a deterministic
