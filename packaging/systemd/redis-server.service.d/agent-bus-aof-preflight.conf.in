@@ -1,0 +1,16 @@
+# agent-bus-aof-preflight.conf.in -- drop-in for the system redis-server unit that backs the
+# agent-bus hub. Rendered and installed (root) by:
+#   ./install.sh --with-backend-hardening
+# Takes effect at Redis's next start; the installer never starts, stops or restarts Redis.
+#
+# The packaged unit restarts after 100 ms with a 5-in-10 s start limit, so a deterministic
+# start failure (the 2026-10-26 corrupt AOF tail) exhausted it in 2 s. @START_LIMIT_BURST@
+# starts @RESTART_SEC@ s apart fit inside @START_LIMIT_INTERVAL_SEC@ s, so systemd still gives
+# up loudly instead of looping. See packaging/README.md, "Backend hardening".
+[Unit]
+StartLimitIntervalSec=@START_LIMIT_INTERVAL_SEC@
+StartLimitBurst=@START_LIMIT_BURST@
+
+[Service]
+ExecStartPre=@PREFLIGHT_BIN@ @AOF_DIR@ @AOF_MANIFEST@ @MAX_FIX_BYTES@
+RestartSec=@RESTART_SEC@

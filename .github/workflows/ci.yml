@@ -120,6 +120,11 @@ jobs:
       - run: bash scripts/ci/setup-rust.sh
       - run: env -u AGENT_BUS_SERVER_CANDIDATES cargo test --workspace --lib --bins -- --test-threads=4
       - run: python3 -B -m unittest discover -s scripts/ci -p "test_*.py"
+      - name: Backend hardening packaging fixture (fakes only; never root or a live backend)
+        # Redis AOF preflight, PostgreSQL dump and their root installer
+        # (packaging/README.md, "Backend hardening"). Every privileged command goes
+        # to a recorder that runs nothing, so a root runner cannot touch /etc.
+        run: bash packaging/tests/backend-hardening-test.sh
       - name: Non-ignored integration tests (no live backend of any kind)
         shell: bash
         # `--tests` here is deliberately NOT `--workspace --tests -- --ignored`

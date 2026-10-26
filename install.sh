@@ -41,6 +41,14 @@
 #                            ~/.config/agent-bus/config.json if present, else
 #                            a documented placeholder). Only used with
 #                            --with-relay-service.
+#   --with-backend-hardening Run packaging/backend-hardening.sh after the rest: a Redis
+#                            AOF start preflight drop-in, a Redis overcommit sysctl and a
+#                            daily PostgreSQL dump timer for the SYSTEM services behind an
+#                            authoritative hub. Needs root (runs sudo unless already root);
+#                            never starts, stops or restarts Redis or PostgreSQL. Linux only.
+#                            Combine with --skip-build --no-verify to do only this.
+#   --backend-<option> <v>   Forward --<option> <v> to backend-hardening.sh, e.g.
+#                            --backend-pg-port 5432 (see its --help for the options).
 #   --dry-run                Print planned actions; make no changes.
 #   -h, --help                Show this help and exit.
 #
@@ -61,6 +69,8 @@ NO_VERIFY=0
 FORCE=0
 WITH_HTTP_SERVICE=0
 WITH_RELAY_SERVICE=0
+WITH_BACKEND_HARDENING=0
+BACKEND_ARGS=()
 RELAY_BIN=""
 HUB_URL=""
 DRY_RUN=0
@@ -96,6 +106,14 @@ while [[ $# -gt 0 ]]; do
         --bin-dir=*) BIN_DIR="${1#--bin-dir=}"; shift ;;
         --with-http-service) WITH_HTTP_SERVICE=1; shift ;;
         --with-relay-service) WITH_RELAY_SERVICE=1; shift ;;
+        --with-backend-hardening) WITH_BACKEND_HARDENING=1; shift ;;
+        --backend-allow-missing-aof) BACKEND_ARGS+=(--allow-missing-aof); shift ;;
+        --backend-*=*)
+            option="${1%%=*}"
+            BACKEND_ARGS+=("--${option#--backend-}" "${1#*=}"); shift ;;
+        --backend-*)
+            [[ $# -ge 2 ]] || { err "$1 requires a value"; exit 2; }
+            BACKEND_ARGS+=("--${1#--backend-}" "$2"); shift 2 ;;
         --relay-bin)
             [[ $# -ge 2 ]] || { err "--relay-bin requires a path argument"; exit 2; }
             RELAY_BIN="$2"; shift 2 ;;
@@ -674,6 +692,37 @@ install_relay_service() {
     ensure_user_service_linger
 }
 
+# ── optional root-owned Redis/PostgreSQL hardening (packaging/README.md) ───────────
+backend_hardening_cmd() {
+    local -a cmd=(bash "${REPO_ROOT}/packaging/backend-hardening.sh")
+    [[ $DRY_RUN -eq 0 ]] || cmd+=(--dry-run)
+    cmd+=("$@")
+    if [[ ${#BACKEND_ARGS[@]} -gt 0 ]]; then
+        cmd+=("${BACKEND_ARGS[@]}")
+    fi
+    "${cmd[@]}"
+}
+
+preflight_backend_hardening() {
+    if [[ $WITH_BACKEND_HARDENING -eq 0 ]]; then
+        if [[ ${#BACKEND_ARGS[@]} -gt 0 ]]; then
+            err "--backend-* options need --with-backend-hardening"
+            exit 2
+        fi
+        return 0
+    fi
+    # Refuse bad options before the build, not after it.
+    backend_hardening_cmd --validate-only
+}
+
+install_backend_hardening() {
+    if [[ $WITH_BACKEND_HARDENING -eq 0 ]]; then
+        return 0
+    fi
+    log "Backend hardening (root; never restarts Redis or PostgreSQL)..."
+    backend_hardening_cmd
+}
+
 # ── main ───────────────────────────────────────────────────────────────────────
 main() {
     log "agent-hub installer starting (repo: $REPO_ROOT)"
@@ -687,6 +736,7 @@ main() {
     esac
 
     preflight_http_service
+    preflight_backend_hardening
     run_build
     verify_built_binaries
     deploy_binaries
@@ -694,6 +744,7 @@ main() {
     verify_install
     install_http_service
     install_relay_service
+    install_backend_hardening
 
     ok "Install complete."
 }
