@@ -17,7 +17,9 @@ StartLimitBurst=@START_LIMIT_BURST@
 # shares the service's namespace, so redis-server may now also exec these files: the helper,
 # the real /bin/sh, redis-check-aof and the commands on the helper's exec-deps line, resolved by
 # backend-hardening.sh to real paths. Nothing else is added. Environment= pins the helper to
-# that same redis-check-aof; it is set for redis-server too, which ignores it.
+# that same redis-check-aof by its unresolved path: Redis is one multi-call binary that picks
+# checker or server mode from the name it runs under. It is set for redis-server too, which
+# ignores it.
 [Service]
 ExecPaths=@PREFLIGHT_EXEC_PATHS@
 Environment=AGENT_BUS_REDIS_CHECK_AOF=@REDIS_CHECK_AOF@

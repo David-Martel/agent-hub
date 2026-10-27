@@ -457,7 +457,7 @@ test_installer_dry_run_shows_every_file_and_command() {
         /etc/systemd/system/agent-bus-postgres-dump.timer \
         'ExecStartPre=/usr/local/libexec/agent-bus/agent-bus-redis-aof-preflight /var/lib/redis/appendonlydir appendonly.aof.manifest 1048576' \
         'ExecPaths=/usr/local/libexec/agent-bus/agent-bus-redis-aof-preflight ' \
-        "Environment=AGENT_BUS_REDIS_CHECK_AOF=$(readlink -f "${fake_bin}/redis-check-aof")" \
+        "Environment=AGENT_BUS_REDIS_CHECK_AOF=${fake_bin}/redis-check-aof" \
         'ExecStart=/usr/local/libexec/agent-bus/agent-bus-postgres-dump /var/backups/agent-bus-postgres 5300 14 redis_backend workq' \
         'vm.overcommit_memory = 1' \
         'install -d -m 0700 -o postgres -g postgres /var/backups/agent-bus-postgres' \
@@ -476,7 +476,7 @@ test_installer_dry_run_shows_every_file_and_command
 # and /lib; the drop-in adds exactly the helper, the real /bin/sh, the checker it pins and the
 # real file of each exec-deps command (codex review of PR #189, P1).
 # Detects: a missing entry (Redis cannot start) or an extra one (a wider shell surface), and
-# a checker pin that differs from the admitted checker.
+# a checker pin that is not the checker found on PATH.
 # Needs: bash, the recorder and the fake redis-check-aof on PATH; nothing runs as root.
 # Breadcrumb: packaging/systemd/redis-server.service.d/agent-bus-aof-preflight.conf.in
 test_installer_exec_paths_admit_exactly_the_preflight() {
@@ -487,21 +487,62 @@ test_installer_exec_paths_admit_exactly_the_preflight() {
     # ExecPaths=, so take the unit directive, which starts the line.
     line="$(sed -n 's/^ *| \(ExecPaths=\/.*\)$/\1/p' <<<"$out" | head -1)"
     [[ -n "$line" ]] || fail "drop-in has no ExecPaths= line"
-    checker="$(readlink -f "${fake_bin}/redis-check-aof")"
-    want="/usr/local/libexec/agent-bus/agent-bus-redis-aof-preflight"$'\n'"$(readlink -f /bin/sh)"$'\n'"$checker"
+    checker="${fake_bin}/redis-check-aof"
+    want="/usr/local/libexec/agent-bus/agent-bus-redis-aof-preflight"$'\n'"$(readlink -f /bin/sh)"$'\n'"$(readlink -f "$checker")"
     for dep in $(preflight_exec_deps); do
         want+=$'\n'"$(readlink -f "$(command -v "$dep")")"
     done
     want="$(sort -u <<<"$want")"
     got="$(tr ' ' '\n' <<<"${line#ExecPaths=}" | sort -u)"
     [[ "$got" == "$want" ]] || fail "ExecPaths= admits [$(tr '\n' ' ' <<<"$got")], expected [$(tr '\n' ' ' <<<"$want")]"
-    [[ "$out" == *"Environment=AGENT_BUS_REDIS_CHECK_AOF=${checker}"* ]] || fail "checker pin differs from the admitted checker"
+    [[ "$out" == *"Environment=AGENT_BUS_REDIS_CHECK_AOF=${checker}"* ]] || fail "checker pin is not the checker on PATH"
     run_hardening --dry-run --only redis --allow-missing-aof --redis-check-aof "${test_root}/no-such-checker"
     [[ $rc -eq 1 && "$out" == *"not an executable on this host"* ]] ||
         fail "a missing checker was not refused (rc=$rc): $out"
     printf 'installer-exec-paths-admit-exactly-the-preflight: PASS\n'
 }
 test_installer_exec_paths_admit_exactly_the_preflight
+
+# Protects: Redis starting when redis-check-aof is a link to Redis's multi-call binary (as
+# upstream `make install` lays it out; Ubuntu ships copies). That binary picks checker or
+# server mode from the name it runs under, so a pin to the resolved file would start
+# redis-server with the manifest as its config and refuse every Redis start (claude review of
+# PR #189).
+# Detects: the drop-in pinning the resolved file instead of the checker's own name, or
+# ExecPaths= missing the real file behind the link. Control: the same preflight run through
+# the resolved file must fail, which proves the fake discriminates by name.
+# Needs: bash, the recorder fake and a symlinked multi-call fake; nothing runs as root.
+# Breadcrumb: packaging/backend-hardening.sh (find_exec, resolve_exec)
+test_installer_pins_multicall_checker_by_name() {
+    local mc pin line dir
+    mc="${test_root}/multicall"
+    mkdir -p "$mc"
+    cat >"${mc}/redis-server" <<EOF
+#!/bin/sh
+case \${0##*/} in
+    redis-check-aof) exec "${fake_bin}/redis-check-aof" "\$@" ;;
+    *) echo "server mode: cannot open config file \$1"; exit 1 ;;
+esac
+EOF
+    chmod 755 "${mc}/redis-server"
+    ln -s redis-server "${mc}/redis-check-aof"
+    run_hardening --dry-run --only redis --allow-missing-aof --redis-check-aof "${mc}/redis-check-aof"
+    [[ $rc -eq 0 ]] || fail "multi-call dry run failed: $out"
+    pin="$(sed -n 's/^ *| Environment=AGENT_BUS_REDIS_CHECK_AOF=\(.*\)$/\1/p' <<<"$out" | head -1)"
+    [[ "$pin" == "${mc}/redis-check-aof" ]] || fail "checker pinned to '$pin', not its own name"
+    line="$(sed -n 's/^ *| \(ExecPaths=\/.*\)$/\1/p' <<<"$out" | head -1)"
+    [[ " ${line#ExecPaths=} " == *" $(readlink -f "${mc}/redis-server") "* ]] ||
+        fail "ExecPaths= lacks the real file behind the checker link: $line"
+    dir="$(new_aof multicall valid)"
+    rc=0
+    out="$(AGENT_BUS_REDIS_CHECK_AOF="$pin" sh "$preflight" "$dir" appendonly.aof.manifest 1048576 2>&1)" || rc=$?
+    [[ $rc -eq 0 ]] || fail "valid AOF refused through the pinned checker: $out"
+    rc=0
+    out="$(AGENT_BUS_REDIS_CHECK_AOF="$(readlink -f "$pin")" sh "$preflight" "$dir" appendonly.aof.manifest 1048576 2>&1)" || rc=$?
+    [[ $rc -ne 0 ]] || fail "control: the resolved file also acted as the checker, so the fake does not discriminate"
+    printf 'installer-pins-multicall-checker-by-name: PASS\n'
+}
+test_installer_pins_multicall_checker_by_name
 
 # Protects: installing the hardening never starts, stops or restarts Redis or PostgreSQL
 # (the drop-in waits for Redis's next start; only the dump TIMER is started).

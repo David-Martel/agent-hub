@@ -261,8 +261,8 @@ DUMP_BIN="$LIBEXEC_DIR/agent-bus-postgres-dump"
 # The drop-in must add every file the preflight executes, or Redis fails its next start:
 # the helper, the real /bin/sh named by its shebang, the checker, and each command on the
 # helper's `# exec-deps:` line. Each is resolved to its real file here, on the target host.
-resolve_exec() { # resolve_exec <command name or absolute path> -> prints the real path
-    local found real
+find_exec() { # find_exec <command name or absolute path> -> prints the absolute path, unresolved
+    local found
     if [[ "$1" == /* ]]; then
         found="$1"
     else
@@ -272,6 +272,15 @@ resolve_exec() { # resolve_exec <command name or absolute path> -> prints the re
         err "the Redis preflight needs '$1', which is not an executable on this host"
         return 1
     fi
+    if ! is_plain_abs_path "$found"; then
+        err "'$1' is at '$found', which a unit file cannot hold"
+        return 1
+    fi
+    printf '%s\n' "$found"
+}
+resolve_exec() { # resolve_exec <command name or absolute path> -> prints the real file's path
+    local found real
+    found="$(find_exec "$1")"
     real="$(readlink -f -- "$found")"
     if ! is_plain_abs_path "$real"; then
         err "'$1' resolves to '$real', which an ExecPaths= list cannot hold"
@@ -280,7 +289,7 @@ resolve_exec() { # resolve_exec <command name or absolute path> -> prints the re
     printf '%s\n' "$real"
 }
 PREFLIGHT_EXEC_PATHS=""
-REDIS_CHECK_AOF_REAL=""
+REDIS_CHECK_AOF_PIN=""
 if [[ "$ONLY" != postgres ]]; then
     read -r -a preflight_deps <<<"$(sed -n 's/^# exec-deps: //p' "$SCRIPT_DIR/libexec/agent-bus-redis-aof-preflight")"
     if ((${#preflight_deps[@]} == 0)); then
@@ -288,9 +297,14 @@ if [[ "$ONLY" != postgres ]]; then
         exit 1
     fi
     # Plain assignments, so set -e stops the script when a resolution fails.
-    REDIS_CHECK_AOF_REAL="$(resolve_exec "$REDIS_CHECK_AOF")"
+    # Redis's binaries are one multi-call program that picks checker or server mode from the
+    # name it was started under (upstream `make install` links redis-check-aof to
+    # redis-server). So the helper is pinned to the checker by its own NAME, unresolved, and
+    # only ExecPaths= gets the real file the kernel checks (claude review of PR #189).
+    REDIS_CHECK_AOF_PIN="$(find_exec "$REDIS_CHECK_AOF")"
+    checker_real="$(resolve_exec "$REDIS_CHECK_AOF_PIN")"
     sh_real="$(resolve_exec /bin/sh)"
-    exec_list=("$PREFLIGHT_BIN" "$sh_real" "$REDIS_CHECK_AOF_REAL")
+    exec_list=("$PREFLIGHT_BIN" "$sh_real" "$checker_real")
     for dep in "${preflight_deps[@]}"; do
         dep_real="$(resolve_exec "$dep")"
         exec_list+=("$dep_real")
@@ -309,7 +323,7 @@ declare -A values=(
     [RESTART_SEC]="$REDIS_RESTART_SEC"
     [PREFLIGHT_BIN]="$PREFLIGHT_BIN"
     [PREFLIGHT_EXEC_PATHS]="$PREFLIGHT_EXEC_PATHS"
-    [REDIS_CHECK_AOF]="$REDIS_CHECK_AOF_REAL"
+    [REDIS_CHECK_AOF]="$REDIS_CHECK_AOF_PIN"
     [AOF_DIR]="$REDIS_AOF_DIR"
     [AOF_MANIFEST]="$REDIS_MANIFEST"
     [MAX_FIX_BYTES]="$REDIS_MAX_FIX_BYTES"
