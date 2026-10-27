@@ -38,6 +38,8 @@
 #   --redis-start-limit-interval-sec <n>  (default: 300)
 #   --redis-start-limit-burst <n>       (default: 10). burst * restart-sec must fit the interval.
 #   --redis-overcommit-memory <0|1|2>   vm.overcommit_memory (default: 1).
+#   --redis-check-aof <path>            redis-check-aof the preflight runs and the drop-in's
+#                                       ExecPaths= admits (default: found on PATH).
 #   --allow-missing-aof                 Install even when the AOF manifest does not exist yet
 #                                       (fresh install, AOF off). Otherwise a wrong path refuses,
 #                                       because the preflight treats a missing manifest as clean.
@@ -77,6 +79,7 @@ REDIS_RESTART_SEC=5
 REDIS_START_LIMIT_INTERVAL_SEC=300
 REDIS_START_LIMIT_BURST=10
 REDIS_OVERCOMMIT_MEMORY=1
+REDIS_CHECK_AOF=redis-check-aof
 ALLOW_MISSING_AOF=0
 PG_SERVICE=postgresql.service
 PG_USER=postgres
@@ -111,6 +114,7 @@ while [[ $# -gt 0 ]]; do
         --redis-start-limit-interval-sec) need_value "$@"; REDIS_START_LIMIT_INTERVAL_SEC="$2"; shift 2 ;;
         --redis-start-limit-burst) need_value "$@"; REDIS_START_LIMIT_BURST="$2"; shift 2 ;;
         --redis-overcommit-memory) need_value "$@"; REDIS_OVERCOMMIT_MEMORY="$2"; shift 2 ;;
+        --redis-check-aof) need_value "$@"; REDIS_CHECK_AOF="$2"; shift 2 ;;
         --pg-service) need_value "$@"; PG_SERVICE="$2"; shift 2 ;;
         --pg-user) need_value "$@"; PG_USER="$2"; shift 2 ;;
         --pg-port) need_value "$@"; PG_PORT="$2"; shift 2 ;;
@@ -158,6 +162,8 @@ if [[ "$ONLY" != postgres ]]; then
         bad "--redis-start-limit-burst ($REDIS_START_LIMIT_BURST) x --redis-restart-sec ($REDIS_RESTART_SEC) exceeds --redis-start-limit-interval-sec ($REDIS_START_LIMIT_INTERVAL_SEC); the start limit could never fire"
     fi
     [[ "$REDIS_OVERCOMMIT_MEMORY" =~ ^[012]$ ]] || bad "--redis-overcommit-memory must be 0, 1 or 2"
+    [[ "$REDIS_CHECK_AOF" == redis-check-aof ]] || is_plain_abs_path "$REDIS_CHECK_AOF" ||
+        bad "--redis-check-aof must be a plain absolute path, got '$REDIS_CHECK_AOF'"
 fi
 
 if [[ "$ONLY" != redis ]]; then
@@ -235,7 +241,8 @@ trap 'rm -rf -- "$stage"' EXIT
 render() { # render <template> <output>
     local -a expr=()
     local key
-    for key in START_LIMIT_INTERVAL_SEC START_LIMIT_BURST RESTART_SEC PREFLIGHT_BIN AOF_DIR \
+    for key in START_LIMIT_INTERVAL_SEC START_LIMIT_BURST RESTART_SEC PREFLIGHT_BIN \
+        PREFLIGHT_EXEC_PATHS REDIS_CHECK_AOF AOF_DIR \
         AOF_MANIFEST MAX_FIX_BYTES OVERCOMMIT_MEMORY PG_SERVICE PG_USER DUMP_BIN DUMP_DIR \
         PG_PORT DUMP_KEEP PG_DATABASES ON_CALENDAR RANDOMIZED_DELAY_SEC; do
         expr+=(-e "s|@${key}@|$(escape_sed_replacement "${values[$key]}")|g")
@@ -249,11 +256,60 @@ render() { # render <template> <output>
 
 PREFLIGHT_BIN="$LIBEXEC_DIR/agent-bus-redis-aof-preflight"
 DUMP_BIN="$LIBEXEC_DIR/agent-bus-postgres-dump"
+
+# Redis's packaged unit sets NoExecPaths=/ and admits only redis-server, /usr/lib and /lib.
+# The drop-in must add every file the preflight executes, or Redis fails its next start:
+# the helper, the real /bin/sh named by its shebang, the checker, and each command on the
+# helper's `# exec-deps:` line. Each is resolved to its real file here, on the target host.
+resolve_exec() { # resolve_exec <command name or absolute path> -> prints the real path
+    local found real
+    if [[ "$1" == /* ]]; then
+        found="$1"
+    else
+        found="$(command -v -- "$1" || true)"
+    fi
+    if [[ "$found" != /* || ! -x "$found" ]]; then
+        err "the Redis preflight needs '$1', which is not an executable on this host"
+        return 1
+    fi
+    real="$(readlink -f -- "$found")"
+    if ! is_plain_abs_path "$real"; then
+        err "'$1' resolves to '$real', which an ExecPaths= list cannot hold"
+        return 1
+    fi
+    printf '%s\n' "$real"
+}
+PREFLIGHT_EXEC_PATHS=""
+REDIS_CHECK_AOF_REAL=""
+if [[ "$ONLY" != postgres ]]; then
+    read -r -a preflight_deps <<<"$(sed -n 's/^# exec-deps: //p' "$SCRIPT_DIR/libexec/agent-bus-redis-aof-preflight")"
+    if ((${#preflight_deps[@]} == 0)); then
+        err "no '# exec-deps:' line in libexec/agent-bus-redis-aof-preflight"
+        exit 1
+    fi
+    # Plain assignments, so set -e stops the script when a resolution fails.
+    REDIS_CHECK_AOF_REAL="$(resolve_exec "$REDIS_CHECK_AOF")"
+    sh_real="$(resolve_exec /bin/sh)"
+    exec_list=("$PREFLIGHT_BIN" "$sh_real" "$REDIS_CHECK_AOF_REAL")
+    for dep in "${preflight_deps[@]}"; do
+        dep_real="$(resolve_exec "$dep")"
+        exec_list+=("$dep_real")
+    done
+    declare -A seen_exec=()
+    for path in "${exec_list[@]}"; do
+        [[ -n "${seen_exec[$path]+set}" ]] && continue
+        seen_exec[$path]=1
+        PREFLIGHT_EXEC_PATHS+="${PREFLIGHT_EXEC_PATHS:+ }$path"
+    done
+fi
+
 declare -A values=(
     [START_LIMIT_INTERVAL_SEC]="$REDIS_START_LIMIT_INTERVAL_SEC"
     [START_LIMIT_BURST]="$REDIS_START_LIMIT_BURST"
     [RESTART_SEC]="$REDIS_RESTART_SEC"
     [PREFLIGHT_BIN]="$PREFLIGHT_BIN"
+    [PREFLIGHT_EXEC_PATHS]="$PREFLIGHT_EXEC_PATHS"
+    [REDIS_CHECK_AOF]="$REDIS_CHECK_AOF_REAL"
     [AOF_DIR]="$REDIS_AOF_DIR"
     [AOF_MANIFEST]="$REDIS_MANIFEST"
     [MAX_FIX_BYTES]="$REDIS_MAX_FIX_BYTES"

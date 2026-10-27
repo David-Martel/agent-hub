@@ -11,6 +11,15 @@
 StartLimitIntervalSec=@START_LIMIT_INTERVAL_SEC@
 StartLimitBurst=@START_LIMIT_BURST@
 
+# The packaged unit sets NoExecPaths=/ and ExecPaths=/usr/bin/redis-server /usr/lib /lib, so
+# without the ExecPaths= below the helper (and the /bin/sh that runs it) cannot execute and
+# Redis fails every start. ExecPaths= adds to the packaged list (systemd.exec(5)). ExecStartPre
+# shares the service's namespace, so redis-server may now also exec these files: the helper,
+# the real /bin/sh, redis-check-aof and the commands on the helper's exec-deps line, resolved by
+# backend-hardening.sh to real paths. Nothing else is added. Environment= pins the helper to
+# that same redis-check-aof; it is set for redis-server too, which ignores it.
 [Service]
+ExecPaths=@PREFLIGHT_EXEC_PATHS@
+Environment=AGENT_BUS_REDIS_CHECK_AOF=@REDIS_CHECK_AOF@
 ExecStartPre=@PREFLIGHT_BIN@ @AOF_DIR@ @AOF_MANIFEST@ @MAX_FIX_BYTES@
 RestartSec=@RESTART_SEC@

@@ -19,6 +19,15 @@
 #   5. Re-check. Anything but exit 0 refuses the start.
 # Every outcome goes to stderr, so it lands in the unit's journal.
 #
+# It runs inside Redis's own sandbox. Ubuntu's packaged unit sets
+# SystemCallFilter=~@privileged, which includes chown, so the backup copy must not preserve
+# ownership: `cp -a` calls fchownat and is killed with SIGSYS (measured 2026-10-27 under the
+# same filter: code=dumped/status=SYS). It runs as the redis user, so the copy is redis-owned
+# anyway. The same unit sets NoExecPaths=/; backend-hardening.sh adds this script, /bin/sh,
+# the checker and every command in the exec-deps line below to the drop-in's ExecPaths=.
+# Keep that line complete: the fixture runs this script with a PATH holding only those.
+# exec-deps: sed awk rm mv cp
+#
 # Installed by packaging/backend-hardening.sh (packaging/README.md, "Backend hardening").
 # Tests: packaging/tests/backend-hardening-test.sh.
 #
@@ -68,7 +77,7 @@ backup="$dir.preflight-backup"
 rm -rf "$backup.3"
 [ ! -e "$backup.2" ] || mv "$backup.2" "$backup.3"
 [ ! -e "$backup.1" ] || mv "$backup.1" "$backup.2"
-cp -a "$dir" "$backup.1"
+cp -R --preserve=mode,timestamps "$dir" "$backup.1"
 say "AOF has $bad_bytes bad tail bytes; copied $dir to $backup.1, repairing"
 
 printf 'y\n' | "$check" --fix "$manifest" >&2

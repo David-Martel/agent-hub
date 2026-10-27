@@ -31,10 +31,11 @@ mkdir -p "$fake_bin"
 
 # redis-check-aof: reads ./state in the AOF directory: "valid", "bad <n>", "nocount" or
 # "stuck <n>" (--fix "succeeds" but leaves the file invalid). Each --fix is logged to ./fixlog.
+# Shell builtins only, so it still runs when a test limits PATH to the preflight's exec-deps.
 # The "AOF analyzed ... diff=" lines are the Redis 7.0.15 report format.
 cat >"${fake_bin}/redis-check-aof" <<'EOF'
 #!/bin/sh
-state=$(cat state)
+IFS= read -r state <state || :
 if [ "$1" = "--fix" ]; then
     read -r answer
     echo "fix $answer" >> fixlog
@@ -121,6 +122,7 @@ run_dump() { # run_dump <args...> -> sets rc and out
     rc=0
     out="$(sh "$dump" "$@" 2>&1)" || rc=$?
 }
+preflight_exec_deps() { sed -n 's/^# exec-deps: //p' "$preflight"; }
 dumps_in() { find "$1" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort; }
 run_hardening() { # run_hardening <args...> -> sets rc and out; privileged steps are recorded only
     rc=0
@@ -150,7 +152,7 @@ test_preflight_valid_aof_starts_without_repair
 # Protects: recovery from the 2026-10-26 power cut shape (1155 bad tail bytes) without
 # losing the original: the AOF directory is copied aside BEFORE --fix truncates it.
 # Detects: a repair with no backup, or a backup taken after the repair.
-# Needs: sh, sed, awk, cp -a and the fake redis-check-aof only.
+# Needs: sh, sed, awk, cp and the fake redis-check-aof only.
 # Breadcrumb: packaging/libexec/agent-bus-redis-aof-preflight
 test_preflight_small_tail_backed_up_before_fix() {
     local dir backup
@@ -249,7 +251,7 @@ test_preflight_malformed_limit_is_usage_error
 # Protects: disk space. Each repair adds a full AOF copy (113 MB on asuspro13), so only the
 # newest three are kept, newest in .1.
 # Detects: unbounded backup growth, or rotation that drops the newest copy.
-# Needs: sh, sed, awk, cp -a, mv and the fake redis-check-aof only.
+# Needs: sh, sed, awk, cp, mv and the fake redis-check-aof only.
 # Breadcrumb: packaging/libexec/agent-bus-redis-aof-preflight
 test_preflight_backups_rotate_keep_three() {
     local dir generation parent
@@ -267,6 +269,82 @@ test_preflight_backups_rotate_keep_three() {
     printf 'preflight-backups-rotate-keep-three: PASS\n'
 }
 test_preflight_backups_rotate_keep_three
+
+# Protects: Redis starting at all once the drop-in is installed. Ubuntu's redis-server unit
+# sets NoExecPaths=/, so the preflight can run only the files the drop-in adds to ExecPaths=,
+# and the installer adds the helper's `# exec-deps:` commands. An undeclared command would be
+# "Permission denied" inside the unit and fail every Redis start.
+# Detects: the preflight using a command missing from its exec-deps line. A PATH without `cp`
+# must fail the same repair, which proves the restricted PATH is what the run used.
+# Needs: sh, the exec-deps commands and the fake redis-check-aof (shell builtins only).
+# Breadcrumb: packaging/libexec/agent-bus-redis-aof-preflight (exec-deps line)
+test_preflight_runs_with_only_declared_exec_deps() {
+    local dir sh_real restricted short dep generation
+    sh_real="$(readlink -f /bin/sh)"
+    restricted="${test_root}/exec-deps-path"
+    short="${test_root}/exec-deps-path-no-cp"
+    mkdir -p "$restricted" "$short"
+    for dep in $(preflight_exec_deps); do
+        ln -s "$(command -v "$dep")" "${restricted}/${dep}"
+        [[ "$dep" == cp ]] || ln -s "$(command -v "$dep")" "${short}/${dep}"
+    done
+    [[ -L "${restricted}/cp" ]] || fail "exec-deps line does not declare cp"
+    dir="$(new_aof exec-deps 'bad 1')"
+    for generation in 1 2 3 4; do  # four repairs also exercise the rm -rf of .3
+        printf 'bad %s' "$generation" >"${dir}/state"
+        rc=0
+        out="$(PATH="$restricted" "$sh_real" "$preflight" "$dir" appendonly.aof.manifest 1048576 2>&1)" || rc=$?
+        [[ $rc -eq 0 ]] || fail "repair $generation needs an undeclared command: $out"
+    done
+    [[ "$(backups_of "$dir" | wc -l)" -eq 3 ]] || fail "restricted run did not rotate three backups"
+    dir="$(new_aof exec-deps-control 'bad 1155')"
+    rc=0
+    out="$(PATH="$short" "$sh_real" "$preflight" "$dir" appendonly.aof.manifest 1048576 2>&1)" || rc=$?
+    [[ $rc -ne 0 ]] || fail "control: the repair succeeded without cp on PATH, so PATH was not restricted"
+    printf 'preflight-runs-with-only-declared-exec-deps: PASS\n'
+}
+test_preflight_runs_with_only_declared_exec_deps
+
+# Protects: the repair path under Redis's own seccomp filter. Ubuntu's redis-server unit sets
+# SystemCallFilter=~@privileged @resources, and @privileged includes chown, so a `cp -a`
+# backup is killed with SIGSYS (measured 2026-10-27: code=dumped/status=SYS).
+# Detects: the preflight making a syscall that filter kills, on the clean, repair and
+# rotation paths. Control: `cp -a` must die under the same filter, or the host does not
+# enforce it and the case reports SKIP instead of a PASS it could not earn.
+# Needs: a working `systemd-run --user` (absent in CI containers: SKIP). NoExecPaths= is not
+# exercised here: a user manager applies it only with unprivileged user namespaces.
+# Breadcrumb: /usr/lib/systemd/system/redis-server.service (Ubuntu 24.04, Redis 7.0.15)
+test_preflight_survives_redis_syscall_filter() {
+    local -a filter=(-p SystemCallArchitectures=native -p 'SystemCallFilter=@system-service'
+        -p 'SystemCallFilter=~@privileged @resources' -p NoNewPrivileges=yes)
+    local dir generation probe
+    if ! command -v systemd-run >/dev/null 2>&1 ||
+        ! systemd-run --user --wait --pipe --quiet true >/dev/null 2>&1; then
+        printf 'preflight-survives-redis-syscall-filter: SKIP (no systemd-run --user here)\n'
+        return 0
+    fi
+    probe="${test_root}/seccomp-probe"
+    mkdir -p "${probe}/src"
+    printf 'x' >"${probe}/src/f"
+    if systemd-run --user --wait --pipe --quiet "${filter[@]}" \
+        "$(command -v cp)" -a "${probe}/src" "${probe}/dst" >/dev/null 2>&1; then
+        printf 'preflight-survives-redis-syscall-filter: SKIP (filter not enforced: cp -a survived)\n'
+        return 0
+    fi
+    dir="$(new_aof seccomp 'valid')"
+    for generation in valid 1 2 3 4; do
+        if [[ "$generation" == valid ]]; then printf 'valid' >"${dir}/state"; else printf 'bad %s' "$generation" >"${dir}/state"; fi
+        rc=0
+        out="$(systemd-run --user --wait --pipe --quiet "${filter[@]}" \
+            --setenv=AGENT_BUS_REDIS_CHECK_AOF="${fake_bin}/redis-check-aof" \
+            "$(readlink -f /bin/sh)" "$preflight" "$dir" appendonly.aof.manifest 1048576 2>&1)" || rc=$?
+        [[ $rc -eq 0 ]] || fail "preflight ($generation) failed under the Redis syscall filter: $out"
+    done
+    [[ "$(backups_of "$dir" | wc -l)" -eq 3 ]] || fail "filtered repairs did not rotate three backups"
+    [[ "$(cat "${dir}/state")" == valid ]] || fail "filtered repair did not run --fix"
+    printf 'preflight-survives-redis-syscall-filter: PASS\n'
+}
+test_preflight_survives_redis_syscall_filter
 
 # ── PostgreSQL dump ───────────────────────────────────────────────────────────────────────
 
@@ -378,6 +456,8 @@ test_installer_dry_run_shows_every_file_and_command() {
         /etc/systemd/system/agent-bus-postgres-dump.service \
         /etc/systemd/system/agent-bus-postgres-dump.timer \
         'ExecStartPre=/usr/local/libexec/agent-bus/agent-bus-redis-aof-preflight /var/lib/redis/appendonlydir appendonly.aof.manifest 1048576' \
+        'ExecPaths=/usr/local/libexec/agent-bus/agent-bus-redis-aof-preflight ' \
+        "Environment=AGENT_BUS_REDIS_CHECK_AOF=$(readlink -f "${fake_bin}/redis-check-aof")" \
         'ExecStart=/usr/local/libexec/agent-bus/agent-bus-postgres-dump /var/backups/agent-bus-postgres 5300 14 redis_backend workq' \
         'vm.overcommit_memory = 1' \
         'install -d -m 0700 -o postgres -g postgres /var/backups/agent-bus-postgres' \
@@ -390,6 +470,38 @@ test_installer_dry_run_shows_every_file_and_command() {
     printf 'installer-dry-run-shows-every-file-and-command: PASS\n'
 }
 test_installer_dry_run_shows_every_file_and_command
+
+# Protects: Redis starting after install, without widening its exec allowlist further than
+# the preflight needs. The packaged unit's NoExecPaths=/ admits only redis-server, /usr/lib
+# and /lib; the drop-in adds exactly the helper, the real /bin/sh, the checker it pins and the
+# real file of each exec-deps command (codex review of PR #189, P1).
+# Detects: a missing entry (Redis cannot start) or an extra one (a wider shell surface), and
+# a checker pin that differs from the admitted checker.
+# Needs: bash, the recorder and the fake redis-check-aof on PATH; nothing runs as root.
+# Breadcrumb: packaging/systemd/redis-server.service.d/agent-bus-aof-preflight.conf.in
+test_installer_exec_paths_admit_exactly_the_preflight() {
+    local line got want dep checker
+    run_hardening --dry-run --only redis --allow-missing-aof
+    [[ $rc -eq 0 ]] || fail "redis dry run failed: $out"
+    # The dry run prints each rendered file as "| <line>"; the helper's own comments also say
+    # ExecPaths=, so take the unit directive, which starts the line.
+    line="$(sed -n 's/^ *| \(ExecPaths=\/.*\)$/\1/p' <<<"$out" | head -1)"
+    [[ -n "$line" ]] || fail "drop-in has no ExecPaths= line"
+    checker="$(readlink -f "${fake_bin}/redis-check-aof")"
+    want="/usr/local/libexec/agent-bus/agent-bus-redis-aof-preflight"$'\n'"$(readlink -f /bin/sh)"$'\n'"$checker"
+    for dep in $(preflight_exec_deps); do
+        want+=$'\n'"$(readlink -f "$(command -v "$dep")")"
+    done
+    want="$(sort -u <<<"$want")"
+    got="$(tr ' ' '\n' <<<"${line#ExecPaths=}" | sort -u)"
+    [[ "$got" == "$want" ]] || fail "ExecPaths= admits [$(tr '\n' ' ' <<<"$got")], expected [$(tr '\n' ' ' <<<"$want")]"
+    [[ "$out" == *"Environment=AGENT_BUS_REDIS_CHECK_AOF=${checker}"* ]] || fail "checker pin differs from the admitted checker"
+    run_hardening --dry-run --only redis --allow-missing-aof --redis-check-aof "${test_root}/no-such-checker"
+    [[ $rc -eq 1 && "$out" == *"not an executable on this host"* ]] ||
+        fail "a missing checker was not refused (rc=$rc): $out"
+    printf 'installer-exec-paths-admit-exactly-the-preflight: PASS\n'
+}
+test_installer_exec_paths_admit_exactly_the_preflight
 
 # Protects: installing the hardening never starts, stops or restarts Redis or PostgreSQL
 # (the drop-in waits for Redis's next start; only the dump TIMER is started).
