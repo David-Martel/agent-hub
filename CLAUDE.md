@@ -153,6 +153,8 @@ Use `--schema finding|status|benchmark` on `send` to validate message structure:
 **Redis** (realtime, always required): Streams (MAXLEN~100000), Pub/Sub, Presence (TTL), AOF persistence
 **PostgreSQL** (durable history): Auto-creates tables, GIN index on tags, circuit breaker (60s cooldown)
 
+On the Linux hub both are system services; the opt-in root hardening (Redis AOF start preflight, daily `pg_dump`) is `packaging/backend-hardening.sh` (also reachable as `./install.sh --with-backend-hardening`), see [`packaging/README.md`](packaging/README.md#backend-hardening-root-opt-in).
+
 ## Environment Variables
 
 | Variable | Default | Source |
