@@ -178,7 +178,7 @@ wanted later, the fitting place is the deferred R2 snapshot binding in
 Tests: [`tests/backend-hardening-test.sh`](tests/backend-hardening-test.sh) drives both scripts
 with fake `redis-check-aof`, `pg_dump` and `pg_restore` that replay the formats measured from
 Redis 7.0.15 and PostgreSQL 16, and the installer with a privilege recorder that runs nothing.
-CI runs it in the required Unit Tests job. Background: [POSTGRES-REDIS.md](../POSTGRES-REDIS.md).
+CI runs it in the required Unit Tests job, through [`scripts/ci/test_backend_hardening_packaging.py`](../scripts/ci/test_backend_hardening_packaging.py) (so `ci.yml`, whose hash the Dependabot admission policy pins, stays unchanged). Background: [POSTGRES-REDIS.md](../POSTGRES-REDIS.md).
 
 ## Update
 
