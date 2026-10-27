@@ -1,0 +1,27 @@
+# agent-bus-aof-preflight.conf.in -- drop-in for the system redis-server unit that backs the
+# agent-bus hub. Rendered and installed (root) by:
+#   packaging/backend-hardening.sh (or ./install.sh --with-backend-hardening)
+# Takes effect at Redis's next start; the installer never starts, stops or restarts Redis.
+#
+# The packaged unit restarts after 100 ms with a 5-in-10 s start limit, so a deterministic
+# start failure (the 2026-10-26 corrupt AOF tail) exhausted it in 2 s. @START_LIMIT_BURST@
+# starts @RESTART_SEC@ s apart fit inside @START_LIMIT_INTERVAL_SEC@ s, so systemd still gives
+# up loudly instead of looping. See packaging/README.md, "Backend hardening".
+[Unit]
+StartLimitIntervalSec=@START_LIMIT_INTERVAL_SEC@
+StartLimitBurst=@START_LIMIT_BURST@
+
+# The packaged unit sets NoExecPaths=/ and ExecPaths=/usr/bin/redis-server /usr/lib /lib, so
+# without the ExecPaths= below the helper (and the /bin/sh that runs it) cannot execute and
+# Redis fails every start. ExecPaths= adds to the packaged list (systemd.exec(5)). ExecStartPre
+# shares the service's namespace, so redis-server may now also exec these files: the helper,
+# the real /bin/sh, redis-check-aof and the commands on the helper's exec-deps line, resolved by
+# backend-hardening.sh to real paths. Nothing else is added. Environment= pins the helper to
+# that same redis-check-aof by its unresolved path: Redis is one multi-call binary that picks
+# checker or server mode from the name it runs under. It is set for redis-server too, which
+# ignores it.
+[Service]
+ExecPaths=@PREFLIGHT_EXEC_PATHS@
+Environment=AGENT_BUS_REDIS_CHECK_AOF=@REDIS_CHECK_AOF@
+ExecStartPre=@PREFLIGHT_BIN@ @AOF_DIR@ @AOF_MANIFEST@ @MAX_FIX_BYTES@
+RestartSec=@RESTART_SEC@

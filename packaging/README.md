@@ -98,6 +98,114 @@ systemctl --user start agent-bus-http.service
 systemctl --user restart agent-bus-http.service
 ```
 
+## Backend hardening (root, opt-in)
+
+The hub's Redis and PostgreSQL are **system** services (`redis-server.service` and
+`postgresql@16-main.service` on asuspro13, Redis on port 6380 and PostgreSQL on 5300). This
+hardening therefore needs root, unlike the user-unit HTTP hub above. It is never installed
+unless asked for, and it never starts, stops or restarts Redis or PostgreSQL.
+
+```bash
+packaging/backend-hardening.sh --dry-run   # review every file and root command
+packaging/backend-hardening.sh             # install (sudo)
+packaging/backend-hardening.sh --help      # options
+```
+
+The standalone script needs no build. `./install.sh --with-backend-hardening` runs the same
+script after the normal build, deploy and verify steps. `--skip-build` there still (re)deploys
+whatever is in `target/release/` to `~/.local/bin`, and fails if nothing is built, so use the
+standalone script when only the hardening is wanted.
+
+**Why.** On 2026-10-26 at 22:32Z a power cut left 1155 bad bytes at the tail of the hub's AOF
+INCR file. `redis-server` refused to load it, the packaged unit (`Restart=always`, 100 ms
+apart, 5 starts in 10 s) hit its start limit within 2 s, and the fleet bus stayed down until
+someone ran `redis-check-aof --fix` by hand. `aof-load-truncated yes` does not cover this: it
+handles a file that ends early, not a partly written final command. PostgreSQL recovered
+cleanly from the same cut (fsync, full_page_writes and synchronous_commit are on), but there
+was no copy of its databases at all.
+
+**What it installs.**
+
+| Target | Effect |
+|---|---|
+| `/usr/local/libexec/agent-bus/agent-bus-redis-aof-preflight` | [Start check](libexec/agent-bus-redis-aof-preflight). A valid AOF passes (0.38 s for 113 MB, measured). A bad tail of at most `--redis-max-fix-bytes` (1 MiB) is repaired with `redis-check-aof --fix`, after the AOF directory is copied to `<dir>.preflight-backup.1` (three generations kept, each about the size of the AOF). A larger region, an unreadable report or a file still invalid after the fix refuses the start, and the journal says how to recover. |
+| `/etc/systemd/system/redis-server.service.d/agent-bus-aof-preflight.conf` | [Drop-in](systemd/redis-server.service.d/agent-bus-aof-preflight.conf.in): `ExecStartPre=` the check, `ExecPaths=` for exactly the files the check executes (see "Redis's sandbox" below), `RestartSec=5`, 10 starts in 300 s. That is about 50 s of retries before systemd gives up loudly; the installer refuses a burst and delay that cannot fit the interval. Applies at Redis's next start. |
+| `/etc/sysctl.d/60-agent-bus-redis-overcommit.conf` | [`vm.overcommit_memory = 1`](sysctl/60-agent-bus-redis-overcommit.conf.in), applied live with `sysctl -p` and read back. Redis warns at every start that its background-save fork can fail without it. |
+| `/usr/local/libexec/agent-bus/agent-bus-postgres-dump` | [Dump script](libexec/agent-bus-postgres-dump): `pg_dump -Fc` per database into `<dir>/<db>/`, kept only if `pg_restore --list` reads it, newest 14 kept. A failed database is counted and the others still run; any failure exits 1. |
+| `/var/backups/agent-bus-postgres/` | Dump directory, owned by `postgres`, mode 0700. |
+| `/etc/systemd/system/agent-bus-postgres-dump.{service,timer}` | [Oneshot](systemd/agent-bus-postgres-dump.service.in) as `postgres` over the local socket (peer authentication, no stored password), sandboxed to write only the dump directory, and a [daily timer](systemd/agent-bus-postgres-dump.timer.in) (03:30, up to 15 min jitter, `Persistent=true`). Only the timer is enabled and started. |
+
+**Redis's sandbox.** `ExecStartPre=` runs inside the packaged unit's sandbox, and Ubuntu's
+`redis-server.service` is strict about two things:
+
+- `NoExecPaths=/` with `ExecPaths=/usr/bin/redis-server /usr/lib /lib`. Anything else is not
+  executable, including the check and the `/bin/sh` that runs it, so without help Redis fails
+  every start. The drop-in therefore adds to `ExecPaths=` exactly the check, the real file
+  behind `/bin/sh`, `redis-check-aof`, and each command on the check's `# exec-deps:` line,
+  all resolved to real paths on the target host. `--redis-check-aof <path>` picks a checker
+  other than the one on `PATH`, and `Environment=AGENT_BUS_REDIS_CHECK_AOF=` pins the check to
+  the admitted one. The cost: the namespace is shared, so `redis-server` itself may now also
+  execute those few files (a shell among them), which Ubuntu's allowlist otherwise prevents.
+  The alternatives were worse or unproven: `ExecStartPre=+` would run the check as root,
+  outside the sandbox, in a directory Redis can write; a separate oneshot unit ordered before
+  Redis keeps Redis's allowlist intact, but whether `Restart=always` re-runs it on every
+  restart is unverified.
+- `SystemCallFilter=~@privileged @resources`. `@privileged` includes `chown`, so `cp -a`
+  (which calls `fchownat`) is killed with SIGSYS. The backup copy uses
+  `cp -R --preserve=mode,timestamps`; the check runs as `redis`, so the copy is owned by
+  `redis` anyway.
+
+The fixture covers both: it runs the check with a `PATH` holding only its declared commands,
+and, where `systemd-run --user` works, under the same system-call filter, with a `cp -a`
+control that must die. A user service manager applies `NoExecPaths=` only with unprivileged
+user namespaces, which Ubuntu restricts, so the exec allowlist itself is checked from the
+rendered drop-in rather than enforced in a test.
+
+Measured on asuspro13 on 2026-10-26: `redis_backend` dumps to 24 MB in about 4 s and `workq` to
+16 KB, from a real sandboxed run against the live cluster.
+
+**Settings.** Every name, path, port and database list is an option of
+[`backend-hardening.sh`](backend-hardening.sh) (`--help` lists them); `install.sh` forwards
+`--backend-<option> <value>` as `--<option> <value>`, for example `--backend-pg-port 5432` or
+`--backend-only redis`. Defaults match asuspro13. The installer validates everything before it
+renders or runs anything, and refuses:
+
+- a dump directory under `/tmp` or `/var/tmp`: the unit's `PrivateTmp` hides those, and
+  systemd fails it with status 226 (measured);
+- a database name outside `[A-Za-z0-9_]`, and paths with spaces, quotes or `%`;
+- an AOF manifest that does not exist, unless `--allow-missing-aof` is given. The preflight
+  treats a missing manifest as a clean start, so a wrong `--redis-aof-dir` would otherwise
+  protect nothing. `/etc/redis/redis.conf` is root-only; the AOF directory is Redis's `dir`
+  plus `appenddirname`, and the manifest is `appendfilename` plus `.manifest`.
+
+The dry run prints every target with its rendered content and every root command, and never
+calls sudo. It is a preview: its `install` lines name a staging directory that is removed on
+exit, so run the script without `--dry-run` rather than pasting them. After installing, check the drop-in and run one dump:
+
+```bash
+systemctl show redis-server.service -p DropInPaths,ExecStartPre,RestartUSec
+sudo systemctl start agent-bus-postgres-dump.service
+journalctl -u agent-bus-postgres-dump.service -n 20
+```
+
+**Restore** a database from a dump into a scratch database first, never over the live one:
+`sudo -u postgres createdb -p 5300 restore_check && sudo -u postgres pg_restore -p 5300 -d restore_check <dump>`.
+
+**Relation to other backups and the cloud tier.** `agent-bus backup` writes an NDJSON export
+of recent messages to `AGENT_BUS_BACKUP_DIR`. The dump is a complete copy of each PostgreSQL
+database, including presence history and anything else in it. Neither leaves the host. The
+Cloudflare tier ([`cloud/agentbus`](../cloud/agentbus/README.md), [cloud sync](../docs/cloud-sync.md))
+is a replica of `internal` messages and presence, not a backup target: it never receives
+`sensitivity=no-offsite` messages, and R2 is denied on the current token and deferred. A dump
+holds every message, so shipping it off-site would bypass that filter. If off-site copies are
+wanted later, the fitting place is the deferred R2 snapshot binding in
+[`wrangler.toml`](../cloud/agentbus/wrangler.toml), with its own sensitivity decision.
+
+Tests: [`tests/backend-hardening-test.sh`](tests/backend-hardening-test.sh) drives both scripts
+with fake `redis-check-aof`, `pg_dump` and `pg_restore` that replay the formats measured from
+Redis 7.0.15 and PostgreSQL 16, and the installer with a privilege recorder that runs nothing.
+CI runs it in the required Unit Tests job, through [`scripts/ci/test_backend_hardening_packaging.py`](../scripts/ci/test_backend_hardening_packaging.py) (so `ci.yml`, whose hash the Dependabot admission policy pins, stays unchanged). Background: [POSTGRES-REDIS.md](../POSTGRES-REDIS.md).
+
 ## Update
 
 Re-run the installer after pulling new commits:
@@ -168,7 +276,14 @@ path.
 
 | File | Purpose |
 |------|---------|
-| [`../install.sh`](../install.sh) | Main POSIX installer (build, deploy, symlink, verify, optional relay) |
+| [`../install.sh`](../install.sh) | Main POSIX installer (build, deploy, symlink, verify, optional HTTP/relay units and backend hardening) |
 | [`systemd/agent-bus-http.service.in`](systemd/agent-bus-http.service.in) | Dedicated authoritative HTTP hub unit |
 | [`systemd/agent-bus-relay.service.in`](systemd/agent-bus-relay.service.in) | Template for the optional federation relay unit |
 | [`tests/install-http-service-test.sh`](tests/install-http-service-test.sh) | HTTP unit rendering, idempotency, permission, and no-auto-start regression test |
+| [`backend-hardening.sh`](backend-hardening.sh) | Root-owned Redis/PostgreSQL hardening installer (`install.sh --with-backend-hardening`) |
+| [`libexec/agent-bus-redis-aof-preflight`](libexec/agent-bus-redis-aof-preflight) | Redis `ExecStartPre` AOF check and bounded repair |
+| [`libexec/agent-bus-postgres-dump`](libexec/agent-bus-postgres-dump) | Verified, rotated `pg_dump -Fc` per database |
+| [`systemd/redis-server.service.d/agent-bus-aof-preflight.conf.in`](systemd/redis-server.service.d/agent-bus-aof-preflight.conf.in) | Redis drop-in: preflight, restart delay and start limit |
+| [`systemd/agent-bus-postgres-dump.service.in`](systemd/agent-bus-postgres-dump.service.in), [`.timer.in`](systemd/agent-bus-postgres-dump.timer.in) | Sandboxed dump oneshot and its daily timer |
+| [`sysctl/60-agent-bus-redis-overcommit.conf.in`](sysctl/60-agent-bus-redis-overcommit.conf.in) | `vm.overcommit_memory` for Redis's background fork |
+| [`tests/backend-hardening-test.sh`](tests/backend-hardening-test.sh) | Preflight, dump and installer fixture (fakes only; run in CI Unit Tests) |
