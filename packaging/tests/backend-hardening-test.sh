@@ -270,6 +270,32 @@ test_preflight_backups_rotate_keep_three() {
 }
 test_preflight_backups_rotate_keep_three
 
+# Protects: the original AOF bytes when the AOF directory is a symlink (the installer accepts
+# one). A backup that copies the link points at the same files, so --fix would change both.
+# Detects: a backup that is a link, or one whose bytes changed with the repair.
+# Needs: sh, sed, awk, cp, mv, ln and the fake redis-check-aof only.
+# Breadcrumb: packaging/libexec/agent-bus-redis-aof-preflight (cp -R -L)
+test_preflight_symlinked_aof_dir_backed_up_as_bytes() {
+    local parent real link backup
+    parent="${test_root}/redis-linked"
+    real="${parent}/real-appendonlydir"
+    link="${parent}/appendonlydir"
+    mkdir -p "$real"
+    printf 'file appendonly.aof.1.base.rdb seq 1 type b\n' >"${real}/appendonly.aof.manifest"
+    printf 'original-bytes' >"${real}/appendonly.aof.1.incr.aof"
+    printf 'bad 1155' >"${real}/state"
+    ln -s real-appendonlydir "$link"
+    run_preflight "$link"
+    [[ $rc -eq 0 ]] || fail "symlinked AOF not repaired: $out"
+    [[ "$(cat "${real}/state")" == valid ]] || fail "repair did not reach the linked directory"
+    backup="${link}.preflight-backup.1"
+    [[ -d "$backup" && ! -L "$backup" ]] || fail "backup of a symlinked AOF is a link, not a copy"
+    [[ "$(cat "${backup}/state")" == "bad 1155" ]] || fail "backup changed with the repair"
+    [[ "$(cat "${backup}/appendonly.aof.1.incr.aof")" == original-bytes ]] || fail "backup lost bytes"
+    printf 'preflight-symlinked-aof-dir-backed-up-as-bytes: PASS\n'
+}
+test_preflight_symlinked_aof_dir_backed_up_as_bytes
+
 # Protects: Redis starting at all once the drop-in is installed. Ubuntu's redis-server unit
 # sets NoExecPaths=/, so the preflight can run only the files the drop-in adds to ExecPaths=,
 # and the installer adds the helper's `# exec-deps:` commands. An undeclared command would be

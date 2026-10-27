@@ -77,7 +77,13 @@ backup="$dir.preflight-backup"
 rm -rf "$backup.3"
 [ ! -e "$backup.2" ] || mv "$backup.2" "$backup.3"
 [ ! -e "$backup.1" ] || mv "$backup.1" "$backup.2"
-cp -R --preserve=mode,timestamps "$dir" "$backup.1"
+# -L: a symlinked AOF directory (or file) must be copied as bytes. Copying the link would let
+# --fix change the "backup" too, and the original would be gone (codex review of PR #189).
+cp -R -L --preserve=mode,timestamps "$dir" "$backup.1"
+if [ -L "$backup.1" ]; then
+    say "backup $backup.1 is a symlink, not a copy; refusing to repair"
+    exit 1
+fi
 say "AOF has $bad_bytes bad tail bytes; copied $dir to $backup.1, repairing"
 
 printf 'y\n' | "$check" --fix "$manifest" >&2
