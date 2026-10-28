@@ -2445,3 +2445,179 @@ fn thread_and_ack_sweep_commands_report_the_hub_error_not_a_loopback_redis_error
         );
     }
 }
+
+fn presence_event_fixture(
+    agent: &str,
+    status: &str,
+    timestamp: &str,
+    session: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "agent": agent,
+        "status": status,
+        "protocol_version": "1.0",
+        "timestamp_utc": timestamp,
+        "session_id": session,
+        "capabilities": ["mcp"],
+        "metadata": {},
+        "ttl_seconds": 300,
+    })
+}
+
+/// Protects: `presence-history` reads the selected hub's `/presence/history` in remote mode.
+/// Detects: opening local PostgreSQL, or losing/mis-encoding the agent, window and limit filters.
+/// Needs: an owned mock hub and CLI children with Redis/PG pinned to closed ports.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_presence_history` remote branch).
+#[cfg(feature = "server-mode")]
+#[test]
+fn presence_history_reads_selected_hub_with_encoded_filters_in_json_and_human() {
+    let events = vec![
+        presence_event_fixture("spark-3066", "online", "2026-10-28T10:00:00Z", "sess-a"),
+        presence_event_fixture("spark-3066", "offline", "2026-10-28T11:30:00Z", "sess-b"),
+    ];
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/presence/history",
+            status: 200,
+            body: serde_json::Value::from(events.clone()).to_string(),
+        },
+    ]);
+    let json = run_ok(
+        agent_bus_with_hub_candidates(&[hub.url()], "presence-history-json")
+            .env("AGENT_BUS_AUTH_TOKEN", "disposable-presence-token")
+            .args([
+                "presence-history",
+                "--agent",
+                "spark 3066/?#&limit=1",
+                "--since-minutes",
+                "17",
+                "--limit",
+                "37",
+                "--encoding",
+                "json",
+            ]),
+        "presence-history json",
+    );
+    let printed: serde_json::Value = serde_json::from_str(json.trim()).expect("JSON output");
+    assert_eq!(printed, serde_json::Value::from(events));
+
+    let human = run_ok(
+        agent_bus_with_hub_candidates(&[hub.url()], "presence-history-human").args([
+            "presence-history",
+            "--encoding",
+            "human",
+        ]),
+        "presence-history human",
+    );
+    assert_eq!(
+        human.lines().collect::<Vec<_>>(),
+        [
+            "[2026-10-28T10:00:00Z] presence spark-3066=online session=sess-a",
+            "[2026-10-28T11:30:00Z] presence spark-3066=offline session=sess-b",
+        ]
+    );
+
+    let requests = hub_requests_except_health(&hub);
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert_eq!(requests[0]["method"], "GET");
+    assert_eq!(
+        requests[0]["authorization"],
+        "Bearer disposable-presence-token"
+    );
+    let url = reqwest::Url::parse(&format!(
+        "{}{}",
+        hub.url(),
+        requests[0]["target"].as_str().expect("target")
+    ))
+    .expect("request URL");
+    assert_eq!(url.path(), "/presence/history");
+    let query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+    assert_eq!(
+        query,
+        [
+            ("agent".to_owned(), "spark 3066/?#&limit=1".to_owned()),
+            ("since".to_owned(), "17".to_owned()),
+            ("limit".to_owned(), "37".to_owned()),
+        ],
+        "exact encoded filters, nothing injected or lost"
+    );
+    // Without --agent the filter is omitted and the documented defaults are sent.
+    assert_eq!(
+        requests[1]["target"],
+        "/presence/history?since=1440&limit=50"
+    );
+}
+
+/// Protects: an unreachable configured hub is an explicit failure, never a local PostgreSQL view.
+/// Detects: `presence-history` reaching for the loopback database when no hub answers.
+/// Needs: a closed remote candidate port and independently closed local stores.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_presence_history` offline handling).
+#[cfg(feature = "server-mode")]
+#[test]
+fn presence_history_refuses_offline_hub_without_opening_local_postgres() {
+    let output = agent_bus_with_hub_candidates(
+        &["http://127.0.0.1:1".to_owned()],
+        "presence-history-offline",
+    )
+    .args(["presence-history", "--encoding", "json"])
+    .output()
+    .expect("run offline presence-history");
+    let stderr = stderr_of(&output);
+    assert!(!output.status.success());
+    assert_eq!(stdout_of(&output), "");
+    assert!(
+        stderr.contains("offline: no authoritative hub reachable"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.to_lowercase().contains("postgres"),
+        "remote mode opened local PostgreSQL: {stderr}"
+    );
+}
+
+/// Protects: a hub failure or malformed reply is a non-zero exit, not an empty history.
+/// Detects: swallowing HTTP 503, or accepting a non-array body as "no events".
+/// Needs: owned failing-response and malformed-response mock hubs, closed local stores.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_presence_history` error propagation).
+#[cfg(feature = "server-mode")]
+#[test]
+fn presence_history_propagates_hub_errors_and_malformed_bodies() {
+    for (status, body, expected, label) in [
+        (
+            503_u16,
+            r#"{"error":"presence fixture unavailable"}"#,
+            "503",
+            "presence-history-503",
+        ),
+        (
+            200,
+            r#"{"not":"an array"}"#,
+            "malformed",
+            "presence-history-malformed",
+        ),
+    ] {
+        let hub = MockHub::spawn(vec![
+            health_route(),
+            MockRoute {
+                method: "GET",
+                path: "/presence/history",
+                status,
+                body: body.to_owned(),
+            },
+        ]);
+        let output = agent_bus_with_hub_candidates(&[hub.url()], label)
+            .args(["presence-history", "--encoding", "json"])
+            .output()
+            .unwrap_or_else(|error| panic!("run {label}: {error}"));
+        let stderr = stderr_of(&output);
+        assert!(!output.status.success(), "{label} must fail: {stderr}");
+        assert_eq!(stdout_of(&output), "", "{label} printed output");
+        assert!(stderr.contains(expected), "{label}: {stderr}");
+        assert!(
+            !stderr.to_lowercase().contains("postgres"),
+            "{label} opened local PostgreSQL: {stderr}"
+        );
+    }
+}

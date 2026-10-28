@@ -145,6 +145,7 @@ pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1 -DryRun
 
 - `read`, `export`, `journal`, `session-summary`, and similar history-oriented queries prefer PostgreSQL when it is configured, then fall back to Redis if the PostgreSQL query path fails.
 - `compact-context` is intentionally Redis-first. It now supports `agent`, `repo`, `session`, `tag`, and `thread_id` scoping so token compaction stays aligned with the live coordination stream instead of replaying unrelated repo traffic.
+- `presence-history` is PostgreSQL-backed locally. In remote mode it reads the selected hub's `GET /presence/history` (`agent`, `since`, `limit`; the hub clamps `limit` to 1..=500) and never opens local PostgreSQL; a hub failure or malformed reply exits non-zero. The [isolated controls](crates/agent-bus-cli/tests/hub_routing_test.rs) exercise encoding, output and error propagation.
 - Use `repo:<name>` tags on every message. Add `session:<id>` for bounded work waves and `thread_id` for long-running shared plans or resource handoffs.
 - Set `AGENT_BUS_MACHINE_SAFE=true` when piping machine-readable output into another tool or LLM capture and you want to suppress non-fatal degraded-mode fallback warnings.
 - Claim routes and server-mode claim commands now percent-encode resource paths correctly, so file-like resources such as `src/http.rs` survive the HTTP path layer.

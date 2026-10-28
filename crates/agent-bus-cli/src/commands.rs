@@ -1031,20 +1031,41 @@ pub(crate) fn cmd_presence_history(
     limit: usize,
     encoding: &Encoding,
 ) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        let base = resolve_hub_url(settings, "presence-history")?;
+        let since = since_minutes.to_string();
+        let max = limit.to_string();
+        let mut query: Vec<(&str, &str)> =
+            agent.map(|agent| ("agent", agent)).into_iter().collect();
+        query.extend([("since", since.as_str()), ("limit", max.as_str())]);
+        let url = build_hub_url(&base, &["presence", "history"], &query)?;
+        let value = http_get(&url)?;
+        let events: Vec<Presence> =
+            decode_task_response(value, "hub returned a malformed /presence/history body")?;
+        render_presence_events(&events, encoding);
+        return Ok(());
+    }
+
     let events = crate::postgres_store::list_presence_history_postgres(
         settings,
         agent,
         since_minutes,
         limit,
     )?;
+    render_presence_events(&events, encoding);
+    Ok(())
+}
+
+/// Print presence events one per line (human) or as one machine-encoded array.
+fn render_presence_events(events: &[Presence], encoding: &Encoding) {
     if matches!(encoding, Encoding::Human) {
-        for p in &events {
+        for p in events {
             output_presence(p, encoding);
         }
     } else {
         output(&events, encoding);
     }
-    Ok(())
 }
 
 pub(crate) fn cmd_presence_list(settings: &Settings, encoding: &Encoding) -> Result<()> {
