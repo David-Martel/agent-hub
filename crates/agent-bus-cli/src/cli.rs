@@ -316,7 +316,9 @@ pub(crate) enum Cmd {
     /// Export messages as NDJSON (one JSON object per line).
     #[command(long_about = "Export messages to stdout as newline-delimited JSON.\n\
         Useful for backup, recovery, and analysis workflows.\n\
-        Supports the same repo/session/tag/thread-id filters as `read`.")]
+        Supports the same repo/session/tag/thread-id filters as `read`.\n\
+        Remote exports require an explicit --limit between 1 and 500;\n\
+        run larger exports on the selected hub until remote pagination is available.")]
     Export {
         #[arg(long, help = "Filter by recipient agent")]
         agent: Option<String>,

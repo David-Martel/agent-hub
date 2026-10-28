@@ -28,6 +28,153 @@ struct MockRoute {
     body: String,
 }
 
+/// Protects: exported NDJSON comes from the configured hub rather than a local island.
+/// Detects: bypassing hub selection or dropping/URL-splitting scoped export filters.
+/// Needs: an owned mock hub and CLI children with Redis/PG pinned to closed ports.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_export` and remote message URL construction).
+#[cfg(feature = "server-mode")]
+#[test]
+fn export_reads_selected_hub_as_ndjson_with_all_filters() {
+    let first = direct_message_fixture("first line\nsecond line");
+    let mut second = direct_message_fixture("second message");
+    second["id"] = serde_json::json!("second-fixture");
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/messages",
+            status: 200,
+            body: serde_json::json!([first.clone(), second.clone()]).to_string(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "export-scoped")
+        .env("AGENT_BUS_AUTH_TOKEN", "disposable-export-token")
+        .args([
+            "export",
+            "--agent",
+            "reader &limit=1",
+            "--from-agent",
+            "author/?#",
+            "--repo",
+            "source ?",
+            "--session",
+            "cohort &",
+            "--tag",
+            "role:builder",
+            "--tag",
+            "scope:a&b",
+            "--thread-id",
+            "work/?#",
+            "--since-minutes",
+            "17",
+            "--limit",
+            "37",
+        ])
+        .output()
+        .expect("run scoped export");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let lines: Vec<serde_json::Value> = stdout_of(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one valid JSON object per line"))
+        .collect();
+    assert_eq!(lines, vec![first, second]);
+    let requests = hub.requests();
+    let request = requests
+        .iter()
+        .find(|r| {
+            r["target"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("/messages?"))
+        })
+        .expect("export must request the selected hub's messages");
+    assert_eq!(request["authorization"], "Bearer disposable-export-token");
+    let url = reqwest::Url::parse(&format!(
+        "{}{}",
+        hub.url(),
+        request["target"].as_str().expect("target")
+    ))
+    .expect("request URL");
+    let query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+    for (key, value) in [
+        ("agent", "reader &limit=1"),
+        ("from", "author/?#"),
+        ("repo", "source ?"),
+        ("session", "cohort &"),
+        ("tag", "role:builder"),
+        ("tag", "scope:a&b"),
+        ("thread_id", "work/?#"),
+        ("since", "17"),
+        ("limit", "37"),
+    ] {
+        assert!(
+            query.contains(&(key.to_owned(), value.to_owned())),
+            "missing {key}={value}: {query:?}"
+        );
+    }
+    assert_eq!(query.len(), 9, "no injected or lost query fields");
+}
+
+/// Protects: a requested large export cannot silently become a capped 500-row read.
+/// Detects: publishing a successful partial archive or falling back to local stores.
+/// Needs: an owned healthy mock hub; no database or production bus.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_export` remote limit admission).
+#[cfg(feature = "server-mode")]
+#[test]
+fn export_rejects_remote_limits_above_read_cap_before_exporting() {
+    let hub = MockHub::spawn(vec![health_route()]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "export-limit")
+        .args(["export", "--limit", "501"])
+        .output()
+        .expect("run oversized export");
+    assert!(!output.status.success());
+    assert_eq!(stdout_of(&output), "");
+    let error = stderr_of(&output);
+    assert!(error.contains("500") && error.contains("hub"), "{error}");
+    assert!(
+        !error.to_lowercase().contains("redis"),
+        "remote export touched local Redis: {error}"
+    );
+    assert!(hub.requests().iter().all(|r| r["target"] == "/health"));
+}
+
+/// Protects: a failing selected hub remains the export authority and emits no archive.
+/// Detects: replacing HTTP errors with unrelated local Redis/PostgreSQL history.
+/// Needs: an owned failing-response mock hub with closed-port local stores.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_export` remote HTTP error propagation).
+#[cfg(feature = "server-mode")]
+#[test]
+fn export_remote_failure_does_not_fall_back_to_local_history() {
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/messages",
+            status: 503,
+            body: r#"{"error":"export fixture unavailable"}"#.to_owned(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "export-failure")
+        .args(["export", "--limit", "10"])
+        .output()
+        .expect("run failing export");
+    assert!(!output.status.success());
+    assert_eq!(stdout_of(&output), "");
+    let error = stderr_of(&output);
+    assert!(
+        error.contains("503"),
+        "selected HTTP failure was lost: {error}"
+    );
+    assert!(
+        !error.to_lowercase().contains("redis"),
+        "export tried local Redis: {error}"
+    );
+    assert!(hub.requests().iter().any(|r| {
+        r["target"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("/messages?"))
+    }));
+}
+
 /// A minimal HTTP/1.1 server matching exact `(method, path)` pairs from a
 /// fixed table, ignoring query strings. Good enough to stand in for
 /// `agent-bus-http` in these routing tests; not a general-purpose mock.

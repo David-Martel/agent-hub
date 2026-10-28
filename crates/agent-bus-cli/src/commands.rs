@@ -650,6 +650,47 @@ pub(crate) fn cmd_send(settings: &Settings, args: &SendArgs<'_>) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "server-mode")]
+fn read_remote_messages(
+    settings: &Settings,
+    args: &ReadArgs<'_>,
+    command: &str,
+) -> Result<serde_json::Value> {
+    let base = resolve_hub_url(settings, command)?;
+    let mut url = reqwest::Url::parse(&format!("{base}/messages"))
+        .context("invalid server URL for message read")?;
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("since", &args.since_minutes.to_string());
+        query.append_pair("limit", &args.limit.to_string());
+        if let Some(agent) = args.agent.as_deref() {
+            query.append_pair("agent", agent);
+        }
+        if let Some(from) = args.from_agent.as_deref() {
+            query.append_pair("from", from);
+        }
+        if let Some(topic) = args.topic.as_deref() {
+            query.append_pair("topic", topic);
+        }
+        if let Some(repo) = args.repo.as_deref() {
+            query.append_pair("repo", repo);
+        }
+        if let Some(session) = args.session.as_deref() {
+            query.append_pair("session", session);
+        }
+        for tag in args.tags {
+            query.append_pair("tag", tag);
+        }
+        if let Some(thread_id) = args.thread_id.as_deref() {
+            query.append_pair("thread_id", thread_id);
+        }
+        if args.exclude_broadcast {
+            query.append_pair("broadcast", "false");
+        }
+    }
+    http_get(url.as_str())
+}
+
 pub(crate) fn cmd_read(settings: &Settings, args: &ReadArgs<'_>) -> Result<()> {
     let filters = MessageFilters {
         repo: args.repo.as_deref(),
@@ -661,39 +702,7 @@ pub(crate) fn cmd_read(settings: &Settings, args: &ReadArgs<'_>) -> Result<()> {
 
     #[cfg(feature = "server-mode")]
     if use_server_mode(settings) {
-        let base = resolve_hub_url(settings, "read")?;
-        let mut url = reqwest::Url::parse(&format!("{base}/messages"))
-            .context("invalid server URL for message read")?;
-        {
-            let mut query = url.query_pairs_mut();
-            query.append_pair("since", &args.since_minutes.to_string());
-            query.append_pair("limit", &args.limit.to_string());
-            if let Some(agent) = args.agent.as_deref() {
-                query.append_pair("agent", agent);
-            }
-            if let Some(from) = args.from_agent.as_deref() {
-                query.append_pair("from", from);
-            }
-            if let Some(topic) = args.topic.as_deref() {
-                query.append_pair("topic", topic);
-            }
-            if let Some(repo) = args.repo.as_deref() {
-                query.append_pair("repo", repo);
-            }
-            if let Some(session) = args.session.as_deref() {
-                query.append_pair("session", session);
-            }
-            for tag in args.tags {
-                query.append_pair("tag", tag);
-            }
-            if let Some(thread_id) = args.thread_id.as_deref() {
-                query.append_pair("thread_id", thread_id);
-            }
-            if args.exclude_broadcast {
-                query.append_pair("broadcast", "false");
-            }
-        }
-        let val = http_get(url.as_str())?;
+        let val = read_remote_messages(settings, args, "read")?;
         output(&val, args.encoding);
         return Ok(());
     }
@@ -1001,6 +1010,43 @@ pub(crate) fn cmd_export(
     since_minutes: u64,
     limit: usize,
 ) -> Result<()> {
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        anyhow::ensure!(
+            (1..=500).contains(&limit),
+            "remote export requires --limit between 1 and 500; run export on the selected hub for larger history archives (remote pagination is not available)"
+        );
+        let receiver = agent.map(str::to_owned);
+        let sender = from_agent.map(str::to_owned);
+        let args = ReadArgs {
+            agent: &receiver,
+            from_agent: &sender,
+            topic: &None,
+            repo,
+            session,
+            tags,
+            thread_id,
+            since_minutes,
+            limit,
+            exclude_broadcast: false,
+            excerpt: None,
+            encoding: &Encoding::Json,
+        };
+        let value = read_remote_messages(settings, &args, "export")?;
+        let messages = value
+            .as_array()
+            .context("remote export expected a message array from the selected hub")?;
+        anyhow::ensure!(
+            messages.len() <= limit && messages.iter().all(serde_json::Value::is_object),
+            "remote export received an invalid message array from the selected hub"
+        );
+        for message in messages {
+            println!("{}", serde_json::to_string(message)?);
+        }
+        eprintln!("Exported {} messages from selected hub", messages.len());
+        return Ok(());
+    }
+
     let filters = MessageFilters {
         repo: repo.as_deref(),
         session: session.as_deref(),
@@ -1018,7 +1064,7 @@ pub(crate) fn cmd_export(
         &filters,
     )?;
     for msg in &msgs {
-        println!("{}", serde_json::to_string(msg).unwrap_or_default());
+        println!("{}", serde_json::to_string(msg)?);
     }
     eprintln!("Exported {} messages", msgs.len());
     Ok(())
