@@ -27,7 +27,7 @@ HEAD = "a" * 40
 MERGE = "c" * 40
 PRODUCER = b""
 FUTURE_PRODUCER = b""
-REVIEWED_HASH = "80377abd88b78d000c1d9ca544ad776f4dbe862001ffc563719c46443ad6ac8b"
+REVIEWED_HASH = "7df81fe6dc5f436a91bc36254a428e032e7e4437fe0d7f9c2d4486abcc6e93f3"
 JOBS = [
     "Format Check",
     "Cloud Agentbus (TypeScript)",
@@ -52,7 +52,7 @@ SKIPS = {
     "CI": {
         "path": ".github/workflows/ci.yml",
         "source_sha256": (
-            "80377abd88b78d000c1d9ca544ad776f4dbe862001ffc563719c46443ad6ac8b"
+            "7df81fe6dc5f436a91bc36254a428e032e7e4437fe0d7f9c2d4486abcc6e93f3"
         ),
         "job_name": "Windows Native Validation (manual)",
         "if_expression": "github.event_name == 'workflow_dispatch'",
