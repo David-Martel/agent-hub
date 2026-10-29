@@ -132,6 +132,34 @@ pub(crate) enum Cmd {
                     gates that require full durability."
         )]
         require_storage: bool,
+        #[arg(
+            long,
+            help = "Also compare the message-ID SETS of Redis and PostgreSQL, not just their \
+                    counts (agent-hub#194). Exits 1 and lists the differing ids (capped) on \
+                    mismatch. Reads the local stores, so run it on the hub host."
+        )]
+        verify_sets: bool,
+        #[arg(
+            long,
+            default_value_t = 60,
+            requires = "verify_sets",
+            conflicts_with = "full_scan",
+            help = "Minutes of history to compare with --verify-sets"
+        )]
+        window_minutes: u32,
+        #[arg(
+            long,
+            requires = "verify_sets",
+            help = "With --verify-sets, compare everything Redis still retains"
+        )]
+        full_scan: bool,
+        #[arg(
+            long,
+            default_value_t = 50,
+            requires = "verify_sets",
+            help = "Cap on differing ids listed per side"
+        )]
+        max_listed: usize,
     },
 
     /// Manage the separately migrated sanitized-history catalog.
@@ -1373,8 +1401,20 @@ mod tests {
     // Helpers
     // ------------------------------------------------------------------
 
+    /// Parse on a thread with the production stack size.
+    ///
+    /// The derived `Cli` command tree is large; in an unoptimised test build
+    /// parsing it needs more than the 2 MiB default test-thread stack, and
+    /// adding flags to a subcommand overflowed it in the container gate.
+    /// `main_entry` already runs on an 8 MiB thread.
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
-        Cli::try_parse_from(args)
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || Cli::try_parse_from(args))
+            .expect("spawn parse thread")
+            .join()
+            .expect("parse thread panicked")
     }
 
     // ------------------------------------------------------------------
