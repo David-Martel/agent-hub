@@ -403,13 +403,16 @@ class HookGuards(unittest.TestCase):
         tool_version_code,
         audit_code,
         sysroot="/usr/local/rustup/toolchains/1.99.0-aarch64-unknown-linux-gnu",
+        job=None,
+        environments=None,
     ):
+        job = job or {"phase": "audit", "jobs": 2}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, output = root / "source", root / "work"
             source.mkdir()
             output.mkdir()
-            for name in QA.handoff_names("audit"):
+            for name in QA.handoff_names(job["phase"]):
                 (output / name).touch(exist_ok=False)
             (source / "rust-toolchain.toml").write_text(
                 '[toolchain]\nchannel="1.99.0"\n'
@@ -427,6 +430,8 @@ class HookGuards(unittest.TestCase):
                 raise AssertionError(f"Unexpected check_output: {command}")
 
             def tool(command, **kwargs):
+                if environments is not None:
+                    environments.append(kwargs.get("env"))
                 if command[:2] == ["cargo", "audit"]:
                     code = tool_version_code if "--version" in command else audit_code
                 else:
@@ -441,8 +446,35 @@ class HookGuards(unittest.TestCase):
                 patch.object(QA.subprocess, "check_output", side_effect=check_output),
                 patch.object(QA.subprocess, "run", side_effect=tool),
             ):
-                result = QA.actor({"phase": "audit", "jobs": 2})
+                result = QA.actor(job)
             return result, json.loads((output / "actor-receipt.json").read_text())
+
+    def test_pre_push_tests_run_with_a_bounded_test_thread_count(self):
+        # Protects: the container test run does not start one libtest thread per
+        # visible CPU, which turns a busy host into timing flakes.
+        for job, expected in (
+            ({"phase": "pre-push", "jobs": 2}, "2"),
+            ({"phase": "pre-push", "jobs": 4}, "4"),
+            ({"phase": "pre-push", "jobs": 4, "test_threads": 3}, "3"),
+        ):
+            with self.subTest(job=job):
+                environments = []
+                result, _receipt = self.audit_actor_result(
+                    0, 0, job=job, environments=environments
+                )
+                self.assertEqual(result, 0)
+                self.assertTrue(environments)
+                for env in environments:
+                    self.assertEqual(env["RUST_TEST_THREADS"], expected)
+
+    def test_config_bounds_the_test_thread_count(self):
+        self.assertEqual(QA.test_threads({"jobs": 2}), 2)
+        self.assertEqual(QA.test_threads({"jobs": 4}), 4)
+        self.assertEqual(QA.test_threads({"jobs": 1}), 1)
+        self.assertEqual(QA.test_threads({"jobs": 4, "test_threads": 8}), 8)
+        for bad in (0, 17, -1, "4", True, 1.5):
+            with self.subTest(bad=bad), self.assertRaises(RuntimeError):
+                QA.test_threads({"jobs": 4, "test_threads": bad})
 
     def test_actor_derives_arm64_and_x86_64_sysroot_from_admitted_compiler(self):
         for target in ("aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"):
