@@ -1,12 +1,15 @@
-# Vendored from David-Martel/vigil-utils .github/actions/nextest-ci at a09a378dcb06bed30cd997f3e520b8516a760f88
+# Vendored from David-Martel/vigil-utils .github/actions/nextest-ci at 2b9e990e5804cb89f3f281900bf0d2959e060afd
 # (PR #1127), synced by hand. Do not reference vigil-utils' copy from this repo's workflows.
 # Local addition (not upstream): the `unset-env` input, because agent-hub's test steps must run
 # with runner-inherited AGENT_BUS_* routing variables removed (an empty value is a parse error,
 # not an absence), and a step's `env:` can set a variable but never unset it.
 name: nextest-ci
 description: >-
-  Run cargo nextest with the ci profile (2 retries). A test that passes on retry keeps the job
-  green but is listed as flaky in the job summary and as a warning annotation. Requires
+  Run cargo nextest with the ci profile (2 retries). A test that passes only on retry is listed
+  as flaky in the job summary and as an annotation, and by default turns the job red: the retries
+  buy a precise diagnosis (which test, which attempt), not a green merge. `cargo test` has no
+  retries, so a race already failed the job, and switching to nextest must not make the gate
+  more lenient. A caller that wants lenient mode sets `fail-on-flaky: false` explicitly. Requires
   cargo-nextest and python3 on the runner and a [profile.ci] with a junit path (see nextest-ci.toml).
 inputs:
   args:
@@ -21,6 +24,12 @@ inputs:
     required: false
     default: .
     description: Workspace directory.
+  fail-on-flaky:
+    required: false
+    default: "true"
+    description: >-
+      "true" (default) fails the job when any test passed only on retry. "false" reports flaky
+      tests as warnings and keeps the job green; set it only as a deliberate, reviewed opt-out.
   log-file:
     required: false
     default: ""
@@ -80,8 +89,14 @@ runs:
       env:
         JUNIT: ${{ steps.locate.outputs.junit }}
         RUN_OUTCOME: ${{ steps.run.outcome }}
+        FAIL_ON_FLAKY: ${{ inputs.fail-on-flaky }}
       run: |
         set -uo pipefail
-        require=()
-        if [ "$RUN_OUTCOME" = success ]; then require=(--require); fi
-        python3 -I "${{ github.action_path }}/nextest_flaky_summary.py" "${require[@]}" "$JUNIT" "$GITHUB_STEP_SUMMARY"
+        flags=()
+        if [ "$RUN_OUTCOME" = success ]; then flags+=(--require); fi
+        case "$FAIL_ON_FLAKY" in
+          true) ;;
+          false) flags+=(--allow-flaky) ;;
+          *) echo "::error title=nextest-ci::fail-on-flaky must be true or false, got '$FAIL_ON_FLAKY'"; exit 2 ;;
+        esac
+        python3 -I "${{ github.action_path }}/nextest_flaky_summary.py" "${flags[@]}" "$JUNIT" "$GITHUB_STEP_SUMMARY"
