@@ -332,4 +332,22 @@ mod tests {
         settings.database_url = None;
         assert!(export_all(&settings, 10, |_| Ok(())).is_err());
     }
+
+    /// Protects: the first export page has no lower bound, so rows timestamped
+    /// before 1970 are archived (Codex review of agent-hub#198).
+    /// Detects: an epoch sentinel cursor that silently drops pre-1970 rows.
+    /// Needs: disposable Redis and PostgreSQL (`AGENT_BUS_TEST_*` URLs).
+    #[test]
+    #[ignore = "needs disposable PostgreSQL; run with --ignored"]
+    fn first_export_page_includes_pre_epoch_rows() {
+        let settings = crate::test_support::backend_settings();
+        let id = Uuid::new_v4().to_string();
+        let old = message(&id, "1969-07-20T20:17:00.000000Z", "pre-epoch");
+        crate::postgres_store::persist_message_postgres(&settings, &old).expect("persist");
+        let page = export_messages_page(&settings, None, 10_000).expect("first page");
+        assert!(
+            page.iter().any(|m| m.id == id),
+            "pre-1970 row missing from the first export page"
+        );
+    }
 }

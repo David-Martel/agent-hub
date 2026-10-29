@@ -945,19 +945,30 @@ pub fn export_messages_page(
         let limit = i64::try_from(limit).map_err(|e| {
             crate::error::AgentBusError::Internal(format!("page size exceeds i64: {e}"))
         })?;
-        let (after_ts, after_id) = after.unwrap_or((DateTime::<Utc>::UNIX_EPOCH, Uuid::nil()));
-        let rows = client.query(
-            &format!(
-                "select id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, tags, priority, request_ack, reply_to, metadata, stream_id, \
-                 client_msg_id, origin_hub, origin_seq, hlc, sensitivity \
-                 from {} \
-                 where (timestamp_utc, id) > ($1, $2) \
-                 order by timestamp_utc, id \
-                 limit $3",
-                settings.message_table
-            ),
-            &[&after_ts, &after_id, &limit],
-        )?;
+        let columns = "id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, tags, priority, request_ack, reply_to, metadata, stream_id, \
+                 client_msg_id, origin_hub, origin_seq, hlc, sensitivity";
+        // The first page has no lower bound at all: PostgreSQL timestamps may
+        // predate 1970, so any sentinel cursor would silently drop rows.
+        let rows = if let Some((after_ts, after_id)) = after {
+            client.query(
+                &format!(
+                    "select {columns} from {} \
+                     where (timestamp_utc, id) > ($1, $2) \
+                     order by timestamp_utc, id \
+                     limit $3",
+                    settings.message_table
+                ),
+                &[&after_ts, &after_id, &limit],
+            )?
+        } else {
+            client.query(
+                &format!(
+                    "select {columns} from {} order by timestamp_utc, id limit $1",
+                    settings.message_table
+                ),
+                &[&limit],
+            )?
+        };
         let page = rows.iter().map(row_to_message).collect();
         return_pg_client(client);
         Ok(page)
