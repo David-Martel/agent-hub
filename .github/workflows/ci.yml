@@ -371,7 +371,10 @@ jobs:
         with:
           name: agent-bus-windows-x64
           if-no-files-found: error
-          retention-days: 2
+          # release.yml reuses this artifact from the main CI run of the tagged
+          # commit (scripts/ci/release_windows_artifact.py refuses an expired one),
+          # so it keeps the 7-day tag window; the other CI uploads keep 2 days.
+          retention-days: 7
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus.exe
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http.exe
