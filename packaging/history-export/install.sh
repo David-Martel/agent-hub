@@ -3,8 +3,8 @@
 #
 #   packaging/history-export/install.sh [--dry-run] [--no-enable]
 #
-# Copies agent-hub-history-export.py to ~/.local/share/agent-hub-history-export/
-# and the three user units to ~/.config/systemd/user/, reloads the user manager
+# Copies agent-hub-history-export.py and agent-hub-history-export-notify.sh to
+# ~/.local/share/agent-hub-history-export/ and the three user units to ~/.config/systemd/user/, reloads the user manager
 # and enables the daily timer. Files whose bytes already match are left alone.
 # It never creates or reads the drop key; README.md says how to make one.
 # SYSTEMCTL overrides the systemctl binary (the packaging test uses a recorder).
@@ -57,6 +57,7 @@ place() {  # place <source> <dest-dir> <mode>
 }
 
 place "$here/agent-hub-history-export.py" "$share" 0644
+place "$here/agent-hub-history-export-notify.sh" "$share" 0644
 for unit in agent-hub-history-export.service agent-hub-history-export.timer \
             agent-hub-history-export-notify@.service; do
     place "$here/systemd/$unit" "$units" 0644

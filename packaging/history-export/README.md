@@ -53,8 +53,22 @@ its counts, the SHA256SUMS hash and a `<host>=<stage>` result per destination.
 It also posts that line on the bus (thread `machine-hygiene`, tag
 `repo:agent-hub`). A required destination that fails posts a FINDING and makes
 the unit fail. That failure also triggers
-`agent-hub-history-export-notify@.service`, which posts a SEVERITY high FINDING.
-A failed mirror is reported and does not fail the run.
+`agent-hub-history-export-notify@.service`, which runs
+[`agent-hub-history-export-notify.sh`](agent-hub-history-export-notify.sh) and
+posts a SEVERITY high FINDING on `machine-hygiene`. A failed mirror is reported
+and does not fail the run.
+
+To prove the alert path works, start the notify unit with an instance name that
+contains `positive-control`:
+
+```bash
+systemctl --user start agent-hub-history-export-notify@positive-control.service
+agent-bus read --thread-id agent-hub-alert-selftest --since-minutes 5 --encoding toon
+```
+
+That posts a `POSITIVE-CONTROL` finding at SEVERITY info on its own thread,
+`agent-hub-alert-selftest`, never on `machine-hygiene`, so other lanes do not
+treat it as an incident. Any other instance name is a real alert.
 
 ## What a run produces
 

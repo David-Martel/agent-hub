@@ -28,6 +28,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 PKG = ROOT / "packaging" / "history-export"
 SCRIPT = PKG / "agent-hub-history-export.py"
+NOTIFY = PKG / "agent-hub-history-export-notify.sh"
 
 
 def load_module():
@@ -342,8 +343,11 @@ class UnitFileTests(unittest.TestCase):
             svc,
         )
         notify = self.read("agent-hub-history-export-notify@.service")
-        self.assertIn("--schema finding", notify)
-        self.assertIn("SEVERITY: high", notify)
+        self.assertIn(
+            '"$HOME/.local/share/agent-hub-history-export/'
+            'agent-hub-history-export-notify.sh" "%i" "%H"',
+            notify,
+        )
         self.assertIn('source "$HOME/.config/bash/env.bash" &&', notify)
 
     @unittest.skipUnless(shutil.which("flock"), "needs flock")
@@ -390,6 +394,62 @@ class UnitFileTests(unittest.TestCase):
         self.assertIn("OnCalendar=daily", timer)
         self.assertIn("Persistent=true", timer)
         self.assertIn("Unit=agent-hub-history-export.service", timer)
+
+
+@unittest.skipUnless(os.name == "posix", "the notify script runs under /bin/sh")
+class NotifyTests(TempDirCase):
+    def notify(self, unit: str) -> list[str]:
+        """Run the notify script against a recorder and return the argv it sent."""
+        out = self.tmp / "argv.json"
+        recorder = self.tmp / "agent-bus"
+        recorder.write_text(
+            "#!/bin/sh\n"
+            f"exec {sys.executable} -c 'import json, sys; "
+            f'json.dump(sys.argv[1:], open("{out}", "w"))\' "$@"\n'
+        )
+        recorder.chmod(0o755)
+        env = dict(os.environ, AGENT_BUS=str(recorder))
+        res = subprocess.run(
+            ["/bin/sh", str(NOTIFY), unit, "asuspro13"],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return json.loads(out.read_text())
+
+    @staticmethod
+    def opt(argv: list[str], name: str) -> list[str]:
+        return [argv[i + 1] for i, a in enumerate(argv) if a == name]
+
+    def test_real_failure_is_a_high_finding_on_machine_hygiene(self):
+        """Protects: a failed export being seen by the lanes. Detects: an alert that
+        loses SEVERITY high, the unit name, or the machine-hygiene thread.
+        Needs: /bin/sh. Breadcrumb: README "Run"."""
+        argv = self.notify("agent-hub-history-export.service")
+        body = self.opt(argv, "--body")[0]
+        self.assertEqual(self.opt(argv, "--thread-id"), ["machine-hygiene"])
+        self.assertEqual(self.opt(argv, "--schema"), ["finding"])
+        self.assertIn("agent-hub-history-export.service failed on asuspro13", body)
+        self.assertTrue(body.endswith("\nSEVERITY: high"), body)
+        self.assertNotIn("POSITIVE-CONTROL", body)
+
+    def test_positive_control_is_labelled_and_kept_off_the_shared_thread(self):
+        """Protects: the shared thread from test alerts read as incidents, which
+        happened on 2026-10-29 18:41Z. Detects: a positive-control instance posting
+        to machine-hygiene, at high severity, or without the POSITIVE-CONTROL
+        label. Needs: /bin/sh. Breadcrumb: README "Run"."""
+        for unit in ("positive-control", "selftest-positive-control"):
+            argv = self.notify(unit)
+            body = self.opt(argv, "--body")[0]
+            self.assertEqual(
+                self.opt(argv, "--thread-id"), ["agent-hub-alert-selftest"]
+            )
+            self.assertNotIn("machine-hygiene", argv)
+            self.assertTrue(body.startswith("FINDING: POSITIVE-CONTROL"), body)
+            self.assertTrue(body.endswith("\nSEVERITY: info"), body)
 
 
 @unittest.skipUnless(
@@ -446,6 +506,9 @@ class InstallTests(TempDirCase):
             home / ".local/share/agent-hub-history-export/agent-hub-history-export.py"
         )
         self.assertEqual(script.read_bytes(), SCRIPT.read_bytes())
+        self.assertEqual(
+            (script.parent / NOTIFY.name).read_bytes(), NOTIFY.read_bytes()
+        )
         for unit in (
             "agent-hub-history-export.service",
             "agent-hub-history-export.timer",
@@ -465,7 +528,7 @@ class InstallTests(TempDirCase):
         again = self.run_install("--no-enable")
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertNotIn("installed ", again.stdout)
-        self.assertEqual(again.stdout.count("unchanged "), 4)
+        self.assertEqual(again.stdout.count("unchanged "), 5)
 
     def test_missing_env_bash_refuses(self):
         """Protects: never installing a timer that cannot start. Detects: install.sh
