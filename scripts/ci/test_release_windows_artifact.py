@@ -628,6 +628,40 @@ class ReleaseSourceControls(unittest.TestCase):
             )
         )
 
+    def test_reused_windows_ci_artifact_outlives_the_tag_window(self):
+        """
+        Protects: A v* tag cut up to 7 days after its main CI run can still reuse
+        that run's agent-bus-windows-x64 artifact (the helper refuses expired ones).
+        Detects: The Windows CI upload's retention-days dropping below 7, or the step
+        losing it (agent-hub #193 review: 2 days broke release reuse after 2 days).
+        Needs: Actual ci.yml; no credentials, network or services.
+        Breadcrumb: ci.yml Windows Build And Unit Tests upload;
+        release_windows_artifact.py expired check; release.yml windows-x64 download.
+        """
+
+        def retention(source):
+            step = re.search(
+                r"(?ms)^      - uses: actions/upload-artifact@\S+\r?\n"
+                r"        with:\r?\n"
+                r"          name: agent-bus-windows-x64\r?\n(.*?)(?=^      - |^  \S)",
+                source,
+            )
+            if step is None:
+                return None
+            days = re.search(r"(?m)^          retention-days: (\d+)\r?$", step[1])
+            return int(days[1]) if days else None
+
+        source = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+        days = retention(source)
+        self.assertIsNotNone(days)
+        self.assertGreaterEqual(days, 7)
+        self.assertEqual(
+            retention(
+                source.replace(f"retention-days: {days}\n", "retention-days: 2\n", 1)
+            ),
+            2,
+        )
+
     def test_candidate_source_contract_and_original_cross_rebuild_control(self):
         source = RELEASE_SOURCE.read_text()
         self.assertTrue(release_contract(source))
