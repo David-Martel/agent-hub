@@ -384,6 +384,8 @@ pub(crate) enum Cmd {
     #[command(long_about = "Export messages to stdout as newline-delimited JSON.\n\
         Useful for backup, recovery, and analysis workflows.\n\
         Supports the same repo/session/tag/thread-id filters as `read`.\n\
+        Remote exports require an explicit --limit between 1 and 500;\n\
+        run larger exports on the selected hub until remote pagination is available.\n\
         The windowed form is capped at 7 days; use --all for a complete archive.")]
     Export {
         #[arg(long, help = "Filter by recipient agent")]
