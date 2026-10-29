@@ -1382,8 +1382,20 @@ mod tests {
     // Helpers
     // ------------------------------------------------------------------
 
+    /// Parse on a thread with the production stack size.
+    ///
+    /// The derived `Cli` command tree is large; in an unoptimised test build
+    /// parsing it needs more than the 2 MiB default test-thread stack, and
+    /// adding flags to a subcommand overflowed it in the container gate.
+    /// `main_entry` already runs on an 8 MiB thread.
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
-        Cli::try_parse_from(args)
+        let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+        std::thread::Builder::new()
+            .stack_size(8 * 1024 * 1024)
+            .spawn(move || Cli::try_parse_from(args))
+            .expect("spawn parse thread")
+            .join()
+            .expect("parse thread panicked")
     }
 
     // ------------------------------------------------------------------
