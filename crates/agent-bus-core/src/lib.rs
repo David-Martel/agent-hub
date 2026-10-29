@@ -8,6 +8,7 @@ pub mod build_info;
 pub mod channels;
 pub mod codex_bridge;
 pub mod error;
+pub mod export;
 pub mod history_catalog;
 pub mod hub;
 pub mod hub_cache;
