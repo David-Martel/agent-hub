@@ -926,6 +926,58 @@ pub fn count_both_postgres(settings: &Settings) -> (Option<i64>, Option<i64>) {
     .unwrap_or_default()
 }
 
+/// One keyset page of the full message history, ordered by `(timestamp_utc, id)`.
+///
+/// `after` is the `(timestamp_utc, id)` of the last row already read; `None`
+/// starts at the beginning. Read-only. Used by `export --all` (agent-hub#194).
+///
+/// # Errors
+///
+/// Returns an error if `PostgreSQL` is not configured or the query fails.
+pub fn export_messages_page(
+    settings: &Settings,
+    after: Option<(DateTime<Utc>, Uuid)>,
+    limit: usize,
+) -> Result<Vec<Message>> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = get_pg_client(settings)? else {
+            return Err(crate::error::AgentBusError::Internal(
+                "PostgreSQL is not configured".to_owned(),
+            ));
+        };
+        let limit = i64::try_from(limit).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("page size exceeds i64: {e}"))
+        })?;
+        let columns = "id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, tags, priority, request_ack, reply_to, metadata, stream_id, \
+                 client_msg_id, origin_hub, origin_seq, hlc, sensitivity";
+        // The first page has no lower bound at all: PostgreSQL timestamps may
+        // predate 1970, so any sentinel cursor would silently drop rows.
+        let rows = if let Some((after_ts, after_id)) = after {
+            client.query(
+                &format!(
+                    "select {columns} from {} \
+                     where (timestamp_utc, id) > ($1, $2) \
+                     order by timestamp_utc, id \
+                     limit $3",
+                    settings.message_table
+                ),
+                &[&after_ts, &after_id, &limit],
+            )?
+        } else {
+            client.query(
+                &format!(
+                    "select {columns} from {} order by timestamp_utc, id limit $1",
+                    settings.message_table
+                ),
+                &[&limit],
+            )?
+        };
+        let page = rows.iter().map(row_to_message).collect();
+        return_pg_client(client);
+        Ok(page)
+    })
+}
+
 /// Delete messages older than `older_than_days` days from `PostgreSQL`.
 ///
 /// Returns the number of rows deleted, or `0` if `PostgreSQL` is not configured.
