@@ -446,6 +446,29 @@ class DockerPrerequisiteTests(unittest.TestCase):
                     ),
                 )
 
+    def test_a_slow_readiness_probe_is_retried_not_fatal(self):
+        """Protects: one slow `docker exec` readiness probe does not abort the run.
+
+        Detects: wait_container retrying only CalledProcessError, so a single
+        probe over its 5 s limit raised TimeoutExpired and failed the whole
+        fixture start (agent-hub main 15392c9, 32 s into the step).
+        Needs: no Docker; run() and sleep are faked.
+        Breadcrumb: scripts/ci/isolated-services.py Services.wait_container.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            owned = services.Services(directory, "smoke")
+            probes = [
+                subprocess.TimeoutExpired(["docker", "exec"], 5),
+                subprocess.CalledProcessError(1, ["docker", "exec"]),
+                None,
+            ]
+            with (
+                patch.object(services, "run", side_effect=probes) as probe,
+                patch.object(services.time, "sleep"),
+            ):
+                owned.wait_container("c" * 64, ["pg_isready"])
+            self.assertEqual(probe.call_count, 3)
+
     def test_native_failure_and_timeout_report_operation_without_native_details(self):
         marker = "inert-sensitive-fixture-marker"
         for operation in ("context-inspect", "linux-container-info"):

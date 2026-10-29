@@ -239,7 +239,7 @@ class Services:
             try:
                 run(["docker", "exec", cid, *command], capture=True, timeout=5)
                 return
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
                 time.sleep(0.2)
         raise RuntimeError("Disposable backend did not become ready within 60 seconds")
 
