@@ -41,11 +41,11 @@ use commands::{
     cmd_journal, cmd_knock, cmd_monitor, cmd_overdue_acks, cmd_peek_tasks, cmd_pending_acks,
     cmd_post_direct, cmd_post_group, cmd_presence, cmd_presence_history, cmd_presence_list,
     cmd_prune, cmd_pull_task, cmd_push_task, cmd_read, cmd_read_direct, cmd_read_group,
-    cmd_release_claim, cmd_renew_claim, cmd_resolve, cmd_send, cmd_service, cmd_session_summary,
-    cmd_spool_replay, cmd_spool_send, cmd_subscribe, cmd_subscriptions, cmd_summarize_thread,
-    cmd_sync, cmd_thread_close, cmd_thread_create, cmd_thread_join, cmd_thread_leave,
-    cmd_thread_list, cmd_token_count, cmd_unsubscribe, cmd_validate_backup, cmd_verify_sets,
-    cmd_watch,
+    cmd_reconcile, cmd_release_claim, cmd_renew_claim, cmd_resolve, cmd_send, cmd_service,
+    cmd_session_summary, cmd_spool_replay, cmd_spool_send, cmd_subscribe, cmd_subscriptions,
+    cmd_summarize_thread, cmd_sync, cmd_thread_close, cmd_thread_create, cmd_thread_join,
+    cmd_thread_leave, cmd_thread_list, cmd_token_count, cmd_unsubscribe, cmd_validate_backup,
+    cmd_verify_sets, cmd_watch,
 };
 
 #[global_allocator]
@@ -187,6 +187,25 @@ fn run(args: Vec<OsString>) -> Result<()> {
             if verify_sets {
                 cmd_verify_sets(&settings, encoding, window_minutes, full_scan, max_listed);
             }
+        }
+
+        Cmd::Reconcile {
+            apply,
+            window_minutes,
+            full_scan,
+            max_listed,
+            max_insert,
+            ref encoding,
+        } => {
+            cmd_reconcile(
+                &settings,
+                encoding,
+                apply,
+                window_minutes,
+                full_scan,
+                max_listed,
+                max_insert,
+            );
         }
 
         Cmd::History(ref command) => match command {

@@ -421,6 +421,67 @@ pub(crate) fn cmd_verify_sets(
     }
 }
 
+/// `reconcile`: dry-run by default; `--apply` backfills Redis-only messages into PostgreSQL.
+pub(crate) fn cmd_reconcile(
+    settings: &Settings,
+    encoding: &Encoding,
+    apply: bool,
+    window_minutes: u32,
+    full_scan: bool,
+    max_listed: usize,
+    max_insert: usize,
+) {
+    use agent_bus_core::reconcile::reconcile;
+    use agent_bus_core::store_consistency::{DEFAULT_SETTLE_SECONDS, Scope};
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        eprintln!(
+            "reconcile reads the local Redis and PostgreSQL; run it on the hub host \
+             (this client is configured for a remote hub)"
+        );
+        std::process::exit(2);
+    }
+    let scope = if full_scan {
+        Scope::Full
+    } else {
+        Scope::Window(chrono::Duration::minutes(i64::from(window_minutes)))
+    };
+    match reconcile(
+        settings,
+        scope,
+        chrono::Duration::seconds(DEFAULT_SETTLE_SECONDS),
+        max_listed,
+        apply,
+        max_insert,
+    ) {
+        Ok(report) => {
+            let still_diverged = report
+                .after
+                .as_ref()
+                .unwrap_or(&report.before)
+                .report
+                .redis_only_count
+                > 0;
+            output(&serde_json::json!({ "reconcile": report }), encoding);
+            if !apply && report.planned_redis_to_pg > 0 {
+                eprintln!(
+                    "dry run: {} Redis-only messages would be inserted; re-run with --apply",
+                    report.planned_redis_to_pg
+                );
+            }
+            if apply && still_diverged {
+                eprintln!("reconcile applied but Redis-only messages remain");
+                std::process::exit(1);
+            }
+        }
+        Err(error) => {
+            eprintln!("reconcile failed: {error:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn service_status_report(
     base_url: &str,
     service_name: &str,
