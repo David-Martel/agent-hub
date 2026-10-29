@@ -371,6 +371,56 @@ pub(crate) fn cmd_health(settings: &Settings, encoding: &Encoding, require_stora
     }
 }
 
+/// `health --verify-sets`: compare Redis and `PostgreSQL` by message id.
+///
+/// Runs after the count-based health output. Exits 1 when the sets differ or
+/// cannot be read, so `agent-bus health --verify-sets && deploy` gates on it.
+pub(crate) fn cmd_verify_sets(
+    settings: &Settings,
+    encoding: &Encoding,
+    window_minutes: u32,
+    full_scan: bool,
+    max_listed: usize,
+) {
+    use agent_bus_core::store_consistency::{DEFAULT_SETTLE_SECONDS, Scope, check_stores};
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        eprintln!(
+            "--verify-sets reads the local Redis and PostgreSQL; run it on the hub host \
+             (this client is configured for a remote hub)"
+        );
+        std::process::exit(2);
+    }
+    let scope = if full_scan {
+        Scope::Full
+    } else {
+        Scope::Window(chrono::Duration::minutes(i64::from(window_minutes)))
+    };
+    match check_stores(
+        settings,
+        scope,
+        chrono::Duration::seconds(DEFAULT_SETTLE_SECONDS),
+        max_listed,
+    ) {
+        Ok(check) => {
+            let val = serde_json::json!({ "store_consistency": check });
+            output(&val, encoding);
+            if !check.report.ok {
+                eprintln!(
+                    "store mismatch: {} Redis-only, {} PostgreSQL-only message ids",
+                    check.report.redis_only_count, check.report.pg_only_count
+                );
+                std::process::exit(1);
+            }
+        }
+        Err(error) => {
+            eprintln!("store consistency check failed: {error:#}");
+            std::process::exit(1);
+        }
+    }
+}
+
 fn service_status_report(
     base_url: &str,
     service_name: &str,

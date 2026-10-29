@@ -926,6 +926,40 @@ pub fn count_both_postgres(settings: &Settings) -> (Option<i64>, Option<i64>) {
     .unwrap_or_default()
 }
 
+/// List message ids whose `timestamp_utc` lies in `[from, to]`.
+///
+/// Read-only. Used by the cross-store consistency check (agent-hub#194).
+///
+/// # Errors
+///
+/// Returns an error if `PostgreSQL` is not configured or the query fails.
+pub fn list_message_ids_between(
+    settings: &Settings,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<String>> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = get_pg_client(settings)? else {
+            return Err(crate::error::AgentBusError::Internal(
+                "PostgreSQL is not configured".to_owned(),
+            ));
+        };
+        let rows = client.query(
+            &format!(
+                "SELECT id FROM {} WHERE timestamp_utc >= $1 AND timestamp_utc <= $2",
+                settings.message_table
+            ),
+            &[&from, &to],
+        )?;
+        let ids = rows
+            .iter()
+            .map(|row| row.get::<_, Uuid>("id").to_string())
+            .collect();
+        return_pg_client(client);
+        Ok(ids)
+    })
+}
+
 /// One keyset page of the full message history, ordered by `(timestamp_utc, id)`.
 ///
 /// `after` is the `(timestamp_utc, id)` of the last row already read; `None`
