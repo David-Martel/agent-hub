@@ -17,7 +17,7 @@
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::error::Result;
@@ -62,12 +62,15 @@ pub struct PgWriteMetrics {
     pub batches_flushed: AtomicU64,
     /// Total write failures (one per failed `persist_*` call inside a batch).
     pub write_errors: AtomicU64,
-    /// Total recoverable message writes dropped because the circuit breaker was open.
+    /// Total recoverable message writes that never reached `PostgreSQL`
+    /// because the persist failed (breaker open, connection error, or any
+    /// other `persist_message_postgres` error).
     ///
     /// This counter is a lower bound on the number of messages that may need
     /// backfilling into `PostgreSQL` after a reconnect. Presence drops are not
     /// included because the current Redis presence cache is not an append-only
-    /// replay source.
+    /// replay source. It does not include items still queued; see
+    /// [`PgWriter::pending`].
     pub dropped_writes: AtomicU64,
 }
 
@@ -923,6 +926,58 @@ pub fn count_both_postgres(settings: &Settings) -> (Option<i64>, Option<i64>) {
     .unwrap_or_default()
 }
 
+/// One keyset page of the full message history, ordered by `(timestamp_utc, id)`.
+///
+/// `after` is the `(timestamp_utc, id)` of the last row already read; `None`
+/// starts at the beginning. Read-only. Used by `export --all` (agent-hub#194).
+///
+/// # Errors
+///
+/// Returns an error if `PostgreSQL` is not configured or the query fails.
+pub fn export_messages_page(
+    settings: &Settings,
+    after: Option<(DateTime<Utc>, Uuid)>,
+    limit: usize,
+) -> Result<Vec<Message>> {
+    run_postgres_blocking(|| {
+        let Some(mut client) = get_pg_client(settings)? else {
+            return Err(crate::error::AgentBusError::Internal(
+                "PostgreSQL is not configured".to_owned(),
+            ));
+        };
+        let limit = i64::try_from(limit).map_err(|e| {
+            crate::error::AgentBusError::Internal(format!("page size exceeds i64: {e}"))
+        })?;
+        let columns = "id, timestamp_utc, protocol_version, sender, recipient, topic, body, thread_id, tags, priority, request_ack, reply_to, metadata, stream_id, \
+                 client_msg_id, origin_hub, origin_seq, hlc, sensitivity";
+        // The first page has no lower bound at all: PostgreSQL timestamps may
+        // predate 1970, so any sentinel cursor would silently drop rows.
+        let rows = if let Some((after_ts, after_id)) = after {
+            client.query(
+                &format!(
+                    "select {columns} from {} \
+                     where (timestamp_utc, id) > ($1, $2) \
+                     order by timestamp_utc, id \
+                     limit $3",
+                    settings.message_table
+                ),
+                &[&after_ts, &after_id, &limit],
+            )?
+        } else {
+            client.query(
+                &format!(
+                    "select {columns} from {} order by timestamp_utc, id limit $1",
+                    settings.message_table
+                ),
+                &[&limit],
+            )?
+        };
+        let page = rows.iter().map(row_to_message).collect();
+        return_pg_client(client);
+        Ok(page)
+    })
+}
+
 /// Delete messages older than `older_than_days` days from `PostgreSQL`.
 ///
 /// Returns the number of rows deleted, or `0` if `PostgreSQL` is not configured.
@@ -1228,6 +1283,8 @@ pub enum PgWriteRequest {
 #[derive(Debug, Clone)]
 pub struct PgWriter {
     tx: mpsc::UnboundedSender<PgWriteRequest>,
+    /// Items enqueued by this writer family and not yet settled by the task.
+    pending: Arc<AtomicU64>,
 }
 
 /// Maximum number of requests to process in a single flush cycle.
@@ -1249,8 +1306,9 @@ impl PgWriter {
     #[must_use]
     pub fn spawn(settings: Settings) -> (Self, tokio::task::JoinHandle<()>) {
         let (tx, rx) = mpsc::unbounded_channel::<PgWriteRequest>();
-        let handle = tokio::spawn(pg_writer_task(settings, rx));
-        (Self { tx }, handle)
+        let pending = Arc::new(AtomicU64::new(0));
+        let handle = tokio::spawn(pg_writer_task(settings, rx, Arc::clone(&pending)));
+        (Self { tx, pending }, handle)
     }
 
     /// Send a `Shutdown` signal and await the background task.
@@ -1261,10 +1319,22 @@ impl PgWriter {
     ///
     /// If the task has already exited (e.g. channel already closed) this is a no-op.
     pub fn shutdown_and_wait(&self, handle: tokio::task::JoinHandle<()>) {
-        let _ = self.tx.send(PgWriteRequest::Shutdown);
+        self.request_shutdown();
         // Block in place so we don't need to restructure main() into async.
         // This is a CLI-only path; the server transports never call this.
         let _ = tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(handle));
+    }
+
+    /// Items enqueued through this writer that the task has not yet settled
+    /// (written or failed). Non-zero after a shutdown means abandoned writes.
+    #[must_use]
+    pub fn pending(&self) -> u64 {
+        self.pending.load(Ordering::Relaxed)
+    }
+
+    /// Ask the background task to drain its queue and stop, without waiting.
+    pub fn request_shutdown(&self) {
+        let _ = self.tx.send(PgWriteRequest::Shutdown);
     }
 
     /// Request an immediate flush of queued writes.
@@ -1280,7 +1350,17 @@ impl PgWriter {
     ///
     /// Drops the write silently if the background task has already exited.
     pub fn send_message(&self, msg: &Message) {
-        let _ = self.tx.send(PgWriteRequest::Message(Box::new(msg.clone())));
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        if self
+            .tx
+            .send(PgWriteRequest::Message(Box::new(msg.clone())))
+            .is_err()
+        {
+            // The task is gone: the write can never happen. Count it as a drop
+            // instead of losing it silently (agent-hub#194).
+            self.pending.fetch_sub(1, Ordering::Relaxed);
+            pg_metrics().dropped_writes.fetch_add(1, Ordering::Relaxed);
+        }
         pg_metrics().messages_queued.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -1288,9 +1368,14 @@ impl PgWriter {
     ///
     /// Drops the write silently if the background task has already exited.
     pub fn send_presence(&self, presence: &Presence) {
-        let _ = self
+        self.pending.fetch_add(1, Ordering::Relaxed);
+        if self
             .tx
-            .send(PgWriteRequest::Presence(Box::new(presence.clone())));
+            .send(PgWriteRequest::Presence(Box::new(presence.clone())))
+            .is_err()
+        {
+            self.pending.fetch_sub(1, Ordering::Relaxed);
+        }
         pg_metrics().messages_queued.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -1320,7 +1405,11 @@ impl PgWriter {
 }
 
 /// Background task: drain the mpsc channel and flush to `PostgreSQL` in batches.
-async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWriteRequest>) {
+async fn pg_writer_task(
+    settings: Settings,
+    mut rx: mpsc::UnboundedReceiver<PgWriteRequest>,
+    pending: Arc<AtomicU64>,
+) {
     let mut batch: Vec<PgWriteRequest> = Vec::with_capacity(PG_BATCH_SIZE);
     let mut interval = tokio::time::interval(PG_FLUSH_INTERVAL);
 
@@ -1329,7 +1418,7 @@ async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWr
             // Timer tick: flush whatever we have.
             _ = interval.tick() => {
                 if !batch.is_empty() {
-                    flush_pg_batch(&settings, &mut batch);
+                    flush_pg_batch(&settings, &mut batch, &pending);
                 }
             }
             // Incoming write request.
@@ -1338,7 +1427,7 @@ async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWr
                     None => {
                         // Channel closed — sender side dropped.
                         if !batch.is_empty() {
-                            flush_pg_batch(&settings, &mut batch);
+                            flush_pg_batch(&settings, &mut batch, &pending);
                         }
                         return;
                     }
@@ -1350,7 +1439,7 @@ async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWr
                                 PgWriteRequest::Message(_) | PgWriteRequest::Presence(_) => batch.push(req),
                                 PgWriteRequest::Flush { completion } => {
                                     if !batch.is_empty() {
-                                        flush_pg_batch(&settings, &mut batch);
+                                        flush_pg_batch(&settings, &mut batch, &pending);
                                     }
                                     if let Some(completion) = completion {
                                         let _ = completion.send(());
@@ -1360,13 +1449,13 @@ async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWr
                             }
                         }
                         if !batch.is_empty() {
-                            flush_pg_batch(&settings, &mut batch);
+                            flush_pg_batch(&settings, &mut batch, &pending);
                         }
                         return;
                     }
                     Some(PgWriteRequest::Flush { completion }) => {
                         if !batch.is_empty() {
-                            flush_pg_batch(&settings, &mut batch);
+                            flush_pg_batch(&settings, &mut batch, &pending);
                         }
                         if let Some(completion) = completion {
                             let _ = completion.send(());
@@ -1375,7 +1464,7 @@ async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWr
                     Some(req) => {
                         batch.push(req);
                         if batch.len() >= PG_BATCH_SIZE {
-                            flush_pg_batch(&settings, &mut batch);
+                            flush_pg_batch(&settings, &mut batch, &pending);
                         }
                     }
                 }
@@ -1393,25 +1482,26 @@ async fn pg_writer_task(settings: Settings, mut rx: mpsc::UnboundedReceiver<PgWr
 /// completed batch cycles.  When the circuit breaker is open at the time a
 /// message write is attempted, `dropped_writes` is incremented to track
 /// recoverable message backfill debt.
-fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>) {
+fn flush_pg_batch(settings: &Settings, batch: &mut Vec<PgWriteRequest>, pending: &AtomicU64) {
     let metrics = pg_metrics();
     for req in batch.drain(..) {
         match req {
             PgWriteRequest::Message(msg) => {
                 let err = persist_message_postgres(settings, &msg);
+                pending.fetch_sub(1, Ordering::Relaxed);
                 if let Err(ref error) = err {
                     tracing::warn!("PgWriter: failed to persist message: {error:#}");
                     metrics.write_errors.fetch_add(1, Ordering::Relaxed);
-                    // F1: count writes dropped while the circuit breaker was open.
-                    if is_pg_circuit_open() {
-                        metrics.dropped_writes.fetch_add(1, Ordering::Relaxed);
-                    }
+                    // F1: every failed message write is a drop (no requeue), not
+                    // only those failing while the breaker is open (agent-hub#194).
+                    metrics.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 } else {
                     metrics.messages_written.fetch_add(1, Ordering::Relaxed);
                 }
             }
             PgWriteRequest::Presence(presence) => {
                 let err = persist_presence_postgres(settings, &presence);
+                pending.fetch_sub(1, Ordering::Relaxed);
                 if let Err(ref error) = err {
                     tracing::warn!("PgWriter: failed to persist presence: {error:#}");
                     metrics.write_errors.fetch_add(1, Ordering::Relaxed);
@@ -1513,11 +1603,11 @@ pub(crate) fn postgres_storage_sql(settings: &Settings) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Serializes tests that mutate the process-wide `PostgreSQL` state.
-    fn global_state_lock() -> &'static Mutex<()> {
+    pub(crate) fn global_state_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
@@ -2269,7 +2359,7 @@ mod tests {
 
         let mut batch: Vec<PgWriteRequest> =
             vec![PgWriteRequest::Message(Box::new(sample_test_message()))];
-        flush_pg_batch(&settings, &mut batch);
+        flush_pg_batch(&settings, &mut batch, &AtomicU64::new(0));
 
         let after_drop = metrics.dropped_writes.load(Ordering::Relaxed);
         assert!(
@@ -2331,7 +2421,7 @@ mod tests {
 
         let mut batch: Vec<PgWriteRequest> =
             vec![PgWriteRequest::Presence(Box::new(sample_test_presence()))];
-        flush_pg_batch(&settings, &mut batch);
+        flush_pg_batch(&settings, &mut batch, &AtomicU64::new(0));
 
         assert_eq!(
             metrics.dropped_writes.load(Ordering::Relaxed),

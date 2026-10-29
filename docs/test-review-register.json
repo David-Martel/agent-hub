@@ -8387,6 +8387,338 @@
       "breaking_behavior": "None; reads ci.yml only."
     },
     {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "5af596311459b516a17247ce9385fa4ffd98e4ec",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T07:40:00Z",
+      "reviewed_source_state": "Reviewed-hash refresh for the agent-hub nextest PR (vigil-utils register C-25): ci.yml's Unit Tests job now runs its two cargo test steps on cargo-nextest through the vendored .github/actions/nextest-ci action, with the same selections (--workspace --lib --bins; --workspace --tests), the same 4 test threads and the same unset AGENT_BUS_* variables. The author of the refresh wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_dependabot_admission.py::AdmissionTests::test_trusted_policy_inventory_matches_independent_producer_oracle",
+      "scope": "Reviewed CI producer hash refresh only: REVIEWED_JOB_INVENTORY_JSON and REVIEWED_SKIP_JOBS_JSON source_sha256 in dependabot-automerge.yml and REVIEWED_HASH plus the SKIPS source_sha256 in the test move from 9c2bc8ec... to 7b7b3e1a.... The 16 required jobs, the manual-only Windows Native Validation skip and every assertion are unchanged.",
+      "selector_source": {
+        "path": "scripts/ci/test_dependabot_admission.py",
+        "first_line": 436,
+        "last_line": 460,
+        "sha256": "dd3925017fa83443b7f7f06b0bcf326e48543a305658ec9df7eaa7a5101773b6"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/dependabot-automerge.yml",
+        "sha256": "a671e28f6db367bebabc96d578a87999f782a490f77a5d601a1bb5134faad8dc"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_dependabot_admission.py",
+          "sha256": "26437d15dd32543be704a839f2f7dc97dc4e5a4f90798cc1335effd4baae7c6a"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "586ab0ad466e8f2828a4123d414628ebbb1546e559cdd1caa3d27b3c8902ff9e"
+        }
+      ],
+      "relevance": "Dependabot admission consumes exact-source CI inventory and manual-job skip evidence; any ci.yml byte change requires this refresh.",
+      "protections": "Only the reviewed current CI producer can satisfy the complete independent 16-job oracle and manual-only skip.",
+      "detects": "Unknown or changed producers, missing jobs and hash-only manipulations remain rejected.",
+      "needs": "Existing fixture harness; no live GitHub changes or credentials.",
+      "coverage": {
+        "failing_input_or_control": "Before the refresh, unittest discover on the nextest branch failed 7 assertions and 5 errors (test_dependabot_admission.py and test_release_windows_artifact.py 'reviewed CI producer hash differs'); after it the full scripts/ci discovery passes.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 326 tests, OK, 1 skipped. Job names, runs-on, if and needs lines of ci.yml are identical to origin/main."
+      },
+      "breaking_behavior": "Admits the CI producer whose diff from the previously reviewed source moves the Unit Tests job's two test steps to the nextest-ci action. Does not change job membership, routing, skips, assertions or gate implementation."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "5af596311459b516a17247ce9385fa4ffd98e4ec",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T07:40:00Z",
+      "reviewed_source_state": "Reviewed-hash refresh for the agent-hub nextest PR (vigil-utils register C-25): ci.yml's Unit Tests job now runs its two cargo test steps on cargo-nextest through the vendored .github/actions/nextest-ci action, with the same selections (--workspace --lib --bins; --workspace --tests), the same 4 test threads and the same unset AGENT_BUS_* variables. The author of the refresh wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_toolchain_policy.py::ToolchainPolicyTests::test_floating_node_pin_fails",
+      "scope": "Shared-source ci.yml hash only; selector, code under test, policy JSON and test file are byte-identical to the previous row. The Node pin lines in ci.yml are unchanged.",
+      "selector_source": {
+        "path": "scripts/ci/test_toolchain_policy.py",
+        "first_line": 52,
+        "last_line": 57,
+        "sha256": "addeee178a1162059cf196ee6de00eff6843d6238ad5f08861e1a297b4343258"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/toolchain_policy.py",
+        "sha256": "580f65450b4d20368d2604be932f2f5dec25e0dfa3414569dcdb06dda7384151"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_toolchain_policy.py",
+          "sha256": "eb8e687fbc07067657c2bc4d783f59ecd0e9554e8185ca1ea01f3b8773ab3815"
+        },
+        {
+          "path": "scripts/ci/toolchain-policy.json",
+          "sha256": "c0eed523870753e7c10e1b54b0915ddd46b3919650179ac068da79c02b6b4ad7"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "586ab0ad466e8f2828a4123d414628ebbb1546e559cdd1caa3d27b3c8902ff9e"
+        }
+      ],
+      "relevance": "The shipping CI source check requires the exact Node pin.",
+      "protections": "Keep CI Node selection exact and policy-consistent.",
+      "detects": "A floating Node pin; assertIn also detects a stale mutation that changes no bytes.",
+      "needs": "Temporary source fixture; no external services, network or hardware.",
+      "coverage": {
+        "failing_input_or_control": "Unchanged from the previous row; the mutation needle is derived from policy and the retention-days diff does not touch it.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 326 tests, OK, 1 skipped. Job names, runs-on, if and needs lines of ci.yml are identical to origin/main."
+      },
+      "breaking_behavior": "None; records the new ci.yml hash for a test-runner change. Does not permit floating versions or relax the production verifier."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "5af596311459b516a17247ce9385fa4ffd98e4ec",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T07:40:00Z",
+      "reviewed_source_state": "Reviewed-hash refresh for the agent-hub nextest PR (vigil-utils register C-25): ci.yml's Unit Tests job now runs its two cargo test steps on cargo-nextest through the vendored .github/actions/nextest-ci action, with the same selections (--workspace --lib --bins; --workspace --tests), the same 4 test threads and the same unset AGENT_BUS_* variables. The author of the refresh wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_release_windows_artifact.py::ReleaseSourceControls::test_reused_windows_ci_artifact_outlives_the_tag_window",
+      "scope": "Code-under-test ci.yml hash only; the agent-bus-windows-x64 upload and its retention-days 7 are unchanged, and the selector and its shared sources are byte-identical to the previous row.",
+      "selector_source": {
+        "path": "scripts/ci/test_release_windows_artifact.py",
+        "first_line": 631,
+        "last_line": 663,
+        "sha256": "6d54f5db946fc09477e9e775f2911786ace4e7183bb54c4a718b5faa2ca98375"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/ci.yml",
+        "sha256": "586ab0ad466e8f2828a4123d414628ebbb1546e559cdd1caa3d27b3c8902ff9e"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_release_windows_artifact.py",
+          "sha256": "b9deb74727a92a8e9641166a4f9a2e303f7e02360eefeec1268fb20c5ada876c"
+        },
+        {
+          "path": "scripts/ci/release_windows_artifact.py",
+          "sha256": "1563fa86b346b25415236dce0979a26705b2db51a524470910d629d358a02e82"
+        }
+      ],
+      "relevance": "release.yml reuses the main CI run's Windows artifact and release_windows_artifact.py refuses an expired one, so its retention bounds the tag window.",
+      "protections": "A v* tag cut up to 7 days after its main CI run can still reuse the Windows artifact.",
+      "detects": "retention-days below 7, or missing, on the agent-bus-windows-x64 upload; the parser's own control proves it reads a lowered value.",
+      "needs": "Actual ci.yml; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Unchanged from the previous row; the nextest diff does not touch the upload step.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 326 tests, OK, 1 skipped. Job names, runs-on, if and needs lines of ci.yml are identical to origin/main."
+      },
+      "breaking_behavior": "None; reads ci.yml only."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "0a0833208d72e9731dcfa9af84c4086dc4b5ae4c",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T09:30:00Z",
+      "reviewed_source_state": "New selector added with the fail-on-flaky resync of the vendored nextest-ci action (vigil-utils #1127 at 2b9e990e5804cb89f3f281900bf0d2959e060afd): a test that passes only on retry now fails the Unit Tests job by default, as the retry-free cargo test it replaced did. The author of the test wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_nextest_ci_action.py::NextestCiActionTests::test_flaky_report_fails_by_default",
+      "scope": "This selector only; it certifies neither the other nextest-ci selectors nor the Unit Tests run.",
+      "selector_source": {
+        "path": "scripts/ci/test_nextest_ci_action.py",
+        "first_line": 77,
+        "last_line": 84,
+        "sha256": "9239042b9ec5501c9bc9042e29eaa126b1b1a02c4d1273673991c487ff49b551"
+      },
+      "code_under_test": {
+        "path": ".github/actions/nextest-ci/nextest_flaky_summary.py",
+        "sha256": "1637e1da4b369f7a5872f863197bd2938241b4b73fc83944d0ba7645fc55af05"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_nextest_ci_action.py",
+          "sha256": "44f4ccb65dc72f7bf30f0101de49de1c8901fcdf5286f0e9ae337aff687da34f"
+        }
+      ],
+      "relevance": "The summary script decides the job's final colour after a green nextest run, so its flaky branch is the gate.",
+      "protections": "A test that failed once and passed on retry turns the Unit Tests job red, as cargo test did.",
+      "detects": "The summary exiting 0 for a flaky report, or dropping the flaky test's ::error annotation or summary row.",
+      "needs": "Python stdlib; no cargo, credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Reverting main to the warning-only behaviour (return 0 for a flaky report) fails the rc == 1 assertion.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
+      },
+      "breaking_behavior": "None; temporary files only."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "0a0833208d72e9731dcfa9af84c4086dc4b5ae4c",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T09:30:00Z",
+      "reviewed_source_state": "New selector added with the fail-on-flaky resync of the vendored nextest-ci action (vigil-utils #1127 at 2b9e990e5804cb89f3f281900bf0d2959e060afd): a test that passes only on retry now fails the Unit Tests job by default, as the retry-free cargo test it replaced did. The author of the test wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_nextest_ci_action.py::NextestCiActionTests::test_clean_report_passes",
+      "scope": "This selector only; it certifies neither the other nextest-ci selectors nor the Unit Tests run.",
+      "selector_source": {
+        "path": "scripts/ci/test_nextest_ci_action.py",
+        "first_line": 90,
+        "last_line": 97,
+        "sha256": "dae2c810abcbe01f1783a3bbcaba49ce5cbe80a53f804ffaa30680008f916e42"
+      },
+      "code_under_test": {
+        "path": ".github/actions/nextest-ci/nextest_flaky_summary.py",
+        "sha256": "1637e1da4b369f7a5872f863197bd2938241b4b73fc83944d0ba7645fc55af05"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_nextest_ci_action.py",
+          "sha256": "44f4ccb65dc72f7bf30f0101de49de1c8901fcdf5286f0e9ae337aff687da34f"
+        }
+      ],
+      "relevance": "The fail-on-flaky default must not fail runs where every test passed on its first attempt.",
+      "protections": "A clean nextest run stays green under the strict default and --require.",
+      "detects": "The summary step failing a clean report, which would make the gate unusable.",
+      "needs": "Python stdlib; no cargo, credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Paired with the flaky fixture above; the same script returns 1 for FLAKY_JUNIT and 0 here.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
+      },
+      "breaking_behavior": "None; temporary files only."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "0a0833208d72e9731dcfa9af84c4086dc4b5ae4c",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T09:30:00Z",
+      "reviewed_source_state": "New selector added with the fail-on-flaky resync of the vendored nextest-ci action (vigil-utils #1127 at 2b9e990e5804cb89f3f281900bf0d2959e060afd): a test that passes only on retry now fails the Unit Tests job by default, as the retry-free cargo test it replaced did. The author of the test wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_nextest_ci_action.py::NextestCiActionTests::test_allow_flaky_reports_without_failing",
+      "scope": "This selector only; it certifies neither the other nextest-ci selectors nor the Unit Tests run.",
+      "selector_source": {
+        "path": "scripts/ci/test_nextest_ci_action.py",
+        "first_line": 103,
+        "last_line": 110,
+        "sha256": "f921343bc62e1508877312cbcd6d62a3a9312825a0205b9a97807c42ae7099dd"
+      },
+      "code_under_test": {
+        "path": ".github/actions/nextest-ci/nextest_flaky_summary.py",
+        "sha256": "1637e1da4b369f7a5872f863197bd2938241b4b73fc83944d0ba7645fc55af05"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_nextest_ci_action.py",
+          "sha256": "44f4ccb65dc72f7bf30f0101de49de1c8901fcdf5286f0e9ae337aff687da34f"
+        }
+      ],
+      "relevance": "--allow-flaky is the explicit lenient opt-out that fail-on-flaky: false selects.",
+      "protections": "A caller that opts out still sees every flaky test reported, as a warning, without a red job.",
+      "detects": "--allow-flaky still failing the job, or the flaky test vanishing from the report.",
+      "needs": "Python stdlib; no cargo, credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Paired with test_flaky_report_fails_by_default; only the flag differs between the two calls.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
+      },
+      "breaking_behavior": "None; temporary files only."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "0a0833208d72e9731dcfa9af84c4086dc4b5ae4c",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T09:30:00Z",
+      "reviewed_source_state": "New selector added with the fail-on-flaky resync of the vendored nextest-ci action (vigil-utils #1127 at 2b9e990e5804cb89f3f281900bf0d2959e060afd): a test that passes only on retry now fails the Unit Tests job by default, as the retry-free cargo test it replaced did. The author of the test wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_nextest_ci_action.py::NextestCiActionTests::test_action_fail_on_flaky_input_controls_the_exit",
+      "scope": "This selector only; it certifies neither the other nextest-ci selectors nor the Unit Tests run.",
+      "selector_source": {
+        "path": "scripts/ci/test_nextest_ci_action.py",
+        "first_line": 119,
+        "last_line": 139,
+        "sha256": "c0f24fb4536bb7525e9c45f74bbdb9672a092a99b042316085ea257d251c2c02"
+      },
+      "code_under_test": {
+        "path": ".github/actions/nextest-ci/action.yml",
+        "sha256": "05681d48559ce28bb682fe5ab9a6baa647c6d865f47c1826a7da7fbc44a32fab"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_nextest_ci_action.py",
+          "sha256": "44f4ccb65dc72f7bf30f0101de49de1c8901fcdf5286f0e9ae337aff687da34f"
+        },
+        {
+          "path": ".github/actions/nextest-ci/nextest_flaky_summary.py",
+          "sha256": "1637e1da4b369f7a5872f863197bd2938241b4b73fc83944d0ba7645fc55af05"
+        }
+      ],
+      "relevance": "The action's summary step maps the fail-on-flaky input onto the script's flags; this runs that step's text.",
+      "protections": "fail-on-flaky true fails a flaky run, false passes it, and any other value is rejected.",
+      "detects": "The input not reaching the script, \"false\" not opting out, or a typo such as \"yes\" being accepted.",
+      "needs": "Python stdlib and bash; no cargo, credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Three values on one fixture expect exits 1, 0 and 2, so a step that ignores the input fails two of them.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
+      },
+      "breaking_behavior": "None; temporary files only."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "0a0833208d72e9731dcfa9af84c4086dc4b5ae4c",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T09:30:00Z",
+      "reviewed_source_state": "New selector added with the fail-on-flaky resync of the vendored nextest-ci action (vigil-utils #1127 at 2b9e990e5804cb89f3f281900bf0d2959e060afd): a test that passes only on retry now fails the Unit Tests job by default, as the retry-free cargo test it replaced did. The author of the test wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_nextest_ci_action.py::NextestCiActionTests::test_action_unset_env_removes_the_variable",
+      "scope": "This selector only; it certifies neither the other nextest-ci selectors nor the Unit Tests run.",
+      "selector_source": {
+        "path": "scripts/ci/test_nextest_ci_action.py",
+        "first_line": 149,
+        "last_line": 176,
+        "sha256": "0e3d68adcfc46a4e00f2c4eca533efa6037b5263c99cebdc9f4eb38ce3bdd0eb"
+      },
+      "code_under_test": {
+        "path": ".github/actions/nextest-ci/action.yml",
+        "sha256": "05681d48559ce28bb682fe5ab9a6baa647c6d865f47c1826a7da7fbc44a32fab"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_nextest_ci_action.py",
+          "sha256": "44f4ccb65dc72f7bf30f0101de49de1c8901fcdf5286f0e9ae337aff687da34f"
+        }
+      ],
+      "relevance": "unset-env is the agent-hub local addition that strips AGENT_BUS_* routing from cargo nextest's environment.",
+      "protections": "Unit Tests runs with the runner's hub-routing variables removed, so no test inherits a live hub route.",
+      "detects": "unset-env not reaching the cargo nextest process.",
+      "needs": "Python stdlib and bash; no cargo, credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The second run, with unset-env empty, shows the fake cargo does see the variable when it is not removed.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
+      },
+      "breaking_behavior": "None; temporary files only."
+    },
+    {
       "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_reads_selected_hub_as_ndjson_with_all_filters",
       "reviewer": "codex-p1gen9-backend-independent-review",
       "reviewer_type": "independent_agent",

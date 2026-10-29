@@ -1070,6 +1070,38 @@ pub(crate) fn cmd_export(
     Ok(())
 }
 
+/// `export --all`: stream the complete history of both stores as NDJSON.
+pub(crate) fn cmd_export_all(settings: &Settings, page_size: usize) -> Result<()> {
+    use std::io::Write as _;
+
+    #[cfg(feature = "server-mode")]
+    if use_server_mode(settings) {
+        anyhow::bail!(
+            "export --all reads the local Redis and PostgreSQL; run it on the hub host \
+             (this client is configured for a remote hub)"
+        );
+    }
+    let stdout = std::io::stdout();
+    let mut out = std::io::BufWriter::new(stdout.lock());
+    let summary = agent_bus_core::export::export_all(settings, page_size, |msg| {
+        let line = serde_json::to_string(msg).map_err(|e| {
+            agent_bus_core::error::AgentBusError::Internal(format!("serialize message: {e}"))
+        })?;
+        writeln!(out, "{line}").map_err(|e| {
+            agent_bus_core::error::AgentBusError::Internal(format!("write export line: {e}"))
+        })
+    })?;
+    out.flush()?;
+    eprintln!(
+        "Exported {} messages ({} from PostgreSQL, {} Redis-only; {} Redis entries already in PostgreSQL)",
+        summary.pg_messages + summary.redis_only,
+        summary.pg_messages,
+        summary.redis_only,
+        summary.redis_duplicates
+    );
+    Ok(())
+}
+
 pub(crate) fn cmd_presence_history(
     settings: &Settings,
     agent: Option<&str>,

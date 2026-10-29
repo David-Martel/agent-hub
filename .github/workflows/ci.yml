@@ -118,10 +118,21 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
-      - run: env -u AGENT_BUS_SERVER_CANDIDATES cargo test --workspace --lib --bins -- --test-threads=4
+      # cargo-nextest through the vendored nextest-ci action (vigil-utils C-25): each test runs in
+      # its own process, a failure is retried up to twice, and a test that only passes on retry
+      # stays green but is listed in the job summary and as a warning, so a race is reported, not
+      # hidden. Same selection as the `cargo test --workspace --lib --bins -- --test-threads=4` it
+      # replaced. `--lib --bins` never ran doctests, so none are lost. The profile is
+      # .config/nextest.toml. Runs after setup-rust.sh, whose PATH and CARGO_TARGET_DIR the
+      # action's `cargo metadata` and nextest need.
+      - name: Unit tests (lib and bins)
+        uses: ./.github/actions/nextest-ci
+        with:
+          args: --workspace --lib --bins --test-threads 4
+          unset-env: AGENT_BUS_SERVER_CANDIDATES
       - run: python3 -B -m unittest discover -s scripts/ci -p "test_*.py"
       - name: Non-ignored integration tests (no live backend of any kind)
-        shell: bash
+        # On cargo-nextest like the unit step above; `--tests` never ran doctests either.
         # `--tests` here is deliberately NOT `--workspace --tests -- --ignored`
         # (that's test-integration's job, below, against disposable backends).
         # This runs every *non*-ignored `tests/*.rs` binary -- e.g.
@@ -134,11 +145,11 @@ jobs:
         env:
           AGENT_BUS_REDIS_URL: redis://127.0.0.1:1/0
           AGENT_BUS_DATABASE_URL: postgresql://postgres@127.0.0.1:1/none
-        run: |
-          set -euo pipefail
-          env -u AGENT_BUS_SERVER_URL -u AGENT_BUS_SERVER_URLS -u AGENT_BUS_SERVER_CANDIDATES -u AGENT_BUS_AUTH_TOKEN \
-            AGENT_BUS_HUB_CACHE_TTL_SECONDS=0 \
-            cargo test --workspace --tests -- --test-threads=4
+          AGENT_BUS_HUB_CACHE_TTL_SECONDS: "0"
+        uses: ./.github/actions/nextest-ci
+        with:
+          args: --workspace --tests --test-threads 4
+          unset-env: AGENT_BUS_SERVER_URL AGENT_BUS_SERVER_URLS AGENT_BUS_SERVER_CANDIDATES AGENT_BUS_AUTH_TOKEN
 
   test-integration:
     name: Integration Tests
@@ -228,11 +239,17 @@ jobs:
           fi
           sha256sum agent-bus agent-bus-http agent-bus-mcp | tee artifact-sha256.txt
           cat build-provenance.txt artifact-sha256.txt >> "$GITHUB_STEP_SUMMARY"
+      # Nothing in a PR run consumes the Linux binaries (no job needs
+      # build-release), and three ~14 MB uploads per PR revision filled the
+      # account's Actions artifact quota. The build above still proves the
+      # release profile compiles; only main and manual runs keep the files.
       - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
         with:
           name: agent-bus-${{ matrix.name }}
           if-no-files-found: error
           retention-days: 2
+          compression-level: 9
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http
@@ -367,7 +384,23 @@ jobs:
             ConvertTo-Json -Depth 4 | Set-Content (Join-Path $release 'artifact-sha256.json') -Encoding utf8NoBOM
           & $env:RUSTC_WRAPPER --show-stats --stats-format=json
           if ($LASTEXITCODE -ne 0) { throw 'Native cache counters unavailable' }
+      # PR runs upload the same name for smoke-functional (needs: [windows]) to
+      # download, but keep it one day: only the run itself consumes it. Main and
+      # manual runs keep the 7-day upload below for release reuse.
       - uses: actions/upload-artifact@v7
+        if: github.event_name == 'pull_request'
+        with:
+          name: agent-bus-windows-x64
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+          path: |
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-mcp.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/artifact-sha256.json
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
         with:
           name: agent-bus-windows-x64
           if-no-files-found: error
@@ -375,6 +408,7 @@ jobs:
           # commit (scripts/ci/release_windows_artifact.py refuses an expired one),
           # so it keeps the 7-day tag window; the other CI uploads keep 2 days.
           retention-days: 7
+          compression-level: 9
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus.exe
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http.exe

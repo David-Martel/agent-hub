@@ -318,7 +318,8 @@ pub(crate) enum Cmd {
         Useful for backup, recovery, and analysis workflows.\n\
         Supports the same repo/session/tag/thread-id filters as `read`.\n\
         Remote exports require an explicit --limit between 1 and 500;\n\
-        run larger exports on the selected hub until remote pagination is available.")]
+        run larger exports on the selected hub until remote pagination is available.\n\
+        The windowed form is capped at 7 days; use --all for a complete archive.")]
     Export {
         #[arg(long, help = "Filter by recipient agent")]
         agent: Option<String>,
@@ -340,6 +341,22 @@ pub(crate) enum Cmd {
         since_minutes: u64,
         #[arg(long, default_value_t = 10000, help = "Max messages to export")]
         limit: usize,
+        #[arg(
+            long,
+            conflicts_with_all = ["agent", "from_agent", "repo", "session", "tag", "thread_id"],
+            help = "Export the COMPLETE history: every PostgreSQL row, then every Redis \
+                    stream entry PostgreSQL lacks, each id once, bodies as plaintext \
+                    (LZ4 decoded). Ignores --since-minutes and --limit. Reads the local \
+                    stores, so run it on the hub host. This is the supported archive path."
+        )]
+        all: bool,
+        #[arg(
+            long,
+            default_value_t = agent_bus_core::export::DEFAULT_PAGE_SIZE,
+            requires = "all",
+            help = "Rows/entries per page with --all"
+        )]
+        page_size: usize,
     },
 
     /// List historical presence events (hub in remote mode, `PostgreSQL` locally).
@@ -1671,6 +1688,28 @@ mod tests {
         } else {
             panic!("expected Cmd::Export");
         }
+    }
+
+    #[test]
+    fn parse_export_all_and_rejects_filters() {
+        let cli = parse(&["agent-bus", "export", "--all", "--page-size", "500"])
+            .expect("export --all must parse");
+        assert!(matches!(
+            cli.command,
+            Cmd::Export {
+                all: true,
+                page_size: 500,
+                ..
+            }
+        ));
+        assert!(
+            parse(&["agent-bus", "export", "--all", "--repo", "x"]).is_err(),
+            "--all must not combine with filters it would ignore"
+        );
+        assert!(
+            parse(&["agent-bus", "export", "--page-size", "5"]).is_err(),
+            "--page-size needs --all"
+        );
     }
 
     #[test]

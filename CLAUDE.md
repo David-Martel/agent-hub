@@ -155,6 +155,8 @@ Use `--schema finding|status|benchmark` on `send` to validate message structure:
 
 On the Linux hub both are system services; the opt-in root hardening (Redis AOF start preflight, daily `pg_dump`) is `packaging/backend-hardening.sh` (also reachable as `./install.sh --with-backend-hardening`), see [`packaging/README.md`](packaging/README.md#backend-hardening-root-opt-in).
 
+**Full-history archive (#194):** `agent-bus export` is windowed (7 days max). For a complete archive run `agent-bus export --all > history.ndjson` on the hub host: every PostgreSQL row (keyset-paged), then every Redis stream entry PostgreSQL lacks, each id once, bodies as plaintext (Redis `_compressed: lz4` bodies are decoded; `metadata._compressed` is left as a historical marker). Progress and counts go to stderr. It needs PostgreSQL and exits non-zero otherwise, so a Redis-only dump is never mistaken for a full one.
+
 ## Environment Variables
 
 | Variable | Default | Source |
