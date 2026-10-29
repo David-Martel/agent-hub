@@ -91,6 +91,7 @@ pub fn bootstrap() -> Result<(Settings, BootstrapGuard)> {
 mod tests {
     use super::*;
     use crate::models::Message;
+    use crate::postgres_store::tests::global_state_lock;
 
     fn message() -> Message {
         Message {
@@ -128,14 +129,21 @@ mod tests {
     /// `?` between the Redis write and the end of `run()`) left the queue
     /// unflushed, so the message stayed Redis-only (agent-hub#194).
     /// Needs: a multi-thread runtime, as in the three binaries.
+    ///
+    /// No precondition on the queue depth: the writer task runs concurrently
+    /// and may legitimately flush part of it first. The assertion after the
+    /// drop holds for any interleaving, and a large burst keeps the pre-fix
+    /// failure reliable (the unfixed guard returned with the tail still queued).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dropping_the_guard_flushes_queued_writes() {
+        let _lock = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (writer, handle) = spawn_writer();
         let guard = BootstrapGuard::from_parts(writer.clone(), handle);
-        for _ in 0..5 {
+        for _ in 0..2000 {
             writer.send_message(&message());
         }
-        assert_eq!(writer.pending(), 5, "precondition: writes are queued");
         drop(guard);
         assert_eq!(
             writer.pending(),
@@ -147,6 +155,9 @@ mod tests {
     /// Protects: explicit `shutdown()` still drains, and a second drain is inert.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn explicit_shutdown_flushes_queued_writes() {
+        let _lock = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (writer, handle) = spawn_writer();
         let guard = BootstrapGuard::from_parts(writer.clone(), handle);
         writer.send_message(&message());
@@ -158,6 +169,9 @@ mod tests {
     /// Detects: `send_message` ignoring a closed channel (`let _ = tx.send`).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn send_after_shutdown_is_counted_as_dropped() {
+        let _lock = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (writer, handle) = spawn_writer();
         writer.shutdown_and_wait(handle);
         let before = crate::postgres_store::pg_metrics()
@@ -177,6 +191,9 @@ mod tests {
     /// Protects: the guard never panics or hangs on a current-thread runtime.
     #[tokio::test]
     async fn drop_on_current_thread_runtime_does_not_block() {
+        let _lock = global_state_lock()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (writer, handle) = spawn_writer();
         let guard = BootstrapGuard::from_parts(writer, handle);
         drop(guard);

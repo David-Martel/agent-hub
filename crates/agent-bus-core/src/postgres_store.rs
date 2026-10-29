@@ -1551,11 +1551,11 @@ pub(crate) fn postgres_storage_sql(settings: &Settings) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Serializes tests that mutate the process-wide `PostgreSQL` state.
-    fn global_state_lock() -> &'static Mutex<()> {
+    pub(crate) fn global_state_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
     }
