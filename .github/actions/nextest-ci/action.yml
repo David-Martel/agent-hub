@@ -1,0 +1,87 @@
+# Vendored from David-Martel/vigil-utils .github/actions/nextest-ci at a09a378dcb06bed30cd997f3e520b8516a760f88
+# (PR #1127), synced by hand. Do not reference vigil-utils' copy from this repo's workflows.
+# Local addition (not upstream): the `unset-env` input, because agent-hub's test steps must run
+# with runner-inherited AGENT_BUS_* routing variables removed (an empty value is a parse error,
+# not an absence), and a step's `env:` can set a variable but never unset it.
+name: nextest-ci
+description: >-
+  Run cargo nextest with the ci profile (2 retries). A test that passes on retry keeps the job
+  green but is listed as flaky in the job summary and as a warning annotation. Requires
+  cargo-nextest and python3 on the runner and a [profile.ci] with a junit path (see nextest-ci.toml).
+inputs:
+  args:
+    description: Extra arguments for `cargo nextest run`.
+    required: false
+    default: --workspace
+  junit-path:
+    description: JUnit path relative to <workspace root>/target/nextest/ci (profile.ci.junit.path).
+    required: false
+    default: junit.xml
+  working-directory:
+    required: false
+    default: .
+    description: Workspace directory.
+  log-file:
+    required: false
+    default: ""
+    description: >-
+      Optional path, relative to working-directory, that receives the full nextest output (tee), so
+      a diagnostics upload keeps the test log it had under `cargo test`.
+  unset-env:
+    required: false
+    default: ""
+    description: >-
+      Space-separated environment variable names removed (env -u) from the nextest process.
+runs:
+  using: composite
+  steps:
+    # nextest writes its store (store.dir, default "target/nextest") relative to the WORKSPACE ROOT,
+    # not to cargo's target directory: measured with nextest 0.9.148 under CARGO_TARGET_DIR, and the
+    # vigil1 and Spark images move build.target-dir to a shared cache. So ask cargo for the workspace
+    # root, which also makes a member-crate working-directory resolve correctly. Any report an
+    # earlier run left there is deleted, so the summary can only read this run's file.
+    - id: locate
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        JUNIT_REL: ${{ inputs.junit-path }}
+      run: |
+        set -euo pipefail
+        workspace_root=$(cargo metadata --format-version 1 --no-deps \
+          | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["workspace_root"])')
+        junit="$workspace_root/target/nextest/ci/$JUNIT_REL"
+        rm -f "$junit"
+        echo "junit=$junit" >> "$GITHUB_OUTPUT"
+    - id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        NEXTEST_ARGS: ${{ inputs.args }}
+        LOG_FILE: ${{ inputs.log-file }}
+        UNSET_ENV: ${{ inputs.unset-env }}
+      run: |
+        set -uo pipefail
+        unset_args=()
+        for name in $UNSET_ENV; do unset_args+=(-u "$name"); done
+        if [ -n "$LOG_FILE" ]; then
+          mkdir -p "$(dirname "$LOG_FILE")"
+          # shellcheck disable=SC2086
+          env "${unset_args[@]}" cargo nextest run --profile ci $NEXTEST_ARGS 2>&1 | tee "$LOG_FILE"
+        else
+          # shellcheck disable=SC2086
+          env "${unset_args[@]}" cargo nextest run --profile ci $NEXTEST_ARGS
+        fi
+    # A green run that wrote no JUnit file means the profile lost its junit table or the path moved,
+    # and the flaky report would read nothing for good. --require turns that into a red step. After
+    # a failed run the file may legitimately be absent (a build error), so the report stays advisory.
+    - if: always() && steps.locate.outcome == 'success'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        JUNIT: ${{ steps.locate.outputs.junit }}
+        RUN_OUTCOME: ${{ steps.run.outcome }}
+      run: |
+        set -uo pipefail
+        require=()
+        if [ "$RUN_OUTCOME" = success ]; then require=(--require); fi
+        python3 -I "${{ github.action_path }}/nextest_flaky_summary.py" "${require[@]}" "$JUNIT" "$GITHUB_STEP_SUMMARY"
