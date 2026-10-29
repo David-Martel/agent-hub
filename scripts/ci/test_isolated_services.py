@@ -469,6 +469,61 @@ class DockerPrerequisiteTests(unittest.TestCase):
                 owned.wait_container("c" * 64, ["pg_isready"])
             self.assertEqual(probe.call_count, 3)
 
+    def test_failed_fixture_docker_command_is_named_in_the_failure(self):
+        """Protects: a red smoke run names its cause (agent-hub main, 2026-10-29).
+
+        Detects: a fixture ``docker`` failure printing only ``CalledProcessError``,
+        indistinguishable from a failing test script, and the disposable password
+        or token leaking through argv or the output tail.
+        Needs: no Docker; ``start`` is faked.
+        Breadcrumb: scripts/ci/isolated-services.py.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            owned = services.Services(directory, "smoke")
+            failure = subprocess.CalledProcessError(
+                125,
+                [
+                    "C:\\Docker\\docker.exe",
+                    "create",
+                    "--env",
+                    f"POSTGRES_PASSWORD={owned.password}",
+                ],
+                output="",
+                stderr=f"pull access denied\ntoken {owned.token}\ntoomanyrequests",
+            )
+            owned.start = MagicMock(side_effect=failure)
+            cli = Path(directory) / "agent-bus.exe"
+            http = Path(directory) / "agent-bus-http.exe"
+            cli.write_text("x")
+            http.write_text("x")
+            output = io.StringIO()
+            with (
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        "isolated-services.py",
+                        "smoke",
+                        "--cli",
+                        str(cli),
+                        "--http",
+                        str(http),
+                    ],
+                ),
+                patch.object(services.shutil, "which", return_value="pwsh"),
+                patch.object(services, "require_local_docker"),
+                patch.object(services, "Services", return_value=owned),
+                contextlib.redirect_stdout(output),
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                services.main()
+            text = output.getvalue()
+            self.assertIn("Child command failed: docker create (exit 125)", text)
+            self.assertIn("pull access denied", text)
+            self.assertIn("toomanyrequests", text)
+            self.assertNotIn(owned.password, text)
+            self.assertNotIn(owned.token, text)
+
     def test_native_failure_and_timeout_report_operation_without_native_details(self):
         marker = "inert-sensitive-fixture-marker"
         for operation in ("context-inspect", "linux-container-info"):
