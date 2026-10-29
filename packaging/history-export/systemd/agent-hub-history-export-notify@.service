@@ -1,0 +1,10 @@
+[Unit]
+Description=Post an agent-bus finding for failed agent-hub unit %i
+Documentation=https://github.com/David-Martel/agent-hub/blob/main/packaging/history-export/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'source "$HOME/.config/bash/env.bash" && exec agent-bus send --from-agent agent-hub-history-export --to-agent all --topic agent-hub-findings --schema finding --thread-id machine-hygiene --tag repo:agent-hub --tag machine-hygiene --body "FINDING: systemd unit %i failed on %H; agent-hub history was not exported or not verified on the drop. Read: journalctl --user -u %i -n 80\nSEVERITY: high" --encoding compact'
+TimeoutStartSec=90
+UMask=0077
+NoNewPrivileges=true

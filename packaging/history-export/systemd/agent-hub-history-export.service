@@ -1,0 +1,19 @@
+[Unit]
+Description=Export agent-bus history and push it, hash-verified, to the agent-hub SFTP drop on dtm-p1gen7 (mirror dtm-p1gen9)
+Documentation=https://github.com/David-Martel/agent-hub/blob/main/packaging/history-export/README.md
+After=network-online.target
+OnFailure=agent-hub-history-export-notify@%n.service
+
+[Service]
+Type=oneshot
+# env.bash gives the unit the same PATH as an interactive shell (uv, agent-bus, psql);
+# a bare user-unit PATH lacks the toolchain. flock -n refuses an overlapping run.
+ExecStart=/bin/bash -c 'source "$HOME/.config/bash/env.bash" && exec flock -n "$HOME/.cache/agent-hub-history-export.lock" uv run --no-project --with redis python -B "$HOME/.local/share/agent-hub-history-export/agent-hub-history-export.py" --dest dtm-p1gen7 --mirror dtm-p1gen9'
+TimeoutStartSec=2h
+UMask=0077
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUQuota=100%
+MemoryMax=4G
+NoNewPrivileges=true
