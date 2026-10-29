@@ -342,10 +342,12 @@ pub(crate) enum Cmd {
         limit: usize,
     },
 
-    /// List historical presence events from `PostgreSQL`.
-    #[command(long_about = "Query PostgreSQL for historical presence events.\n\
+    /// List historical presence events (hub in remote mode, `PostgreSQL` locally).
+    #[command(long_about = "Query historical presence events.\n\
         Unlike presence-list (which shows current TTL-based state from Redis),\n\
-        this shows the full history of presence changes.")]
+        this shows the full history of presence changes.\n\
+        In remote mode the selected hub's GET /presence/history answers and a hub\n\
+        failure is an error; locally the command queries PostgreSQL directly.")]
     PresenceHistory {
         #[arg(long, help = "Filter by agent ID")]
         agent: Option<String>,
