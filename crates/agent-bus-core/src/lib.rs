@@ -29,6 +29,7 @@ pub mod redis_bus;
 mod redis_health;
 pub mod remote_dispatch;
 pub mod settings;
+pub mod store_consistency;
 pub mod sync_store;
 pub mod token;
 pub mod validation;

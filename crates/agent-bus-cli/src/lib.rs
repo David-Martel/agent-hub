@@ -44,7 +44,7 @@ use commands::{
     cmd_renew_claim, cmd_resolve, cmd_send, cmd_service, cmd_session_summary, cmd_spool_replay,
     cmd_spool_send, cmd_subscribe, cmd_subscriptions, cmd_summarize_thread, cmd_sync,
     cmd_thread_close, cmd_thread_create, cmd_thread_join, cmd_thread_leave, cmd_thread_list,
-    cmd_token_count, cmd_unsubscribe, cmd_validate_backup, cmd_watch,
+    cmd_token_count, cmd_unsubscribe, cmd_validate_backup, cmd_verify_sets, cmd_watch,
 };
 
 #[global_allocator]
@@ -177,8 +177,15 @@ fn run(args: Vec<OsString>) -> Result<()> {
         Cmd::Health {
             ref encoding,
             require_storage,
+            verify_sets,
+            window_minutes,
+            full_scan,
+            max_listed,
         } => {
             cmd_health(&settings, encoding, require_storage);
+            if verify_sets {
+                cmd_verify_sets(&settings, encoding, window_minutes, full_scan, max_listed);
+            }
         }
 
         Cmd::History(ref command) => match command {

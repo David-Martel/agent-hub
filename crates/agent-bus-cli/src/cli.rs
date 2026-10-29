@@ -132,6 +132,34 @@ pub(crate) enum Cmd {
                     gates that require full durability."
         )]
         require_storage: bool,
+        #[arg(
+            long,
+            help = "Also compare the message-ID SETS of Redis and PostgreSQL, not just their \
+                    counts (agent-hub#194). Exits 1 and lists the differing ids (capped) on \
+                    mismatch. Reads the local stores, so run it on the hub host."
+        )]
+        verify_sets: bool,
+        #[arg(
+            long,
+            default_value_t = 60,
+            requires = "verify_sets",
+            conflicts_with = "full_scan",
+            help = "Minutes of history to compare with --verify-sets"
+        )]
+        window_minutes: u32,
+        #[arg(
+            long,
+            requires = "verify_sets",
+            help = "With --verify-sets, compare everything Redis still retains"
+        )]
+        full_scan: bool,
+        #[arg(
+            long,
+            default_value_t = 50,
+            requires = "verify_sets",
+            help = "Cap on differing ids listed per side"
+        )]
+        max_listed: usize,
     },
 
     /// Manage the separately migrated sanitized-history catalog.
