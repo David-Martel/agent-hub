@@ -9,7 +9,6 @@ HTTP process handle created by this invocation. Missing prerequisites are errors
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
 import json
 import os
 import re
@@ -24,6 +23,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 
 from wine_lifecycle import NativeWineProvider, WineGuest, prove_runner_namespace
@@ -49,6 +49,55 @@ def run(args, *, env=None, capture=False, timeout=180):
         timeout=timeout,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
+
+
+DIAGNOSTIC_TAIL_LINES = 20
+DIAGNOSTIC_TAIL_CHARS = 2000
+
+
+def _basename(path):
+    """Last component of a Windows or POSIX path, whichever host runs this."""
+    return re.split(r"[\\/]", path)[-1]
+
+
+def describe_failure(failure, redact=()):
+    """Name a failed child command without leaking its arguments.
+
+    argv can carry this run's disposable password and token, so only the tool
+    name, a plain subcommand word (``create``, ``start``) or the PowerShell
+    script's basename, the exit status and a redacted output tail are shown.
+    Without this a failing fixture ``docker`` call and a failing test script
+    both print only ``CalledProcessError``.
+    """
+    argv = failure.cmd if isinstance(failure.cmd, (list, tuple)) else [failure.cmd]
+    argv = [str(part) for part in argv]
+    tool = _basename(argv[0]).removesuffix(".exe") if argv else "unknown"
+    detail = ""
+    if "-File" in argv[:-1]:
+        detail = _basename(argv[argv.index("-File") + 1])
+    else:
+        for part in argv[1:]:
+            if re.fullmatch(r"[a-z][a-z-]*", part):
+                detail = part
+                break
+    if isinstance(failure, subprocess.TimeoutExpired):
+        status = f"timed out after {failure.timeout}s"
+    else:
+        status = f"exit {failure.returncode}"
+    text = ""
+    for stream in (failure.stdout, failure.stderr):
+        if isinstance(stream, bytes):
+            stream = stream.decode("utf-8", "replace")
+        if stream:
+            text += stream if stream.endswith("\n") else stream + "\n"
+    for secret in redact:
+        if secret:
+            text = text.replace(secret, "<redacted>")
+    tail = "\n".join(text.splitlines()[-DIAGNOSTIC_TAIL_LINES:])[
+        -DIAGNOSTIC_TAIL_CHARS:
+    ]
+    label = f"{tool} {detail}".strip()
+    return f"Child command failed: {label} ({status})" + (f"\n{tail}" if tail else "")
 
 
 def clean_environment(source):
@@ -723,9 +772,14 @@ def main():
                 args.http.resolve() if args.http else None,
                 args.minimum_backend_tests,
             )
-        except BaseException:
+        except BaseException as failure:
             # The first fixture/test failure remains authoritative even if cleanup
             # independently fails. Never stringify subprocess argv/passwords.
+            if isinstance(failure, subprocess.SubprocessError):
+                print(
+                    describe_failure(failure, (services.password, services.token)),
+                    flush=True,
+                )
             try:
                 services.close()
             except (RuntimeError, OSError, subprocess.SubprocessError) as cleanup_error:
