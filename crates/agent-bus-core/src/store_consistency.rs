@@ -212,6 +212,8 @@ struct RedisIds {
     non_uuid_skipped: usize,
     untimed_skipped: usize,
     retention_start: Option<DateTime<Utc>>,
+    /// Lower bound actually applied to the Redis ids; PostgreSQL must use it too.
+    effective_from: DateTime<Utc>,
 }
 
 fn read_redis_ids(settings: &Settings, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<RedisIds> {
@@ -226,11 +228,24 @@ fn read_redis_ids(settings: &Settings, from: DateTime<Utc>, to: DateTime<Utc>) -
         .arg(1)
         .query(&mut conn)
         .map_err(xrange_err)?;
-    let retention_start = parse_range_page(first)
-        .into_iter()
-        .next()
-        .and_then(|(_, fields)| field_text(&fields, "timestamp_utc"))
-        .and_then(|ts| parse_timestamp_utc(&ts).ok());
+    // The boundary is the first retained entry's `timestamp_utc`, so that entry
+    // itself is inside it. An entry without a usable timestamp falls back to
+    // its stream-id time rather than hiding the boundary.
+    let retention_start =
+        parse_range_page(first)
+            .into_iter()
+            .next()
+            .and_then(|(stream_id, fields)| {
+                field_text(&fields, "timestamp_utc")
+                    .and_then(|ts| parse_timestamp_utc(&ts).ok())
+                    .or_else(|| {
+                        let ms = stream_id.split('-').next()?.parse::<i64>().ok()?;
+                        DateTime::<Utc>::from_timestamp_millis(ms)
+                    })
+            });
+    // One lower bound for both stores, applied to Redis entries below and to
+    // the PostgreSQL query by the caller.
+    let from = retention_start.map_or(from, |start| from.max(start));
 
     let start_ms = (from.timestamp_millis() - STREAM_START_SLACK_MS).max(0);
     let mut cursor = format!("{start_ms}-0");
@@ -239,6 +254,7 @@ fn read_redis_ids(settings: &Settings, from: DateTime<Utc>, to: DateTime<Utc>) -
         non_uuid_skipped: 0,
         untimed_skipped: 0,
         retention_start,
+        effective_from: from,
     };
     loop {
         let raw: Vec<redis::Value> = redis::cmd("XRANGE")
@@ -302,11 +318,7 @@ pub fn check_stores(
     };
     // Window start is clamped to Redis retention below, once it is known.
     let redis = read_redis_ids(settings, requested_from, to)?;
-    let from = redis
-        .retention_start
-        .map_or(requested_from, |start| requested_from.max(start));
-    // Redis was read from `requested_from`; drop anything older than the clamp
-    // is unnecessary because the retention start is the oldest entry.
+    let from = redis.effective_from;
     let pg_ids = list_message_ids_between(settings, from, to)?;
     let report = compare_id_sets(&redis.ids, &pg_ids, max_listed);
     Ok(StoreCheck {
@@ -483,5 +495,67 @@ mod tests {
             check_stores(&settings, Scope::Full, Duration::seconds(0), 10).expect("check must run");
         assert!(check.report.ok, "repaired stores must pass: {check:?}");
         assert_eq!(check.report.redis_digest, check.report.pg_digest);
+    }
+
+    /// Protects: both stores are judged over the same lower bound even when a
+    /// synced entry keeps an old `timestamp_utc` but lands late in the stream
+    /// (Codex and gemini review of agent-hub#197).
+    /// Detects: identical stores reported as divergent when the first retained
+    /// entry is newer than a later synced one.
+    #[ignore = "backend test: needs AGENT_BUS_TEST_REDIS_URL + AGENT_BUS_TEST_DATABASE_URL (see tests/support/backend_env.rs)"]
+    #[test]
+    fn synced_entry_older_than_first_retained_entry_is_not_divergence() {
+        use crate::models::Message;
+        use crate::postgres_store::persist_message_postgres;
+
+        let mut settings = crate::test_support::backend_settings();
+        let tag = Uuid::new_v4().simple().to_string();
+        settings.stream_key = format!("agent_bus:test:consistency:{tag}");
+        settings.message_table = format!("test_consistency_{tag}");
+        let mut conn = connect(&settings).expect("Redis unreachable via AGENT_BUS_TEST_REDIS_URL");
+
+        let fmt = "%Y-%m-%dT%H:%M:%S%.6fZ";
+        let recent = (Utc::now() - Duration::minutes(5)).format(fmt).to_string();
+        let old = (Utc::now() - Duration::hours(2)).format(fmt).to_string();
+        for (id, stamp) in [(Uuid::now_v7(), &recent), (Uuid::now_v7(), &old)] {
+            let _: String = redis::cmd("XADD")
+                .arg(&settings.stream_key)
+                .arg("*")
+                .arg("id")
+                .arg(id.to_string())
+                .arg("timestamp_utc")
+                .arg(stamp)
+                .query(&mut conn)
+                .expect("XADD");
+            persist_message_postgres(
+                &settings,
+                &Message {
+                    id: id.to_string(),
+                    timestamp_utc: stamp.clone(),
+                    protocol_version: "1.0".to_owned(),
+                    from: "consistency-test".to_owned(),
+                    to: "all".to_owned(),
+                    topic: "status".to_owned(),
+                    body: "x".to_owned(),
+                    thread_id: None,
+                    tags: vec![].into(),
+                    priority: "normal".to_owned(),
+                    request_ack: false,
+                    reply_to: None,
+                    metadata: serde_json::Value::Object(serde_json::Map::new()),
+                    stream_id: None,
+                    client_msg_id: None,
+                    origin_hub: None,
+                    origin_seq: None,
+                    hlc: None,
+                    sensitivity: None,
+                },
+            )
+            .expect("PG insert");
+        }
+
+        let check =
+            check_stores(&settings, Scope::Full, Duration::seconds(0), 10).expect("check must run");
+        assert!(check.report.ok, "identical stores must pass: {check:?}");
     }
 }
