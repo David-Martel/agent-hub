@@ -8518,6 +8518,205 @@
         "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 326 tests, OK, 1 skipped. Job names, runs-on, if and needs lines of ci.yml are identical to origin/main."
       },
       "breaking_behavior": "None; reads ci.yml only."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "0a0833208d72e9731dcfa9af84c4086dc4b5ae4c",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T09:30:00Z",
+      "reviewed_source_state": "New selector added with the fail-on-flaky resync of the vendored nextest-ci action (vigil-utils #1127 at 2b9e990e5804cb89f3f281900bf0d2959e060afd): a test that passes only on retry now fails the Unit Tests job by default, as the retry-free cargo test it replaced did. The author of the test wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_nextest_ci_action.py::NextestCiActionTests::test_flaky_report_fails_by_default",
+      "scope": "This selector only; it certifies neither the other nextest-ci selectors nor the Unit Tests run.",
+      "selector_source": {
+        "path": "scripts/ci/test_nextest_ci_action.py",
+        "first_line": 77,
+        "last_line": 84,
+        "sha256": "9239042b9ec5501c9bc9042e29eaa126b1b1a02c4d1273673991c487ff49b551"
+      },
+      "code_under_test": {
+        "path": ".github/actions/nextest-ci/nextest_flaky_summary.py",
+        "sha256": "1637e1da4b369f7a5872f863197bd2938241b4b73fc83944d0ba7645fc55af05"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_nextest_ci_action.py",
+          "sha256": "44f4ccb65dc72f7bf30f0101de49de1c8901fcdf5286f0e9ae337aff687da34f"
+        }
+      ],
+      "relevance": "The summary script decides the job's final colour after a green nextest run, so its flaky branch is the gate.",
+      "protections": "A test that failed once and passed on retry turns the Unit Tests job red, as cargo test did.",
+      "detects": "The summary exiting 0 for a flaky report, or dropping the flaky test's ::error annotation or summary row.",
+      "needs": "Python stdlib; no cargo, credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Reverting main to the warning-only behaviour (return 0 for a flaky report) fails the rc == 1 assertion.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
+      },
+      "breaking_behavior": "None; temporary files only."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "0a0833208d72e9731dcfa9af84c4086dc4b5ae4c",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T09:30:00Z",
+      "reviewed_source_state": "New selector added with the fail-on-flaky resync of the vendored nextest-ci action (vigil-utils #1127 at 2b9e990e5804cb89f3f281900bf0d2959e060afd): a test that passes only on retry now fails the Unit Tests job by default, as the retry-free cargo test it replaced did. The author of the test wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_nextest_ci_action.py::NextestCiActionTests::test_clean_report_passes",
+      "scope": "This selector only; it certifies neither the other nextest-ci selectors nor the Unit Tests run.",
+      "selector_source": {
+        "path": "scripts/ci/test_nextest_ci_action.py",
+        "first_line": 90,
+        "last_line": 97,
+        "sha256": "dae2c810abcbe01f1783a3bbcaba49ce5cbe80a53f804ffaa30680008f916e42"
+      },
+      "code_under_test": {
+        "path": ".github/actions/nextest-ci/nextest_flaky_summary.py",
+        "sha256": "1637e1da4b369f7a5872f863197bd2938241b4b73fc83944d0ba7645fc55af05"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_nextest_ci_action.py",
+          "sha256": "44f4ccb65dc72f7bf30f0101de49de1c8901fcdf5286f0e9ae337aff687da34f"
+        }
+      ],
+      "relevance": "The fail-on-flaky default must not fail runs where every test passed on its first attempt.",
+      "protections": "A clean nextest run stays green under the strict default and --require.",
+      "detects": "The summary step failing a clean report, which would make the gate unusable.",
+      "needs": "Python stdlib; no cargo, credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Paired with the flaky fixture above; the same script returns 1 for FLAKY_JUNIT and 0 here.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
+      },
+      "breaking_behavior": "None; temporary files only."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "0a0833208d72e9731dcfa9af84c4086dc4b5ae4c",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T09:30:00Z",
+      "reviewed_source_state": "New selector added with the fail-on-flaky resync of the vendored nextest-ci action (vigil-utils #1127 at 2b9e990e5804cb89f3f281900bf0d2959e060afd): a test that passes only on retry now fails the Unit Tests job by default, as the retry-free cargo test it replaced did. The author of the test wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_nextest_ci_action.py::NextestCiActionTests::test_allow_flaky_reports_without_failing",
+      "scope": "This selector only; it certifies neither the other nextest-ci selectors nor the Unit Tests run.",
+      "selector_source": {
+        "path": "scripts/ci/test_nextest_ci_action.py",
+        "first_line": 103,
+        "last_line": 110,
+        "sha256": "f921343bc62e1508877312cbcd6d62a3a9312825a0205b9a97807c42ae7099dd"
+      },
+      "code_under_test": {
+        "path": ".github/actions/nextest-ci/nextest_flaky_summary.py",
+        "sha256": "1637e1da4b369f7a5872f863197bd2938241b4b73fc83944d0ba7645fc55af05"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_nextest_ci_action.py",
+          "sha256": "44f4ccb65dc72f7bf30f0101de49de1c8901fcdf5286f0e9ae337aff687da34f"
+        }
+      ],
+      "relevance": "--allow-flaky is the explicit lenient opt-out that fail-on-flaky: false selects.",
+      "protections": "A caller that opts out still sees every flaky test reported, as a warning, without a red job.",
+      "detects": "--allow-flaky still failing the job, or the flaky test vanishing from the report.",
+      "needs": "Python stdlib; no cargo, credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Paired with test_flaky_report_fails_by_default; only the flag differs between the two calls.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
+      },
+      "breaking_behavior": "None; temporary files only."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "0a0833208d72e9731dcfa9af84c4086dc4b5ae4c",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T09:30:00Z",
+      "reviewed_source_state": "New selector added with the fail-on-flaky resync of the vendored nextest-ci action (vigil-utils #1127 at 2b9e990e5804cb89f3f281900bf0d2959e060afd): a test that passes only on retry now fails the Unit Tests job by default, as the retry-free cargo test it replaced did. The author of the test wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_nextest_ci_action.py::NextestCiActionTests::test_action_fail_on_flaky_input_controls_the_exit",
+      "scope": "This selector only; it certifies neither the other nextest-ci selectors nor the Unit Tests run.",
+      "selector_source": {
+        "path": "scripts/ci/test_nextest_ci_action.py",
+        "first_line": 119,
+        "last_line": 139,
+        "sha256": "c0f24fb4536bb7525e9c45f74bbdb9672a092a99b042316085ea257d251c2c02"
+      },
+      "code_under_test": {
+        "path": ".github/actions/nextest-ci/action.yml",
+        "sha256": "05681d48559ce28bb682fe5ab9a6baa647c6d865f47c1826a7da7fbc44a32fab"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_nextest_ci_action.py",
+          "sha256": "44f4ccb65dc72f7bf30f0101de49de1c8901fcdf5286f0e9ae337aff687da34f"
+        },
+        {
+          "path": ".github/actions/nextest-ci/nextest_flaky_summary.py",
+          "sha256": "1637e1da4b369f7a5872f863197bd2938241b4b73fc83944d0ba7645fc55af05"
+        }
+      ],
+      "relevance": "The action's summary step maps the fail-on-flaky input onto the script's flags; this runs that step's text.",
+      "protections": "fail-on-flaky true fails a flaky run, false passes it, and any other value is rejected.",
+      "detects": "The input not reaching the script, \"false\" not opting out, or a typo such as \"yes\" being accepted.",
+      "needs": "Python stdlib and bash; no cargo, credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Three values on one fixture expect exits 1, 0 and 2, so a step that ignores the input fails two of them.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
+      },
+      "breaking_behavior": "None; temporary files only."
+    },
+    {
+      "reviewer": "claude-asus-nextest",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "0a0833208d72e9731dcfa9af84c4086dc4b5ae4c",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T09:30:00Z",
+      "reviewed_source_state": "New selector added with the fail-on-flaky resync of the vendored nextest-ci action (vigil-utils #1127 at 2b9e990e5804cb89f3f281900bf0d2959e060afd): a test that passes only on retry now fails the Unit Tests job by default, as the retry-free cargo test it replaced did. The author of the test wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_nextest_ci_action.py::NextestCiActionTests::test_action_unset_env_removes_the_variable",
+      "scope": "This selector only; it certifies neither the other nextest-ci selectors nor the Unit Tests run.",
+      "selector_source": {
+        "path": "scripts/ci/test_nextest_ci_action.py",
+        "first_line": 149,
+        "last_line": 176,
+        "sha256": "0e3d68adcfc46a4e00f2c4eca533efa6037b5263c99cebdc9f4eb38ce3bdd0eb"
+      },
+      "code_under_test": {
+        "path": ".github/actions/nextest-ci/action.yml",
+        "sha256": "05681d48559ce28bb682fe5ab9a6baa647c6d865f47c1826a7da7fbc44a32fab"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_nextest_ci_action.py",
+          "sha256": "44f4ccb65dc72f7bf30f0101de49de1c8901fcdf5286f0e9ae337aff687da34f"
+        }
+      ],
+      "relevance": "unset-env is the agent-hub local addition that strips AGENT_BUS_* routing from cargo nextest's environment.",
+      "protections": "Unit Tests runs with the runner's hub-routing variables removed, so no test inherits a live hub route.",
+      "detects": "unset-env not reaching the cargo nextest process.",
+      "needs": "Python stdlib and bash; no cargo, credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The second run, with unset-env empty, shows the fake cargo does see the variable when it is not removed.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
+      },
+      "breaking_behavior": "None; temporary files only."
     }
   ],
   "historical_reviews": [
