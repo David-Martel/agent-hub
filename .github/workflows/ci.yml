@@ -232,7 +232,7 @@ jobs:
         with:
           name: agent-bus-${{ matrix.name }}
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 2
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http
@@ -371,7 +371,7 @@ jobs:
         with:
           name: agent-bus-windows-x64
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 2
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus.exe
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http.exe
