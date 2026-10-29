@@ -642,6 +642,7 @@ class ReleaseSourceControls(unittest.TestCase):
         def retention(source):
             step = re.search(
                 r"(?ms)^      - uses: actions/upload-artifact@\S+\r?\n"
+                r"        if: github.event_name != 'pull_request'\r?\n"
                 r"        with:\r?\n"
                 r"          name: agent-bus-windows-x64\r?\n(.*?)(?=^      - |^  \S)",
                 source,
@@ -660,6 +661,45 @@ class ReleaseSourceControls(unittest.TestCase):
                 source.replace(f"retention-days: {days}\n", "retention-days: 2\n", 1)
             ),
             2,
+        )
+
+    def test_pull_request_runs_do_not_fill_the_artifact_quota(self):
+        """
+        Protects: The account's Actions artifact quota. Every PR revision once
+        uploaded about 54 MB of release binaries nobody downloaded, and the
+        quota stopped uploads in every repo (2026-10-29).
+        Detects: A Linux release-binary upload that runs on pull_request, a
+        PR-event Windows upload kept longer than one day, or the PR Windows
+        upload disappearing (smoke-functional downloads it in the same run).
+        Needs: Actual ci.yml; no credentials, network or services.
+        Breadcrumb: ci.yml build-release and windows upload steps; the
+        main-event retention contract is
+        test_reused_windows_ci_artifact_outlives_the_tag_window.
+        """
+        source = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+        steps = re.findall(
+            r"(?ms)^      - uses: actions/upload-artifact@\S+\r?\n"
+            r"(.*?)(?=^      - |^  \S)",
+            source,
+        )
+        by_name = {}
+        for body in steps:
+            name = re.search(r"(?m)^          name: (\S+)", body)[1]
+            by_name.setdefault(name, []).append(body)
+        linux = [b for n, bs in by_name.items() if "windows" not in n for b in bs]
+        self.assertTrue(linux)
+        for body in linux:
+            self.assertIn("if: github.event_name != 'pull_request'", body)
+        windows = by_name["agent-bus-windows-x64"]
+        pr = [b for b in windows if "if: github.event_name == 'pull_request'" in b]
+        main = [b for b in windows if "if: github.event_name != 'pull_request'" in b]
+        self.assertEqual((len(pr), len(main)), (1, 1))
+        self.assertIn("retention-days: 1\n", pr[0])
+        for body in windows + linux:
+            self.assertIn("compression-level: 9", body)
+        self.assertIn("needs: [windows]", source)
+        self.assertIn(
+            "name: agent-bus-windows-x64\n          path: ci-artifacts", source
         )
 
     def test_candidate_source_contract_and_original_cross_rebuild_control(self):
