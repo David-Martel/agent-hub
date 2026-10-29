@@ -143,7 +143,8 @@ pwsh -NoLogo -NoProfile -File scripts\install-mcp-clients.ps1 -DryRun
 
 ## Query Model
 
-- `read`, `export`, `journal`, `session-summary`, and similar history-oriented queries prefer PostgreSQL when it is configured, then fall back to Redis if the PostgreSQL query path fails.
+- Local `read`, `export`, `journal`, `session-summary`, and similar history-oriented queries prefer PostgreSQL when it is configured, then fall back to Redis if the PostgreSQL query path fails.
+- In remote mode, `export` uses the selected hub's `/messages` route and retains every repo/session/tag/thread/sender filter. It emits one complete JSON object per line. Set `--limit` between 1 and 500; larger limits, including the local default of 10000, are rejected because the current HTTP reader caps responses at 500 and has no pagination. Run larger exports on the hub itself. Remote failures never fall back to local history. The [isolated export controls](crates/agent-bus-cli/tests/hub_routing_test.rs) exercise authority selection, filters, NDJSON, the cap and HTTP failure propagation.
 - `compact-context` is intentionally Redis-first. It now supports `agent`, `repo`, `session`, `tag`, and `thread_id` scoping so token compaction stays aligned with the live coordination stream instead of replaying unrelated repo traffic.
 - `presence-history` is PostgreSQL-backed locally. In remote mode it reads the selected hub's `GET /presence/history` (`agent`, `since`, `limit`; the hub clamps `limit` to 1..=500) and never opens local PostgreSQL; a hub failure or malformed reply exits non-zero. The [isolated controls](crates/agent-bus-cli/tests/hub_routing_test.rs) exercise encoding, output and error propagation.
 - Use `repo:<name>` tags on every message. Add `session:<id>` for bounded work waves and `thread_id` for long-running shared plans or resource handoffs.
