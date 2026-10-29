@@ -19,7 +19,8 @@
 # Usage: scripts/hub-restart.sh [--ref REF] [--expect-sha SHA] [--apply]
 #                               [--bin-dir DIR] [--state-dir DIR] [--unit NAME]
 #        scripts/hub-restart.sh --rollback BACKUP_DIR [--apply]
-# Exit codes: 0 ok, 1 failure or failed readback, 2 usage.
+# Exit codes: 0 ok, 1 failure or failed readback (after --apply, the binaries
+# are rolled back first), 2 usage.
 
 set -euo pipefail
 
@@ -122,7 +123,7 @@ verify_hub() {
         [[ $waited -lt 30 ]] || { err "health did not answer within 30 s"; return 1; }
     done
     log "$health"
-    VERIFY_HEALTH="$health" BASELINE_GAP="$BASELINE_GAP" python3 - <<'PY' || return 1
+    VERIFY_HEALTH="$health" python3 - <<'PY' || return 1
 import json, os, sys
 h = json.loads(os.environ["VERIFY_HEALTH"])
 bad = []
@@ -131,14 +132,30 @@ if not h.get("ok"):
 for key in ("pg_dropped_writes", "pg_write_errors"):
     if h.get(key, 0) != 0:
         bad.append(f"{key}={h.get(key)}")
-gap = h.get("stream_length", 0) - h.get("pg_message_count", 0)
-base = os.environ["BASELINE_GAP"]
-if base != "?" and gap > int(base):
-    bad.append(f"store gap grew from {base} to {gap}")
 if bad:
     print("health check failed: " + "; ".join(bad), file=sys.stderr)
     sys.exit(1)
 PY
+    # The gap is a live difference of two counters. A write that is in flight
+    # between the stream append and the PostgreSQL flush (a 100 ms batch) makes
+    # one sample read +1 for an instant, so a single sample can fail a healthy
+    # hub. Fail only when the gap stays above the baseline for the whole window.
+    if [[ "$BASELINE_GAP" != "?" ]]; then
+        local gap="?" settled=0
+        for _ in $(seq 1 15); do
+            gap="$(store_gap)"
+            if [[ "$gap" != "?" && "$gap" -le "$BASELINE_GAP" ]]; then
+                settled=1
+                break
+            fi
+            sleep 1
+        done
+        if [[ $settled -ne 1 ]]; then
+            err "store gap stayed above the baseline for 15 s (baseline $BASELINE_GAP, last $gap)"
+            return 1
+        fi
+        log "store gap $gap (baseline $BASELINE_GAP): ok"
+    fi
     "$BIN_DIR/agent-bus" presence-list --encoding human | head -20
     local marker
     marker="hub-restart-probe-$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -250,7 +267,18 @@ for bin in "${BINARIES[@]}"; do
         log "[dry-run] would install $TARGET/release/$bin over $BIN_DIR/$bin (temp file + rename in the same directory, so the running process keeps its old inode)"
     fi
 done
-restart_and_verify
+if ! restart_and_verify; then
+    if [[ $APPLY -eq 1 ]]; then
+        err "readback failed after the restart; rolling back from $BACKUP"
+        for bin in "${BINARIES[@]}"; do
+            [[ -f "$BACKUP/$bin" ]] || continue
+            cp --preserve=mode "$BACKUP/$bin" "$BIN_DIR/$bin.rollback"
+            mv -f "$BIN_DIR/$bin.rollback" "$BIN_DIR/$bin"
+        done
+        restart_and_verify || err "the readback after the rollback also failed; inspect $UNIT now"
+    fi
+    exit 1
+fi
 
 log ""
 log "== rollback =="
