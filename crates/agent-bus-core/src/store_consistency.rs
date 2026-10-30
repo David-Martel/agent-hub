@@ -293,6 +293,79 @@ fn read_redis_ids(settings: &Settings, from: DateTime<Utc>, to: DateTime<Utc>) -
     Ok(out)
 }
 
+/// Both stores' ids for one window, uncapped, before comparison.
+#[derive(Debug)]
+pub struct StoreScan {
+    /// `window` or `full`.
+    pub scope: &'static str,
+    /// Inclusive start of the compared range (clamped to Redis retention).
+    pub from: DateTime<Utc>,
+    /// Inclusive end of the compared range.
+    pub to: DateTime<Utc>,
+    /// Oldest message timestamp Redis still holds, if any.
+    pub redis_retention_start: Option<DateTime<Utc>>,
+    /// Redis ids in range.
+    pub redis_ids: Vec<String>,
+    /// `PostgreSQL` ids in range.
+    pub pg_ids: Vec<String>,
+    /// Redis entries whose `id` is not a UUID.
+    pub redis_non_uuid_skipped: usize,
+    /// Redis entries with a missing or unparseable `timestamp_utc`.
+    pub redis_untimed_skipped: usize,
+}
+
+/// Read both stores' ids for `scope`, judging messages up to `now - settle`.
+///
+/// # Errors
+///
+/// Returns an error when `PostgreSQL` is not configured, or when either store
+/// cannot be read.
+pub fn scan_stores(settings: &Settings, scope: Scope, settle: Duration) -> Result<StoreScan> {
+    if settings.database_url.is_none() {
+        return Err(AgentBusError::Internal(
+            "store consistency needs PostgreSQL (database_url is not configured)".to_owned(),
+        ));
+    }
+    let to = Utc::now() - settle;
+    let requested_from = match scope {
+        Scope::Window(window) => to - window,
+        Scope::Full => DateTime::<Utc>::UNIX_EPOCH,
+    };
+    let redis = read_redis_ids(settings, requested_from, to)?;
+    // Both stores are judged over the bound `read_redis_ids` applied.
+    let from = redis.effective_from;
+    let pg_ids = list_message_ids_between(settings, from, to)?;
+    Ok(StoreScan {
+        scope: match scope {
+            Scope::Window(_) => "window",
+            Scope::Full => "full",
+        },
+        from,
+        to,
+        redis_retention_start: redis.retention_start,
+        redis_ids: redis.ids,
+        pg_ids,
+        redis_non_uuid_skipped: redis.non_uuid_skipped,
+        redis_untimed_skipped: redis.untimed_skipped,
+    })
+}
+
+impl StoreScan {
+    /// Compare the two id sets, listing at most `max_listed` differing ids per side.
+    #[must_use]
+    pub fn check(&self, max_listed: usize) -> StoreCheck {
+        StoreCheck {
+            scope: self.scope.to_owned(),
+            from_utc: self.from.to_rfc3339(),
+            to_utc: self.to.to_rfc3339(),
+            redis_retention_start_utc: self.redis_retention_start.map(|ts| ts.to_rfc3339()),
+            redis_non_uuid_skipped: self.redis_non_uuid_skipped,
+            redis_untimed_skipped: self.redis_untimed_skipped,
+            report: compare_id_sets(&self.redis_ids, &self.pg_ids, max_listed),
+        }
+    }
+}
+
 /// Compare the Redis stream and `PostgreSQL` for `scope`, judging messages up to
 /// `now - settle`.
 ///
@@ -306,33 +379,7 @@ pub fn check_stores(
     settle: Duration,
     max_listed: usize,
 ) -> Result<StoreCheck> {
-    if settings.database_url.is_none() {
-        return Err(AgentBusError::Internal(
-            "store consistency needs PostgreSQL (database_url is not configured)".to_owned(),
-        ));
-    }
-    let to = Utc::now() - settle;
-    let requested_from = match scope {
-        Scope::Window(window) => to - window,
-        Scope::Full => DateTime::<Utc>::UNIX_EPOCH,
-    };
-    // Window start is clamped to Redis retention below, once it is known.
-    let redis = read_redis_ids(settings, requested_from, to)?;
-    let from = redis.effective_from;
-    let pg_ids = list_message_ids_between(settings, from, to)?;
-    let report = compare_id_sets(&redis.ids, &pg_ids, max_listed);
-    Ok(StoreCheck {
-        scope: match scope {
-            Scope::Window(_) => "window".to_owned(),
-            Scope::Full => "full".to_owned(),
-        },
-        from_utc: from.to_rfc3339(),
-        to_utc: to.to_rfc3339(),
-        redis_retention_start_utc: redis.retention_start.map(|ts| ts.to_rfc3339()),
-        redis_non_uuid_skipped: redis.non_uuid_skipped,
-        redis_untimed_skipped: redis.untimed_skipped,
-        report,
-    })
+    Ok(scan_stores(settings, scope, settle)?.check(max_listed))
 }
 
 #[cfg(test)]
