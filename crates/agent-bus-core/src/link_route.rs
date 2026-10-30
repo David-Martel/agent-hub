@@ -848,6 +848,32 @@ mod tests {
         })
     }
 
+    /// A socket-free probe answering each URL with a fixed identity after a
+    /// latency (milliseconds) that is slept on the tokio clock, so a paused
+    /// clock makes the race order independent of host load.
+    fn scripted_probe(answers: &[(&str, u64, Option<&str>)]) -> AsyncProbe {
+        let answers: Arc<Vec<(String, u64, Option<String>)>> = Arc::new(
+            answers
+                .iter()
+                .map(|(url, ms, hub)| ((*url).to_owned(), *ms, hub.map(str::to_owned)))
+                .collect(),
+        );
+        Arc::new(move |url: String| -> ProbeFuture {
+            let answer = answers
+                .iter()
+                .find(|answer| answer.0 == url)
+                .cloned()
+                .expect("every contacted URL must have an explicit fixture answer");
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(answer.1)).await;
+                answer.2.map(|hub| ProbeInfo {
+                    build_version: None,
+                    hub_identity: Some(hub),
+                })
+            })
+        })
+    }
+
     fn slot(url: &str, delay_ms: u64) -> Slot {
         Slot {
             url: url.to_owned(),
@@ -901,36 +927,40 @@ mod tests {
     }
 
     /// Protects: head-start preference avoids an unnecessary worse-route probe.
-    /// Detects: wrong winner, missing skipped outcome or worse-route hit.
-    /// Needs: private healthy listeners and distinct fixture start delays.
+    /// Detects: wrong winner, missing skipped outcome or worse-route probe.
+    /// Needs: virtual time, a scripted probe and distinct fixture start delays.
     /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_better_class_wins_a_tie_because_the_worse_class_starts_later() {
-        // Why: with two healthy routes the preferred link class must be chosen.
-        let fabric = fake_hub(Behavior::Healthy, "hub");
-        let lan = fake_hub(Behavior::Healthy, "hub");
-        let slots = [slot(&fabric.url, 0), slot(&lan.url, 75)];
-        let result = race(&slots, &socket_probe(), BUDGET, |_, _| true).await;
+        // Why: with two healthy routes the preferred link class must be chosen. Virtual
+        // time keeps a loaded host from outlasting the worse class's 75 ms head start.
+        let probe = scripted_probe(&[
+            ("http://fabric.test", 0, Some("hub")),
+            ("http://lan.test", 0, Some("hub")),
+        ]);
+        let slots = [slot("http://fabric.test", 0), slot("http://lan.test", 75)];
+        let result = race(&slots, &probe, BUDGET, |_, _| true).await;
         assert_eq!(result.winner.as_ref().map(|winner| winner.slot), Some(0));
         assert_eq!(
             result.outcomes[1],
             SlotOutcome::Failed(ProbeFailure::Skipped),
             "the worse class never even started"
         );
-        assert_eq!(lan.hits.load(Ordering::SeqCst), 0);
     }
 
     /// Protects: stagger preference does not lock in a slower link.
     /// Detects: a slow preferred route winning over a faster alternate.
-    /// Needs: private slow/healthy listeners with explicit fixture delays.
+    /// Needs: virtual time, a scripted probe and explicit fixture latencies.
     /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_much_slower_better_class_loses_to_a_healthy_worse_one() {
         // Why: the stagger is a tie-breaker, not a lock-in to a link that is slow right now.
-        let slow_fabric = fake_hub(Behavior::Slow(Duration::from_millis(250)), "hub");
-        let lan = fake_hub(Behavior::Healthy, "hub");
-        let slots = [slot(&slow_fabric.url, 0), slot(&lan.url, 50)];
-        let result = race(&slots, &socket_probe(), BUDGET, |_, _| true).await;
+        let probe = scripted_probe(&[
+            ("http://fabric.test", 250, Some("hub")),
+            ("http://lan.test", 0, Some("hub")),
+        ]);
+        let slots = [slot("http://fabric.test", 0), slot("http://lan.test", 50)];
+        let result = race(&slots, &probe, BUDGET, |_, _| true).await;
         assert_eq!(result.winner.as_ref().map(|winner| winner.slot), Some(1));
     }
 
@@ -961,15 +991,22 @@ mod tests {
 
     /// Protects: the caller can reject a healthy but foreign identity.
     /// Detects: identity rejection winning or losing its failure diagnostic.
-    /// Needs: private impostor/genuine listeners and an accept callback.
+    /// Needs: virtual time, a scripted probe and an accept callback.
     /// Breadcrumb: crates/agent-bus-core/src/hub.rs (route planner and race consumers).
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_rejected_answer_is_not_a_win_and_the_next_route_is_used() {
         // Why: the caller's identity check must be able to veto a fast but wrong hub.
-        let impostor = fake_hub(Behavior::Healthy, "someone-else");
-        let genuine = fake_hub(Behavior::Healthy, "hub");
-        let slots = [slot(&impostor.url, 0), slot(&genuine.url, 40)];
-        let result = race(&slots, &socket_probe(), BUDGET, |_, info| {
+        // Virtual time guarantees the impostor answers before the genuine route's 40 ms
+        // head start expires; real sockets let a loaded host reorder the two.
+        let probe = scripted_probe(&[
+            ("http://impostor.test", 0, Some("someone-else")),
+            ("http://genuine.test", 0, Some("hub")),
+        ]);
+        let slots = [
+            slot("http://impostor.test", 0),
+            slot("http://genuine.test", 40),
+        ];
+        let result = race(&slots, &probe, BUDGET, |_, info| {
             info.hub_identity.as_deref() == Some("hub")
         })
         .await;
