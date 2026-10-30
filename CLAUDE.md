@@ -159,6 +159,8 @@ On the Linux hub both are system services; the opt-in root hardening (Redis AOF 
 
 **Full-history archive (#194):** `agent-bus export` is windowed (7 days max). For a complete archive run `agent-bus export --all > history.ndjson` on the hub host: every PostgreSQL row (keyset-paged), then every Redis stream entry PostgreSQL lacks, each id once, bodies as plaintext (Redis `_compressed: lz4` bodies are decoded; `metadata._compressed` is left as a historical marker). Progress and counts go to stderr. It needs PostgreSQL and exits non-zero otherwise, so a Redis-only dump is never mistaken for a full one.
 
+**Repair (#194):** `agent-bus reconcile [--window-minutes N | --full-scan]` is a DRY RUN by default. `--apply` backfills Redis-only messages into PostgreSQL (plaintext bodies, `ON CONFLICT DO NOTHING`, idempotent) and refuses to insert more than `--max-insert` (default 1000) rows. PostgreSQL-only messages are reported, never written to Redis (a stream accepts only increasing ids, so an old message would reappear as new); read them from PostgreSQL or `export --all`.
+
 ## Environment Variables
 
 | Variable | Default | Source |
