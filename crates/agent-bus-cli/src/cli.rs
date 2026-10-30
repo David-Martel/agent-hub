@@ -162,6 +162,45 @@ pub(crate) enum Cmd {
         max_listed: usize,
     },
 
+    /// Repair Redis/PostgreSQL divergence found by `health --verify-sets` (dry run by default).
+    #[command(
+        long_about = "Backfill messages that exist in the Redis stream but not in \
+        PostgreSQL (agent-hub#194). Bodies are decoded to plaintext and inserted with \
+        ON CONFLICT DO NOTHING, so a repeat run is a no-op.\n\n\
+        Default is a DRY RUN that writes nothing; pass --apply to write. --apply refuses \
+        to insert more than --max-insert rows.\n\
+        PostgreSQL-only messages are reported but never written to Redis: a stream only \
+        accepts increasing ids, so an old message would reappear as new. Reads the local \
+        stores, so run it on the hub host."
+    )]
+    Reconcile {
+        #[arg(long, help = "Write the backfill (default: dry run)")]
+        apply: bool,
+        #[arg(
+            long,
+            default_value_t = 60,
+            conflicts_with = "full_scan",
+            help = "Minutes of history to compare"
+        )]
+        window_minutes: u32,
+        #[arg(long, help = "Compare everything Redis still retains")]
+        full_scan: bool,
+        #[arg(
+            long,
+            default_value_t = 50,
+            help = "Cap on differing ids listed per side"
+        )]
+        max_listed: usize,
+        #[arg(
+            long,
+            default_value_t = agent_bus_core::reconcile::DEFAULT_MAX_INSERT,
+            help = "Refuse --apply when more rows than this would be inserted"
+        )]
+        max_insert: usize,
+        #[arg(long, default_value = "json", help = "Output format")]
+        encoding: Encoding,
+    },
+
     /// Manage the separately migrated sanitized-history catalog.
     #[command(subcommand)]
     History(HistoryCmd),
@@ -1749,6 +1788,32 @@ mod tests {
         assert!(
             parse(&["agent-bus", "export", "--page-size", "5"]).is_err(),
             "--page-size needs --all"
+        );
+    }
+
+    #[test]
+    fn parse_reconcile_defaults_to_dry_run() {
+        let cli = parse(&["agent-bus", "reconcile"]).expect("reconcile must parse");
+        assert!(matches!(
+            cli.command,
+            Cmd::Reconcile {
+                apply: false,
+                full_scan: false,
+                ..
+            }
+        ));
+        let cli = parse(&["agent-bus", "reconcile", "--apply", "--full-scan"])
+            .expect("reconcile --apply must parse");
+        assert!(matches!(cli.command, Cmd::Reconcile { apply: true, .. }));
+        assert!(
+            parse(&[
+                "agent-bus",
+                "reconcile",
+                "--full-scan",
+                "--window-minutes",
+                "5"
+            ])
+            .is_err()
         );
     }
 
