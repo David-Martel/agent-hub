@@ -9713,6 +9713,45 @@
       "coverage": "At 43827b9 on minisforum-ms01, from a git archive export: cargo test -p agent-bus --test hub_routing_test passed 52 of 53 tests. The one failure was direct_commands_surface_http_failures_without_success_output_or_local_fallback (hub.hits() == 2 at line 751), which is outside this PR's diff. It then passed 10 of 10 runs on this head and 10 of 10 on main: an intermittent hit-count race, not this change. Mutation control: making the remote branch of cmd_export unreachable makes all three export controls fail, at lines 75, 132 and 163. The controls verify literal NDJSON records, all nine encoded query pairs including both tags, bearer authentication, the refusal of a limit above 500 before any /messages request, and HTTP 503 propagation with no local fallback.",
       "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
       "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
+    },
+    {
+      "selector": "scripts/ci/test_archive_release_build.py::WorkflowContractTests::test_archive_job_and_its_upload_skip_pull_request_runs_together",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-30",
+      "commit_reviewed": null,
+      "scope": "Workflow-contract text check over the actual ci.yml; source-only, no runner, network or credentials",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 262,
+        "last_line": 278,
+        "sha256": "24a863a5947f9e475400c371865af9931ea807aa5f71bc8ace40ab14e8953d24"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/ci.yml",
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        }
+      ],
+      "protections": "The Archive Release Build job never waits on an artifact that pull_request runs do not upload.",
+      "detects": "The build-release upload losing its pull_request skip, or the archive job losing the same condition, so PR runs fail on an empty download.",
+      "needs": "The actual ci.yml only; no credentials, network or services.",
+      "breadcrumb": "ci.yml build-release upload step and archive-release-build if; companion of test_transport_uploads_are_best_effort_and_kept_one_day.",
+      "relevance": "Main's quota fix skips the build-release upload on pull_request; the archive job downloads that artifact and so carries the same condition.",
+      "coverage": {
+        "author_control": "Author removed the condition from the archive job and the selector failed; restored, the scripts/ci suite passes (346 passed, 1 skipped). No independent replay."
+      },
+      "breaking_behavior": "None; reads workflow text only."
     }
   ],
   "historical_reviews": [
