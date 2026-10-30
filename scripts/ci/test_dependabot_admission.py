@@ -48,16 +48,28 @@ JOBS = [
 ]
 
 MANUAL = "Windows Native Validation (manual)"
+ARCHIVE = "Archive Release Build (dtm-p1gen7)"
 SKIPS = {
-    "CI": {
-        "path": ".github/workflows/ci.yml",
-        "source_sha256": (
-            "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
-        ),
-        "job_name": "Windows Native Validation (manual)",
-        "if_expression": "github.event_name == 'workflow_dispatch'",
-        "event": "pull_request",
-    }
+    "CI": [
+        {
+            "path": ".github/workflows/ci.yml",
+            "source_sha256": (
+                "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+            ),
+            "job_name": MANUAL,
+            "if_expression": "github.event_name == 'workflow_dispatch'",
+            "event": "pull_request",
+        },
+        {
+            "path": ".github/workflows/ci.yml",
+            "source_sha256": (
+                "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+            ),
+            "job_name": ARCHIVE,
+            "if_expression": "github.event_name != 'pull_request'",
+            "event": "pull_request",
+        },
+    ]
 }
 
 
@@ -125,6 +137,18 @@ def evaluate(code: str, scenario: str) -> tuple[str, list[str]]:
         )
     )
     manual = jobs[-1]
+    jobs.append(
+        {
+            "id": 95,
+            "name": ARCHIVE,
+            "head_sha": HEAD,
+            "run_id": 1,
+            "run_attempt": 1,
+            "status": "completed",
+            "conclusion": "skipped",
+        }
+    )
+    archive = jobs[-1]
     source = PRODUCER
     merge_source = PRODUCER
     merge = MERGE if scenario in {"merge_success", "merge_changed_source"} else ""
@@ -147,7 +171,8 @@ def evaluate(code: str, scenario: str) -> tuple[str, list[str]]:
         )
     if scenario == "future_hash_only":
         required["CI"]["source_sha256"] = hashlib.sha256(source).hexdigest()
-        reviewed_skips["CI"]["source_sha256"] = hashlib.sha256(source).hexdigest()
+        for rule in reviewed_skips["CI"]:
+            rule["source_sha256"] = hashlib.sha256(source).hexdigest()
     if scenario == "windows_skipped":
         windows["conclusion"] = "skipped"
     if scenario == "windows_failed":
@@ -219,17 +244,27 @@ def evaluate(code: str, scenario: str) -> tuple[str, list[str]]:
     if scenario == "manual_duplicate":
         jobs.append(dict(manual, id=96))
     if scenario == "manual_wrong_policy_job":
-        reviewed_skips["CI"]["job_name"] = "Unproven job"
+        reviewed_skips["CI"][0]["job_name"] = "Unproven job"
     if scenario == "manual_wrong_policy_path":
-        reviewed_skips["CI"]["path"] = ".github/workflows/other.yml"
+        reviewed_skips["CI"][0]["path"] = ".github/workflows/other.yml"
     if scenario == "manual_wrong_policy_hash":
-        reviewed_skips["CI"]["source_sha256"] = "0" * 64
+        reviewed_skips["CI"][0]["source_sha256"] = "0" * 64
     if scenario == "manual_wrong_policy_event":
-        reviewed_skips["CI"]["event"] = "push"
+        reviewed_skips["CI"][0]["event"] = "push"
     if scenario == "manual_wrong_policy_expression":
-        reviewed_skips["CI"]["if_expression"] = "always()"
+        reviewed_skips["CI"][0]["if_expression"] = "always()"
     if scenario == "manual_unreviewed":
         reviewed_skips = {}
+    if scenario == "archive_unreviewed":
+        reviewed_skips["CI"] = reviewed_skips["CI"][:1]
+    if scenario == "archive_ran_in_pr":
+        archive["conclusion"] = "success"
+    if scenario == "archive_failed":
+        archive["conclusion"] = "failure"
+    if scenario == "archive_wrong_policy_job":
+        reviewed_skips["CI"][1]["job_name"] = "Unproven archive"
+    if scenario == "archive_wrong_policy_expression":
+        reviewed_skips["CI"][1]["if_expression"] = "always()"
     if scenario == "history_missing":
         jobs = [j for j in jobs if j["name"] != "History Catalog Migration"]
     if scenario == "history_skipped":
@@ -518,6 +553,11 @@ for case in (
     "manual_wrong_policy_event",
     "manual_wrong_policy_expression",
     "manual_unreviewed",
+    "archive_unreviewed",
+    "archive_ran_in_pr",
+    "archive_failed",
+    "archive_wrong_policy_job",
+    "archive_wrong_policy_expression",
     "history_missing",
     "history_skipped",
 ):

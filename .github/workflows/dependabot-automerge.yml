@@ -44,7 +44,7 @@ jobs:
       EXPECTED_WORKFLOWS_JSON: '["CI"]'
       CONDITIONAL_WORKFLOWS_JSON: '{}'
       REVIEWED_JOB_INVENTORY_JSON: '{"CI":{"path":".github/workflows/ci.yml","source_sha256":"57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5","required_jobs":["Format Check","Cloud Agentbus (TypeScript)","Lefthook Gates Run","Clippy Lint","Unit Tests","Integration Tests","History Catalog Migration","Release Build (linux-x64)","Release Build (linux-arm64-1)","Release Build (linux-arm64-2)","CLI And HTTP Smoke","Security Audit","Windows Build And Unit Tests","Benchmark Compile","Docker Build (linux-x64)","Docker Build (linux-arm64)"],"auxiliary_sources":{}}}'
-      REVIEWED_SKIP_JOBS_JSON: '{"CI":{"path":".github/workflows/ci.yml","source_sha256":"57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5","job_name":"Windows Native Validation (manual)","if_expression":"github.event_name == ''workflow_dispatch''","event":"pull_request"}}'
+      REVIEWED_SKIP_JOBS_JSON: '{"CI":[{"path":".github/workflows/ci.yml","source_sha256":"57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5","job_name":"Windows Native Validation (manual)","if_expression":"github.event_name == ''workflow_dispatch''","event":"pull_request"},{"path":".github/workflows/ci.yml","source_sha256":"57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5","job_name":"Archive Release Build (dtm-p1gen7)","if_expression":"github.event_name != ''pull_request''","event":"pull_request"}]}'
     steps:
     - name: Resolve the PR, its exact head SHA and Dependabot metadata
       id: meta
@@ -385,15 +385,21 @@ jobs:
             skip_keys={"path","source_sha256","job_name","if_expression","event"}
             if not isinstance(reviewed_skips,dict) or len(reviewed_skips)>20:
                 raise ValueError("invalid reviewed skip policy")
-            for name,rule in reviewed_skips.items():
-                if (not isinstance(name,str) or not name or not isinstance(rule,dict) or set(rule)!=skip_keys
-                        or any(not isinstance(value,str) or not value for value in rule.values())
-                        or not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml",rule["path"])
-                        or not re.fullmatch(r"[0-9a-f]{64}",rule["source_sha256"])
-                        or rule["event"]!="pull_request"
-                        or rule["if_expression"]!="github.event_name == 'workflow_dispatch'"
-                        or any(ord(char)<32 or ord(char)==127 for char in rule["job_name"])):
+            skip_conditions={"github.event_name == 'workflow_dispatch'","github.event_name != 'pull_request'"}
+            for name,value in list(reviewed_skips.items()):
+                rules=value if isinstance(value,list) else [value]
+                if not isinstance(name,str) or not name or not rules or len(rules)>5:
                     raise ValueError("unsupported or malformed reviewed skip declaration")
+                reviewed_skips[name]=rules
+                for rule in rules:
+                    if (not isinstance(rule,dict) or set(rule)!=skip_keys
+                            or any(not isinstance(item,str) or not item for item in rule.values())
+                            or not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml",rule["path"])
+                            or not re.fullmatch(r"[0-9a-f]{64}",rule["source_sha256"])
+                            or rule["event"]!="pull_request"
+                            or rule["if_expression"] not in skip_conditions
+                            or any(ord(char)<32 or ord(char)==127 for char in rule["job_name"])):
+                        raise ValueError("unsupported or malformed reviewed skip declaration")
             inventory=json.loads(os.environ["REVIEWED_JOB_INVENTORY_JSON"])
             inventory_keys={"path","source_sha256","required_jobs","auxiliary_sources"}
             workflow_path=r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml"
@@ -440,10 +446,10 @@ jobs:
                     if checked_sources[key]!=digest: return False
                 return True
             def proven_false_event_skip(run,job):
-                rule=reviewed_skips.get(run["name"])
                 path=run.get("path","").split("@",1)[0]
-                return (rule and run.get("event")==rule["event"] and path==rule["path"]
-                        and job.get("name")==rule["job_name"] and source_matches(path,rule["source_sha256"]))
+                return any(run.get("event")==rule["event"] and path==rule["path"]
+                           and job.get("name")==rule["job_name"] and source_matches(path,rule["source_sha256"])
+                           for rule in reviewed_skips.get(run["name"],[]))
             def pattern_regex(pattern):
                 if not isinstance(pattern,str) or not pattern or pattern.startswith("/") or any(part in {".","..",""} for part in pattern.split("/")):
                     raise ValueError("invalid path filter")
