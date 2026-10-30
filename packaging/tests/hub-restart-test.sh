@@ -47,6 +47,9 @@ get() { cat "\$control/\$1.\$phase" 2>/dev/null || cat "\$control/\$1" 2>/dev/nu
 case "\$cmd" in
     health)
         echo "token_present=\${AGENT_BUS_AUTH_TOKEN:+1} url=\$url" >> "\$control/health-calls"
+        # The real CLI prints an offline report without counts and exits 1 when the hub is down.
+        rc="\$(get health_rc 0)"
+        if [[ "\$rc" != 0 ]]; then echo '{"ok": false, "database_ok": false, "storage_ready": false}'; exit "\$rc"; fi
         mode=remote; [[ -z "\$url" ]] && mode=local
         shown="\$(get url "\$url")"
         gap="\$(get gap 0)"
@@ -191,6 +194,26 @@ out="$(PATH="${fake_bin}:$PATH" HUB_RESTART_HEALTH_WAIT_S=2 HUB_RESTART_GAP_WAIT
     --state-dir "$state_dir" --env-file "$env_file" --url http://hub.test:8400 2>&1)" || rc=$?
 [[ $rc -eq 0 ]] || fail "rollback: exit $rc. Output tail: $(tail -5 <<<"$out")"
 [[ "$(installed_version)" == "agent-bus saved" ]] || fail "rollback: the saved binary was not restored"
+
+# 7. A health command that exits 1 (the real CLI does when the hub is down) must not abort
+# the script through pipefail: the rollback has to run precisely then, and --apply must
+# report the missing baseline instead of dying silently.
+reset_control
+printf '1' > "$control/health_rc.before"
+run "apply, health exits 1" 1 --apply
+[[ "$(installed_version)" == "agent-bus old" ]] || fail "health rc 1: a binary was installed"
+grep -q 'refusing to restart without a baseline' <<<"$out" || fail "health rc 1: died silently instead of refusing: $(tail -3 <<<"$out")"
+reset_control
+rm -f "$control/restarted"
+printf '1' > "$control/health_rc.before"
+printf 'no' > "$control/pg_count.before"
+install_old
+rc=0
+out="$(PATH="${fake_bin}:$PATH" HUB_RESTART_HEALTH_WAIT_S=2 HUB_RESTART_GAP_WAIT_S=2 \
+    bash "${fixture_repo}/scripts/hub-restart.sh" --rollback "$backup" --apply --bin-dir "$bin_dir" \
+    --state-dir "$state_dir" --env-file "$env_file" --url http://hub.test:8400 2>&1)" || rc=$?
+[[ $rc -eq 0 ]] || fail "rollback with the hub down: exit $rc. Output tail: $(tail -5 <<<"$out")"
+[[ "$(installed_version)" == "agent-bus saved" ]] || fail "rollback with the hub down: the saved binary was not restored"
 
 if [[ $failures -ne 0 ]]; then
     printf 'hub-restart-test: %d failure(s)\n' "$failures" >&2

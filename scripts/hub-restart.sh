@@ -100,7 +100,7 @@ version_of() {
 
 # Rows the stores disagree on right now (stream_length - pg_message_count), or "?".
 store_gap() {
-    ab health --encoding json 2>/dev/null | python3 -c '
+    { ab health --encoding json 2>/dev/null || true; } | python3 -c '
 import json, sys
 try:
     h = json.load(sys.stdin)
