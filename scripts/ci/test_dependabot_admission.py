@@ -27,7 +27,7 @@ HEAD = "a" * 40
 MERGE = "c" * 40
 PRODUCER = b""
 FUTURE_PRODUCER = b""
-REVIEWED_HASH = "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+REVIEWED_HASH = "2a736dc7f044efad06aefc0d2ffface386064b91540d77a87e96b35fdf549b52"
 JOBS = [
     "Format Check",
     "Cloud Agentbus (TypeScript)",
@@ -54,7 +54,7 @@ SKIPS = {
         {
             "path": ".github/workflows/ci.yml",
             "source_sha256": (
-                "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+                "2a736dc7f044efad06aefc0d2ffface386064b91540d77a87e96b35fdf549b52"
             ),
             "job_name": MANUAL,
             "if_expression": "github.event_name == 'workflow_dispatch'",
@@ -63,7 +63,7 @@ SKIPS = {
         {
             "path": ".github/workflows/ci.yml",
             "source_sha256": (
-                "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+                "2a736dc7f044efad06aefc0d2ffface386064b91540d77a87e96b35fdf549b52"
             ),
             "job_name": ARCHIVE,
             "if_expression": "github.event_name != 'pull_request'",

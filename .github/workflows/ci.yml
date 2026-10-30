@@ -275,10 +275,25 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      # One download per leg into its own directory: a pattern download extracts a
+      # single match straight into the target, which would drop the leg's name. A leg
+      # that failed to build has no artifact and its step is allowed to fail; the
+      # --require list below still demands all three when the build succeeded.
       - uses: actions/download-artifact@v8
+        continue-on-error: true
         with:
-          pattern: agent-bus-linux-*
-          path: ci-artifacts/release-build
+          name: agent-bus-linux-x64
+          path: ci-artifacts/release-build/agent-bus-linux-x64
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: agent-bus-linux-arm64-1
+          path: ci-artifacts/release-build/agent-bus-linux-arm64-1
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: agent-bus-linux-arm64-2
+          path: ci-artifacts/release-build/agent-bus-linux-arm64-2
       - name: Verify and archive under C:\codedev\agent-hub-artifacts\ci
         shell: pwsh
         env:

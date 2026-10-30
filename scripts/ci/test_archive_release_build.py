@@ -184,6 +184,22 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(run(self.source, self.dest), (0, ""))
         self.assertFalse(self.dest.exists())
 
+    def test_loose_files_in_the_source_fail_instead_of_archiving_nothing(self) -> None:
+        """Protects: a download that extracted an artifact straight into the source
+        directory (no name directory) being noticed, not mistaken for an empty run.
+
+        Detects: archive() skipping files directly under the source and reporting
+        that there is nothing to archive, which silently loses the surviving leg.
+        Needs: a temporary directory only.
+        Breadcrumb: archive_release_build.archive, before the empty-source return.
+        """
+        self.source.mkdir(parents=True, exist_ok=True)
+        (self.source / "agent-bus").write_bytes(b"binary")
+        code, message = run(self.source, self.dest)
+        self.assertEqual(code, 1)
+        self.assertIn("loose", message)
+        self.assertFalse(self.dest.exists())
+
 
 def step_block(source: str, name: str) -> str:
     match = re.search(
@@ -261,7 +277,19 @@ class WorkflowContractTests(unittest.TestCase):
             "    runs-on: [self-hosted, Windows, X64, agent-hub-native-smoke]\n", job
         )
         self.assertIn("    needs: [build-release]\n", job)
-        self.assertIn("          pattern: agent-bus-linux-*\n", job)
+        # One download per leg, into its own directory, so a lone surviving artifact
+        # keeps its name (a pattern download extracts a single match directly into
+        # the target and drops the directory the archive keys on).
+        self.assertNotIn("pattern:", job)
+        for leg in ("linux-x64", "linux-arm64-1", "linux-arm64-2"):
+            self.assertIn(
+                "      - uses: actions/download-artifact@v8\n"
+                "        continue-on-error: true\n"
+                "        with:\n"
+                f"          name: agent-bus-{leg}\n"
+                f"          path: ci-artifacts/release-build/agent-bus-{leg}\n",
+                job,
+            )
         self.assertIn("python -I -B scripts/ci/archive_release_build.py", job)
         self.assertIn(r"C:\codedev\agent-hub-artifacts\ci", job)
         legs = re.findall(

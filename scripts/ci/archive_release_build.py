@@ -110,6 +110,15 @@ def archive(args: argparse.Namespace) -> list[Path]:
     present = (
         sorted(p for p in source.iterdir() if p.is_dir()) if source.is_dir() else []
     )
+    loose = (
+        sorted(p.name for p in source.iterdir() if not p.is_dir())
+        if source.is_dir()
+        else []
+    )
+    if loose:
+        raise ArchiveError(
+            f"loose files in the source, not under an artifact directory: {loose}"
+        )
     unexpected = [p.name for p in present if not ARTIFACT_NAME.fullmatch(p.name)]
     if unexpected:
         raise ArchiveError(f"unexpected artifact directories: {unexpected}")
