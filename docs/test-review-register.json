@@ -8717,6 +8717,78 @@
         "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 331 tests, OK, 1 skipped; the five selectors in scripts/ci/test_nextest_ci_action.py all passed."
       },
       "breaking_behavior": "None; temporary files only."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_reads_selected_hub_as_ndjson_with_all_filters",
+      "reviewer": "claude-second-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-29",
+      "commit_reviewed": "43827b9cfbb9a89de62fefe6e9b52bebe615a650",
+      "disposition": "keep",
+      "scope": "Independent re-review by claude-second-review, which wrote neither these tests nor the code under test, of the three remote export controls and their shared read/export implementation at 43827b9cfbb9a89de62fefe6e9b52bebe615a650, after main was merged into the PR. It is a source review plus an independent replay on minisforum-ms01. It does not refresh historical test reviews or certify unrelated backend, runtime or platform acceptance.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "456f3b7ba3963b26a29a0f81e219c84a8be92c0cbaec7e1f3f9becdd55fd8c5d",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e8c849a3bbc49d0c944135e9757eefc331a232f74f58677dadbd04835f4279"
+      },
+      "canonical_target_sha256": "c78be60cf45d99ff1626a0a305c22d1ce04b7fe13f87ba70cbc1d3142c028919",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "At 43827b9 on minisforum-ms01, from a git archive export: cargo test -p agent-bus --test hub_routing_test passed 52 of 53 tests. The one failure was direct_commands_surface_http_failures_without_success_output_or_local_fallback (hub.hits() == 2 at line 751), which is outside this PR's diff. It then passed 10 of 10 runs on this head and 10 of 10 on main: an intermittent hit-count race, not this change. Mutation control: making the remote branch of cmd_export unreachable makes all three export controls fail, at lines 75, 132 and 163. The controls verify literal NDJSON records, all nine encoded query pairs including both tags, bearer authentication, the refusal of a limit above 500 before any /messages request, and HTTP 503 propagation with no local fallback.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_rejects_remote_limits_above_read_cap_before_exporting",
+      "reviewer": "claude-second-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-29",
+      "commit_reviewed": "43827b9cfbb9a89de62fefe6e9b52bebe615a650",
+      "disposition": "keep",
+      "scope": "Independent re-review by claude-second-review, which wrote neither these tests nor the code under test, of the three remote export controls and their shared read/export implementation at 43827b9cfbb9a89de62fefe6e9b52bebe615a650, after main was merged into the PR. It is a source review plus an independent replay on minisforum-ms01. It does not refresh historical test reviews or certify unrelated backend, runtime or platform acceptance.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "79d5cd0e825323e7cee82bef39398fc8a2912269b2509ef0f542f9ea2f23cfb4",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e8c849a3bbc49d0c944135e9757eefc331a232f74f58677dadbd04835f4279"
+      },
+      "canonical_target_sha256": "c78be60cf45d99ff1626a0a305c22d1ce04b7fe13f87ba70cbc1d3142c028919",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "At 43827b9 on minisforum-ms01, from a git archive export: cargo test -p agent-bus --test hub_routing_test passed 52 of 53 tests. The one failure was direct_commands_surface_http_failures_without_success_output_or_local_fallback (hub.hits() == 2 at line 751), which is outside this PR's diff. It then passed 10 of 10 runs on this head and 10 of 10 on main: an intermittent hit-count race, not this change. Mutation control: making the remote branch of cmd_export unreachable makes all three export controls fail, at lines 75, 132 and 163. The controls verify literal NDJSON records, all nine encoded query pairs including both tags, bearer authentication, the refusal of a limit above 500 before any /messages request, and HTTP 503 propagation with no local fallback.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_remote_failure_does_not_fall_back_to_local_history",
+      "reviewer": "claude-second-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-29",
+      "commit_reviewed": "43827b9cfbb9a89de62fefe6e9b52bebe615a650",
+      "disposition": "keep",
+      "scope": "Independent re-review by claude-second-review, which wrote neither these tests nor the code under test, of the three remote export controls and their shared read/export implementation at 43827b9cfbb9a89de62fefe6e9b52bebe615a650, after main was merged into the PR. It is a source review plus an independent replay on minisforum-ms01. It does not refresh historical test reviews or certify unrelated backend, runtime or platform acceptance.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "dd746e16d01f568e19221af292cb993284aa274bee543ee22543eb7f138c8c90",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e8c849a3bbc49d0c944135e9757eefc331a232f74f58677dadbd04835f4279"
+      },
+      "canonical_target_sha256": "c78be60cf45d99ff1626a0a305c22d1ce04b7fe13f87ba70cbc1d3142c028919",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "At 43827b9 on minisforum-ms01, from a git archive export: cargo test -p agent-bus --test hub_routing_test passed 52 of 53 tests. The one failure was direct_commands_surface_http_failures_without_success_output_or_local_fallback (hub.hits() == 2 at line 751), which is outside this PR's diff. It then passed 10 of 10 runs on this head and 10 of 10 on main: an intermittent hit-count race, not this change. Mutation control: making the remote branch of cmd_export unreachable makes all three export controls fail, at lines 75, 132 and 163. The controls verify literal NDJSON records, all nine encoded query pairs including both tags, bearer authentication, the refusal of a limit above 500 before any /messages request, and HTTP 503 propagation with no local fallback.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
     }
   ],
   "historical_reviews": [
@@ -14205,6 +14277,78 @@
       },
       "breaking_behavior": "Only the independently reviewed six-line CI addition is newly admitted. Required sixteen jobs, exact-head checks, manual skip semantics and changed-source negative controls remain unchanged.",
       "additional_coverage_boundary": "This record does not certify every legacy selector, host deployment, artifact binary or current-head CI success."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_reads_selected_hub_as_ndjson_with_all_filters",
+      "reviewer": "codex-p1gen9-backend-independent-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-28",
+      "commit_reviewed": "cff62e78598f004729a6100f160326ef7e71bcf2",
+      "disposition": "keep",
+      "scope": "Only the three new remote export controls and their shared read/export implementation. Independent source review; author execution receipts inspected, no independent replay claimed.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "3b00316bf079f0e65afd4a7a82f10f733ad6971971a8a86a52bed504b6f30dcf",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "0a51c2777b799acd687d28a756f12b3f8860fcb1332546deef92a3b867d14abe"
+      },
+      "canonical_target_sha256": "4a5ff471a8d63780de4e4fb43841db6c8a9f5195312b7478e16218f52bfeff83",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "The original selected-hub control fails against the old implementation with closed-port Redis. New controls verify literal NDJSON records, all nine encoded query pairs, two tags, bearer authentication, the oversized request refusal and HTTP503 propagation without local fallback. All 50 routing cases passed after repair.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_rejects_remote_limits_above_read_cap_before_exporting",
+      "reviewer": "codex-p1gen9-backend-independent-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-28",
+      "commit_reviewed": "cff62e78598f004729a6100f160326ef7e71bcf2",
+      "disposition": "keep",
+      "scope": "Only the three new remote export controls and their shared read/export implementation. Independent source review; author execution receipts inspected, no independent replay claimed.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "116813d954efca9cb410355550b694f0d6eaf1d673e930bfc3f0611492829062",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "0a51c2777b799acd687d28a756f12b3f8860fcb1332546deef92a3b867d14abe"
+      },
+      "canonical_target_sha256": "4a5ff471a8d63780de4e4fb43841db6c8a9f5195312b7478e16218f52bfeff83",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "The original selected-hub control fails against the old implementation with closed-port Redis. New controls verify literal NDJSON records, all nine encoded query pairs, two tags, bearer authentication, the oversized request refusal and HTTP503 propagation without local fallback. All 50 routing cases passed after repair.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_remote_failure_does_not_fall_back_to_local_history",
+      "reviewer": "codex-p1gen9-backend-independent-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-28",
+      "commit_reviewed": "cff62e78598f004729a6100f160326ef7e71bcf2",
+      "disposition": "keep",
+      "scope": "Only the three new remote export controls and their shared read/export implementation. Independent source review; author execution receipts inspected, no independent replay claimed.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "f77e775431232694b942d224440e64b3fd39cd90bef2c9e84d7bce67b221ba9f",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "0a51c2777b799acd687d28a756f12b3f8860fcb1332546deef92a3b867d14abe"
+      },
+      "canonical_target_sha256": "4a5ff471a8d63780de4e4fb43841db6c8a9f5195312b7478e16218f52bfeff83",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "The original selected-hub control fails against the old implementation with closed-port Redis. New controls verify literal NDJSON records, all nine encoded query pairs, two tags, bearer authentication, the oversized request refusal and HTTP503 propagation without local fallback. All 50 routing cases passed after repair.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
     }
   ]
 }
