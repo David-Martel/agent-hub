@@ -72,6 +72,18 @@ pub fn plan_redis_to_pg(redis: &[String], pg: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Whether a Redis entry's id is one of the `wanted` ids.
+///
+/// `wanted` holds canonical (lowercase, hyphenated) UUIDs, because the scan normalizes every id it
+/// reads. An entry written in another valid spelling is looked up by its canonical form; an id that
+/// is not a UUID is matched exactly.
+fn is_wanted(wanted: &HashSet<&str>, id: &str) -> bool {
+    uuid::Uuid::parse_str(id).map_or_else(
+        |_| wanted.contains(id),
+        |parsed| wanted.contains(parsed.to_string().as_str()),
+    )
+}
+
 /// Decode the Redis entries whose id is in `wanted` and whose timestamp lies in `[from, to]`.
 fn fetch_redis_messages(
     settings: &Settings,
@@ -118,7 +130,7 @@ fn fetch_redis_messages(
                 fields.insert(String::from_utf8_lossy(&key).into_owned(), value);
             }
             let mut message = decode_stream_entry(&fields);
-            if !wanted.contains(message.id.as_str()) {
+            if !is_wanted(wanted, message.id.as_str()) {
                 continue;
             }
             let in_range =
@@ -211,6 +223,29 @@ mod tests {
         let redis = ["a"].map(str::to_owned);
         let pg = ["a", "only-in-pg"].map(str::to_owned);
         assert_eq!(plan_redis_to_pg(&redis, &pg), Vec::<String>::new());
+    }
+
+    /// Protects: an entry is matched to the plan by the same canonical id the scan used. The scan
+    /// (`read_redis_ids`) and `PostgreSQL` both accept any valid UUID spelling, so a Redis-only
+    /// entry written as uppercase or unhyphenated hex is planned under its canonical form.
+    /// Detects: matching on the raw string, which plans the entry in the dry run and then inserts
+    /// 0 rows on `--apply`, failing "Redis-only messages remain" on every retry.
+    #[test]
+    fn a_non_canonical_uuid_spelling_matches_the_planned_canonical_id() {
+        let canonical = "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b";
+        let wanted: HashSet<&str> = HashSet::from([canonical]);
+        assert!(is_wanted(&wanted, canonical));
+        assert!(is_wanted(&wanted, "0192A3B4-C5D6-7E8F-9A0B-1C2D3E4F5A6B"));
+        assert!(is_wanted(&wanted, "0192a3b4c5d67e8f9a0b1c2d3e4f5a6b"));
+        assert!(!is_wanted(&wanted, "0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6c"));
+    }
+
+    /// Protects: an id that is not a UUID is still matched exactly, never silently widened.
+    #[test]
+    fn a_non_uuid_id_is_matched_exactly() {
+        let wanted: HashSet<&str> = HashSet::from(["legacy-id"]);
+        assert!(is_wanted(&wanted, "legacy-id"));
+        assert!(!is_wanted(&wanted, "LEGACY-ID"));
     }
 
     /// Protects: reconcile refuses to run without `PostgreSQL`, even as a dry run.
