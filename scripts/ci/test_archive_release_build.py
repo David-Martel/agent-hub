@@ -221,19 +221,31 @@ class WorkflowContractTests(unittest.TestCase):
         Breadcrumb: ci.yml build-release upload; release.yml windows-x64 and
         linux uploads.
         """
+        block = step_block(self.ci, "agent-bus-${{ matrix.name }}")
+        self.assertTrue(block)
+        self.assertTrue(best_effort_one_day(block), block)
+        raised = block.replace("retention-days: 1\n", "retention-days: 2\n")
+        self.assertFalse(best_effort_one_day(raised))
+
+    def test_release_uploads_are_fatal_and_kept_one_day(self) -> None:
+        """Protects: a release never publishes a partial set, because a failed
+        platform upload fails its job and the publish job needs every platform.
+
+        Detects: continue-on-error returning to either release.yml upload step, or
+        retention-days leaving 1. The check failed against the best-effort steps
+        before they were made fatal.
+        Needs: the actual release.yml.
+        Breadcrumb: release.yml windows-x64 and linux uploads; publish needs.
+        """
         blocks = {
-            "ci build-release": step_block(self.ci, "agent-bus-${{ matrix.name }}"),
             "release windows-x64": step_block(self.release, "agent-bus-windows-x64"),
             "release linux": step_block(self.release, "agent-bus-${{ matrix.name }}"),
         }
         for label, block in blocks.items():
             with self.subTest(label):
                 self.assertTrue(block, label)
-                self.assertTrue(best_effort_one_day(block), block)
-        raised = blocks["ci build-release"].replace(
-            "retention-days: 1\n", "retention-days: 2\n"
-        )
-        self.assertFalse(best_effort_one_day(raised))
+                self.assertNotIn("continue-on-error", block)
+                self.assertRegex(block, r"(?m)^          retention-days: 1$")
 
     def test_archive_job_verifies_every_release_build_on_dtm_p1gen7(self) -> None:
         """Protects: every Release Build leg is hash-verified into the p1gen7 archive.

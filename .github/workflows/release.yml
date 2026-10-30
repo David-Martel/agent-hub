@@ -112,10 +112,7 @@ jobs:
             --repo-root "$PWD" --repository "$env:GITHUB_REPOSITORY" `
             --revision "$env:GITHUB_SHA" --artifact-dir "$release" --dist "$PWD/dist"
           if ($LASTEXITCODE -ne 0) { throw 'Reused native artifact staging failed' }
-      # Transport to the publish job in this run; it attaches these to the GitHub
-      # release. A quota failure surfaces there, so the upload itself is best-effort.
       - uses: actions/upload-artifact@v7
-        continue-on-error: true
         with:
           name: agent-bus-windows-x64
           if-no-files-found: error
@@ -184,10 +181,7 @@ jobs:
           cd dist
           sha256sum ./* > "SHA256SUMS-${{ matrix.name }}"
 
-      # Transport to the publish job in this run; it attaches these to the GitHub
-      # release. A quota failure surfaces there, so the upload itself is best-effort.
       - uses: actions/upload-artifact@v7
-        continue-on-error: true
         with:
           name: agent-bus-${{ matrix.name }}
           retention-days: 1
