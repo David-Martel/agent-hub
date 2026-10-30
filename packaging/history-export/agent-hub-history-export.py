@@ -424,6 +424,27 @@ def health() -> dict:
     )
 
 
+def upload_receipts(
+    results: list[dict], rp: Path, name: str, work: Path, key: Path, user: str
+) -> None:
+    """Upload the receipt to every verified destination, never raising.
+
+    A timeout or OS error on one destination (typically an optional mirror) is
+    recorded as ``receipt_uploaded: false`` with the exception type, so the other
+    destinations keep their results and the run still writes its summary.
+    """
+    for res in (r for r in results if r["ok"]):
+        try:
+            put = sftp(
+                res["host"], f'put "{rp}" "{name}.receipt.json"\n', work, key, user
+            )
+        except (subprocess.SubprocessError, OSError) as e:
+            res["receipt_uploaded"] = False
+            res["receipt_error"] = type(e).__name__
+        else:
+            res["receipt_uploaded"] = put.returncode == 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dest", required=True, help="required drop host (ssh name)")
@@ -502,16 +523,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         rp = STATE / "receipts" / f"{name}.json"
         rp.write_text(json.dumps(receipt, indent=1) + "\n")
-        for res in results:
-            if res["ok"]:
-                put = sftp(
-                    res["host"],
-                    f'put "{rp}" "{name}.receipt.json"\n',
-                    work,
-                    args.key,
-                    args.drop_user,
-                )
-                res["receipt_uploaded"] = put.returncode == 0
+        upload_receipts(results, rp, name, work, args.key, args.drop_user)
         rp.write_text(json.dumps(receipt, indent=1) + "\n")
         required_ok = results[0]["ok"]
         summary = (

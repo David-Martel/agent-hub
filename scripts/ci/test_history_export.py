@@ -282,6 +282,47 @@ class PushTests(TempDirCase):
         self.assertEqual(res["readback_files"], res["files"] + 1)
 
 
+class ReceiptUploadTests(unittest.TestCase):
+    def run_uploads(self, failing):
+        results = [
+            {"host": "required", "ok": True},
+            {"host": "mirror", "ok": True},
+            {"host": "skipped", "ok": False},
+        ]
+
+        def fake_sftp(host, batch, work, key, user):
+            if host == "mirror":
+                raise failing
+            return subprocess.CompletedProcess([], 0, "", "")
+
+        old = hx.sftp
+        hx.sftp = fake_sftp
+        try:
+            hx.upload_receipts(
+                results, Path("/r.json"), "bundle", Path("/w"), Path("/k"), "u"
+            )
+        finally:
+            hx.sftp = old
+        return results
+
+    def test_an_optional_mirror_receipt_failure_does_not_fail_the_run(self):
+        """Protects: a verified required destination keeping its result when the
+        receipt upload to an optional mirror times out or hits an OS error.
+        Detects: the exception escaping, which skips the final receipt update and
+        summary and fires the unit's failure alert for a successful export.
+        Needs: a stubbed sftp; no network. Breadcrumb: upload_receipts in main()."""
+        for failing in (
+            subprocess.TimeoutExpired("sftp", 1),
+            OSError("connection reset"),
+        ):
+            with self.subTest(type(failing).__name__):
+                results = self.run_uploads(failing)
+                self.assertIs(results[0]["receipt_uploaded"], True)
+                self.assertIs(results[1]["receipt_uploaded"], False)
+                self.assertEqual(results[1]["receipt_error"], type(failing).__name__)
+                self.assertNotIn("receipt_uploaded", results[2])
+
+
 class UnitFileTests(unittest.TestCase):
     def read(self, name: str) -> str:
         return (PKG / "systemd" / name).read_text()
@@ -304,6 +345,42 @@ class UnitFileTests(unittest.TestCase):
         self.assertIn("--schema finding", notify)
         self.assertIn("SEVERITY: high", notify)
         self.assertIn('source "$HOME/.config/bash/env.bash" &&', notify)
+
+    @unittest.skipUnless(shutil.which("flock"), "needs flock")
+    def test_fresh_home_without_a_cache_directory_still_runs(self):
+        """Protects: the first run on a fresh install, before anything has created
+        ~/.cache, taking its lock and reaching the exporter.
+        Detects: flock opening the lock file under a missing ~/.cache and exiting
+        non-zero before the export starts (the unit then alerts on every first run).
+        Needs: a temporary HOME, an empty env.bash and a stub uv; no network.
+        Breadcrumb: the service ExecStart; install.sh makes only share and unit dirs."""
+        match = re.search(
+            r"(?m)^ExecStart=/bin/bash -c '(.*)'$",
+            self.read("agent-hub-history-export.service"),
+        )
+        self.assertIsNotNone(match)
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            (home / ".config" / "bash").mkdir(parents=True)
+            (home / ".config" / "bash" / "env.bash").write_text("")
+            stub = Path(tmp) / "bin"
+            stub.mkdir()
+            (stub / "uv").write_text("#!/bin/sh\nexit 0\n")
+            (stub / "uv").chmod(0o755)
+            env = {
+                **os.environ,
+                "HOME": str(home),
+                "PATH": f"{stub}:{os.environ['PATH']}",
+            }
+            done = subprocess.run(
+                ["/bin/bash", "-c", match[1]],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(done.returncode, 0, done.stderr)
+            self.assertTrue((home / ".cache").is_dir())
 
     def test_timer_is_daily_and_catches_up(self):
         """Protects: the daily cadence across hub downtime. Detects: a timer that skips
