@@ -259,6 +259,24 @@ class WorkflowContractTests(unittest.TestCase):
         required = re.findall(r"'--require', '(agent-bus-linux-[a-z0-9-]+)'", job)
         self.assertEqual(required, [f"agent-bus-{leg}" for leg in legs])
 
+    def test_archive_job_and_its_upload_skip_pull_request_runs_together(self) -> None:
+        """Protects: the archive job never waits on an artifact that PR runs do not
+        upload (the quota fix skips the build-release upload on pull_request).
+
+        Detects: the upload losing its pull_request skip, or the archive job losing
+        the same condition, so PR runs fail on an empty download. Positive control:
+        removing the condition from the archive job makes the check fail.
+        Needs: the actual ci.yml.
+        Breadcrumb: ci.yml build-release upload; archive-release-build if.
+        """
+        skip = "github.event_name != 'pull_request'"
+        upload = step_block(self.ci, "agent-bus-${{ matrix.name }}")
+        job = job_block(self.ci, "archive-release-build")
+        self.assertIn(f"        if: {skip}\n", upload)
+        self.assertRegex(job, rf"(?m)^    if: \$\{{\{{ {re.escape(skip)} && ")
+        ungated = job.replace(f"{skip} && ", "")
+        self.assertNotRegex(ungated, rf"(?m)^    if: \$\{{\{{ {re.escape(skip)} && ")
+
 
 if __name__ == "__main__":
     unittest.main()

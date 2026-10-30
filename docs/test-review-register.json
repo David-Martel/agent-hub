@@ -8406,16 +8406,16 @@
       },
       "code_under_test": {
         "path": ".github/workflows/dependabot-automerge.yml",
-        "sha256": "a671e28f6db367bebabc96d578a87999f782a490f77a5d601a1bb5134faad8dc"
+        "sha256": "40a10394f202a723a210b72a9a5276868014f560223b6793294fd5b063cece03"
       },
       "shared_sources": [
         {
           "path": "scripts/ci/test_dependabot_admission.py",
-          "sha256": "26437d15dd32543be704a839f2f7dc97dc4e5a4f90798cc1335effd4baae7c6a"
+          "sha256": "cd88e0d29c099e12ccfcc5feb65d187ee92037c6def537bf468789fc4ba923a5"
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "7b7b3e1a7e4283bf3de02b1b9eb30f01a92b48bf4a4dc1d6d31361297436caf7"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         }
       ],
       "relevance": "Dependabot admission consumes exact-source CI inventory and manual-job skip evidence; any ci.yml byte change requires this refresh.",
@@ -8462,7 +8462,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "7b7b3e1a7e4283bf3de02b1b9eb30f01a92b48bf4a4dc1d6d31361297436caf7"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         }
       ],
       "relevance": "The shipping CI source check requires the exact Node pin.",
@@ -8496,7 +8496,7 @@
       },
       "code_under_test": {
         "path": ".github/workflows/ci.yml",
-        "sha256": "7b7b3e1a7e4283bf3de02b1b9eb30f01a92b48bf4a4dc1d6d31361297436caf7"
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
       },
       "shared_sources": [
         {
@@ -8738,16 +8738,16 @@
       },
       "code_under_test": {
         "path": ".github/workflows/dependabot-automerge.yml",
-        "sha256": "6986965f47093f0f134e32edec34702e116bbb6fb605e0a3adcf8ee1abb5108c"
+        "sha256": "40a10394f202a723a210b72a9a5276868014f560223b6793294fd5b063cece03"
       },
       "shared_sources": [
         {
           "path": "scripts/ci/test_dependabot_admission.py",
-          "sha256": "8dc21ab3543d0fc456730f1f04c5a4cb35e8ae02b4b39e9a4592ff285d4ff873"
+          "sha256": "cd88e0d29c099e12ccfcc5feb65d187ee92037c6def537bf468789fc4ba923a5"
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         }
       ],
       "relevance": "Dependabot admission consumes exact-source CI inventory and manual-job skip evidence; any ci.yml byte change requires this refresh.",
@@ -8794,7 +8794,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         }
       ],
       "relevance": "The shipping CI source check requires the exact Node pin.",
@@ -8828,7 +8828,7 @@
       },
       "code_under_test": {
         "path": ".github/workflows/ci.yml",
-        "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
       },
       "shared_sources": [
         {
@@ -8880,7 +8880,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         },
         {
           "path": ".github/workflows/release.yml",
@@ -8927,7 +8927,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         },
         {
           "path": ".github/workflows/release.yml",
@@ -8974,7 +8974,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         },
         {
           "path": ".github/workflows/release.yml",
@@ -9007,8 +9007,8 @@
       "selector_source": {
         "path": "scripts/ci/test_archive_release_build.py",
         "first_line": 146,
-        "last_line": 174,
-        "sha256": "872c03e6bd7e5b784ad61031782a3cf8dbef06df921a4c12a16958bd8c9f2820"
+        "last_line": 175,
+        "sha256": "71c69a6d584a0684a07a17e8edff872da24d8385ef3b160a506fefad42e30b5d"
       },
       "code_under_test": {
         "path": "scripts/ci/archive_release_build.py",
@@ -9021,7 +9021,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         },
         {
           "path": ".github/workflows/release.yml",
@@ -9053,9 +9053,9 @@
       "scope": "New selector.",
       "selector_source": {
         "path": "scripts/ci/test_archive_release_build.py",
-        "first_line": 176,
-        "last_line": 184,
-        "sha256": "152c52729cde77440090037775299f0f651674742da6b457b78ead9ca20eadf7"
+        "first_line": 177,
+        "last_line": 185,
+        "sha256": "f988d785a2e0cf634c5e30bee8f8f6fc0af92e6b8ac38734552a3d862efa6478"
       },
       "code_under_test": {
         "path": "scripts/ci/archive_release_build.py",
@@ -9068,7 +9068,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         },
         {
           "path": ".github/workflows/release.yml",
@@ -9100,13 +9100,13 @@
       "scope": "New selector.",
       "selector_source": {
         "path": "scripts/ci/test_archive_release_build.py",
-        "first_line": 212,
-        "last_line": 234,
-        "sha256": "974113a3a49cfa05c8e6f249992249d58d95cc0b14a77e09f482cc95f05fec0a"
+        "first_line": 213,
+        "last_line": 236,
+        "sha256": "416835f9a174ccb3b58304d4e5d1058f5f26dc32cd6d5e914014186db8b2ca9d"
       },
       "code_under_test": {
         "path": ".github/workflows/ci.yml",
-        "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
       },
       "shared_sources": [
         {
@@ -9147,13 +9147,13 @@
       "scope": "New selector.",
       "selector_source": {
         "path": "scripts/ci/test_archive_release_build.py",
-        "first_line": 236,
-        "last_line": 258,
-        "sha256": "d614e719ef606e74713d63f76659c2925198574b84083468319886f1e6fc01e0"
+        "first_line": 238,
+        "last_line": 260,
+        "sha256": "4952f797becc2f1b56de57172092ed62f2e51cb0605659e29985ddb3a565bf79"
       },
       "code_under_test": {
         "path": ".github/workflows/ci.yml",
-        "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
       },
       "shared_sources": [
         {
@@ -9200,16 +9200,16 @@
       },
       "code_under_test": {
         "path": ".github/workflows/dependabot-automerge.yml",
-        "sha256": "6986965f47093f0f134e32edec34702e116bbb6fb605e0a3adcf8ee1abb5108c"
+        "sha256": "40a10394f202a723a210b72a9a5276868014f560223b6793294fd5b063cece03"
       },
       "shared_sources": [
         {
           "path": "scripts/ci/test_dependabot_admission.py",
-          "sha256": "8dc21ab3543d0fc456730f1f04c5a4cb35e8ae02b4b39e9a4592ff285d4ff873"
+          "sha256": "cd88e0d29c099e12ccfcc5feb65d187ee92037c6def537bf468789fc4ba923a5"
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         }
       ],
       "relevance": "Dependabot admission consumes exact-source CI inventory and manual-job skip evidence; any ci.yml byte change requires this refresh.",
@@ -9256,7 +9256,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         }
       ],
       "relevance": "The shipping CI source check requires the exact Node pin.",
@@ -9290,7 +9290,7 @@
       },
       "code_under_test": {
         "path": ".github/workflows/ci.yml",
-        "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
       },
       "shared_sources": [
         {
@@ -9338,11 +9338,11 @@
       "shared_sources": [
         {
           "path": "scripts/ci/test_archive_release_build.py",
-          "sha256": "b03f4cc027fcc157bc0912cce95ee481c54bc456c22ad08ecf92aab0e577e197"
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         },
         {
           "path": ".github/workflows/release.yml",
@@ -9385,11 +9385,11 @@
       "shared_sources": [
         {
           "path": "scripts/ci/test_archive_release_build.py",
-          "sha256": "b03f4cc027fcc157bc0912cce95ee481c54bc456c22ad08ecf92aab0e577e197"
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         },
         {
           "path": ".github/workflows/release.yml",
@@ -9432,11 +9432,11 @@
       "shared_sources": [
         {
           "path": "scripts/ci/test_archive_release_build.py",
-          "sha256": "b03f4cc027fcc157bc0912cce95ee481c54bc456c22ad08ecf92aab0e577e197"
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         },
         {
           "path": ".github/workflows/release.yml",
@@ -9479,11 +9479,11 @@
       "shared_sources": [
         {
           "path": "scripts/ci/test_archive_release_build.py",
-          "sha256": "b03f4cc027fcc157bc0912cce95ee481c54bc456c22ad08ecf92aab0e577e197"
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         },
         {
           "path": ".github/workflows/release.yml",
@@ -9526,11 +9526,11 @@
       "shared_sources": [
         {
           "path": "scripts/ci/test_archive_release_build.py",
-          "sha256": "b03f4cc027fcc157bc0912cce95ee481c54bc456c22ad08ecf92aab0e577e197"
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         },
         {
           "path": ".github/workflows/release.yml",
@@ -9568,12 +9568,12 @@
       },
       "code_under_test": {
         "path": ".github/workflows/ci.yml",
-        "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
       },
       "shared_sources": [
         {
           "path": "scripts/ci/test_archive_release_build.py",
-          "sha256": "b03f4cc027fcc157bc0912cce95ee481c54bc456c22ad08ecf92aab0e577e197"
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
         },
         {
           "path": "scripts/ci/archive_release_build.py",
@@ -9615,12 +9615,12 @@
       },
       "code_under_test": {
         "path": ".github/workflows/ci.yml",
-        "sha256": "09302510afcca60ec57812809cbcc29474de6b2a21b023200b236d44e359dc8d"
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
       },
       "shared_sources": [
         {
           "path": "scripts/ci/test_archive_release_build.py",
-          "sha256": "b03f4cc027fcc157bc0912cce95ee481c54bc456c22ad08ecf92aab0e577e197"
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
         },
         {
           "path": "scripts/ci/archive_release_build.py",
@@ -9641,6 +9641,78 @@
         "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
       },
       "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_reads_selected_hub_as_ndjson_with_all_filters",
+      "reviewer": "claude-second-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-29",
+      "commit_reviewed": "43827b9cfbb9a89de62fefe6e9b52bebe615a650",
+      "disposition": "keep",
+      "scope": "Independent re-review by claude-second-review, which wrote neither these tests nor the code under test, of the three remote export controls and their shared read/export implementation at 43827b9cfbb9a89de62fefe6e9b52bebe615a650, after main was merged into the PR. It is a source review plus an independent replay on minisforum-ms01. It does not refresh historical test reviews or certify unrelated backend, runtime or platform acceptance.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "456f3b7ba3963b26a29a0f81e219c84a8be92c0cbaec7e1f3f9becdd55fd8c5d",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e8c849a3bbc49d0c944135e9757eefc331a232f74f58677dadbd04835f4279"
+      },
+      "canonical_target_sha256": "c78be60cf45d99ff1626a0a305c22d1ce04b7fe13f87ba70cbc1d3142c028919",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "At 43827b9 on minisforum-ms01, from a git archive export: cargo test -p agent-bus --test hub_routing_test passed 52 of 53 tests. The one failure was direct_commands_surface_http_failures_without_success_output_or_local_fallback (hub.hits() == 2 at line 751), which is outside this PR's diff. It then passed 10 of 10 runs on this head and 10 of 10 on main: an intermittent hit-count race, not this change. Mutation control: making the remote branch of cmd_export unreachable makes all three export controls fail, at lines 75, 132 and 163. The controls verify literal NDJSON records, all nine encoded query pairs including both tags, bearer authentication, the refusal of a limit above 500 before any /messages request, and HTTP 503 propagation with no local fallback.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_rejects_remote_limits_above_read_cap_before_exporting",
+      "reviewer": "claude-second-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-29",
+      "commit_reviewed": "43827b9cfbb9a89de62fefe6e9b52bebe615a650",
+      "disposition": "keep",
+      "scope": "Independent re-review by claude-second-review, which wrote neither these tests nor the code under test, of the three remote export controls and their shared read/export implementation at 43827b9cfbb9a89de62fefe6e9b52bebe615a650, after main was merged into the PR. It is a source review plus an independent replay on minisforum-ms01. It does not refresh historical test reviews or certify unrelated backend, runtime or platform acceptance.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "79d5cd0e825323e7cee82bef39398fc8a2912269b2509ef0f542f9ea2f23cfb4",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e8c849a3bbc49d0c944135e9757eefc331a232f74f58677dadbd04835f4279"
+      },
+      "canonical_target_sha256": "c78be60cf45d99ff1626a0a305c22d1ce04b7fe13f87ba70cbc1d3142c028919",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "At 43827b9 on minisforum-ms01, from a git archive export: cargo test -p agent-bus --test hub_routing_test passed 52 of 53 tests. The one failure was direct_commands_surface_http_failures_without_success_output_or_local_fallback (hub.hits() == 2 at line 751), which is outside this PR's diff. It then passed 10 of 10 runs on this head and 10 of 10 on main: an intermittent hit-count race, not this change. Mutation control: making the remote branch of cmd_export unreachable makes all three export controls fail, at lines 75, 132 and 163. The controls verify literal NDJSON records, all nine encoded query pairs including both tags, bearer authentication, the refusal of a limit above 500 before any /messages request, and HTTP 503 propagation with no local fallback.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_remote_failure_does_not_fall_back_to_local_history",
+      "reviewer": "claude-second-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-29",
+      "commit_reviewed": "43827b9cfbb9a89de62fefe6e9b52bebe615a650",
+      "disposition": "keep",
+      "scope": "Independent re-review by claude-second-review, which wrote neither these tests nor the code under test, of the three remote export controls and their shared read/export implementation at 43827b9cfbb9a89de62fefe6e9b52bebe615a650, after main was merged into the PR. It is a source review plus an independent replay on minisforum-ms01. It does not refresh historical test reviews or certify unrelated backend, runtime or platform acceptance.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "dd746e16d01f568e19221af292cb993284aa274bee543ee22543eb7f138c8c90",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "18e8c849a3bbc49d0c944135e9757eefc331a232f74f58677dadbd04835f4279"
+      },
+      "canonical_target_sha256": "c78be60cf45d99ff1626a0a305c22d1ce04b7fe13f87ba70cbc1d3142c028919",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "At 43827b9 on minisforum-ms01, from a git archive export: cargo test -p agent-bus --test hub_routing_test passed 52 of 53 tests. The one failure was direct_commands_surface_http_failures_without_success_output_or_local_fallback (hub.hits() == 2 at line 751), which is outside this PR's diff. It then passed 10 of 10 runs on this head and 10 of 10 on main: an intermittent hit-count race, not this change. Mutation control: making the remote branch of cmd_export unreachable makes all three export controls fail, at lines 75, 132 and 163. The controls verify literal NDJSON records, all nine encoded query pairs including both tags, bearer authentication, the refusal of a limit above 500 before any /messages request, and HTTP 503 propagation with no local fallback.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
     }
   ],
   "historical_reviews": [
@@ -15129,6 +15201,78 @@
       },
       "breaking_behavior": "Only the independently reviewed six-line CI addition is newly admitted. Required sixteen jobs, exact-head checks, manual skip semantics and changed-source negative controls remain unchanged.",
       "additional_coverage_boundary": "This record does not certify every legacy selector, host deployment, artifact binary or current-head CI success."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_reads_selected_hub_as_ndjson_with_all_filters",
+      "reviewer": "codex-p1gen9-backend-independent-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-28",
+      "commit_reviewed": "cff62e78598f004729a6100f160326ef7e71bcf2",
+      "disposition": "keep",
+      "scope": "Only the three new remote export controls and their shared read/export implementation. Independent source review; author execution receipts inspected, no independent replay claimed.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "3b00316bf079f0e65afd4a7a82f10f733ad6971971a8a86a52bed504b6f30dcf",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "0a51c2777b799acd687d28a756f12b3f8860fcb1332546deef92a3b867d14abe"
+      },
+      "canonical_target_sha256": "4a5ff471a8d63780de4e4fb43841db6c8a9f5195312b7478e16218f52bfeff83",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "The original selected-hub control fails against the old implementation with closed-port Redis. New controls verify literal NDJSON records, all nine encoded query pairs, two tags, bearer authentication, the oversized request refusal and HTTP503 propagation without local fallback. All 50 routing cases passed after repair.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_rejects_remote_limits_above_read_cap_before_exporting",
+      "reviewer": "codex-p1gen9-backend-independent-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-28",
+      "commit_reviewed": "cff62e78598f004729a6100f160326ef7e71bcf2",
+      "disposition": "keep",
+      "scope": "Only the three new remote export controls and their shared read/export implementation. Independent source review; author execution receipts inspected, no independent replay claimed.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "116813d954efca9cb410355550b694f0d6eaf1d673e930bfc3f0611492829062",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "0a51c2777b799acd687d28a756f12b3f8860fcb1332546deef92a3b867d14abe"
+      },
+      "canonical_target_sha256": "4a5ff471a8d63780de4e4fb43841db6c8a9f5195312b7478e16218f52bfeff83",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "The original selected-hub control fails against the old implementation with closed-port Redis. New controls verify literal NDJSON records, all nine encoded query pairs, two tags, bearer authentication, the oversized request refusal and HTTP503 propagation without local fallback. All 50 routing cases passed after repair.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
+    },
+    {
+      "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_remote_failure_does_not_fall_back_to_local_history",
+      "reviewer": "codex-p1gen9-backend-independent-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
+      "date": "2026-10-28",
+      "commit_reviewed": "cff62e78598f004729a6100f160326ef7e71bcf2",
+      "disposition": "keep",
+      "scope": "Only the three new remote export controls and their shared read/export implementation. Independent source review; author execution receipts inspected, no independent replay claimed.",
+      "selector_source": {
+        "path": "crates/agent-bus-cli/tests/hub_routing_test.rs",
+        "sha256": "f77e775431232694b942d224440e64b3fd39cd90bef2c9e84d7bce67b221ba9f",
+        "hash_scheme": "canonical tools.doc_checks selector digest"
+      },
+      "code_under_test": {
+        "path": "crates/agent-bus-cli/src/commands.rs",
+        "sha256": "0a51c2777b799acd687d28a756f12b3f8860fcb1332546deef92a3b867d14abe"
+      },
+      "canonical_target_sha256": "4a5ff471a8d63780de4e4fb43841db6c8a9f5195312b7478e16218f52bfeff83",
+      "relevance": "Remote exports previously selected local history even when the configured hub was healthy; these exercise the actual CLI with closed local stores.",
+      "coverage": "The original selected-hub control fails against the old implementation with closed-port Redis. New controls verify literal NDJSON records, all nine encoded query pairs, two tags, bearer authentication, the oversized request refusal and HTTP503 propagation without local fallback. All 50 routing cases passed after repair.",
+      "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
+      "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
     }
   ]
 }

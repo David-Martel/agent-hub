@@ -155,6 +155,10 @@ Use `--schema finding|status|benchmark` on `send` to validate message structure:
 
 On the Linux hub both are system services; the opt-in root hardening (Redis AOF start preflight, daily `pg_dump`) is `packaging/backend-hardening.sh` (also reachable as `./install.sh --with-backend-hardening`), see [`packaging/README.md`](packaging/README.md#backend-hardening-root-opt-in).
 
+**Store consistency (#194):** `pg_message_count == stream_length` does not prove the stores hold the same messages. On the hub host run `agent-bus health --verify-sets [--window-minutes N | --full-scan]`; it compares the Redis and PostgreSQL message-id sets (order-independent digest plus a capped list of differing ids) and exits 1 on any difference. The window ends 30 s in the past (write-behind lag) and starts no earlier than the oldest entry Redis retains. See `agent_bus_core::store_consistency`.
+
+**Full-history archive (#194):** `agent-bus export` is windowed (7 days max). For a complete archive run `agent-bus export --all > history.ndjson` on the hub host: every PostgreSQL row (keyset-paged), then every Redis stream entry PostgreSQL lacks, each id once, bodies as plaintext (Redis `_compressed: lz4` bodies are decoded; `metadata._compressed` is left as a historical marker). Progress and counts go to stderr. It needs PostgreSQL and exits non-zero otherwise, so a Redis-only dump is never mistaken for a full one.
+
 ## Environment Variables
 
 | Variable | Default | Source |

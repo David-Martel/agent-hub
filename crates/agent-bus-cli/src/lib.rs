@@ -37,14 +37,15 @@ use cloud_tokens::run_cloud_tokens;
 use commands::{
     CompactContextArgs, PresenceArgs, ReadArgs, SendArgs, cmd_ack, cmd_backup, cmd_batch_send,
     cmd_claim, cmd_claims, cmd_codex_sync, cmd_compact_context, cmd_compact_thread, cmd_dedup,
-    cmd_export, cmd_health, cmd_history_migrate, cmd_history_status, cmd_inventory, cmd_journal,
-    cmd_knock, cmd_monitor, cmd_overdue_acks, cmd_peek_tasks, cmd_pending_acks, cmd_post_direct,
-    cmd_post_group, cmd_presence, cmd_presence_history, cmd_presence_list, cmd_prune,
-    cmd_pull_task, cmd_push_task, cmd_read, cmd_read_direct, cmd_read_group, cmd_release_claim,
-    cmd_renew_claim, cmd_resolve, cmd_send, cmd_service, cmd_session_summary, cmd_spool_replay,
-    cmd_spool_send, cmd_subscribe, cmd_subscriptions, cmd_summarize_thread, cmd_sync,
-    cmd_thread_close, cmd_thread_create, cmd_thread_join, cmd_thread_leave, cmd_thread_list,
-    cmd_token_count, cmd_unsubscribe, cmd_validate_backup, cmd_watch,
+    cmd_export, cmd_export_all, cmd_health, cmd_history_migrate, cmd_history_status, cmd_inventory,
+    cmd_journal, cmd_knock, cmd_monitor, cmd_overdue_acks, cmd_peek_tasks, cmd_pending_acks,
+    cmd_post_direct, cmd_post_group, cmd_presence, cmd_presence_history, cmd_presence_list,
+    cmd_prune, cmd_pull_task, cmd_push_task, cmd_read, cmd_read_direct, cmd_read_group,
+    cmd_release_claim, cmd_renew_claim, cmd_resolve, cmd_send, cmd_service, cmd_session_summary,
+    cmd_spool_replay, cmd_spool_send, cmd_subscribe, cmd_subscriptions, cmd_summarize_thread,
+    cmd_sync, cmd_thread_close, cmd_thread_create, cmd_thread_join, cmd_thread_leave,
+    cmd_thread_list, cmd_token_count, cmd_unsubscribe, cmd_validate_backup, cmd_verify_sets,
+    cmd_watch,
 };
 
 #[global_allocator]
@@ -177,8 +178,15 @@ fn run(args: Vec<OsString>) -> Result<()> {
         Cmd::Health {
             ref encoding,
             require_storage,
+            verify_sets,
+            window_minutes,
+            full_scan,
+            max_listed,
         } => {
             cmd_health(&settings, encoding, require_storage);
+            if verify_sets {
+                cmd_verify_sets(&settings, encoding, window_minutes, full_scan, max_listed);
+            }
         }
 
         Cmd::History(ref command) => match command {
@@ -319,7 +327,13 @@ fn run(args: Vec<OsString>) -> Result<()> {
             ref thread_id,
             since_minutes,
             limit,
+            all,
+            page_size,
         } => {
+            if all {
+                cmd_export_all(&settings, page_size)?;
+                return Ok(());
+            }
             cmd_export(
                 &settings,
                 agent.as_deref(),

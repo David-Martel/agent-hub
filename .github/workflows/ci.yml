@@ -241,12 +241,18 @@ jobs:
           cat build-provenance.txt artifact-sha256.txt >> "$GITHUB_STEP_SUMMARY"
       # Transport only: archive-release-build copies this to dtm-p1gen7 in the same
       # run, so a GitHub artifact quota must not fail the build (it fails the archive).
+      # Nothing in a PR run consumes the Linux binaries (no job needs
+      # build-release), and three ~14 MB uploads per PR revision filled the
+      # account's Actions artifact quota. The build above still proves the
+      # release profile compiles; only main and manual runs keep the files.
       - uses: actions/upload-artifact@v7
         continue-on-error: true
+        if: github.event_name != 'pull_request'
         with:
           name: agent-bus-${{ matrix.name }}
           if-no-files-found: error
           retention-days: 1
+          compression-level: 9
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http
@@ -263,7 +269,9 @@ jobs:
     # every leg when build-release succeeded, and keeps what exists otherwise.
     runs-on: [self-hosted, Windows, X64, agent-hub-native-smoke]
     needs: [build-release]
-    if: ${{ !cancelled() && needs.build-release.result != 'skipped' }}
+    # PR runs do not upload the Linux binaries (see build-release), so there is
+    # nothing to archive; only main and manual runs reach this job.
+    if: ${{ github.event_name != 'pull_request' && !cancelled() && needs.build-release.result != 'skipped' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -414,7 +422,23 @@ jobs:
             ConvertTo-Json -Depth 4 | Set-Content (Join-Path $release 'artifact-sha256.json') -Encoding utf8NoBOM
           & $env:RUSTC_WRAPPER --show-stats --stats-format=json
           if ($LASTEXITCODE -ne 0) { throw 'Native cache counters unavailable' }
+      # PR runs upload the same name for smoke-functional (needs: [windows]) to
+      # download, but keep it one day: only the run itself consumes it. Main and
+      # manual runs keep the 7-day upload below for release reuse.
       - uses: actions/upload-artifact@v7
+        if: github.event_name == 'pull_request'
+        with:
+          name: agent-bus-windows-x64
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
+          path: |
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-mcp.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/artifact-sha256.json
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request'
         with:
           name: agent-bus-windows-x64
           if-no-files-found: error
@@ -422,6 +446,7 @@ jobs:
           # commit (scripts/ci/release_windows_artifact.py refuses an expired one),
           # so it keeps the 7-day tag window; the other CI uploads keep 2 days.
           retention-days: 7
+          compression-level: 9
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus.exe
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-http.exe
