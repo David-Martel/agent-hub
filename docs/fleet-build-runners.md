@@ -57,7 +57,7 @@ under Wine). Native Windows validation is a manual dispatch.
 | Target | Runner labels | Intended host | Work |
 | --- | --- | --- | --- |
 | Linux x86-64 | `self-hosted`, `Linux`, `X64`, `vigil1` | vigil1 | format, lint, unit, audit, benchmark compilation and native builds |
-| Linux x86-64 Docker | `self-hosted`, `Linux`, `X64`, `docker` | ASUSPRO13 | Linux-container build on the ASUS Docker engine |
+| Linux x86-64 Docker | `self-hosted`, `Linux`, `X64`, `docker` | ASUSPRO13 and minisforum-ms01 | Linux-container build and the owned-fixture integration and history jobs. ASUS uses its Docker engine. ms01's `minisforum-ms01-agenthub-docker-1` (extra label `minisforum-ms01`) uses the dedicated `ci-agenthub` account's own rootless Podman socket; see [the ms01 carrier](../config/fleet/minisforum-ms01-agenthub/README.md) |
 | Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | Spark fleet | native and Docker builds |
 | Windows x86-64 build and smoke (cross) | `self-hosted`, `Linux`, `X64`, `docker`, `windows-cross` | qualified ASUSPRO13 runner; vigil1 only after the same qualification | GNU-target compile, strict clippy, unit tests, configured MCP and CLI/HTTP smoke under Wine, release artifacts |
 | Windows x86-64 native (manual) | `self-hosted`, `Windows`, `X64`, `local-build` | dtm-p1gen7 | `workflow_dispatch` only: MSVC-ABI build, Codex config validator and native smoke |
