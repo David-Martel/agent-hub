@@ -287,3 +287,4 @@ path.
 | [`systemd/agent-bus-postgres-dump.service.in`](systemd/agent-bus-postgres-dump.service.in), [`.timer.in`](systemd/agent-bus-postgres-dump.timer.in) | Sandboxed dump oneshot and its daily timer |
 | [`sysctl/60-agent-bus-redis-overcommit.conf.in`](sysctl/60-agent-bus-redis-overcommit.conf.in) | `vm.overcommit_memory` for Redis's background fork |
 | [`tests/backend-hardening-test.sh`](tests/backend-hardening-test.sh) | Preflight, dump and installer fixture (fakes only; run in CI Unit Tests) |
+| [`tests/hub-restart-test.sh`](tests/hub-restart-test.sh) | `scripts/hub-restart.sh`: dry run changes nothing, apply reads back through the pinned HTTP service, each failed readback rolls back (fakes only; run it by hand) |
