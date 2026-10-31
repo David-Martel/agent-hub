@@ -1532,9 +1532,12 @@ fn service_status_refuses_rejected_configured_authority_without_base_url_overrid
 #[cfg(feature = "server-mode")]
 #[test]
 fn service_status_refuses_unreachable_admin_endpoint() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve disposable closed endpoint");
-    let base_url = format!("http://{}", listener.local_addr().expect("fixture address"));
-    drop(listener);
+    // A closed endpoint must stay closed. Binding an ephemeral port and dropping
+    // the listener frees it for a MockHub of a parallel test, which then receives
+    // this test's `GET /admin/service` as a stray request (extra hits, wrong
+    // request order). Port 1 is privileged, outside the ephemeral range and never
+    // bound by a fixture; the other offline tests in this file use it too.
+    let base_url = "http://127.0.0.1:1".to_owned();
     let output = isolated_agent_bus("service-status-unreachable")
         .args([
             "service",
