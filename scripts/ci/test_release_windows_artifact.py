@@ -232,6 +232,54 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn("abi=msvc\n", build)
         self.assertIn("ci_run_id=11\n", build)
 
+    def archive_job(self, conclusion, job_id=198):
+        return {
+            **self.api.jobs[0],
+            "id": job_id,
+            "name": HELPER.ARCHIVE,
+            "conclusion": conclusion,
+            "started_at": None,
+            "completed_at": None,
+        }
+
+    def test_the_archive_job_is_optional_and_never_a_release_input(self):
+        """Protects: a CI run that lists the Archive Release Build job, in any
+        completed state, is still admitted, and one that predates the job is too.
+
+        Detects: the job inventory check rejecting the transport-only archive job
+        added to ci.yml, which would block every release reuse after it merged.
+        Needs: the closed API fixtures only; no network or credentials.
+        Breadcrumb: release_windows_artifact.jobs_snapshot; ci.yml archive job.
+        """
+        for conclusion in ("success", "skipped", "failure"):
+            with self.subTest(conclusion):
+                self.setUp()
+                self.api.jobs.append(self.archive_job(conclusion))
+                _, receipt = self.admit()
+                self.assertEqual(
+                    set(receipt["jobs"]), {*JOBS, HELPER.MANUAL, HELPER.ARCHIVE}
+                )
+
+    def test_a_duplicated_or_unknown_extra_job_is_still_refused(self):
+        """Protects: allowing the archive job does not open the inventory to
+        other or repeated jobs.
+
+        Detects: the inventory check accepting a second archive job or any other
+        unlisted job. Positive control: the single archive job is admitted by the
+        sibling test.
+        Needs: the closed API fixtures only; no network or credentials.
+        Breadcrumb: release_windows_artifact.jobs_snapshot.
+        """
+        self.api.jobs.extend(
+            [self.archive_job("success"), self.archive_job("success", 197)]
+        )
+        with self.assertRaisesRegex(HELPER.Refused, "inventory"):
+            self.admit()
+        self.setUp()
+        self.api.jobs.append({**self.archive_job("success"), "name": "Unreviewed job"})
+        with self.assertRaisesRegex(HELPER.Refused, "inventory"):
+            self.admit()
+
     def test_reviewed_inventory_matches_independent_sixteen_job_oracle(self):
         rule, _ = HELPER.policy(self.root)
         self.assertEqual(rule["required_jobs"], JOBS)
