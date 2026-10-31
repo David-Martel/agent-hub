@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily agent-bus history export to the agent-hub SFTP drop
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+Unit=agent-hub-history-export.service
+
+[Install]
+WantedBy=timers.target

@@ -288,3 +288,4 @@ path.
 | [`sysctl/60-agent-bus-redis-overcommit.conf.in`](sysctl/60-agent-bus-redis-overcommit.conf.in) | `vm.overcommit_memory` for Redis's background fork |
 | [`tests/backend-hardening-test.sh`](tests/backend-hardening-test.sh) | Preflight, dump and installer fixture (fakes only; run in CI Unit Tests) |
 | [`tests/hub-restart-test.sh`](tests/hub-restart-test.sh) | `scripts/hub-restart.sh`: dry run changes nothing, apply reads back through the pinned HTTP service, each failed readback rolls back (fakes only; run it by hand) |
+| [`history-export/`](history-export/README.md) | Daily user-timer export of the full bus history to the restricted SFTP drop on the dtm-* hosts, read back and hash-verified; Windows drop installer |
