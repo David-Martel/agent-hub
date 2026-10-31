@@ -239,16 +239,19 @@ jobs:
           fi
           sha256sum agent-bus agent-bus-http agent-bus-mcp | tee artifact-sha256.txt
           cat build-provenance.txt artifact-sha256.txt >> "$GITHUB_STEP_SUMMARY"
+      # Transport only: archive-release-build copies this to dtm-p1gen7 in the same
+      # run, so a GitHub artifact quota must not fail the build (it fails the archive).
       # Nothing in a PR run consumes the Linux binaries (no job needs
       # build-release), and three ~14 MB uploads per PR revision filled the
       # account's Actions artifact quota. The build above still proves the
       # release profile compiles; only main and manual runs keep the files.
       - uses: actions/upload-artifact@v7
+        continue-on-error: true
         if: github.event_name != 'pull_request'
         with:
           name: agent-bus-${{ matrix.name }}
           if-no-files-found: error
-          retention-days: 2
+          retention-days: 1
           compression-level: 9
           path: |
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus
@@ -256,6 +259,56 @@ jobs:
             ${{ env.CARGO_TARGET_DIR }}/release/agent-bus-mcp
             ${{ env.CARGO_TARGET_DIR }}/release/build-provenance.txt
             ${{ env.CARGO_TARGET_DIR }}/release/artifact-sha256.txt
+
+  archive-release-build:
+    name: Archive Release Build (dtm-p1gen7)
+    # Owner rule (2026-10-29): agent-hub artifacts live on dtm-* hosts and the
+    # owner's Drive, never on vigil1, the Sparks or the fleet share. GitHub is
+    # only the transport; this job hash-verifies every Release Build leg
+    # against its artifact-sha256.txt and archives it with a manifest. It needs
+    # every leg when build-release succeeded, and keeps what exists otherwise.
+    runs-on: [self-hosted, Windows, X64, agent-hub-native-smoke]
+    needs: [build-release]
+    # PR runs do not upload the Linux binaries (see build-release), so there is
+    # nothing to archive; only main and manual runs reach this job.
+    if: ${{ github.event_name != 'pull_request' && !cancelled() && needs.build-release.result != 'skipped' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      # One download per leg into its own directory: a pattern download extracts a
+      # single match straight into the target, which would drop the leg's name. A leg
+      # that failed to build has no artifact and its step is allowed to fail; the
+      # --require list below still demands all three when the build succeeded.
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: agent-bus-linux-x64
+          path: ci-artifacts/release-build/agent-bus-linux-x64
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: agent-bus-linux-arm64-1
+          path: ci-artifacts/release-build/agent-bus-linux-arm64-1
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: agent-bus-linux-arm64-2
+          path: ci-artifacts/release-build/agent-bus-linux-arm64-2
+      - name: Verify and archive under C:\codedev\agent-hub-artifacts\ci
+        shell: pwsh
+        env:
+          BUILD_RESULT: ${{ needs.build-release.result }}
+        run: |
+          $require = @()
+          if ($env:BUILD_RESULT -ceq 'success') {
+            $require = @('--require', 'agent-bus-linux-x64', '--require', 'agent-bus-linux-arm64-1', '--require', 'agent-bus-linux-arm64-2')
+          }
+          python -I -B scripts/ci/archive_release_build.py `
+            --source "$PWD/ci-artifacts/release-build" `
+            --dest-root 'C:\codedev\agent-hub-artifacts\ci' `
+            --run-id $env:GITHUB_RUN_ID --attempt $env:GITHUB_RUN_ATTEMPT `
+            --job build-release --revision $env:GITHUB_SHA @require
+          if ($LASTEXITCODE -ne 0) { throw 'Release Build archive failed' }
 
   smoke-functional:
     name: CLI And HTTP Smoke

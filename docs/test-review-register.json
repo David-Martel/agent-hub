@@ -8406,16 +8406,16 @@
       },
       "code_under_test": {
         "path": ".github/workflows/dependabot-automerge.yml",
-        "sha256": "a671e28f6db367bebabc96d578a87999f782a490f77a5d601a1bb5134faad8dc"
+        "sha256": "40a10394f202a723a210b72a9a5276868014f560223b6793294fd5b063cece03"
       },
       "shared_sources": [
         {
           "path": "scripts/ci/test_dependabot_admission.py",
-          "sha256": "26437d15dd32543be704a839f2f7dc97dc4e5a4f90798cc1335effd4baae7c6a"
+          "sha256": "cd88e0d29c099e12ccfcc5feb65d187ee92037c6def537bf468789fc4ba923a5"
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "586ab0ad466e8f2828a4123d414628ebbb1546e559cdd1caa3d27b3c8902ff9e"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         }
       ],
       "relevance": "Dependabot admission consumes exact-source CI inventory and manual-job skip evidence; any ci.yml byte change requires this refresh.",
@@ -8462,7 +8462,7 @@
         },
         {
           "path": ".github/workflows/ci.yml",
-          "sha256": "586ab0ad466e8f2828a4123d414628ebbb1546e559cdd1caa3d27b3c8902ff9e"
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
         }
       ],
       "relevance": "The shipping CI source check requires the exact Node pin.",
@@ -8496,7 +8496,7 @@
       },
       "code_under_test": {
         "path": ".github/workflows/ci.yml",
-        "sha256": "586ab0ad466e8f2828a4123d414628ebbb1546e559cdd1caa3d27b3c8902ff9e"
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
       },
       "shared_sources": [
         {
@@ -8719,6 +8719,930 @@
       "breaking_behavior": "None; temporary files only."
     },
     {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:20:00Z",
+      "reviewed_source_state": "Reviewed-hash refresh for the agent-hub archive PR: ci.yml gains the Archive Release Build (dtm-p1gen7) job (needs build-release, runs on agent-hub-native-smoke, not in the required inventory) and the build-release upload becomes continue-on-error with retention-days 1. The 16 required job names, their runs-on, if and needs lines, the manual-only Windows Native Validation skip and the agent-bus-windows-x64 upload (retention-days 7) are unchanged. The author of the refresh wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_dependabot_admission.py::AdmissionTests::test_trusted_policy_inventory_matches_independent_producer_oracle",
+      "scope": "ci.yml hash refresh only; Reviewed CI producer hash refresh only: REVIEWED_JOB_INVENTORY_JSON and REVIEWED_SKIP_JOBS_JSON source_sha256 in dependabot-automerge.yml and REVIEWED_HASH plus the SKIPS source_sha256 in the test move from 9c2bc8ec... to 7b7b3e1a.... The 16 required jobs, the manual-only Windows Native Validation skip and every assertion are unchanged.",
+      "selector_source": {
+        "path": "scripts/ci/test_dependabot_admission.py",
+        "first_line": 436,
+        "last_line": 460,
+        "sha256": "dd3925017fa83443b7f7f06b0bcf326e48543a305658ec9df7eaa7a5101773b6"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/dependabot-automerge.yml",
+        "sha256": "40a10394f202a723a210b72a9a5276868014f560223b6793294fd5b063cece03"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_dependabot_admission.py",
+          "sha256": "cd88e0d29c099e12ccfcc5feb65d187ee92037c6def537bf468789fc4ba923a5"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        }
+      ],
+      "relevance": "Dependabot admission consumes exact-source CI inventory and manual-job skip evidence; any ci.yml byte change requires this refresh.",
+      "protections": "Only the reviewed current CI producer can satisfy the complete independent 16-job oracle and manual-only skip.",
+      "detects": "Unknown or changed producers, missing jobs and hash-only manipulations remain rejected.",
+      "needs": "Existing fixture harness; no live GitHub changes or credentials.",
+      "coverage": {
+        "failing_input_or_control": "Before the refresh, unittest discover on the nextest branch failed 7 assertions and 5 errors (test_dependabot_admission.py and test_release_windows_artifact.py 'reviewed CI producer hash differs'); after it the full scripts/ci discovery passes.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "Admits the CI producer whose diff from the previously reviewed source moves the Unit Tests job's two test steps to the nextest-ci action. Does not change job membership, routing, skips, assertions or gate implementation."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:20:00Z",
+      "reviewed_source_state": "Reviewed-hash refresh for the agent-hub archive PR: ci.yml gains the Archive Release Build (dtm-p1gen7) job (needs build-release, runs on agent-hub-native-smoke, not in the required inventory) and the build-release upload becomes continue-on-error with retention-days 1. The 16 required job names, their runs-on, if and needs lines, the manual-only Windows Native Validation skip and the agent-bus-windows-x64 upload (retention-days 7) are unchanged. The author of the refresh wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_toolchain_policy.py::ToolchainPolicyTests::test_floating_node_pin_fails",
+      "scope": "ci.yml hash refresh only; selector, code under test, policy JSON and test file are byte-identical to the previous row. The Node pin lines in ci.yml are unchanged.",
+      "selector_source": {
+        "path": "scripts/ci/test_toolchain_policy.py",
+        "first_line": 52,
+        "last_line": 57,
+        "sha256": "addeee178a1162059cf196ee6de00eff6843d6238ad5f08861e1a297b4343258"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/toolchain_policy.py",
+        "sha256": "580f65450b4d20368d2604be932f2f5dec25e0dfa3414569dcdb06dda7384151"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_toolchain_policy.py",
+          "sha256": "eb8e687fbc07067657c2bc4d783f59ecd0e9554e8185ca1ea01f3b8773ab3815"
+        },
+        {
+          "path": "scripts/ci/toolchain-policy.json",
+          "sha256": "c0eed523870753e7c10e1b54b0915ddd46b3919650179ac068da79c02b6b4ad7"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        }
+      ],
+      "relevance": "The shipping CI source check requires the exact Node pin.",
+      "protections": "Keep CI Node selection exact and policy-consistent.",
+      "detects": "A floating Node pin; assertIn also detects a stale mutation that changes no bytes.",
+      "needs": "Temporary source fixture; no external services, network or hardware.",
+      "coverage": {
+        "failing_input_or_control": "Unchanged from the previous row; the mutation needle is derived from policy and the retention-days diff does not touch it.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None; records the new ci.yml hash for a test-runner change. Does not permit floating versions or relax the production verifier."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:20:00Z",
+      "reviewed_source_state": "Reviewed-hash refresh for the agent-hub archive PR: ci.yml gains the Archive Release Build (dtm-p1gen7) job (needs build-release, runs on agent-hub-native-smoke, not in the required inventory) and the build-release upload becomes continue-on-error with retention-days 1. The 16 required job names, their runs-on, if and needs lines, the manual-only Windows Native Validation skip and the agent-bus-windows-x64 upload (retention-days 7) are unchanged. The author of the refresh wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_release_windows_artifact.py::ReleaseSourceControls::test_reused_windows_ci_artifact_outlives_the_tag_window",
+      "scope": "ci.yml hash refresh only; the agent-bus-windows-x64 upload and its retention-days 7 are unchanged, and the selector and its shared sources are byte-identical to the previous row.",
+      "selector_source": {
+        "path": "scripts/ci/test_release_windows_artifact.py",
+        "first_line": 631,
+        "last_line": 663,
+        "sha256": "6d54f5db946fc09477e9e775f2911786ace4e7183bb54c4a718b5faa2ca98375"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/ci.yml",
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_release_windows_artifact.py",
+          "sha256": "b9deb74727a92a8e9641166a4f9a2e303f7e02360eefeec1268fb20c5ada876c"
+        },
+        {
+          "path": "scripts/ci/release_windows_artifact.py",
+          "sha256": "1563fa86b346b25415236dce0979a26705b2db51a524470910d629d358a02e82"
+        }
+      ],
+      "relevance": "release.yml reuses the main CI run's Windows artifact and release_windows_artifact.py refuses an expired one, so its retention bounds the tag window.",
+      "protections": "A v* tag cut up to 7 days after its main CI run can still reuse the Windows artifact.",
+      "detects": "retention-days below 7, or missing, on the agent-bus-windows-x64 upload; the parser's own control proves it reads a lowered value.",
+      "needs": "Actual ci.yml; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Unchanged from the previous row; the nextest diff does not touch the upload step.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None; reads ci.yml only."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:20:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::ArchiveTests::test_verified_artifacts_are_copied_with_a_read_back_manifest",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 78,
+        "last_line": 109,
+        "sha256": "0e6dd0c60a254548b8aab058068decffe9f2b368c143f3e2d419f5ad76b7932a"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/archive_release_build.py",
+        "sha256": "82f4fcc01b2ce7de85acc097f682820dd555bd709e12fd770a2a504f4c5fc5b0"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "710f9612b5724788db15d50336283d63143b76caa2bf15e3bbe8cdbb432fe7ee"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "Byte-identical archive with a read-back manifest at <run>/<attempt>/<job>/<artifact>.",
+      "detects": "A dropped file, a manifest hash that is not the archived bytes, or a wrong archive path.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:20:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::ArchiveTests::test_hash_mismatch_fails_and_leaves_no_archive",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 111,
+        "last_line": 126,
+        "sha256": "e8b4c89a77a0a7a2c26f3f6dad0805f9088ca7bf8fc3d085c1abe13c66fe263a"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/archive_release_build.py",
+        "sha256": "82f4fcc01b2ce7de85acc097f682820dd555bd709e12fd770a2a504f4c5fc5b0"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "710f9612b5724788db15d50336283d63143b76caa2bf15e3bbe8cdbb432fe7ee"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "A binary that differs from artifact-sha256.txt never reaches the archive.",
+      "detects": "A passing job on a hash mismatch or a leftover staging directory; positive control verifies the untampered tree first.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:20:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::ArchiveTests::test_an_existing_archive_is_never_overwritten",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 128,
+        "last_line": 144,
+        "sha256": "d7090706fa556b189da11546f8724b8bc87b22552fe72276342d8d8b5b99399c"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/archive_release_build.py",
+        "sha256": "82f4fcc01b2ce7de85acc097f682820dd555bd709e12fd770a2a504f4c5fc5b0"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "710f9612b5724788db15d50336283d63143b76caa2bf15e3bbe8cdbb432fe7ee"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "An archived run attempt is immutable.",
+      "detects": "A re-run or colliding run id replacing archived bytes.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:20:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::ArchiveTests::test_missing_required_artifact_and_wrong_provenance_fail",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 146,
+        "last_line": 175,
+        "sha256": "71c69a6d584a0684a07a17e8edff872da24d8385ef3b160a506fefad42e30b5d"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/archive_release_build.py",
+        "sha256": "82f4fcc01b2ce7de85acc097f682820dd555bd709e12fd770a2a504f4c5fc5b0"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "710f9612b5724788db15d50336283d63143b76caa2bf15e3bbe8cdbb432fe7ee"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "A successful Release Build is archived completely and only for its own commit.",
+      "detects": "A silently failed best-effort upload, provenance from another commit, or a hash list missing a binary.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:20:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::ArchiveTests::test_no_artifacts_and_nothing_required_is_a_no_op",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 177,
+        "last_line": 185,
+        "sha256": "f988d785a2e0cf634c5e30bee8f8f6fc0af92e6b8ac38734552a3d862efa6478"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/archive_release_build.py",
+        "sha256": "82f4fcc01b2ce7de85acc097f682820dd555bd709e12fd770a2a504f4c5fc5b0"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "710f9612b5724788db15d50336283d63143b76caa2bf15e3bbe8cdbb432fe7ee"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "A run with no Release Build output creates no archive directory.",
+      "detects": "An empty archive directory for a fully failed build.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:20:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::WorkflowContractTests::test_transport_uploads_are_best_effort_and_kept_one_day",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 213,
+        "last_line": 236,
+        "sha256": "416835f9a174ccb3b58304d4e5d1058f5f26dc32cd6d5e914014186db8b2ca9d"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/ci.yml",
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "710f9612b5724788db15d50336283d63143b76caa2bf15e3bbe8cdbb432fe7ee"
+        },
+        {
+          "path": "scripts/ci/archive_release_build.py",
+          "sha256": "82f4fcc01b2ce7de85acc097f682820dd555bd709e12fd770a2a504f4c5fc5b0"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "GitHub quota cannot fail a build; transport copies live one day.",
+      "detects": "continue-on-error or retention-days 1 dropped from the ci.yml Release Build upload or either release.yml upload; positive control rejects retention 2.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:20:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::WorkflowContractTests::test_archive_job_verifies_every_release_build_on_dtm_p1gen7",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 238,
+        "last_line": 260,
+        "sha256": "4952f797becc2f1b56de57172092ed62f2e51cb0605659e29985ddb3a565bf79"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/ci.yml",
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "710f9612b5724788db15d50336283d63143b76caa2bf15e3bbe8cdbb432fe7ee"
+        },
+        {
+          "path": "scripts/ci/archive_release_build.py",
+          "sha256": "82f4fcc01b2ce7de85acc097f682820dd555bd709e12fd770a2a504f4c5fc5b0"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "Every Release Build leg is hash-verified into the dtm-p1gen7 archive.",
+      "detects": "The archive job leaving the dtm-p1gen7 runner, losing needs build-release or -I, or a matrix leg missing from --require.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:21:00Z",
+      "reviewed_source_state": "Reviewed-hash refresh for the agent-hub archive PR: ci.yml gains the Archive Release Build (dtm-p1gen7) job (needs build-release, runs on agent-hub-native-smoke, not in the required inventory) and the build-release upload becomes continue-on-error with retention-days 1. The 16 required job names, their runs-on, if and needs lines, the manual-only Windows Native Validation skip and the agent-bus-windows-x64 upload (retention-days 7) are unchanged. The author of the refresh wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_dependabot_admission.py::AdmissionTests::test_trusted_policy_inventory_matches_independent_producer_oracle",
+      "scope": "ci.yml hash refresh only; Reviewed CI producer hash refresh only: REVIEWED_JOB_INVENTORY_JSON and REVIEWED_SKIP_JOBS_JSON source_sha256 in dependabot-automerge.yml and REVIEWED_HASH plus the SKIPS source_sha256 in the test move from 9c2bc8ec... to 7b7b3e1a.... The 16 required jobs, the manual-only Windows Native Validation skip and every assertion are unchanged.",
+      "selector_source": {
+        "path": "scripts/ci/test_dependabot_admission.py",
+        "first_line": 436,
+        "last_line": 460,
+        "sha256": "dd3925017fa83443b7f7f06b0bcf326e48543a305658ec9df7eaa7a5101773b6"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/dependabot-automerge.yml",
+        "sha256": "40a10394f202a723a210b72a9a5276868014f560223b6793294fd5b063cece03"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_dependabot_admission.py",
+          "sha256": "cd88e0d29c099e12ccfcc5feb65d187ee92037c6def537bf468789fc4ba923a5"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        }
+      ],
+      "relevance": "Dependabot admission consumes exact-source CI inventory and manual-job skip evidence; any ci.yml byte change requires this refresh.",
+      "protections": "Only the reviewed current CI producer can satisfy the complete independent 16-job oracle and manual-only skip.",
+      "detects": "Unknown or changed producers, missing jobs and hash-only manipulations remain rejected.",
+      "needs": "Existing fixture harness; no live GitHub changes or credentials.",
+      "coverage": {
+        "failing_input_or_control": "Before the refresh, unittest discover on the nextest branch failed 7 assertions and 5 errors (test_dependabot_admission.py and test_release_windows_artifact.py 'reviewed CI producer hash differs'); after it the full scripts/ci discovery passes.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "Admits the CI producer whose diff from the previously reviewed source moves the Unit Tests job's two test steps to the nextest-ci action. Does not change job membership, routing, skips, assertions or gate implementation."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:21:00Z",
+      "reviewed_source_state": "Reviewed-hash refresh for the agent-hub archive PR: ci.yml gains the Archive Release Build (dtm-p1gen7) job (needs build-release, runs on agent-hub-native-smoke, not in the required inventory) and the build-release upload becomes continue-on-error with retention-days 1. The 16 required job names, their runs-on, if and needs lines, the manual-only Windows Native Validation skip and the agent-bus-windows-x64 upload (retention-days 7) are unchanged. The author of the refresh wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_toolchain_policy.py::ToolchainPolicyTests::test_floating_node_pin_fails",
+      "scope": "ci.yml hash refresh only; selector, code under test, policy JSON and test file are byte-identical to the previous row. The Node pin lines in ci.yml are unchanged.",
+      "selector_source": {
+        "path": "scripts/ci/test_toolchain_policy.py",
+        "first_line": 52,
+        "last_line": 57,
+        "sha256": "addeee178a1162059cf196ee6de00eff6843d6238ad5f08861e1a297b4343258"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/toolchain_policy.py",
+        "sha256": "580f65450b4d20368d2604be932f2f5dec25e0dfa3414569dcdb06dda7384151"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_toolchain_policy.py",
+          "sha256": "eb8e687fbc07067657c2bc4d783f59ecd0e9554e8185ca1ea01f3b8773ab3815"
+        },
+        {
+          "path": "scripts/ci/toolchain-policy.json",
+          "sha256": "c0eed523870753e7c10e1b54b0915ddd46b3919650179ac068da79c02b6b4ad7"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        }
+      ],
+      "relevance": "The shipping CI source check requires the exact Node pin.",
+      "protections": "Keep CI Node selection exact and policy-consistent.",
+      "detects": "A floating Node pin; assertIn also detects a stale mutation that changes no bytes.",
+      "needs": "Temporary source fixture; no external services, network or hardware.",
+      "coverage": {
+        "failing_input_or_control": "Unchanged from the previous row; the mutation needle is derived from policy and the retention-days diff does not touch it.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None; records the new ci.yml hash for a test-runner change. Does not permit floating versions or relax the production verifier."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:21:00Z",
+      "reviewed_source_state": "Reviewed-hash refresh for the agent-hub archive PR: ci.yml gains the Archive Release Build (dtm-p1gen7) job (needs build-release, runs on agent-hub-native-smoke, not in the required inventory) and the build-release upload becomes continue-on-error with retention-days 1. The 16 required job names, their runs-on, if and needs lines, the manual-only Windows Native Validation skip and the agent-bus-windows-x64 upload (retention-days 7) are unchanged. The author of the refresh wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_release_windows_artifact.py::ReleaseSourceControls::test_reused_windows_ci_artifact_outlives_the_tag_window",
+      "scope": "ci.yml hash refresh only; the agent-bus-windows-x64 upload and its retention-days 7 are unchanged, and the selector and its shared sources are byte-identical to the previous row.",
+      "selector_source": {
+        "path": "scripts/ci/test_release_windows_artifact.py",
+        "first_line": 631,
+        "last_line": 663,
+        "sha256": "6d54f5db946fc09477e9e775f2911786ace4e7183bb54c4a718b5faa2ca98375"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/ci.yml",
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_release_windows_artifact.py",
+          "sha256": "b9deb74727a92a8e9641166a4f9a2e303f7e02360eefeec1268fb20c5ada876c"
+        },
+        {
+          "path": "scripts/ci/release_windows_artifact.py",
+          "sha256": "1563fa86b346b25415236dce0979a26705b2db51a524470910d629d358a02e82"
+        }
+      ],
+      "relevance": "release.yml reuses the main CI run's Windows artifact and release_windows_artifact.py refuses an expired one, so its retention bounds the tag window.",
+      "protections": "A v* tag cut up to 7 days after its main CI run can still reuse the Windows artifact.",
+      "detects": "retention-days below 7, or missing, on the agent-bus-windows-x64 upload; the parser's own control proves it reads a lowered value.",
+      "needs": "Actual ci.yml; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "Unchanged from the previous row; the nextest diff does not touch the upload step.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None; reads ci.yml only."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:21:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::ArchiveTests::test_verified_artifacts_are_copied_with_a_read_back_manifest",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 78,
+        "last_line": 109,
+        "sha256": "0e6dd0c60a254548b8aab058068decffe9f2b368c143f3e2d419f5ad76b7932a"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/archive_release_build.py",
+        "sha256": "78695f9d11fc76c4c36d4195d040792a50e9e13159ade471b78f89e025e0756a"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "Byte-identical archive with a read-back manifest at <run>/<attempt>/<job>/<artifact>.",
+      "detects": "A dropped file, a manifest hash that is not the archived bytes, or a wrong archive path.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:21:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::ArchiveTests::test_hash_mismatch_fails_and_leaves_no_archive",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 111,
+        "last_line": 126,
+        "sha256": "e8b4c89a77a0a7a2c26f3f6dad0805f9088ca7bf8fc3d085c1abe13c66fe263a"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/archive_release_build.py",
+        "sha256": "78695f9d11fc76c4c36d4195d040792a50e9e13159ade471b78f89e025e0756a"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "A binary that differs from artifact-sha256.txt never reaches the archive.",
+      "detects": "A passing job on a hash mismatch or a leftover staging directory; positive control verifies the untampered tree first.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:21:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::ArchiveTests::test_an_existing_archive_is_never_overwritten",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 128,
+        "last_line": 144,
+        "sha256": "d7090706fa556b189da11546f8724b8bc87b22552fe72276342d8d8b5b99399c"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/archive_release_build.py",
+        "sha256": "78695f9d11fc76c4c36d4195d040792a50e9e13159ade471b78f89e025e0756a"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "An archived run attempt is immutable.",
+      "detects": "A re-run or colliding run id replacing archived bytes.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:21:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::ArchiveTests::test_missing_required_artifact_and_wrong_provenance_fail",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 146,
+        "last_line": 175,
+        "sha256": "71c69a6d584a0684a07a17e8edff872da24d8385ef3b160a506fefad42e30b5d"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/archive_release_build.py",
+        "sha256": "78695f9d11fc76c4c36d4195d040792a50e9e13159ade471b78f89e025e0756a"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "A successful Release Build is archived completely and only for its own commit.",
+      "detects": "A silently failed best-effort upload, provenance from another commit, or a hash list missing a binary.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:21:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::ArchiveTests::test_no_artifacts_and_nothing_required_is_a_no_op",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 177,
+        "last_line": 185,
+        "sha256": "f988d785a2e0cf634c5e30bee8f8f6fc0af92e6b8ac38734552a3d862efa6478"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/archive_release_build.py",
+        "sha256": "78695f9d11fc76c4c36d4195d040792a50e9e13159ade471b78f89e025e0756a"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "A run with no Release Build output creates no archive directory.",
+      "detects": "An empty archive directory for a fully failed build.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:21:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::WorkflowContractTests::test_transport_uploads_are_best_effort_and_kept_one_day",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 213,
+        "last_line": 236,
+        "sha256": "416835f9a174ccb3b58304d4e5d1058f5f26dc32cd6d5e914014186db8b2ca9d"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/ci.yml",
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
+        },
+        {
+          "path": "scripts/ci/archive_release_build.py",
+          "sha256": "78695f9d11fc76c4c36d4195d040792a50e9e13159ade471b78f89e025e0756a"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "GitHub quota cannot fail a build; transport copies live one day.",
+      "detects": "continue-on-error or retention-days 1 dropped from the ci.yml Release Build upload or either release.yml upload; positive control rejects retention 2.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
+      "reviewer": "claude-asus-ci-capacity",
+      "reviewer_type": "author",
+      "reviewer_authored_test_or_fix": true,
+      "date": "2026-10-29",
+      "commit_reviewed": null,
+      "base_commit": "afac2d3553d22c0317309e9292d39cb888750638",
+      "disposition": "keep",
+      "review_completed_utc": "2026-10-29T17:21:00Z",
+      "reviewed_source_state": "New selector for the agent-hub archive PR (owner rule 2026-10-29: agent-hub artifacts live on dtm-* hosts; GitHub is transport only). The author wrote this row; it is not an independent review.",
+      "selector": "scripts/ci/test_archive_release_build.py::WorkflowContractTests::test_archive_job_verifies_every_release_build_on_dtm_p1gen7",
+      "scope": "New selector.",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 238,
+        "last_line": 260,
+        "sha256": "4952f797becc2f1b56de57172092ed62f2e51cb0605659e29985ddb3a565bf79"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/ci.yml",
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
+        },
+        {
+          "path": "scripts/ci/archive_release_build.py",
+          "sha256": "78695f9d11fc76c4c36d4195d040792a50e9e13159ade471b78f89e025e0756a"
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "sha256": "30533e9c5e8d7baa437ca36082b6b18ecd5ac307082b60dd0b55cb332003d002"
+        }
+      ],
+      "relevance": "archive-release-build copies every Release Build leg to C:\\codedev\\agent-hub-artifacts\\ci on dtm-p1gen7.",
+      "protections": "Every Release Build leg is hash-verified into the dtm-p1gen7 archive.",
+      "detects": "The archive job leaving the dtm-p1gen7 runner, losing needs build-release or -I, or a matrix leg missing from --require.",
+      "needs": "A temporary directory or the actual workflow files; no credentials, network or services.",
+      "coverage": {
+        "failing_input_or_control": "The two workflow-contract selectors fail (4 failures) against origin/main's ci.yml and release.yml and pass on this branch; the helper selectors each assert a rejected input next to an accepted one.",
+        "fresh_independent_selector_pass": false,
+        "execution_evidence": "Author ran the CI command (unittest discover -s scripts/ci -p test_*.py) on asuspro13: 338 tests, OK, 1 skipped. actionlint is clean on ci.yml and release.yml."
+      },
+      "breaking_behavior": "None outside the new job; the archive job is not in the required inventory."
+    },
+    {
       "selector": "crates/agent-bus-cli/tests/hub_routing_test.rs::export_reads_selected_hub_as_ndjson_with_all_filters",
       "reviewer": "claude-second-review",
       "reviewer_type": "independent_agent",
@@ -8789,6 +9713,123 @@
       "coverage": "At 43827b9 on minisforum-ms01, from a git archive export: cargo test -p agent-bus --test hub_routing_test passed 52 of 53 tests. The one failure was direct_commands_surface_http_failures_without_success_output_or_local_fallback (hub.hits() == 2 at line 751), which is outside this PR's diff. It then passed 10 of 10 runs on this head and 10 of 10 on main: an intermittent hit-count race, not this change. Mutation control: making the remote branch of cmd_export unreachable makes all three export controls fail, at lines 75, 132 and 163. The controls verify literal NDJSON records, all nine encoded query pairs including both tags, bearer authentication, the refusal of a limit above 500 before any /messages request, and HTTP 503 propagation with no local fallback.",
       "breaking_behavior": "Allows correctly scoped remote exports up to the documented 500-row reader cap. Larger remote requests fail explicitly; no pagination, live database mutation or deployment is introduced.",
       "remaining_scope": "This disposition does not refresh historical test reviews or certify unrelated backend/runtime/platform acceptance."
+    },
+    {
+      "selector": "scripts/ci/test_archive_release_build.py::WorkflowContractTests::test_archive_job_and_its_upload_skip_pull_request_runs_together",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-30",
+      "commit_reviewed": null,
+      "scope": "Workflow-contract text check over the actual ci.yml; source-only, no runner, network or credentials",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "scripts/ci/test_archive_release_build.py",
+        "first_line": 262,
+        "last_line": 278,
+        "sha256": "24a863a5947f9e475400c371865af9931ea807aa5f71bc8ace40ab14e8953d24"
+      },
+      "code_under_test": {
+        "path": ".github/workflows/ci.yml",
+        "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_archive_release_build.py",
+          "sha256": "a28d81a9b1629ca4a2499946a8170a7ade8bb49c805042f7b1784de0977d2223"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "sha256": "57e77665556494f781b452faf801254e3bca52ff77c0a283560cad96bb70b7a5"
+        }
+      ],
+      "protections": "The Archive Release Build job never waits on an artifact that pull_request runs do not upload.",
+      "detects": "The build-release upload losing its pull_request skip, or the archive job losing the same condition, so PR runs fail on an empty download.",
+      "needs": "The actual ci.yml only; no credentials, network or services.",
+      "breadcrumb": "ci.yml build-release upload step and archive-release-build if; companion of test_transport_uploads_are_best_effort_and_kept_one_day.",
+      "relevance": "Main's quota fix skips the build-release upload on pull_request; the archive job downloads that artifact and so carries the same condition.",
+      "coverage": {
+        "author_control": "Author removed the condition from the archive job and the selector failed; restored, the scripts/ci suite passes (346 passed, 1 skipped). No independent replay."
+      },
+      "breaking_behavior": "None; reads workflow text only."
+    },
+    {
+      "selector": "scripts/ci/test_release_windows_artifact.py::AdmissionTests::test_the_archive_job_is_optional_and_never_a_release_input",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-30",
+      "commit_reviewed": null,
+      "scope": "Closed API fixtures for the Windows release-reuse admission; source-only, no network or credentials",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "scripts/ci/test_release_windows_artifact.py",
+        "first_line": 245,
+        "last_line": 261,
+        "sha256": "8b203ca7951a0e25cd86d683585942da9e26388b33d7bba4c5df5fde12a3f04a"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/release_windows_artifact.py",
+        "sha256": "4c65cea1f2bb5f5fdcbb9f72f8edf30aa46d8e8f0dc8b2c0b96fd04d18c2b3de"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_release_windows_artifact.py",
+          "sha256": "0bf09393ad1e81b61c108240081d6c27d5f044bdf6dd972e897949aa53cff94e"
+        },
+        {
+          "path": "scripts/ci/release_windows_artifact.py",
+          "sha256": "4c65cea1f2bb5f5fdcbb9f72f8edf30aa46d8e8f0dc8b2c0b96fd04d18c2b3de"
+        }
+      ],
+      "protections": "A CI run that lists the Archive Release Build job in any completed state, or predates it, is still admitted for release reuse.",
+      "detects": "The job inventory check rejecting the transport-only archive job added to ci.yml, which would block every release reuse after it merged.",
+      "needs": "The closed API fixtures only; no network or credentials.",
+      "breadcrumb": "jobs_snapshot; ci.yml archive-release-build.",
+      "relevance": "ci.yml gains a transport-only Archive Release Build job; release reuse must keep admitting CI runs that list it.",
+      "coverage": {
+        "author_control": "Author ran the selector against the helper before the change (errors) and after it (pass). No independent replay."
+      },
+      "breaking_behavior": "None; fixture-only."
+    },
+    {
+      "selector": "scripts/ci/test_release_windows_artifact.py::AdmissionTests::test_a_duplicated_or_unknown_extra_job_is_still_refused",
+      "reviewer": null,
+      "reviewer_type": "pending_independent_agent",
+      "reviewer_authored_test_or_fix": null,
+      "date": "2026-10-30",
+      "commit_reviewed": null,
+      "scope": "Closed API fixtures for the Windows release-reuse admission; source-only, no network or credentials",
+      "disposition": "unreviewed",
+      "selector_source": {
+        "path": "scripts/ci/test_release_windows_artifact.py",
+        "first_line": 263,
+        "last_line": 281,
+        "sha256": "15d1e39626336166450990c77d3fdc45bfdb7b8a4aa94a06d51c59ced77fd2ba"
+      },
+      "code_under_test": {
+        "path": "scripts/ci/release_windows_artifact.py",
+        "sha256": "4c65cea1f2bb5f5fdcbb9f72f8edf30aa46d8e8f0dc8b2c0b96fd04d18c2b3de"
+      },
+      "shared_sources": [
+        {
+          "path": "scripts/ci/test_release_windows_artifact.py",
+          "sha256": "0bf09393ad1e81b61c108240081d6c27d5f044bdf6dd972e897949aa53cff94e"
+        },
+        {
+          "path": "scripts/ci/release_windows_artifact.py",
+          "sha256": "4c65cea1f2bb5f5fdcbb9f72f8edf30aa46d8e8f0dc8b2c0b96fd04d18c2b3de"
+        }
+      ],
+      "protections": "Allowing the archive job does not open the release-reuse job inventory to other or repeated jobs.",
+      "detects": "The inventory check accepting a second archive job or any other unlisted job.",
+      "needs": "The closed API fixtures only; no network or credentials.",
+      "breadcrumb": "jobs_snapshot; sibling test_the_archive_job_is_optional_and_never_a_release_input.",
+      "relevance": "ci.yml gains a transport-only Archive Release Build job; release reuse must keep admitting CI runs that list it.",
+      "coverage": {
+        "author_control": "Author ran the selector against the helper before the change (errors) and after it (pass). No independent replay."
+      },
+      "breaking_behavior": "None; fixture-only."
     }
   ],
   "historical_reviews": [
