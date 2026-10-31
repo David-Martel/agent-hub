@@ -58,6 +58,13 @@ $acl.AddAccessRule((Rule 'S-1-5-32-545' $rx $both $P::None))
 $acl.AddAccessRule((Rule "$env:COMPUTERNAME\$user" $dirWrite $I::ContainerInherit $P::None))
 $acl.AddAccessRule((Rule "$env:COMPUTERNAME\$user" $rx $I::ObjectInherit $P::InheritOnly))
 $acl.AddAccessRule((Rule 'S-1-3-4' $rx $both $P::None))
+# The prune account (Install-AgentHubPrune.ps1) keeps its delete rights across a re-run of
+# this installer. These two ACEs must stay identical to the ones that installer adds.
+if (Get-LocalUser -Name 'agenthubprune' -ErrorAction SilentlyContinue) {
+    $pruneDirRights = $rx -bor $F::DeleteSubdirectoriesAndFiles
+    $acl.AddAccessRule((Rule "$env:COMPUTERNAME\agenthubprune" $pruneDirRights $I::ContainerInherit $P::None))
+    $acl.AddAccessRule((Rule "$env:COMPUTERNAME\agenthubprune" $rx $I::ObjectInherit $P::InheritOnly))
+}
 Set-Acl -LiteralPath $root -AclObject $acl
 if (Get-ChildItem -Force $root) { & icacls "$root\*" /reset /T /C /Q | Out-Null }
 & icacls $root

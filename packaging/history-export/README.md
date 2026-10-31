@@ -33,12 +33,15 @@ Nothing to build. The job is one Python file run with
 ## Test
 
 ```bash
-python3 -B -m unittest scripts/ci/test_history_export.py -v
+python3 -B -m unittest scripts/ci/test_history_export.py scripts/ci/test_history_prune.py -v
 ```
 
 [`scripts/ci/test_history_export.py`](../../scripts/ci/test_history_export.py)
-runs in CI's Unit Tests step through `unittest discover -s scripts/ci`. It uses a
-fake `sftp` and needs no network, PostgreSQL, Redis or drop host.
+and [`scripts/ci/test_history_prune.py`](../../scripts/ci/test_history_prune.py)
+run in CI's Unit Tests step through `unittest discover -s scripts/ci`. They use a
+fake `sftp` and need no network, PostgreSQL, Redis or drop host. The prune tests
+run the real PowerShell script and skip, saying so, where no `pwsh` or
+`powershell` exists.
 
 ## Run
 
@@ -155,6 +158,79 @@ redundancy. When the owner asks for a Drive copy, an agent runs one
 the gzip NDJSON parts. MANIFEST.json's `body_encoding` field explains the Redis
 LZ4 bodies.
 
-**Retention**: the drop cannot delete anything, so bundles accumulate (about
-60 MB a day in October 2026). An administrator-side prune runs separately from
-the drop account.
+## Retention
+
+The drop account cannot delete anything, so bundles accumulate (about 60 MB a
+day in October 2026). [`windows/Invoke-AgentHubPrune.ps1`](windows/Invoke-AgentHubPrune.ps1)
+prunes them on each drop host. It runs daily at 03:30 as its own local account,
+`agenthubprune`, never as `agenthubdrop`, and keeps:
+
+- the newest 14 bundles by directory creation time;
+- every bundle named in another receipt or MANIFEST.json under
+  `C:\codedev\agent-hub-artifacts`, or listed in the pin file `incoming\KEEP`;
+- every bundle that fails verification, logged as `anomaly-kept`.
+
+Before each delete it checks the bundle name against sha256(SHA256SUMS), every
+listed hash, and that no file is unlisted or missing. It then appends a
+`remove` line with those hashes to `prune-log\prune.ndjson` and deletes the
+bundle and its receipt. A delete that fails adds `remove-failed` with the
+error and fails the run, which shows as a nonzero last result on the task.
+`-WhatIf` logs `would-remove` instead and deletes nothing.
+
+**Install** on each drop host, elevated, after
+[`Install-AgentHubDrop.ps1`](windows/Install-AgentHubDrop.ps1):
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File Install-AgentHubPrune.ps1
+```
+
+The installer creates or updates the account, grants it only "Log on as a
+batch job", and adds two ACEs on `incoming`: list, read and delete-child on
+folders, and read on files. It gives the account Modify on `prune-log` and read
+on `C:\ProgramData\agent-hub-prune`, which holds the copy of the script the
+task runs. The account cannot change that copy. The drop installer re-adds the
+same two ACEs when it rebuilds the `incoming` DACL, and a test keeps the two
+installers in step. Each run sets a fresh random password, hands it to Task
+Scheduler for the task's password logon, refreshes every other task of the
+account, and keeps no copy. The installer then reads the task back and fails
+unless the task runs as `agenthubprune` with a password logon.
+
+Two findings from dtm-p1gen7 (2026-10-29) shaped this:
+
+- **S4U is refused.** Registering the task with an S4U logon failed with
+  E_ACCESSDENIED, even as SYSTEM. The cause was not found. Register-ScheduledTask
+  reported that failure as a non-terminating error, so a check that did not read
+  the task back saw success. Password logon works.
+- **Remove-Item -Force is denied** under this account, while
+  `[IO.Directory]::Delete` succeeds. The likely cause is that `-Force` resets
+  attributes first, which needs WriteAttributes, and the account does not hold
+  that right. The prune therefore deletes through .NET, and a static test keeps
+  it that way, because pwsh on Linux cannot reproduce the ACL.
+
+**Self-test with the real account**: stage a few synthetic bundles under
+`incoming\_prune-selftest`, register a second, untriggered task against that
+folder, run it, and check the log:
+
+```powershell
+.\Install-AgentHubPrune.ps1 -TaskName agent-hub-prune-selftest -NoTrigger -Keep 1 `
+    -PruneArguments '-Root "C:\codedev\agent-hub-artifacts\incoming\_prune-selftest" -ArtifactsRoot "C:\codedev\agent-hub-artifacts\incoming\_prune-selftest" -LogPath "C:\codedev\agent-hub-artifacts\prune-log\selftest.ndjson"'
+Start-ScheduledTask agent-hub-prune-selftest   # wait until it is no longer Running
+(Get-ScheduledTaskInfo agent-hub-prune-selftest).LastTaskResult   # 0
+Unregister-ScheduledTask agent-hub-prune-selftest -Confirm:$false
+```
+
+Remove the folder and `selftest.ndjson` afterwards. The self-test run also gives
+the main task the new password.
+
+**Limits.**
+
+- **Creation-time order.** The order rests on directory creation time. An SFTP
+  v3 client can set only access and modification times, so the drop account
+  cannot back-date a bundle. Two bundles created in the same second tie, and the
+  tie goes to the name.
+- **Flooding.** Retention counts bundles. An uploader holding the drop key could
+  push many valid bundles and move real ones out of the newest 14, on both hosts,
+  since both take uploads under that key. The defences: the key never leaves
+  asuspro13, `KEEP` pins any bundle that must stay, each run's `summary` line
+  records the bundle count, and the hub's PostgreSQL history can rebuild a
+  bundle.
