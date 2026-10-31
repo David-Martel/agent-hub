@@ -561,6 +561,21 @@ mod backend_tests {
     fn count(conn: &mut redis::Connection, key: &str) -> u64 {
         redis::cmd("XLEN").arg(key).query(conn).unwrap()
     }
+    fn redis_now_ms(conn: &mut redis::Connection) -> u64 {
+        let (seconds, micros): (u64, u64) = redis::cmd("TIME").query(conn).unwrap();
+        seconds * 1000 + micros / 1000
+    }
+    /// Waits on Redis's own clock, which decides key expiry, rather than a
+    /// fixed sleep that a stalled runner can outlast in either direction.
+    fn wait_until_redis_passes(conn: &mut redis::Connection, deadline_ms: u64) -> u64 {
+        loop {
+            let now = redis_now_ms(conn);
+            if now > deadline_ms {
+                return now;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
 
     #[test]
     #[ignore = "requires disposable Redis and PostgreSQL"]
@@ -875,25 +890,11 @@ mod backend_tests {
                 }
             }
         }
+        // The presence must still be live, by Redis's clock, when the first
+        // accept runs. With a 1 s TTL a loaded runner that spent over 1 s
+        // between the TIME read and that accept got Superseded, not Pending.
+        const TTL_SECONDS: u64 = 5;
         let (settings, mut conn) = fixture();
-        let (seconds, micros): (u64, u64) = redis::cmd("TIME").query(&mut conn).unwrap();
-        let now = seconds * 1000 + micros / 1000;
-        let temp = tempfile::tempdir().unwrap();
-        let private = temp.path().join("journal");
-        crate::outbox_private::create_directory(&private).unwrap();
-        let path = private.join("queue.jsonl");
-        let mut journal = Journal::open(&path, "fixture").unwrap();
-        let req = journal
-            .enqueue(
-                Operation::Presence,
-                ClientSurface::Cli,
-                json!({"agent":"crash-window-fixture","ttl_seconds":1})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-                now,
-            )
-            .unwrap();
         let transport = Recover {
             settings: settings.clone(),
             conn: RefCell::new(
@@ -904,6 +905,23 @@ mod backend_tests {
             ),
             unavailable: std::cell::Cell::new(true),
         };
+        let temp = tempfile::tempdir().unwrap();
+        let private = temp.path().join("journal");
+        crate::outbox_private::create_directory(&private).unwrap();
+        let path = private.join("queue.jsonl");
+        let mut journal = Journal::open(&path, "fixture").unwrap();
+        let now = redis_now_ms(&mut conn);
+        let req = journal
+            .enqueue(
+                Operation::Presence,
+                ClientSurface::Cli,
+                json!({"agent":"crash-window-fixture","ttl_seconds":TTL_SECONDS})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                now,
+            )
+            .unwrap();
         let report = journal.flush(&transport, now, 16).unwrap();
         assert_eq!((report.applied, report.remaining), (0, 1));
         // Real Lua acceptance happened while PG authentication failed. No final
@@ -917,7 +935,7 @@ mod backend_tests {
             "applied"
         );
         drop(journal);
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let after = wait_until_redis_passes(&mut conn, req.expires_ms);
         let exists: bool = redis::cmd("EXISTS")
             .arg(format!("{}crash-window-fixture", settings.presence_prefix))
             .query(&mut conn)
@@ -925,7 +943,7 @@ mod backend_tests {
         assert!(!exists);
         let mut recovered = Journal::open(&path, "fixture").unwrap();
         transport.unavailable.set(false);
-        let report = recovered.flush(&transport, now + 1100, 16).unwrap();
+        let report = recovered.flush(&transport, after, 16).unwrap();
         assert_eq!((report.applied, report.remaining), (1, 0));
         assert!(
             !redis::cmd("EXISTS")
@@ -936,7 +954,7 @@ mod backend_tests {
         );
         let row=pg(&settings).query_one(&format!("select count(*),min(timestamp_utc),min(ttl_seconds) from {} where replay_request_id=$1",settings.presence_event_table),&[&req.request_id]).unwrap();
         assert_eq!(row.get::<_, i64>(0), 1);
-        assert_eq!(row.get::<_, i64>(2), 1);
+        assert_eq!(row.get::<_, i64>(2), i64::try_from(TTL_SECONDS).unwrap());
         assert_eq!(
             row.get::<_, chrono::DateTime<Utc>>(1).timestamp_millis(),
             i64::try_from(now).unwrap()
