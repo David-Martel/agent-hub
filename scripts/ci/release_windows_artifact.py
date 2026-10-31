@@ -22,6 +22,9 @@ CI_PATH = ".github/workflows/ci.yml"
 POLICY_PATH = ".github/workflows/dependabot-automerge.yml"
 ARTIFACT = "agent-bus-windows-x64"
 MANUAL = "Windows Native Validation (manual)"
+# Transport-only job in ci.yml. It is not a release input, so a run may list it
+# (any completed conclusion) or, for runs before it existed, omit it.
+ARCHIVE = "Archive Release Build (dtm-p1gen7)"
 WINDOWS = "Windows Build And Unit Tests"
 BINARIES = ("agent-bus.exe", "agent-bus-http.exe", "agent-bus-mcp.exe")
 MEMBERS = {*BINARIES, "artifact-sha256.json"}
@@ -361,10 +364,10 @@ def jobs_snapshot(api, run, required):
         api, f"actions/runs/{run['id']}/attempts/{run['run_attempt']}/jobs", "jobs"
     )
     names = [job.get("name") for job in jobs]
+    mandatory = {*required, MANUAL}
     require(
-        len(names) == 17
-        and len(set(names)) == 17
-        and set(names) == {*required, MANUAL},
+        len(names) == len(set(names))
+        and set(names) in (mandatory, {*mandatory, ARCHIVE}),
         "mandatory job inventory missing/duplicated/unknown",
     )
     keys = (
@@ -388,12 +391,13 @@ def jobs_snapshot(api, run, required):
             and job.get("status") == "completed",
             "job head/run/attempt/status mismatch",
         )
-        require(
-            job.get("conclusion")
-            == ("skipped" if job["name"] == MANUAL else "success"),
-            "mandatory job not successful or manual skip not explicit",
-        )
-        if job["name"] != MANUAL:
+        if job["name"] != ARCHIVE:
+            require(
+                job.get("conclusion")
+                == ("skipped" if job["name"] == MANUAL else "success"),
+                "mandatory job not successful or manual skip not explicit",
+            )
+        if job["name"] not in (MANUAL, ARCHIVE):
             require(
                 timestamp(job.get("started_at")) <= timestamp(job.get("completed_at")),
                 "invalid job execution interval",
