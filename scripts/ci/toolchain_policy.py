@@ -91,7 +91,16 @@ def release_version(tool, body):
     if tool == "npm":
         version = data["version"]
     elif tool == "node":
-        version = data[0]["version"]
+        # dist/index.json is newest-first and also lists prereleases
+        # (v27.0.0-alpha.0.0.0); the newest plain x.y.z entry is the stable one.
+        stable = [
+            entry["version"]
+            for entry in data
+            if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", entry["version"])
+        ]
+        if not stable:
+            raise ValueError("official Node index lists no stable release")
+        version = stable[0]
     else:
         if data.get("draft") or data.get("prerelease"):
             raise ValueError("official latest endpoint returned an unstable release")
