@@ -21,7 +21,7 @@
       "reason": "PR #184 (merged 2026-10-22) kept Rust 1.99.0 although 1.99.1 was published 2026-10-16: rebuild and qualify immutable cross image before a newer compiler is admitted (runner_image_admission PENDING)",
       "reference": "David-Martel/agent-hub PR #184, merge c603a889e69367787835edeb82ae3713587e74c5",
       "reviewer": "codex source/integration review of PR #184 at 6bd597a6, 2026-10-22T16:59:01Z: 'Rust1.99.0 and Actions runner2.338.0 remain unchanged, image admission stays PENDING rebuild'",
-      "recorded_utc": "2026-11-01T22:00:00Z",
+      "recorded_utc": "2026-11-01T21:50:00Z",
       "expires_utc": "2026-11-15T00:00:00Z"
     }
   }

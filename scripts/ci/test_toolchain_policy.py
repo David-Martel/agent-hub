@@ -235,6 +235,19 @@ class ToolchainPolicyTests(unittest.TestCase):
                 self.assertEqual(len(issues), 1)
                 self.assertIn(expected, issues[0])
 
+    # Protects: a hold's 31-day window starts no later than the check that reads it.
+    # Detects: a recorded_utc set in the future to stretch a hold past HOLD_MAX_DAYS.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py hold_problem recorded_utc check.
+    def test_hold_recorded_in_the_future_fails(self):
+        now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        policy = self.held_policy(
+            recorded_utc="2026-11-20T00:00:00Z", expires_utc="2026-12-20T00:00:00Z"
+        )
+        issues = self.rust_issues(policy, "1.99.1", now)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("recorded in the future", issues[0])
+
     # Protects: holds name only tools the drift check knows.
     # Detects: a misspelled hold that silently excuses nothing and rots.
     # Needs: in-memory release fixtures; no network, services or hardware.

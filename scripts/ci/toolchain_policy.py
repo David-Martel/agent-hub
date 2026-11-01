@@ -131,7 +131,8 @@ def hold_problem(tool, hold, current, now):
 
     A hold names the exact upstream version it defers, a reason, the decision it
     cites, a reviewer, and an expiry at most HOLD_MAX_DAYS after it was recorded.
-    It excuses only that exact version and only until it expires.
+    It excuses only that exact version and only until it expires, and its
+    recorded time may not lie after the check that reads it.
     """
     if not isinstance(hold, dict) or any(
         not isinstance(hold.get(field), str) or not hold[field].strip()
@@ -143,6 +144,8 @@ def hold_problem(tool, hold, current, now):
         expires = parse_utc(hold["expires_utc"])
     except ValueError:
         return f"{tool}: hold timestamps are not ISO-8601 UTC"
+    if recorded > now:
+        return f"{tool}: hold is recorded in the future ({hold['recorded_utc']})"
     if not recorded < expires <= recorded + timedelta(days=HOLD_MAX_DAYS):
         return f"{tool}: hold must expire within {HOLD_MAX_DAYS} days of being recorded"
     if hold["version"] != current:
