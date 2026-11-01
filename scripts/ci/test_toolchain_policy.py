@@ -248,17 +248,19 @@ class ToolchainPolicyTests(unittest.TestCase):
         )
         self.assertEqual(issues, ["holds: unknown tool rustc"])
 
-    # Protects: the seeded holds are the ones PR #184 decided, and stay short.
-    # Detects: a hold added for a tool #184 did not hold, or one without its citation.
+    # Protects: the seeded hold is the one PR #184 recorded, and stays short.
+    # Detects: a hold for a release no reviewer decided (actions runner 2.338.2 was
+    #   published 2026-10-26, after #184 merged), or one without its citation.
     # Needs: the tracked toolchain-policy.json; no network, services or hardware.
     # Breadcrumb: scripts/ci/toolchain-policy.json holds; PR #184 image admission.
     def test_seeded_holds_are_the_reviewed_image_admission_deferrals(self):
         holds = self.policy.get("holds", {})
-        self.assertEqual(set(holds), {"rust", "actions_runner"})
+        self.assertEqual(set(holds), {"rust"})
         for tool, hold in holds.items():
             with self.subTest(tool=tool):
                 self.assertIn("immutable cross image", hold["reason"])
                 self.assertIn("#184", hold["reference"])
+                self.assertIn("review of PR #184", hold["reviewer"])
                 self.assertNotEqual(hold["version"], self.policy[tool])
                 self.assertIsNone(
                     POLICY_MODULE.hold_problem(
