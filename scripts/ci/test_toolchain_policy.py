@@ -218,7 +218,7 @@ class ToolchainPolicyTests(unittest.TestCase):
     #   cannot outlive HOLD_MAX_DAYS.
     # Detects: an unreviewed, unexplained or effectively permanent hold.
     # Needs: in-memory release fixtures; no network, services or hardware.
-    # Breadcrumb: scripts/ci/toolchain_policy.py hold_problem field and span checks.
+    # Breadcrumb: scripts/ci/toolchain_policy.py hold_record_problem field, span checks.
     def test_malformed_or_long_holds_fail(self):
         now = datetime(2026, 11, 2, tzinfo=timezone.utc)
         for field, value, expected in (
@@ -238,7 +238,7 @@ class ToolchainPolicyTests(unittest.TestCase):
     # Protects: a hold's 31-day window starts no later than the check that reads it.
     # Detects: a recorded_utc set in the future to stretch a hold past HOLD_MAX_DAYS.
     # Needs: in-memory release fixtures; no network, services or hardware.
-    # Breadcrumb: scripts/ci/toolchain_policy.py hold_problem recorded_utc check.
+    # Breadcrumb: scripts/ci/toolchain_policy.py hold_record_problem recorded_utc check.
     def test_hold_recorded_in_the_future_fails(self):
         now = datetime(2026, 11, 2, tzinfo=timezone.utc)
         policy = self.held_policy(
@@ -247,6 +247,42 @@ class ToolchainPolicyTests(unittest.TestCase):
         issues = self.rust_issues(policy, "1.99.1", now)
         self.assertEqual(len(issues), 1)
         self.assertIn("recorded in the future", issues[0])
+
+    # Protects: the fail-closed hold contract holds once a pin has caught up.
+    # Detects: a malformed, expired, future-recorded or over-long hold that passes
+    #   silently because the tool currently shows no drift.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py check_latest hold validation.
+    def test_invalid_hold_fails_without_drift(self):
+        now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        for overrides, expected in (
+            ({"reviewer": ""}, "malformed"),
+            ({"expires_utc": "2026-11-01T12:00:00Z"}, "expired"),
+            (
+                {
+                    "recorded_utc": "2026-11-20T00:00:00Z",
+                    "expires_utc": "2026-12-01T00:00:00Z",
+                },
+                "recorded in the future",
+            ),
+            ({"expires_utc": "2026-12-15T00:00:00Z"}, "within 31 days"),
+        ):
+            with self.subTest(expected=expected):
+                policy = self.held_policy(**overrides)
+                policy["rust"] = "1.99.1"
+                issues = self.rust_issues(policy, "1.99.1", now)
+                self.assertEqual(len(issues), 1)
+                self.assertIn(expected, issues[0])
+
+    # Protects: a valid hold whose pin has caught up is not itself a failure.
+    # Detects: the no-drift validation rejecting a well-formed, unexpired hold.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py check_latest hold validation.
+    def test_valid_hold_without_drift_passes(self):
+        now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        policy = self.held_policy()
+        policy["rust"] = "1.99.1"
+        self.assertEqual(self.rust_issues(policy, "1.99.1", now), [])
 
     # Protects: holds name only tools the drift check knows.
     # Detects: a misspelled hold that silently excuses nothing and rots.
