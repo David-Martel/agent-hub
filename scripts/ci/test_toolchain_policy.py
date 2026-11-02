@@ -134,6 +134,30 @@ class ToolchainPolicyTests(unittest.TestCase):
                 "sccache", '{"tag_name":"v0.19.0","prerelease":true}'
             )
 
+    def test_node_prerelease_at_head_reports_newest_stable(self):
+        """Protects the Node drift report from upstream prerelease ordering.
+
+        nodejs.org lists prereleases (2026-10-29: v27.0.0-alpha.0.0.0) ahead of
+        stable releases in dist/index.json. Reading entry 0 raised ValueError and
+        hid real drift as "evidence unavailable". The newest plain x.y.z entry is
+        the official stable release.
+        """
+        body = json.dumps(
+            [
+                {"version": "v27.0.0-alpha.0.0.0"},
+                {"version": "v26.13.0"},
+                {"version": "v26.12.1"},
+            ]
+        )
+        self.assertEqual(POLICY_MODULE.release_version("node", body), "26.13.0")
+
+    def test_node_index_without_stable_release_is_refused(self):
+        """A prerelease-only Node index is unavailable evidence, never current."""
+        with self.assertRaises(ValueError):
+            POLICY_MODULE.release_version(
+                "node", json.dumps([{"version": "v27.0.0-rc.1"}])
+            )
+
     def test_native_setup_never_stops_or_replaces_shared_cache(self):
         source = (self.root / "scripts/ci/setup-rust.sh").read_text()
         self.assertNotIn("--stop-server", source)
