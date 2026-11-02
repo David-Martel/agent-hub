@@ -66,26 +66,29 @@ class ToolchainPolicyTests(unittest.TestCase):
             "Windows, X64, agent-hub-native-smoke]",
             "Linux, X64, docker]",
         ):
-            with self.subTest(labels=labels):
-                self.assertIn(
-                    labels, source, "routing mutation must change the fixture"
-                )
-                path.write_text(source.replace(labels, labels[:-1] + ", vigil1]", 1))
-                self.assertIn(
-                    "vigil1 cannot receive unqualified Docker or Windows jobs",
-                    POLICY_MODULE.verify_sources(self.root, self.policy),
-                )
+            for host_label in ("vigil1", "fleet-linux-x64"):
+                with self.subTest(labels=labels, host_label=host_label):
+                    self.assertIn(
+                        labels, source, "routing mutation must change the fixture"
+                    )
+                    path.write_text(
+                        source.replace(labels, labels[:-1] + f", {host_label}]", 1)
+                    )
+                    self.assertIn(
+                        "vigil1 cannot receive unqualified Docker or Windows jobs",
+                        POLICY_MODULE.verify_sources(self.root, self.policy),
+                    )
 
     def test_release_build_cannot_drift_back_to_generic_linux(self):
         path = self.root / ".github/workflows/release.yml"
         path.write_text(
             path.read_text().replace(
-                '["self-hosted","Linux","X64","vigil1"]',
+                '["self-hosted","Linux","X64","fleet-linux-x64"]',
                 '["self-hosted","Linux","X64"]',
             )
         )
         self.assertIn(
-            "Linux x64 release build is not routed to vigil1",
+            "Linux x64 release build is not routed to the fleet-linux-x64 pool",
             POLICY_MODULE.verify_sources(self.root, self.policy),
         )
 

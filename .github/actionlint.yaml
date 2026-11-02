@@ -7,4 +7,5 @@ self-hosted-runner:
     - docker-x64
     - windows-cross
     - vigil1
+    - fleet-linux-x64
     - agent-hub-native-smoke
