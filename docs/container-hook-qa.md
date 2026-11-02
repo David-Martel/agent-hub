@@ -94,5 +94,11 @@ engine is the rootful local daemon at `unix:///var/run/docker.sock`.
 5. Environment. Export `AGENT_BUS_HOOK_QA_CONFIG` where every shell, including non-interactive
    ones, sees it: on asuspro13 that is `~/.config/bash/env.bash`, guarded by a file-exists test.
 
+After any `rust-toolchain.toml` change, repeat steps 1 to 4 before committing: the
+image is offline and immutable, so the hook refuses a commit whose index pins a
+compiler the image does not contain. A parallel lane in its own directories,
+selected with `AGENT_BUS_HOOK_QA_CONFIG` for that one commit and push, avoids
+breaking other branches on the host that still pin the previous compiler.
+
 A passing pre-commit gate takes about one minute and writes `evidence/hook-qa-*/receipt.json`
 with `"state": "PASS"`; the pre-push gate (tests plus audit) adds a similar time.

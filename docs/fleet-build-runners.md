@@ -75,11 +75,11 @@ Native Linux runs two actual compiler requests and requires a Rust cache hit,
 identical artifacts, unchanged error counters and the expected daemon version
 and cache directory. The receipt is `native-cache-proof.json` in the target
 directory. Setup never stops, resets or replaces a serving daemon. Native Linux
-uses port 4230 and a separate `native-0.18` cache, retaining the former cache.
+uses port 4231 and a separate `native-0.19` cache, retaining the former caches.
 The same bootstrap adds `$HOME/.local/bin` and `$HOME/.cargo/bin` to `PATH` and
 bootstraps rustup without a default toolchain when a runner cache volume contains
 no usable Cargo shim. It then installs the compiler pinned by
-[`rust-toolchain.toml`](../rust-toolchain.toml) (currently Rust 1.99.0, plus
+[`rust-toolchain.toml`](../rust-toolchain.toml) (currently Rust 1.99.1, plus
 rustfmt and clippy), which is the one every job
 actually uses; the Windows `setup-rust.ps1` does the same. Changing the pin
 invalidates each runner's compiled cache once, since sccache keys include the
@@ -88,13 +88,13 @@ compiler.
 The GNU cross lane uses `scripts/ci/setup-windows-cross.ps1` instead of the
 permissive native Linux bootstrap. It requires the qualified immutable runner
 image, its source revision and Dockerfile digest to match the running container.
-It uses the pinned upstream Linux sccache 0.18.0 archive, the dedicated port 4228,
+It uses the pinned upstream Linux sccache 0.19.0 archive, the dedicated port 4228,
 and `windows-cache-policy.json`. Two real explicit GNU-target compiler requests
 must produce a Rust cache hit, identical artifact hashes and no new error
 counters. A missing or unhealthy cache fails the job; setup never stops, resets
 or replaces a serving daemon and never falls back to an uncached cross build.
 Each immutable image has its own persistent child under the private
-`~/.cache/agent-hub/windows-gnu0.18` directory. Image upgrades preserve older
+`~/.cache/agent-hub/windows-gnu0.19` directory. Image upgrades preserve older
 children; an existing daemon serving another child causes setup to fail.
 The source/image, compiler, linker and cache receipt is embedded in release
 provenance, together with the actual PE DLL import lists. Native Windows DLL
@@ -112,7 +112,7 @@ fixture network identity. A tag name or the presence of Wine alone does not
 qualify an image. Do not add the label before the receipt is accepted.
 
 The safe L0 is a persistent, runner-local cache at
-`~/.cache/sccache/agent-hub/native-0.18`. Spark jobs add the private-QSFP Redis endpoint at
+`~/.cache/sccache/agent-hub/native-0.19`. Spark jobs add the private-QSFP Redis endpoint at
 `10.55.152.2:6381` as L1 through `SCCACHE_MULTILEVEL_CHAIN=disk,redis`. The
 setup script probes the endpoint and falls back to disk-only caching if it is
 unreachable. Do **not** share `CARGO_TARGET_DIR` between
@@ -306,7 +306,7 @@ Preserve older images/tool volumes for rollback, and restore their exact prior
 IDs/configuration only after rechecking that the affected runner is idle.
 
 Latest-version metadata is a source requirement, separate from deployment:
-the Rust 1.99.0 pin requires rebuilt, independently qualified immutable cross
+the Rust 1.99.1 pin requires rebuilt, independently qualified immutable cross
 images. The policy retains `runner_image_admission` as PENDING until that proof
 is recorded. Cross setup still refuses a mismatched compiler or image; it does
 not download a different compiler into an admitted image. Native runner image

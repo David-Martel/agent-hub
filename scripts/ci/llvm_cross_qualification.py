@@ -17,8 +17,8 @@ from native_cache_preflight import validate_identity
 
 TARGET = "x86_64-pc-windows-gnullvm"
 LLVM_VERSION = "23.1.3"
-RUST_VERSION = "1.99.0"
-SCCACHE_VERSION = "0.18.0"
+RUST_VERSION = "1.99.1"
+SCCACHE_VERSION = "0.19.0"
 
 
 def reject_legacy_runtime(imports):
