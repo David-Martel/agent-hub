@@ -67,8 +67,8 @@ def verify_sources(root, policy):
         issues.append("Windows cache version differs from toolchain policy")
     source = (root / ".github/workflows/ci.yml").read_text()
     release = (root / ".github/workflows/release.yml").read_text()
-    if 'runner: \'["self-hosted","Linux","X64","vigil1"]\'' not in release:
-        issues.append("Linux x64 release build is not routed to vigil1")
+    if 'runner: \'["self-hosted","Linux","X64","agent-hub-local"]\'' not in release:
+        issues.append("Linux x64 release build is not routed to agent-hub-local")
     # Every ordinary x64 Linux job is explicitly offloaded. Docker and Windows
     # cross jobs retain their existing capability labels and acceptance gates.
     if "runs-on: [self-hosted, Linux, X64]" in source:

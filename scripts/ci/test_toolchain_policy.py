@@ -83,12 +83,12 @@ class ToolchainPolicyTests(unittest.TestCase):
         path = self.root / ".github/workflows/release.yml"
         path.write_text(
             path.read_text().replace(
-                '["self-hosted","Linux","X64","vigil1"]',
+                '["self-hosted","Linux","X64","agent-hub-local"]',
                 '["self-hosted","Linux","X64"]',
             )
         )
         self.assertIn(
-            "Linux x64 release build is not routed to vigil1",
+            "Linux x64 release build is not routed to agent-hub-local",
             POLICY_MODULE.verify_sources(self.root, self.policy),
         )
 

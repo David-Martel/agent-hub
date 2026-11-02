@@ -195,7 +195,7 @@ jobs:
       matrix:
         include:
           - name: linux-x64
-            runner: '["self-hosted","Linux","X64","vigil1"]'
+            runner: '["self-hosted","Linux","X64","agent-hub-local"]'
           - name: linux-arm64-1
             runner: '["self-hosted","Linux","ARM64","fleet-build"]'
           - name: linux-arm64-2
