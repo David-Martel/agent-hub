@@ -232,6 +232,54 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn("abi=msvc\n", build)
         self.assertIn("ci_run_id=11\n", build)
 
+    def archive_job(self, conclusion, job_id=198):
+        return {
+            **self.api.jobs[0],
+            "id": job_id,
+            "name": HELPER.ARCHIVE,
+            "conclusion": conclusion,
+            "started_at": None,
+            "completed_at": None,
+        }
+
+    def test_the_archive_job_is_optional_and_never_a_release_input(self):
+        """Protects: a CI run that lists the Archive Release Build job, in any
+        completed state, is still admitted, and one that predates the job is too.
+
+        Detects: the job inventory check rejecting the transport-only archive job
+        added to ci.yml, which would block every release reuse after it merged.
+        Needs: the closed API fixtures only; no network or credentials.
+        Breadcrumb: release_windows_artifact.jobs_snapshot; ci.yml archive job.
+        """
+        for conclusion in ("success", "skipped", "failure"):
+            with self.subTest(conclusion):
+                self.setUp()
+                self.api.jobs.append(self.archive_job(conclusion))
+                _, receipt = self.admit()
+                self.assertEqual(
+                    set(receipt["jobs"]), {*JOBS, HELPER.MANUAL, HELPER.ARCHIVE}
+                )
+
+    def test_a_duplicated_or_unknown_extra_job_is_still_refused(self):
+        """Protects: allowing the archive job does not open the inventory to
+        other or repeated jobs.
+
+        Detects: the inventory check accepting a second archive job or any other
+        unlisted job. Positive control: the single archive job is admitted by the
+        sibling test.
+        Needs: the closed API fixtures only; no network or credentials.
+        Breadcrumb: release_windows_artifact.jobs_snapshot.
+        """
+        self.api.jobs.extend(
+            [self.archive_job("success"), self.archive_job("success", 197)]
+        )
+        with self.assertRaisesRegex(HELPER.Refused, "inventory"):
+            self.admit()
+        self.setUp()
+        self.api.jobs.append({**self.archive_job("success"), "name": "Unreviewed job"})
+        with self.assertRaisesRegex(HELPER.Refused, "inventory"):
+            self.admit()
+
     def test_reviewed_inventory_matches_independent_sixteen_job_oracle(self):
         rule, _ = HELPER.policy(self.root)
         self.assertEqual(rule["required_jobs"], JOBS)
@@ -626,6 +674,80 @@ class ReleaseSourceControls(unittest.TestCase):
                     1,
                 )
             )
+        )
+
+    def test_reused_windows_ci_artifact_outlives_the_tag_window(self):
+        """
+        Protects: A v* tag cut up to 7 days after its main CI run can still reuse
+        that run's agent-bus-windows-x64 artifact (the helper refuses expired ones).
+        Detects: The Windows CI upload's retention-days dropping below 7, or the step
+        losing it (agent-hub #193 review: 2 days broke release reuse after 2 days).
+        Needs: Actual ci.yml; no credentials, network or services.
+        Breadcrumb: ci.yml Windows Build And Unit Tests upload;
+        release_windows_artifact.py expired check; release.yml windows-x64 download.
+        """
+
+        def retention(source):
+            step = re.search(
+                r"(?ms)^      - uses: actions/upload-artifact@\S+\r?\n"
+                r"        if: github.event_name != 'pull_request'\r?\n"
+                r"        with:\r?\n"
+                r"          name: agent-bus-windows-x64\r?\n(.*?)(?=^      - |^  \S)",
+                source,
+            )
+            if step is None:
+                return None
+            days = re.search(r"(?m)^          retention-days: (\d+)\r?$", step[1])
+            return int(days[1]) if days else None
+
+        source = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+        days = retention(source)
+        self.assertIsNotNone(days)
+        self.assertGreaterEqual(days, 7)
+        self.assertEqual(
+            retention(
+                source.replace(f"retention-days: {days}\n", "retention-days: 2\n", 1)
+            ),
+            2,
+        )
+
+    def test_pull_request_runs_do_not_fill_the_artifact_quota(self):
+        """
+        Protects: The account's Actions artifact quota. Every PR revision once
+        uploaded about 54 MB of release binaries nobody downloaded, and the
+        quota stopped uploads in every repo (2026-10-29).
+        Detects: A Linux release-binary upload that runs on pull_request, a
+        PR-event Windows upload kept longer than one day, or the PR Windows
+        upload disappearing (smoke-functional downloads it in the same run).
+        Needs: Actual ci.yml; no credentials, network or services.
+        Breadcrumb: ci.yml build-release and windows upload steps; the
+        main-event retention contract is
+        test_reused_windows_ci_artifact_outlives_the_tag_window.
+        """
+        source = (REPO_ROOT / ".github/workflows/ci.yml").read_text()
+        steps = re.findall(
+            r"(?ms)^      - uses: actions/upload-artifact@\S+\r?\n"
+            r"(.*?)(?=^      - |^  \S)",
+            source,
+        )
+        by_name = {}
+        for body in steps:
+            name = re.search(r"(?m)^          name: (\S+)", body)[1]
+            by_name.setdefault(name, []).append(body)
+        linux = [b for n, bs in by_name.items() if "windows" not in n for b in bs]
+        self.assertTrue(linux)
+        for body in linux:
+            self.assertIn("if: github.event_name != 'pull_request'", body)
+        windows = by_name["agent-bus-windows-x64"]
+        pr = [b for b in windows if "if: github.event_name == 'pull_request'" in b]
+        main = [b for b in windows if "if: github.event_name != 'pull_request'" in b]
+        self.assertEqual((len(pr), len(main)), (1, 1))
+        self.assertIn("retention-days: 1\n", pr[0])
+        for body in windows + linux:
+            self.assertIn("compression-level: 9", body)
+        self.assertIn("needs: [windows]", source)
+        self.assertIn(
+            "name: agent-bus-windows-x64\n          path: ci-artifacts", source
         )
 
     def test_candidate_source_contract_and_original_cross_rebuild_control(self):

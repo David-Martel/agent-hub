@@ -4052,7 +4052,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
         .with_graceful_shutdown(async move {
             tokio::select! {
                 () = shutdown_signal.notified() => {},
-                _ = tokio::signal::ctrl_c() => {},
+                () = process_stop_signal() => {},
             }
             // Close both Redis-backed /events and agent-specific SSE streams
             // before Axum waits for their response bodies to finish.
@@ -4065,6 +4065,31 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
     pubsub_workers.control.stop();
     agent_connections.write().await.clear();
     finish_http_server(result, pubsub_workers.shutdown().await)
+}
+
+/// Resolves on SIGINT or, on Unix, SIGTERM.
+///
+/// `systemctl stop|restart` sends SIGTERM. Listening only for SIGINT let the
+/// default SIGTERM action end the process before the `PgWriter` queue drained,
+/// leaving the last writes in Redis only (agent-hub#194).
+async fn process_stop_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = term.recv() => {},
+                }
+                return;
+            }
+            Err(error) => {
+                tracing::warn!("cannot install SIGTERM handler, SIGINT only: {error}");
+            }
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 fn finish_http_server(transport: std::io::Result<()>, workers: Result<()>) -> Result<()> {

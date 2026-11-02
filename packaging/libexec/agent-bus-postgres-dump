@@ -1,0 +1,69 @@
+#!/bin/sh
+# agent-bus-postgres-dump -- daily logical dump of the agent-bus hub's PostgreSQL databases.
+#
+# Why: the hub keeps its durable message and presence history in PostgreSQL (redis_backend
+# on asuspro13) and other hub-local state alongside it (workq). The cluster is crash-safe as
+# configured (fsync, full_page_writes and synchronous_commit are on) and came back cleanly
+# from the 2026-10-26 power cut, but there was no copy at all: a dropped table, a bad
+# migration or a corrupted page had nothing to restore from.
+#
+# What it does, for each database named on the command line:
+#   1. `pg_dump -Fc` into a hidden .partial file in <dest>/<db>/.
+#   2. `pg_restore --list` on that file, so a truncated or unreadable dump never counts.
+#   3. Rename it to <db>.<UTC stamp>.dump, then delete all but the newest <keep> dumps.
+# A failed database is counted and reported, and the others are still dumped; any failure
+# exits 1, so the unit lands in `systemctl --failed`. Every outcome goes to stderr.
+#
+# Installed by packaging/backend-hardening.sh (packaging/README.md, "Backend hardening").
+# Tests: packaging/tests/backend-hardening-test.sh.
+#
+# Usage: agent-bus-postgres-dump <dest-dir> <port> <keep> <database>...
+set -eu
+
+usage='usage: agent-bus-postgres-dump <dest-dir> <port> <keep> <database>...'
+say() { printf 'agent-bus-postgres-dump: %s\n' "$*" >&2; }
+
+[ $# -ge 4 ] || { say "$usage"; exit 2; }
+dest=$1
+port=$2
+keep=$3
+shift 3
+case $port in '' | *[!0-9]*) say "port must be an integer, got '$port'"; exit 2 ;; esac
+case $keep in '' | *[!0-9]* | 0) say "keep must be a positive integer, got '$keep'"; exit 2 ;; esac
+# The name becomes a directory and a retention pattern, so only plain identifiers pass.
+for db in "$@"; do
+    case $db in '' | *[!A-Za-z0-9_]*) say "database name must be [A-Za-z0-9_]+, got '$db'"; exit 2 ;; esac
+done
+
+pg_dump=${AGENT_BUS_PG_DUMP:-pg_dump}
+pg_restore=${AGENT_BUS_PG_RESTORE:-pg_restore}
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+umask 077
+failed=0
+
+for db in "$@"; do
+    dir=$dest/$db
+    mkdir -p "$dir"
+    partial=$dir/.$db.$stamp.dump.partial
+    if "$pg_dump" -p "$port" -Fc -f "$partial" "$db" && "$pg_restore" --list "$partial" >/dev/null; then
+        mv "$partial" "$dir/$db.$stamp.dump"
+        say "$db: wrote $dir/$db.$stamp.dump ($(wc -c <"$dir/$db.$stamp.dump") bytes)"
+        # UTC stamps sort lexically, so the newest <keep> names are the last ones. Only names
+        # this script writes match: hidden .partial files and operator files are never touched.
+        for old in "$dir/$db".[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]T[0-9][0-9][0-9][0-9][0-9][0-9]Z.dump; do
+            if [ -e "$old" ]; then printf '%s\n' "${old##*/}"; fi
+        done | sort -r | awk -v keep="$keep" 'NR > keep' | while read -r old; do
+            rm -f "$dir/$old"
+            say "$db: removed $old (keeping $keep)"
+        done
+    else
+        rm -f "$partial"
+        say "$db: FAILED; no dump written, older dumps kept"
+        failed=$((failed + 1))
+    fi
+done
+
+if [ "$failed" -ne 0 ]; then
+    say "$failed of $# databases failed"
+    exit 1
+fi

@@ -153,6 +153,14 @@ Use `--schema finding|status|benchmark` on `send` to validate message structure:
 **Redis** (realtime, always required): Streams (MAXLEN~100000), Pub/Sub, Presence (TTL), AOF persistence
 **PostgreSQL** (durable history): Auto-creates tables, GIN index on tags, circuit breaker (60s cooldown)
 
+On the Linux hub both are system services; the opt-in root hardening (Redis AOF start preflight, daily `pg_dump`) is `packaging/backend-hardening.sh` (also reachable as `./install.sh --with-backend-hardening`), see [`packaging/README.md`](packaging/README.md#backend-hardening-root-opt-in).
+
+**Store consistency (#194):** `pg_message_count == stream_length` does not prove the stores hold the same messages. On the hub host run `agent-bus health --verify-sets [--window-minutes N | --full-scan]`; it compares the Redis and PostgreSQL message-id sets (order-independent digest plus a capped list of differing ids) and exits 1 on any difference. The window ends 30 s in the past (write-behind lag) and starts no earlier than the oldest entry Redis retains. See `agent_bus_core::store_consistency`.
+
+**Full-history archive (#194):** `agent-bus export` is windowed (7 days max). For a complete archive run `agent-bus export --all > history.ndjson` on the hub host: every PostgreSQL row (keyset-paged), then every Redis stream entry PostgreSQL lacks, each id once, bodies as plaintext (Redis `_compressed: lz4` bodies are decoded; `metadata._compressed` is left as a historical marker). Progress and counts go to stderr. It needs PostgreSQL and exits non-zero otherwise, so a Redis-only dump is never mistaken for a full one.
+
+**Repair (#194):** `agent-bus reconcile [--window-minutes N | --full-scan]` is a DRY RUN by default. `--apply` backfills Redis-only messages into PostgreSQL (plaintext bodies, `ON CONFLICT DO NOTHING`, idempotent) and refuses to insert more than `--max-insert` (default 1000) rows. PostgreSQL-only messages are reported, never written to Redis (a stream accepts only increasing ids, so an old message would reappear as new); read them from PostgreSQL or `export --all`.
+
 ## Environment Variables
 
 | Variable | Default | Source |

@@ -16,30 +16,30 @@ RUN curl --fail --location --proto '=https' --tlsv1.2 \
 
 RUN curl --fail --location --proto '=https' --tlsv1.2 \
       --connect-timeout 10 --max-time 120 \
-      https://nodejs.org/dist/v26.12.0/node-v26.12.0-linux-x64.tar.xz \
+      https://nodejs.org/dist/v26.12.1/node-v26.12.1-linux-x64.tar.xz \
       --output /tmp/agent-hub-node.tar.xz && \
-    echo 'fd47865ecd6391ebb431fc815e01b9135bf83ded5cf373247e9331e196b7aded  /tmp/agent-hub-node.tar.xz' | sha256sum -c - && \
+    echo '6170b2d474e1c626f43cff3adc118df9fe3b573258a4fc3d850c8dbc6b079bbd  /tmp/agent-hub-node.tar.xz' | sha256sum -c - && \
     tar --no-same-owner -xJf /tmp/agent-hub-node.tar.xz --strip-components=1 -C /usr/local && \
     rm /tmp/agent-hub-node.tar.xz && \
-    test "$(node --version)" = v26.12.0 && \
+    test "$(node --version)" = v26.12.1 && \
     test "$(npm --version)" = 11.20.0
 
 # npm's stable release is newer than the bundled copy. Integrity binds its
 # registry archive; installation changes only this immutable image layer.
 RUN curl --fail --location --proto '=https' --tlsv1.2 \
       --connect-timeout 10 --max-time 120 \
-      https://registry.npmjs.org/npm/-/npm-12.2.0.tgz --output /tmp/agent-hub-npm.tgz && \
-    node -e 'const fs=require("node:fs"),c=require("node:crypto"); const h="sha512-"+c.createHash("sha512").update(fs.readFileSync("/tmp/agent-hub-npm.tgz")).digest("base64"); if(h!=="sha512-ZsJjKpTnlmSXOLLXiU1xDCzC4Wlok4IwZmh/aw2KUuXytU7q6qMv/cUT7MoeSf95Slwuw/lRXYefGzGCspHPNQ==") process.exit(1)' && \
+      https://registry.npmjs.org/npm/-/npm-12.2.1.tgz --output /tmp/agent-hub-npm.tgz && \
+    node -e 'const fs=require("node:fs"),c=require("node:crypto"); const h="sha512-"+c.createHash("sha512").update(fs.readFileSync("/tmp/agent-hub-npm.tgz")).digest("base64"); if(h!=="sha512-bKCmFRVT/BB+YPEYbZwQ1XUI3N5t4xKSpU1MxOjo7z3iWzKBJ0ZXRC1xFdEN+TC7N5TdywaBzf2dMXGJq/e2PQ==") process.exit(1)' && \
     npm install --global --ignore-scripts --no-audit --no-fund /tmp/agent-hub-npm.tgz && \
-    rm /tmp/agent-hub-npm.tgz && test "$(npm --version)" = 12.2.0
+    rm /tmp/agent-hub-npm.tgz && test "$(npm --version)" = 12.2.1
 
 USER runner
 WORKDIR /home/runner
 RUN curl --fail --location --proto '=https' --tlsv1.2 \
       --connect-timeout 10 --max-time 120 \
-      https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init \
+      https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init \
       --output /tmp/rustup-init && \
-    echo 'dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71  /tmp/rustup-init' | sha256sum -c - && \
+    echo '5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4  /tmp/rustup-init' | sha256sum -c - && \
     chmod +x /tmp/rustup-init && \
     /tmp/rustup-init -y --no-modify-path --default-toolchain none && \
     rm /tmp/rustup-init && \

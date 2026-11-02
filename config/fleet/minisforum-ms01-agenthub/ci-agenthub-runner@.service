@@ -1,0 +1,60 @@
+# ci-agenthub-runner@.service -- agent-hub's Docker-capable GitHub Actions runner on minisforum-ms01, as the
+# dedicated rootless account `ci-agenthub` (setup-host.sh). Install to
+# ~ci-agenthub/.config/systemd/user/ and the instance file to ~ci-agenthub/.config/ci-agenthub/<instance>.env.
+#
+# Derived from vigil-utils ci-runners/minisforum's ms01 repo-runner template (vigil-utils #1254). Differences:
+#   - The job gets a Docker-compatible socket: this account's own Podman API socket, mounted at
+#     /var/run/docker.sock. It reaches only ci-agenthub's containers, never vigil-ci's runners.
+#   - --userns=keep-id maps the host account onto the container's `runner` user (uid 1000), so the job can
+#     open the socket. Under the default rootless mapping the socket's owner is container root instead.
+#   - VIGIL_RUNNER_REQUIRE_DOCKER stays 0. The image entrypoint's Docker check wants a rootful engine's
+#     socket group and the Buildx plugin. Podman's compat API has neither a socket group here nor BuildKit;
+#     the ExecStartPre socket test plus the qualification receipt in README.md stand in for that check.
+#   - Containers that jobs start through the socket (postgres, redis, image builds) run under the Podman API
+#     service, not under this unit. setup-host.sh bounds them with the user-2002.slice limits and the
+#     podman.service priority drop-in, which they inherit.
+# Registration is NOT done here (register.sh). The entrypoint refuses to serve an unregistered runner.
+
+[Unit]
+StartLimitIntervalSec=600
+StartLimitBurst=5
+Description=agent-hub GitHub Actions runner %i (rootless podman, Docker-compatible socket) on minisforum-ms01
+Wants=network-online.target podman.socket
+After=network-online.target podman.socket
+AssertPathExists=%h/.config/ci-agenthub/%i.env
+
+[Service]
+Type=simple
+Environment=MEMORY=12G
+Environment=CORES=4-7
+Environment=RUNNER_IMAGE=localhost/vigil-utils-runner:latest
+EnvironmentFile=%h/.config/ci-agenthub/%i.env
+CPUSchedulingPolicy=idle
+Nice=19
+IOSchedulingClass=idle
+ExecStartPre=/usr/bin/test -S %t/podman/podman.sock
+ExecStartPre=/bin/sh -c 'test "$(df --output=avail -BG %h | tail -n 1 | tr -dc 0-9)" -ge 200'
+ExecStartPre=-/usr/bin/podman rm -f --volumes --ignore minisforum-ms01-%i
+ExecStartPre=/usr/bin/rm -rf --one-file-system %h/ci-scratch/%i/work
+ExecStartPre=/usr/bin/mkdir -p %h/ci-scratch/%i/work %h/ci-scratch/%i/sccache %h/ci-scratch/%i/uv
+ExecStart=/usr/bin/podman run --rm --pull=never --name minisforum-ms01-%i \
+  --health-interval disable \
+  --userns=keep-id:uid=1000,gid=1000 \
+  -e REPO=${REPO} -e RUNNER_NAME=minisforum-ms01-%i -e RUNNER_LABELS=${RUNNER_LABELS} \
+  -e VIGIL_RUNNER_REQUIRE_DOCKER=0 -e DOCKER_HOST=unix:///var/run/docker.sock -e CARGO_INCREMENTAL=0 \
+  -e UV_LINK_MODE=copy \
+  -v minisforum-ms01-%i-registration:/home/runner/.actions-runner-state \
+  -v %t/podman/podman.sock:/var/run/docker.sock \
+  -v %h/ci-scratch/%i/work:/home/runner/actions-runner/_work \
+  -v %h/ci-scratch/%i/sccache:/home/runner/.cache/sccache/agent-hub \
+  -v %h/ci-scratch/%i/uv:/home/runner/.cache/uv \
+  --tmpfs /tmp:rw,nosuid,nodev,size=8g,mode=1777 \
+  --memory ${MEMORY} --memory-swap ${MEMORY} --pids-limit 8192 \
+  --entrypoint taskset ${RUNNER_IMAGE} -c ${CORES} /home/runner/entrypoint.sh serve
+ExecStop=/usr/bin/podman stop -t 30 minisforum-ms01-%i
+SuccessExitStatus=137 143
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

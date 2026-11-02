@@ -45,11 +45,15 @@ class ToolchainPolicyTests(unittest.TestCase):
         path.write_text(path.read_text().replace("rust:1.99.0", "rust:1.98.1", 1))
         self.assertTrue(POLICY_MODULE.verify_sources(self.root, self.policy))
 
+    # Protects: CI uses the exact Node version declared by the source policy.
+    # Detects: A floating Node pin or a stale mutation that changes no fixture bytes.
+    # Needs: Temporary tracked-source fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py verify_sources Node workflow check.
     def test_floating_node_pin_fails(self):
         path = self.root / ".github/workflows/ci.yml"
-        path.write_text(
-            path.read_text().replace('node-version: "26.12.0"', 'node-version: "26"')
-        )
+        needle = f'node-version: "{self.policy["node"]}"'
+        self.assertIn(needle, path.read_text(), "mutation must change the fixture")
+        path.write_text(path.read_text().replace(needle, 'node-version: "26"'))
         self.assertTrue(POLICY_MODULE.verify_sources(self.root, self.policy))
 
     def test_unqualified_vigil1_docker_or_windows_routing_fails(self):
@@ -128,6 +132,30 @@ class ToolchainPolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             POLICY_MODULE.release_version(
                 "sccache", '{"tag_name":"v0.19.0","prerelease":true}'
+            )
+
+    def test_node_prerelease_at_head_reports_newest_stable(self):
+        """Protects the Node drift report from upstream prerelease ordering.
+
+        nodejs.org lists prereleases (2026-10-29: v27.0.0-alpha.0.0.0) ahead of
+        stable releases in dist/index.json. Reading entry 0 raised ValueError and
+        hid real drift as "evidence unavailable". The newest plain x.y.z entry is
+        the official stable release.
+        """
+        body = json.dumps(
+            [
+                {"version": "v27.0.0-alpha.0.0.0"},
+                {"version": "v26.13.0"},
+                {"version": "v26.12.1"},
+            ]
+        )
+        self.assertEqual(POLICY_MODULE.release_version("node", body), "26.13.0")
+
+    def test_node_index_without_stable_release_is_refused(self):
+        """A prerelease-only Node index is unavailable evidence, never current."""
+        with self.assertRaises(ValueError):
+            POLICY_MODULE.release_version(
+                "node", json.dumps([{"version": "v27.0.0-rc.1"}])
             )
 
     def test_native_setup_never_stops_or_replaces_shared_cache(self):

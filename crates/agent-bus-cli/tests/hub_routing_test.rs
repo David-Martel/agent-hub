@@ -28,6 +28,153 @@ struct MockRoute {
     body: String,
 }
 
+/// Protects: exported NDJSON comes from the configured hub rather than a local island.
+/// Detects: bypassing hub selection or dropping/URL-splitting scoped export filters.
+/// Needs: an owned mock hub and CLI children with Redis/PG pinned to closed ports.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_export` and remote message URL construction).
+#[cfg(feature = "server-mode")]
+#[test]
+fn export_reads_selected_hub_as_ndjson_with_all_filters() {
+    let first = direct_message_fixture("first line\nsecond line");
+    let mut second = direct_message_fixture("second message");
+    second["id"] = serde_json::json!("second-fixture");
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/messages",
+            status: 200,
+            body: serde_json::json!([first.clone(), second.clone()]).to_string(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "export-scoped")
+        .env("AGENT_BUS_AUTH_TOKEN", "disposable-export-token")
+        .args([
+            "export",
+            "--agent",
+            "reader &limit=1",
+            "--from-agent",
+            "author/?#",
+            "--repo",
+            "source ?",
+            "--session",
+            "cohort &",
+            "--tag",
+            "role:builder",
+            "--tag",
+            "scope:a&b",
+            "--thread-id",
+            "work/?#",
+            "--since-minutes",
+            "17",
+            "--limit",
+            "37",
+        ])
+        .output()
+        .expect("run scoped export");
+    assert!(output.status.success(), "{}", stderr_of(&output));
+    let lines: Vec<serde_json::Value> = stdout_of(&output)
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("one valid JSON object per line"))
+        .collect();
+    assert_eq!(lines, vec![first, second]);
+    let requests = hub.requests();
+    let request = requests
+        .iter()
+        .find(|r| {
+            r["target"]
+                .as_str()
+                .is_some_and(|t| t.starts_with("/messages?"))
+        })
+        .expect("export must request the selected hub's messages");
+    assert_eq!(request["authorization"], "Bearer disposable-export-token");
+    let url = reqwest::Url::parse(&format!(
+        "{}{}",
+        hub.url(),
+        request["target"].as_str().expect("target")
+    ))
+    .expect("request URL");
+    let query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+    for (key, value) in [
+        ("agent", "reader &limit=1"),
+        ("from", "author/?#"),
+        ("repo", "source ?"),
+        ("session", "cohort &"),
+        ("tag", "role:builder"),
+        ("tag", "scope:a&b"),
+        ("thread_id", "work/?#"),
+        ("since", "17"),
+        ("limit", "37"),
+    ] {
+        assert!(
+            query.contains(&(key.to_owned(), value.to_owned())),
+            "missing {key}={value}: {query:?}"
+        );
+    }
+    assert_eq!(query.len(), 9, "no injected or lost query fields");
+}
+
+/// Protects: a requested large export cannot silently become a capped 500-row read.
+/// Detects: publishing a successful partial archive or falling back to local stores.
+/// Needs: an owned healthy mock hub; no database or production bus.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_export` remote limit admission).
+#[cfg(feature = "server-mode")]
+#[test]
+fn export_rejects_remote_limits_above_read_cap_before_exporting() {
+    let hub = MockHub::spawn(vec![health_route()]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "export-limit")
+        .args(["export", "--limit", "501"])
+        .output()
+        .expect("run oversized export");
+    assert!(!output.status.success());
+    assert_eq!(stdout_of(&output), "");
+    let error = stderr_of(&output);
+    assert!(error.contains("500") && error.contains("hub"), "{error}");
+    assert!(
+        !error.to_lowercase().contains("redis"),
+        "remote export touched local Redis: {error}"
+    );
+    assert!(hub.requests().iter().all(|r| r["target"] == "/health"));
+}
+
+/// Protects: a failing selected hub remains the export authority and emits no archive.
+/// Detects: replacing HTTP errors with unrelated local Redis/PostgreSQL history.
+/// Needs: an owned failing-response mock hub with closed-port local stores.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_export` remote HTTP error propagation).
+#[cfg(feature = "server-mode")]
+#[test]
+fn export_remote_failure_does_not_fall_back_to_local_history() {
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/messages",
+            status: 503,
+            body: r#"{"error":"export fixture unavailable"}"#.to_owned(),
+        },
+    ]);
+    let output = agent_bus_with_hub_candidates(&[hub.url()], "export-failure")
+        .args(["export", "--limit", "10"])
+        .output()
+        .expect("run failing export");
+    assert!(!output.status.success());
+    assert_eq!(stdout_of(&output), "");
+    let error = stderr_of(&output);
+    assert!(
+        error.contains("503"),
+        "selected HTTP failure was lost: {error}"
+    );
+    assert!(
+        !error.to_lowercase().contains("redis"),
+        "export tried local Redis: {error}"
+    );
+    assert!(hub.requests().iter().any(|r| {
+        r["target"]
+            .as_str()
+            .is_some_and(|t| t.starts_with("/messages?"))
+    }));
+}
+
 /// A minimal HTTP/1.1 server matching exact `(method, path)` pairs from a
 /// fixed table, ignoring query strings. Good enough to stand in for
 /// `agent-bus-http` in these routing tests; not a general-purpose mock.
@@ -1385,9 +1532,12 @@ fn service_status_refuses_rejected_configured_authority_without_base_url_overrid
 #[cfg(feature = "server-mode")]
 #[test]
 fn service_status_refuses_unreachable_admin_endpoint() {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("reserve disposable closed endpoint");
-    let base_url = format!("http://{}", listener.local_addr().expect("fixture address"));
-    drop(listener);
+    // A closed endpoint must stay closed. Binding an ephemeral port and dropping
+    // the listener frees it for a MockHub of a parallel test, which then receives
+    // this test's `GET /admin/service` as a stray request (extra hits, wrong
+    // request order). Port 1 is privileged, outside the ephemeral range and never
+    // bound by a fixture; the other offline tests in this file use it too.
+    let base_url = "http://127.0.0.1:1".to_owned();
     let output = isolated_agent_bus("service-status-unreachable")
         .args([
             "service",
@@ -2442,6 +2592,182 @@ fn thread_and_ack_sweep_commands_report_the_hub_error_not_a_loopback_redis_error
         assert!(
             stderr.contains("404") || stderr.contains("no mock route"),
             "{name}: expected the hub's own error, got: {stderr}"
+        );
+    }
+}
+
+fn presence_event_fixture(
+    agent: &str,
+    status: &str,
+    timestamp: &str,
+    session: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "agent": agent,
+        "status": status,
+        "protocol_version": "1.0",
+        "timestamp_utc": timestamp,
+        "session_id": session,
+        "capabilities": ["mcp"],
+        "metadata": {},
+        "ttl_seconds": 300,
+    })
+}
+
+/// Protects: `presence-history` reads the selected hub's `/presence/history` in remote mode.
+/// Detects: opening local PostgreSQL, or losing/mis-encoding the agent, window and limit filters.
+/// Needs: an owned mock hub and CLI children with Redis/PG pinned to closed ports.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_presence_history` remote branch).
+#[cfg(feature = "server-mode")]
+#[test]
+fn presence_history_reads_selected_hub_with_encoded_filters_in_json_and_human() {
+    let events = vec![
+        presence_event_fixture("spark-3066", "online", "2026-10-28T10:00:00Z", "sess-a"),
+        presence_event_fixture("spark-3066", "offline", "2026-10-28T11:30:00Z", "sess-b"),
+    ];
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "GET",
+            path: "/presence/history",
+            status: 200,
+            body: serde_json::Value::from(events.clone()).to_string(),
+        },
+    ]);
+    let json = run_ok(
+        agent_bus_with_hub_candidates(&[hub.url()], "presence-history-json")
+            .env("AGENT_BUS_AUTH_TOKEN", "disposable-presence-token")
+            .args([
+                "presence-history",
+                "--agent",
+                "spark 3066/?#&limit=1",
+                "--since-minutes",
+                "17",
+                "--limit",
+                "37",
+                "--encoding",
+                "json",
+            ]),
+        "presence-history json",
+    );
+    let printed: serde_json::Value = serde_json::from_str(json.trim()).expect("JSON output");
+    assert_eq!(printed, serde_json::Value::from(events));
+
+    let human = run_ok(
+        agent_bus_with_hub_candidates(&[hub.url()], "presence-history-human").args([
+            "presence-history",
+            "--encoding",
+            "human",
+        ]),
+        "presence-history human",
+    );
+    assert_eq!(
+        human.lines().collect::<Vec<_>>(),
+        [
+            "[2026-10-28T10:00:00Z] presence spark-3066=online session=sess-a",
+            "[2026-10-28T11:30:00Z] presence spark-3066=offline session=sess-b",
+        ]
+    );
+
+    let requests = hub_requests_except_health(&hub);
+    assert_eq!(requests.len(), 2, "{requests:?}");
+    assert_eq!(requests[0]["method"], "GET");
+    assert_eq!(
+        requests[0]["authorization"],
+        "Bearer disposable-presence-token"
+    );
+    let url = reqwest::Url::parse(&format!(
+        "{}{}",
+        hub.url(),
+        requests[0]["target"].as_str().expect("target")
+    ))
+    .expect("request URL");
+    assert_eq!(url.path(), "/presence/history");
+    let query: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+    assert_eq!(
+        query,
+        [
+            ("agent".to_owned(), "spark 3066/?#&limit=1".to_owned()),
+            ("since".to_owned(), "17".to_owned()),
+            ("limit".to_owned(), "37".to_owned()),
+        ],
+        "exact encoded filters, nothing injected or lost"
+    );
+    // Without --agent the filter is omitted and the documented defaults are sent.
+    assert_eq!(
+        requests[1]["target"],
+        "/presence/history?since=1440&limit=50"
+    );
+}
+
+/// Protects: an unreachable configured hub is an explicit failure, never a local PostgreSQL view.
+/// Detects: `presence-history` reaching for the loopback database when no hub answers.
+/// Needs: a closed remote candidate port and independently closed local stores.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_presence_history` offline handling).
+#[cfg(feature = "server-mode")]
+#[test]
+fn presence_history_refuses_offline_hub_without_opening_local_postgres() {
+    let output = agent_bus_with_hub_candidates(
+        &["http://127.0.0.1:1".to_owned()],
+        "presence-history-offline",
+    )
+    .args(["presence-history", "--encoding", "json"])
+    .output()
+    .expect("run offline presence-history");
+    let stderr = stderr_of(&output);
+    assert!(!output.status.success());
+    assert_eq!(stdout_of(&output), "");
+    assert!(
+        stderr.contains("offline: no authoritative hub reachable"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.to_lowercase().contains("postgres"),
+        "remote mode opened local PostgreSQL: {stderr}"
+    );
+}
+
+/// Protects: a hub failure or malformed reply is a non-zero exit, not an empty history.
+/// Detects: swallowing HTTP 503, or accepting a non-array body as "no events".
+/// Needs: owned failing-response and malformed-response mock hubs, closed local stores.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`cmd_presence_history` error propagation).
+#[cfg(feature = "server-mode")]
+#[test]
+fn presence_history_propagates_hub_errors_and_malformed_bodies() {
+    for (status, body, expected, label) in [
+        (
+            503_u16,
+            r#"{"error":"presence fixture unavailable"}"#,
+            "503",
+            "presence-history-503",
+        ),
+        (
+            200,
+            r#"{"not":"an array"}"#,
+            "malformed",
+            "presence-history-malformed",
+        ),
+    ] {
+        let hub = MockHub::spawn(vec![
+            health_route(),
+            MockRoute {
+                method: "GET",
+                path: "/presence/history",
+                status,
+                body: body.to_owned(),
+            },
+        ]);
+        let output = agent_bus_with_hub_candidates(&[hub.url()], label)
+            .args(["presence-history", "--encoding", "json"])
+            .output()
+            .unwrap_or_else(|error| panic!("run {label}: {error}"));
+        let stderr = stderr_of(&output);
+        assert!(!output.status.success(), "{label} must fail: {stderr}");
+        assert_eq!(stdout_of(&output), "", "{label} printed output");
+        assert!(stderr.contains(expected), "{label}: {stderr}");
+        assert!(
+            !stderr.to_lowercase().contains("postgres"),
+            "{label} opened local PostgreSQL: {stderr}"
         );
     }
 }

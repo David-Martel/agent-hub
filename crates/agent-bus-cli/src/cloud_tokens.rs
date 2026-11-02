@@ -3034,20 +3034,26 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn external_deadline_returns_without_echoing_output_or_retrying() {
+        // The deadline is counted from before the worker thread starts, so it
+        // must exceed scheduling jitter on a loaded host or the run ends in
+        // "expired before launch" (a different, pre-launch outcome). A busy
+        // child can only end at this deadline, so the assertions below prove
+        // the deadline path itself, and the elapsed bound proves the call
+        // returns instead of waiting on the child.
         let start = std::time::Instant::now();
         let error = run_external_with_budgets(
             "sh",
             &["-c", "printf dummy-private-output; while :; do :; done"],
             None,
             None,
-            std::time::Duration::from_millis(50),
-            std::time::Duration::from_millis(100),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
         )
         .unwrap_err();
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
         let rendered = format!("{error:#}");
         assert!(rendered.contains("deadline"));
-        assert!(rendered.contains("NOT_ESTABLISHED"));
+        assert!(rendered.contains("NOT_ESTABLISHED"), "{rendered}");
         assert!(!rendered.contains("dummy-private-output"));
     }
 
@@ -3077,18 +3083,22 @@ mod tests {
     #[cfg(unix)]
     fn inherited_pipe_after_original_exit_never_causes_an_indefinite_join() {
         let start = std::time::Instant::now();
-        // This local disposable fixture's inherited handle expires naturally;
-        // no descendant lookup/kill or live service is involved.
+        // This local disposable fixture's inherited handle expires naturally
+        // after 6 s; no descendant lookup/kill or live service is involved. The
+        // original shell exits at once, so only the inherited pipe is pending.
+        // The budgets exceed scheduling jitter on a loaded host (see the
+        // deadline test above) yet sit well under the holder's lifetime, so a
+        // join that waited for the pipe would overrun the elapsed bound.
         let error = run_external_with_budgets(
             "sh",
-            &["-c", "sleep 0.3 & printf dummy-private-output"],
+            &["-c", "sleep 6 & printf dummy-private-output"],
             None,
             None,
-            std::time::Duration::from_millis(50),
-            std::time::Duration::from_millis(50),
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_secs(1),
         )
         .unwrap_err();
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
         let rendered = format!("{error:#}");
         assert!(rendered.contains("NOT_ESTABLISHED"), "{rendered}");
         assert!(!rendered.contains("dummy-private-output"));

@@ -48,6 +48,21 @@ def clean_host_environment(source):
     return result
 
 
+def test_threads(config):
+    """Libtest thread count for the container run.
+
+    Without a bound libtest starts one thread per visible CPU, so on a busy host
+    the timing-sensitive tests run against dozens of competing threads. The
+    default follows the build job limit, capped at 4; `test_threads` overrides it.
+    """
+    value = config.get("test_threads", min(4, config["jobs"]))
+    require(
+        isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 16,
+        "Invalid test thread limit",
+    )
+    return value
+
+
 def git(repo, *args):
     return subprocess.check_output(
         ["git", "-C", str(repo), *args],
@@ -257,6 +272,7 @@ def validate_config(config):
     )
     require(30 <= config["timeout_seconds"] <= 3600, "Invalid QA deadline")
     require(1 <= config["jobs"] <= 4, "Invalid job limit")
+    test_threads(config)
     for key in ("cargo_home", "target_dir", "tools_dir", "evidence_root"):
         path = Path(config[key])
         require(
@@ -535,6 +551,7 @@ def actor(job):
         "RUSTUP_AUTO_INSTALL": "0",
         "RUSTUP_NO_UPDATE_CHECK": "1",
         "CARGO_BUILD_JOBS": str(job["jobs"]),
+        "RUST_TEST_THREADS": str(job.get("test_threads", min(4, job["jobs"]))),
         "CARGO_INCREMENTAL": "0",
         "CARGO_PROFILE_DEV_CODEGEN_UNITS": "16",
         "CARGO_PROFILE_TEST_CODEGEN_UNITS": "16",
@@ -661,7 +678,13 @@ def execute_container(config, source, run, phase, script):
     job_file = phase_dir / "job.json"
     job_file.write_text(
         json.dumps(
-            {"phase": phase, "jobs": config["jobs"], "uid": user_id, "gid": group_id}
+            {
+                "phase": phase,
+                "jobs": config["jobs"],
+                "test_threads": test_threads(config),
+                "uid": user_id,
+                "gid": group_id,
+            }
         )
     )
     docker = [

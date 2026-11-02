@@ -15,6 +15,18 @@
 | Read pattern | `WHERE timestamp_utc >= now() - interval` + agent/sender/topic | XRANGE / XREAD on streams |
 | Growth rate | ~264 msgs/day, ~95 presence/day | ~22 keys/day (many from tests) |
 
+## Linux hub durability (asuspro13)
+
+The guide below was measured on a Windows host. On the Linux hub, Redis (port 6380) and
+PostgreSQL (port 5300) are system services, and two failure guards for them are packaged
+under [`packaging/`](packaging/README.md#backend-hardening-root-opt-in), installed with
+`packaging/backend-hardening.sh`:
+
+- a Redis `ExecStartPre` check that repairs a small torn AOF tail after copying it aside, with
+  a restart delay and start limit that leave time to recover. It exists because a power cut
+  on 2026-10-26 kept the bus down until a manual `redis-check-aof --fix`;
+- a daily, verified `pg_dump -Fc` of the hub's databases, kept on the host.
+
 ## Rust Code Changes Needed
 
 ### 1. UUIDv7 for Message IDs (Priority: Medium)

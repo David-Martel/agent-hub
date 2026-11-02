@@ -1,0 +1,11 @@
+# cargo-nextest config. [profile.ci] is copied from David-Martel/vigil-utils
+# .github/actions/nextest-ci/nextest-ci.toml at 2b9e990 (PR #1127); keep it equal to that file.
+[profile.ci]
+retries = 2
+fail-fast = false
+status-level = "retry"
+final-status-level = "flaky"
+
+[profile.ci.junit]
+path = "junit.xml"
+store-success-output = false

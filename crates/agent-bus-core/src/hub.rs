@@ -1251,15 +1251,47 @@ mod tests {
         cache: Option<HubCache>,
         authority_only: bool,
     ) -> HubBackend {
+        race_with(
+            &socket_probe(),
+            settings,
+            locations,
+            network,
+            cache,
+            authority_only,
+        )
+        .await
+    }
+
+    async fn race_with(
+        probe: &AsyncProbe,
+        settings: &Settings,
+        locations: &[String],
+        network: &str,
+        cache: Option<HubCache>,
+        authority_only: bool,
+    ) -> HubBackend {
         resolve_concurrent(
             settings,
-            &socket_probe(),
+            probe,
             authority_only,
             Some(locations),
             network,
             cache,
         )
         .await
+    }
+
+    /// Two same-store aliases that both answer `hub` instantly in virtual time.
+    fn instant_hub_probe(fabric: &str, lan: &str) -> (AsyncProbe, ProbeEvents) {
+        scripted_probe(vec![
+            (fabric.to_owned(), Duration::ZERO, Some("hub".to_owned())),
+            (lan.to_owned(), Duration::ZERO, Some("hub".to_owned())),
+        ])
+    }
+
+    fn started(events: &ProbeEvents, url: &str) -> bool {
+        let marker = format!("start:{url}");
+        events.lock().expect("events").contains(&marker)
     }
 
     /// Protects: a healthy fabric alias wins before its LAN alias starts.
@@ -1321,55 +1353,68 @@ mod tests {
 
     /// Protects: a fresh same-store cached alias receives the first probe.
     /// Detects: ignoring the cache or contacting the other healthy alias.
-    /// Needs: private TCP listeners, a temporary cache and fixed network key.
+    /// Needs: virtual time, a scripted probe, a temporary cache and fixed network key.
     /// Breadcrumb: crates/agent-bus-core/src/hub_cache.rs (`HubCache::load`).
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_fresh_cache_hit_is_probed_first_and_wins_without_racing_the_rest() {
-        // Why: after the first resolution the cached route should answer alone.
+        // Why: after the first resolution the cached route should answer alone. Virtual
+        // time keeps the stagger from firing while a loaded host delays the cached probe.
         let dir = tempfile::tempdir().expect("tempdir");
-        let fabric = fake_hub(Duration::ZERO, "hub");
-        let lan = fake_hub(Duration::ZERO, "hub");
-        let settings = two_link_settings(&fabric.url, &lan.url);
+        let (fabric, lan) = ("http://fabric.lan:8400", "http://alternate.lan:8400");
+        let (probe, events) = instant_hub_probe(fabric, lan);
+        let settings = two_link_settings(fabric, lan);
         let locations = both_links();
         let fingerprint = routing_fingerprint(&settings.hub_candidates, Some(&locations), "net");
         cache_in(&dir)
             .store_with_rtt(
                 &fingerprint,
-                &lan.url,
+                lan,
                 HubRole::Authoritative,
                 Some(3),
                 SystemTime::now(),
             )
             .expect("seed cache");
-        let backend = race_at(&settings, &locations, "net", Some(cache_in(&dir)), false).await;
-        assert_eq!(backend.url(), Some(lan.url.as_str()), "cached route first");
-        assert_eq!(fabric.hits.load(Ordering::SeqCst), 0);
+        let backend = race_with(
+            &probe,
+            &settings,
+            &locations,
+            "net",
+            Some(cache_in(&dir)),
+            false,
+        )
+        .await;
+        assert_eq!(backend.url(), Some(lan), "cached route first");
+        assert!(
+            !started(&events, fabric),
+            "the other alias was never probed"
+        );
     }
 
     /// Protects: a changed attachment key invalidates prior route preference.
     /// Detects: cached LAN preference surviving a changed network fingerprint.
-    /// Needs: private TCP listeners and a seeded temporary route cache.
+    /// Needs: virtual time, a scripted probe and a seeded temporary route cache.
     /// Breadcrumb: crates/agent-bus-core/src/hub_cache.rs (fingerprint validation).
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_changed_network_fingerprint_misses_the_cache_and_re_races() {
         // Why: plugging in a better link must not be masked by a route cached before it existed.
         let dir = tempfile::tempdir().expect("tempdir");
-        let fabric = fake_hub(Duration::ZERO, "hub");
-        let lan = fake_hub(Duration::ZERO, "hub");
-        let settings = two_link_settings(&fabric.url, &lan.url);
+        let (fabric, lan) = ("http://fabric.lan:8400", "http://alternate.lan:8400");
+        let (probe, _events) = instant_hub_probe(fabric, lan);
+        let settings = two_link_settings(fabric, lan);
         let locations = both_links();
         let fingerprint =
             routing_fingerprint(&settings.hub_candidates, Some(&locations), "lan-only");
         cache_in(&dir)
             .store_with_rtt(
                 &fingerprint,
-                &lan.url,
+                lan,
                 HubRole::Authoritative,
                 Some(3),
                 SystemTime::now(),
             )
             .expect("seed cache");
-        let same = race_at(
+        let same = race_with(
+            &probe,
             &settings,
             &locations,
             "lan-only",
@@ -1377,12 +1422,9 @@ mod tests {
             false,
         )
         .await;
-        assert_eq!(
-            same.url(),
-            Some(lan.url.as_str()),
-            "same network: cache hit"
-        );
-        let plugged = race_at(
+        assert_eq!(same.url(), Some(lan), "same network: cache hit");
+        let plugged = race_with(
+            &probe,
             &settings,
             &locations,
             "lan-and-fabric",
@@ -1392,7 +1434,7 @@ mod tests {
         .await;
         assert_eq!(
             plugged.url(),
-            Some(fabric.url.as_str()),
+            Some(fabric),
             "a new attachment forces a fresh race that prefers the fabric"
         );
     }

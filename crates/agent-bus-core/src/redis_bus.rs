@@ -1713,6 +1713,19 @@ pub fn bus_post_message_with_schema(
         sensitivity: None,
     };
 
+    // --- Task 2: async PG write-through ------------------------------------------
+    // Enqueued before PUBLISH: a PUBLISH failure returns early, and once XADD
+    // has succeeded the message must still reach PostgreSQL (agent-hub#194).
+    // Enqueue to the background `PgWriter` channel when a handle is provided.
+    // The writer batches and flushes to `PostgreSQL` every 100 ms, keeping the
+    // hot path non-blocking.  The previous synchronous `persist_message_postgres`
+    // call (~230 ms per request) has been removed; Redis is the source-of-truth
+    // for immediate read-your-write consistency within the same request.
+    if let Some(writer) = pg_writer {
+        writer.send_message(&msg);
+    }
+    // -------------------------------------------------------------------------
+
     // Publish when legacy `/events` subscribers are connected or when a direct
     // recipient-specific message should wake active `/events/:agent` clients
     // through the HTTP bridge subscriber.
@@ -1723,17 +1736,6 @@ pub fn bus_post_message_with_schema(
             .publish(&settings.channel_key, &event_json)
             .map_err(|e| crate::error::AgentBusError::Internal(format!("PUBLISH failed: {e}")))?;
     }
-
-    // --- Task 2: async PG write-through ------------------------------------------
-    // Enqueue to the background `PgWriter` channel when a handle is provided.
-    // The writer batches and flushes to `PostgreSQL` every 100 ms, keeping the
-    // hot path non-blocking.  The previous synchronous `persist_message_postgres`
-    // call (~230 ms per request) has been removed; Redis is the source-of-truth
-    // for immediate read-your-write consistency within the same request.
-    if let Some(writer) = pg_writer {
-        writer.send_message(&msg);
-    }
-    // -------------------------------------------------------------------------
 
     // --- Pending ACK tracking ------------------------------------------------
     // When the sender requests acknowledgement, record the pending ack in Redis

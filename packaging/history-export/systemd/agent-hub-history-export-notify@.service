@@ -1,0 +1,10 @@
+[Unit]
+Description=Post an agent-bus finding for failed agent-hub unit %i
+Documentation=https://github.com/David-Martel/agent-hub/blob/main/packaging/history-export/README.md
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'source "$HOME/.config/bash/env.bash" && exec /bin/sh "$HOME/.local/share/agent-hub-history-export/agent-hub-history-export-notify.sh" "%i" "%H"'
+TimeoutStartSec=90
+UMask=0077
+NoNewPrivileges=true
