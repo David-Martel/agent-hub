@@ -66,7 +66,7 @@ class ToolchainPolicyTests(unittest.TestCase):
             "Windows, X64, agent-hub-native-smoke]",
             "Linux, X64, docker]",
         ):
-            for host_label in ("vigil1", "fleet-linux-x64"):
+            for host_label in ("vigil1", "agent-hub-local"):
                 with self.subTest(labels=labels, host_label=host_label):
                     self.assertIn(
                         labels, source, "routing mutation must change the fixture"
@@ -83,12 +83,12 @@ class ToolchainPolicyTests(unittest.TestCase):
         path = self.root / ".github/workflows/release.yml"
         path.write_text(
             path.read_text().replace(
-                '["self-hosted","Linux","X64","fleet-linux-x64"]',
+                '["self-hosted","Linux","X64","vigil1"]',
                 '["self-hosted","Linux","X64"]',
             )
         )
         self.assertIn(
-            "Linux x64 release build is not routed to the fleet-linux-x64 pool",
+            "Linux x64 release build is not routed to vigil1",
             POLICY_MODULE.verify_sources(self.root, self.policy),
         )
 

@@ -15,7 +15,7 @@ concurrency:
 jobs:
   verify:
     name: Official Stable Toolchain Drift
-    runs-on: [self-hosted, Linux, X64, fleet-linux-x64]
+    runs-on: [self-hosted, Linux, X64, agent-hub-local]
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
