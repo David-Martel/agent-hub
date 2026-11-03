@@ -20,10 +20,12 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 PKG = ROOT / "packaging" / "history-export"
@@ -99,7 +101,7 @@ def make_raw(raw: Path, n_messages: int = 5, body: str = "hello") -> None:
         json.dumps({"uuid_union": n_messages}) + "\n"
     )
     (raw / "snapshot.tsv").write_text(
-        f"snapshot_utc|2026-10-29T00:00:00Z\nmessages|{n_messages}\n"
+        f"snapshot_utc|2026-10-29T00:00:00Z\nmessages|{n_messages}\npresence_events|1\n"
     )
 
 
@@ -107,6 +109,469 @@ class TempDirCase(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="history-export-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, True)
+
+
+class DriveTests(TempDirCase):
+    def setUp(self):
+        super().setUp()
+        self.production_reserve = hx.DRIVE_RESERVE
+        # Positive fixtures use a small isolated tmpfs, never a100GiB real export.
+        reserve = mock.patch.object(hx, "DRIVE_RESERVE", 0)
+        reserve.start()
+        self.addCleanup(reserve.stop)
+
+    def bundle(self):
+        raw, bundle = self.tmp / "raw", self.tmp / "bundle"
+        make_raw(raw)
+        name = hx.build_bundle(
+            raw,
+            bundle,
+            {
+                "pg_messages": 5,
+                "pg_presence_events": 1,
+                "pg_snapshot_utc": "2026-10-29T00:00:00Z",
+            },
+        )
+        return bundle, name
+
+    def mismatched_snapshot_bundle(self, snapshot, messages=5, presence=1):
+        raw, bundle = self.tmp / "raw", self.tmp / "bundle"
+        make_raw(raw)
+        (raw / "snapshot.tsv").write_text(snapshot)
+        hx.build_bundle(
+            raw,
+            bundle,
+            {
+                "pg_messages": messages,
+                "pg_presence_events": presence,
+                "pg_snapshot_utc": "2026-10-29T00:00:00Z",
+            },
+        )
+        return bundle
+
+    def test_drive_truncated_pg_rows_fail_even_with_a_valid_health_window(self):
+        """Protects: the captured PG snapshot, beyond an internally hashed bundle.
+        Detects: five exported rows being labelled as a100-row snapshot even when
+        health counts admit100. Needs: synthetic rows only. Breadcrumb:
+        validate_drive_bundle snapshot/count binding and check_window.
+        """
+        hx.check_window(90, 100, 110)
+        bundle = self.mismatched_snapshot_bundle(
+            "snapshot_utc|2026-10-29T00:00:00Z\nmessages|100\npresence_events|1\n",
+            messages=100,
+        )
+        with self.assertRaisesRegex(hx.DriveHold, "export_snapshot_count_mismatch"):
+            hx.validate_drive_bundle(bundle)
+
+    def test_drive_truncated_presence_rows_fail_snapshot_binding(self):
+        """Protects: complete presence history, absent from decoded export--all.
+        Detects: one presence row accepted against a seven-row recorded snapshot.
+        Needs: synthetic PG/presence rows. Breadcrumb: validate_drive_bundle.
+        """
+        bundle = self.mismatched_snapshot_bundle(
+            "snapshot_utc|2026-10-29T00:00:00Z\nmessages|5\npresence_events|7\n",
+            presence=7,
+        )
+        with self.assertRaisesRegex(hx.DriveHold, "export_snapshot_count_mismatch"):
+            hx.validate_drive_bundle(bundle)
+
+    def test_drive_snapshot_tsv_counts_cannot_disagree_with_manifest(self):
+        """Protects: snapshot.tsv as the same source binding as MANIFEST/counts.
+        Detects: all five parsed PG rows passing while snapshot.tsv records four.
+        Needs: synthetic rows; no live stores. Breadcrumb: validate_drive_bundle.
+        """
+        bundle = self.mismatched_snapshot_bundle(
+            "snapshot_utc|2026-10-29T00:00:00Z\nmessages|4\npresence_events|1\n"
+        )
+        with self.assertRaisesRegex(hx.DriveHold, "export_snapshot_count_mismatch"):
+            hx.validate_drive_bundle(bundle)
+
+    def test_drive_snapshot_time_and_complete_fields_are_required(self):
+        """Protects: a unique complete snapshot identity for restore qualification.
+        Detects: wrong snapshot time or a missing presence count being accepted.
+        Needs: synthetic bundle clones only. Breadcrumb: validate_drive_bundle.
+        """
+        bundle = self.mismatched_snapshot_bundle(
+            "snapshot_utc|different\nmessages|5\npresence_events|1\n"
+        )
+        with self.assertRaisesRegex(hx.DriveHold, "export_snapshot_count_mismatch"):
+            hx.validate_drive_bundle(bundle)
+        shutil.rmtree(self.tmp / "raw")
+        shutil.rmtree(bundle)
+        bundle = self.mismatched_snapshot_bundle(
+            "snapshot_utc|2026-10-29T00:00:00Z\nmessages|5\n"
+        )
+        with self.assertRaisesRegex(hx.DriveHold, "export_snapshot_fields_invalid"):
+            hx.validate_drive_bundle(bundle)
+
+    def test_drive_bundle_validation_rejects_extra_and_traversal_files(self):
+        """Protects: exact, safely restorable backup census. Detects: an unlisted
+        file or a checksum path escaping the backup being accepted. Needs: only
+        synthetic files. Breadcrumb: validate_drive_bundle and README Drive restore.
+        """
+        bundle, _ = self.bundle()
+        hx.validate_drive_bundle(bundle)
+        (bundle / "stray").write_text("unlisted")
+        with self.assertRaises(hx.DriveHold):
+            hx.validate_drive_bundle(bundle)
+        (bundle / "stray").unlink()
+        with (bundle / "SHA256SUMS").open("a") as stream:
+            stream.write("0" * 64 + "  ../escape\n")
+        with self.assertRaises(hx.DriveHold):
+            hx.validate_drive_bundle(bundle)
+
+    def test_drive_private_proof_refuses_shared_or_wrong_owner(self):
+        """Protects: owner-only cloud backup. Detects: a shared object or a different
+        account passing the provider proof. Needs: synthetic API objects only.
+        Breadcrumb: DriveStore.check_private.
+        """
+        obj = {"owners": [{"emailAddress": "owner@example.invalid"}], "trashed": False}
+        perms = {
+            "permissions": [
+                {
+                    "type": "user",
+                    "role": "owner",
+                    "emailAddress": "owner@example.invalid",
+                }
+            ]
+        }
+        hx.DriveStore.check_private(obj, perms, "owner@example.invalid")
+        with self.assertRaises(hx.DriveHold):
+            hx.DriveStore.check_private(obj, perms, "other@example.invalid")
+        perms["permissions"].append({"type": "anyone", "role": "reader"})
+        with self.assertRaises(hx.DriveHold):
+            hx.DriveStore.check_private(obj, perms, "owner@example.invalid")
+
+    def test_drive_environment_cannot_override_dedicated_remote(self):
+        """Protects: fixed qualified Drive configuration. Detects: inherited rclone
+        environment redirecting the destination or auth. Needs: patched process env,
+        no credentials. Breadcrumb: drive_environment.
+        """
+        with mock.patch.dict(
+            os.environ,
+            {"RCLONE_CONFIG": "wrong", "RCLONE_CONFIG_MIGRATION_DRIVE_TYPE": "http"},
+        ):
+            env = hx.drive_environment()
+        self.assertFalse(any(k.startswith("RCLONE_") for k in env))
+
+    def test_drive_cloud_failure_keeps_sealed_cipher_for_exact_retry(self):
+        """Protects: durable failed backups and retry without live re-export.
+        Detects: failed readback discarding a closed cipher or a retry re-encrypting.
+        Needs: synthetic bundle, mocked age and cloud. Breadcrumb: close_drive_job,
+        publish_drive_job; no real backends, credentials or package code.
+        """
+        bundle, name = self.bundle()
+        job = self.tmp / "job"
+        job.mkdir()
+        shutil.move(str(bundle), job / "bundle")
+        recipient = self.tmp / "recipient.txt"
+        recipient.write_text("synthetic-public-recipient\n")
+
+        def encrypt(args, timeout=120):
+            Path(args[args.index("--output") + 1]).write_bytes(
+                b"fixture-cipher:" + Path(args[-1]).read_bytes()
+            )
+            return b""
+
+        self.patch_recipient(recipient)
+        with mock.patch.object(hx, "drive_run", side_effect=encrypt) as age:
+            binding = hx.close_drive_job(job, name)
+            self.assertEqual(age.call_count, 1)
+            first = hx.digest(job / binding["cipher_file"])
+            hx.close_drive_job(job, name)
+            self.assertEqual(age.call_count, 1)
+        store = mock.Mock()
+        store.put.side_effect = hx.DriveHold("full_remote_stream_mismatch")
+        with self.assertRaisesRegex(hx.DriveHold, "full_remote_stream_mismatch"):
+            hx.publish_drive_job(job, store)
+        store.put.assert_called_once()
+        self.assertEqual(hx.digest(job / binding["cipher_file"]), first)
+        self.assertTrue((job / "bundle" / "SHA256SUMS").exists())
+        self.assertFalse((job / "verified.json").exists())
+
+    def patch_recipient(self, recipient):
+        for key, value in [
+            ("DRIVE_RECIPIENT", recipient),
+            ("DRIVE_RECIPIENT_SHA", hx.digest(recipient)[0]),
+        ]:
+            patch = mock.patch.object(hx, key, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def closed_job(self):
+        bundle, name = self.bundle()
+        job = self.tmp / "job"
+        job.mkdir()
+        shutil.move(str(bundle), job / "bundle")
+        recipient = self.tmp / "recipient"
+        recipient.write_text("fixture-public-recipient")
+        self.patch_recipient(recipient)
+
+        def encrypt(args, timeout=120):
+            Path(args[args.index("--output") + 1]).write_bytes(
+                b"cipher:" + Path(args[-1]).read_bytes()
+            )
+            return b""
+
+        with mock.patch.object(hx, "drive_run", side_effect=encrypt):
+            binding = hx.close_drive_job(job, name)
+        return job, binding
+
+    def test_drive_tampered_cipher_is_held_before_any_cloud_call(self):
+        """Protects: exact closed-cipher retry. Detects: modified local ciphertext
+        being uploaded under a prior proof. Needs: synthetic closed job only.
+        Breadcrumb: close_drive_job binding checks before publish_drive_job.
+        """
+        job, binding = self.closed_job()
+        path = job / binding["cipher_file"]
+        path.write_bytes(b"tampered")
+        store = mock.Mock()
+        with self.assertRaisesRegex(hx.DriveHold, "closed_cipher_changed"):
+            hx.publish_drive_job(job, store)
+        store.account.assert_not_called()
+        self.assertEqual(path.read_bytes(), b"tampered")
+
+    def test_drive_success_requires_both_cipher_and_receipt_readback(self):
+        """Protects: a remotely recoverable exact bundle and durable receipt.
+        Detects: completion after cipher upload alone, plaintext deletion, or unsafe
+        tar members. Needs: synthetic job and provider proofs; no network/key.
+        Breadcrumb: publish_drive_job, close_drive_job, README Drive restore.
+        """
+        job, binding = self.closed_job()
+        store = mock.Mock()
+        store.put.side_effect = lambda path, name, expected: {
+            "object": {"id": name},
+            "full_readback": {"sha256": expected["sha256"], "bytes": expected["bytes"]},
+        }
+        result = hx.publish_drive_job(job, store)
+        self.assertEqual(store.put.call_count, 2)
+        self.assertEqual(result["status"], "REMOTE_VERIFIED")
+        self.assertTrue((job / "verified.json").is_file())
+        self.assertTrue((job / "bundle/MANIFEST.json").is_file())
+        self.assertTrue((job / binding["cipher_file"]).is_file())
+        with tarfile.open(job / "archive.tar") as archive:
+            self.assertTrue(
+                all(
+                    m.isfile()
+                    and not m.name.startswith("/")
+                    and ".." not in Path(m.name).parts
+                    for m in archive.getmembers()
+                )
+            )
+            self.assertEqual(
+                set(archive.getnames()),
+                {
+                    p.relative_to(job / "bundle").as_posix()
+                    for p in (job / "bundle").rglob("*")
+                    if p.is_file()
+                },
+            )
+
+    def test_drive_receipt_failure_is_not_reported_as_complete(self):
+        """Protects: completion-receipt durability. Detects: a failed second upload
+        being mistaken for success. Needs: synthetic job and failed fake receipt.
+        Breadcrumb: publish_drive_job writes verified.json only after both proofs.
+        """
+        job, _ = self.closed_job()
+        store = mock.Mock()
+        store.put.side_effect = [
+            {"object": {"id": "cipher"}},
+            hx.DriveHold("receipt_readback_failed"),
+        ]
+        with self.assertRaisesRegex(hx.DriveHold, "receipt_readback_failed"):
+            hx.publish_drive_job(job, store)
+        self.assertTrue((job / "cloud-receipt.json").is_file())
+        self.assertFalse((job / "verified.json").exists())
+
+    def test_drive_receipt_retry_reuses_identical_closed_receipt_bytes(self):
+        """Protects: immutable receipt retry after an interrupted second upload.
+        Detects: new receipt bytes/name or re-encryption on retry. Needs: synthetic
+        job/provider, no live config. Breadcrumb: publish_drive_job receipt reuse.
+        """
+        job, _ = self.closed_job()
+        store = mock.Mock()
+        store.put.side_effect = [
+            {"object": {"id": "same-cipher"}},
+            hx.DriveHold("receipt_interrupted"),
+        ]
+        with self.assertRaisesRegex(hx.DriveHold, "receipt_interrupted"):
+            hx.publish_drive_job(job, store)
+        original = (job / "cloud-receipt.json").read_bytes()
+        store.put.side_effect = lambda path, name, expected: {
+            "object": {"id": "same-cipher" if name.endswith(".age") else "receipt"}
+        }
+        with mock.patch.object(hx, "drive_run") as encrypt:
+            hx.publish_drive_job(job, store)
+        encrypt.assert_not_called()
+        self.assertEqual((job / "cloud-receipt.json").read_bytes(), original)
+
+    def test_drive_capacity_hold_keeps_plaintext_before_creating_cipher(self):
+        """Protects: the source100GiB reserve during other ongoing migrations.
+        Detects: encryption or archive allocation when capacity is unavailable.
+        Needs: synthetic bundle and disk-usage fixture. Breadcrumb: close_drive_job.
+        """
+        bundle, name = self.bundle()
+        job = self.tmp / "job"
+        job.mkdir()
+        shutil.move(str(bundle), job / "bundle")
+        self.assertEqual(self.production_reserve, 100 * 1024**3)
+        usage = shutil.disk_usage(job)._replace(free=self.production_reserve - 1)
+        with (
+            mock.patch.object(hx, "DRIVE_RESERVE", self.production_reserve),
+            mock.patch.object(hx.shutil, "disk_usage", return_value=usage),
+            mock.patch.object(hx, "drive_run") as encrypt,
+        ):
+            with self.assertRaisesRegex(hx.DriveHold, "backup_100GiB_reserve"):
+                hx.close_drive_job(job, name)
+        encrypt.assert_not_called()
+        self.assertTrue((job / "bundle/MANIFEST.json").is_file())
+        self.assertFalse((job / "archive.tar").exists())
+
+    def test_drive_conflicting_remote_is_preserved_without_overwrite(self):
+        """Protects: immutable cloud history. Detects: a same-name wrong object
+        being overwritten or accepted. Needs: fake API metadata only.
+        Breadcrumb: DriveStore.put provider binding before readback.
+        """
+        store = object.__new__(hx.DriveStore)
+        store.api = mock.Mock(return_value={"files": [{"id": "existing"}]})
+        store.private = mock.Mock(
+            return_value={
+                "parents": [hx.DRIVE_FOLDER],
+                "size": "1",
+                "md5Checksum": "wrong",
+            }
+        )
+        store.rc = mock.Mock()
+        store.readback = mock.Mock()
+        with self.assertRaisesRegex(hx.DriveHold, "remote_object_binding_mismatch"):
+            store.put(
+                self.tmp / "unused",
+                "safe.age",
+                {"bytes": 2, "md5": "expected", "sha256": "0" * 64},
+            )
+        store.rc.assert_not_called()
+        store.readback.assert_not_called()
+
+    def test_drive_duplicate_remote_name_and_wrong_parent_are_rejected(self):
+        """Protects: unambiguous private object identity. Detects: duplicate names
+        or an object outside the qualified folder passing. Needs: fake API only.
+        Breadcrumb: DriveStore.put find and parent proof.
+        """
+        store = object.__new__(hx.DriveStore)
+        store.api = mock.Mock(return_value={"files": [{"id": "a"}, {"id": "b"}]})
+        with self.assertRaisesRegex(hx.DriveHold, "ambiguous_remote_name"):
+            store.put(self.tmp / "unused", "safe.age", {})
+        store.api.return_value = {"files": [{"id": "a"}]}
+        store.private = mock.Mock(return_value={"parents": ["wrong-folder"]})
+        with self.assertRaisesRegex(hx.DriveHold, "remote_object_binding_mismatch"):
+            store.put(self.tmp / "unused", "safe.age", {})
+
+    def test_drive_existing_partial_is_retained_without_encrypting(self):
+        """Protects: interrupted backup evidence. Detects: an unknown partial
+        being replaced, removed or silently retried. Needs: synthetic bundle.
+        Breadcrumb: close_drive_job unbound_partial_preserved gate.
+        """
+        bundle, name = self.bundle()
+        job = self.tmp / "job"
+        job.mkdir()
+        shutil.move(str(bundle), job / "bundle")
+        partial = job / "ciphertext.pending"
+        partial.write_bytes(b"partial")
+        with mock.patch.object(hx, "drive_run") as encrypt:
+            with self.assertRaisesRegex(hx.DriveHold, "unbound_partial_preserved"):
+                hx.close_drive_job(job, name)
+        encrypt.assert_not_called()
+        self.assertEqual(partial.read_bytes(), b"partial")
+
+    def test_drive_auth_failure_preserves_job_and_retries_without_export(self):
+        """Protects: failure receipts and retry independent of live databases.
+        Detects: auth failure deleting a backup or retry querying production stores.
+        Needs: synthetic closed job and fake DriveStore; no live configuration.
+        Breadcrumb: drive_backup chooses existing unverified job before capture.
+        """
+        job, binding = self.closed_job()
+        state = self.tmp / "state"
+        spool = state / "drive-spool"
+        spool.mkdir(parents=True)
+        target = spool / binding["name"]
+        shutil.move(str(job), target)
+        store = mock.Mock()
+        store.account.side_effect = hx.DriveHold("official_drive_read_failed")
+        with (
+            mock.patch.object(hx, "STATE", state),
+            mock.patch.object(hx, "DriveStore", return_value=store),
+            mock.patch.object(hx, "export_pg") as pg,
+            mock.patch.object(hx, "export_redis") as redis,
+        ):
+            self.assertEqual(hx.drive_backup(no_bus=True), 1)
+        pg.assert_not_called()
+        redis.assert_not_called()
+        self.assertTrue((target / binding["cipher_file"]).is_file())
+        self.assertEqual(
+            json.loads((state / "last-drive-result.json").read_text())["status"], "HELD"
+        )
+
+    def test_drive_notices_satisfy_finding_and_status_schema_fields(self):
+        """Protects: failed scheduled backups being visible on the coordination bus.
+        Detects: a finding rejected for missing FINDING/SEVERITY, or a success
+        missing STATUS. Needs: synthetic closed job/provider and mocked bus only.
+        Breadcrumb: drive_backup notices, bus schema selection and README alerts.
+        """
+        job, binding = self.closed_job()
+        state = self.tmp / "state"
+        spool = state / "drive-spool"
+        spool.mkdir(parents=True)
+        shutil.move(str(job), spool / binding["name"])
+        store = mock.Mock()
+        store.account.side_effect = [hx.DriveHold("official_drive_read_failed"), None]
+        store.put.side_effect = lambda path, name, expected: {"object": {"id": name}}
+        with (
+            mock.patch.object(hx, "STATE", state),
+            mock.patch.object(hx, "DriveStore", return_value=store),
+            mock.patch.object(hx, "bus") as notice,
+        ):
+            self.assertEqual(hx.drive_backup(), 1)
+            self.assertTrue(notice.call_args.args[0].startswith("FINDING:"))
+            self.assertIn("SEVERITY: high", notice.call_args.args[0])
+            self.assertFalse(notice.call_args.args[1])
+            self.assertEqual(hx.drive_backup(), 0)
+            self.assertTrue(notice.call_args.args[0].startswith("STATUS:"))
+            self.assertTrue(notice.call_args.args[1])
+
+    @unittest.skipUnless(os.name == "posix", "pipe selectors need POSIX")
+    def test_drive_full_readback_rejects_corrupted_and_truncated_stream(self):
+        """Protects: actual full readback bytes, not a provider listing. Detects:
+        equal-length corruption and truncation. Needs: owned Python stdout child,
+        no network/credentials. Breadcrumb: DriveStore.readback stream digest/size.
+        """
+        store = object.__new__(hx.DriveStore)
+        real_popen = subprocess.Popen
+        expected = {"bytes": 4, "sha256": hashlib.sha256(b"good").hexdigest()}
+        for value in [b"good", b"evil", b"bad"]:
+            with self.subTest(stream=value):
+
+                def child(*args, **kwargs):
+                    return real_popen(
+                        [
+                            sys.executable,
+                            "-c",
+                            "import sys;sys.stdout.buffer.write(" + repr(value) + ")",
+                        ],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.DEVNULL,
+                        env={"PATH": os.defpath},
+                    )
+
+                with mock.patch.object(hx.subprocess, "Popen", side_effect=child):
+                    if value == b"good":
+                        self.assertEqual(
+                            store.readback("fixture", expected)["bytes"], 4
+                        )
+                    else:
+                        with self.assertRaisesRegex(
+                            hx.DriveHold, "full_remote_stream_mismatch"
+                        ):
+                            store.readback("fixture", expected)
 
 
 class DecTests(unittest.TestCase):
@@ -349,6 +814,17 @@ class UnitFileTests(unittest.TestCase):
             notify,
         )
         self.assertIn('source "$HOME/.config/bash/env.bash" &&', notify)
+
+    def test_service_uses_drive_without_a_gen9_or_gen7_transport(self):
+        """Protects: daily backup independence from retiring Windows drops.
+        Detects: required or optional old-host transport surviving in ExecStart.
+        Needs: source unit text only. Breadcrumb: README private Drive runbook.
+        """
+        service = self.read("agent-hub-history-export.service")
+        self.assertIn("--drive'", service)
+        self.assertIn("uv run --offline", service)
+        self.assertNotIn("dtm-p1gen9", service)
+        self.assertNotIn("dtm-p1gen7", service)
 
     @unittest.skipUnless(shutil.which("flock"), "needs flock")
     def test_fresh_home_without_a_cache_directory_still_runs(self):

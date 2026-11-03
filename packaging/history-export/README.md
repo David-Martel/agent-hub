@@ -1,9 +1,89 @@
 # agent-hub history export
 
-A daily job on the agent-bus hub exports the complete bus history and pushes it
-to a restricted SFTP drop on the dtm-* Windows hosts. It then proves each copy by
-reading it back. The owner directive of 2026-10-29 says agent-hub items live on
-dtm-* hosts, not on the hub. Up: [packaging README](../README.md).
+```sh
+# install preview; deploy only after the restore qualification below
+packaging/history-export/install.sh --dry-run
+# build: standard-library syntax check
+python3 -B -c 'from pathlib import Path; p=Path("packaging/history-export/agent-hub-history-export.py"); compile(p.read_bytes(), str(p), "exec")'
+# test: CI Unit Tests selectors, no live stores
+python3 -B -m unittest scripts/ci/test_history_export.py scripts/ci/test_history_prune.py -v
+# run: only after reviewed deployment and independent restore qualification
+systemctl --user start agent-hub-history-export.service
+```
+
+The existing daily job exports the complete hub history to encrypted, owner-only
+Google Drive custody. It has no required Windows-host transport. The operator's
+2026-11-03 directive to use Google Drive or DTM-WORK replaces the earlier
+personal-Drive automation restriction and the old required Gen7/optional Gen9
+drop routing. Existing drop backups remain preserved. Up: [packaging README](../README.md).
+
+## Private Drive backup
+
+The [helper](agent-hub-history-export.py) preserves the PostgreSQL repeatable-read
+snapshot, Redis raw message/side-channel export, UUID reconciliation and gzip
+bundle/checksum format described below. Redis reads are live, not atomic with the
+PostgreSQL snapshot. It verifies an exact regular-file census, safe relative paths,
+every digest, gzip/NDJSON parsing and line counts before packing. Full private
+message bodies remain in the backup; logs and bus notices contain metadata only.
+Parsed PostgreSQL message/presence counts must equal both the recorded manifest
+snapshot counts and `snapshot.tsv`; the snapshot time and complete field set must
+also agree. A self-consistent checksum list alone cannot hide truncated SQL output.
+
+The [existing service](systemd/agent-hub-history-export.service) uses `--drive` and
+keeps its flock, failure notification and daily/Persistent timer. Its `uv --offline
+--with redis` dependency must already be cached; the pilot checks that prerequisite.
+It uses the operator-qualified `/srv/vigil-migration/asuspro13/rclone.conf`, fixed
+`migration-drive:` and private folder binding. It reads the transport qualification
+and public `age-recipient.txt`, checks the expected owner and public-recipient hash,
+and refuses inherited `RCLONE_*` redirects. It never copies credentials or an age
+private key. Normal rclone credential refresh uses only the dedicated config; the
+separate source migration worker/configuration is not rewritten by this helper.
+
+A tar of the complete bundle is encrypted with `/usr/bin/age`. The object name is
+`agent-hub.<history-name>.<cipher-sha256>.tar.age`; the separate `.receipt.json` binds
+the snapshot, inner manifest/checksum-list, tar and ciphertext hashes and provider
+object. Both objects use immutable copy-to, official owner/permission/parent/size
+checks and complete streamed SHA256 readback. No sync, public sharing or remote
+delete is used. A provider listing alone is not a successful backup.
+
+Owned work stays under `~/.local/state/agent-hub-history-export/drive-spool/`.
+`binding.json` closes an exact tar/cipher pair; retry reads that pair rather than
+re-exporting or re-encrypting. Auth/upload/readback failures keep the spool. Unknown
+partials, changed bytes or conflicting remote objects are held for review without
+overwrite or deletion. A failed or incomplete earlier job is handled before a new
+snapshot. The job refuses work below a100GiB free-space reserve and checks additional
+archive/encryption capacity. Raw export, bundle, tar and ciphertext are retained
+even after cloud proof pending independent restore; no new automated retention
+policy is introduced. `verified.json` appears only after full cipher and completion
+receipt readback. Small current state is `last-drive-result.json`; per-backup cloud
+receipts also live in the existing local `receipts/` directory.
+
+Deploy only the reviewed helper and existing service after isolated tests and
+`systemd-analyze --user verify`. The installer enables the timer, so do not run its
+non-preview mode before qualification. Keep the timer disabled for the first actual
+read-only snapshot/encrypt/upload pilot. Independently download and decrypt that
+exact object on an authorized key-custody machine; never place the private key on
+the hub. Before extraction reject absolute/traversal/duplicate/link/device tar
+members. Extract into a new inert directory, require the exact file census, run
+`sha256sum -c SHA256SUMS`, and validate gzip/NDJSON/counts using
+`validate_drive_bundle` from the reviewed helper. Bind the recovered tar, manifest
+and checksum-list hashes in the qualification receipt. Only then enable the existing
+timer and check its next trigger and last success. A verified archive is byte
+recoverability evidence; loading it into the live bus is a separate operation.
+
+The [DriveTests selectors](../../scripts/ci/test_history_export.py) use synthetic
+bundles/providers/child streams with no real credentials or backends. They reject
+shared/wrong-owner objects, mismatched/duplicate names, unsafe/extra files, changed
+ciphertext, corrupt/truncated readback and missing receipt proof; they verify
+failed-spool retention and exact retry without live export. The POSIX stream control
+runs in Linux CI; unsupported platforms report a skip. Selector review bindings live
+in the [existing review register](../../docs/test-review-register.json).
+
+## Legacy SFTP drop workflow
+
+The following restricted-drop install, restore and pruning details describe retained
+historical backups and the explicit legacy `--dest` CLI. They are not dependencies
+of the current Drive service.
 
 ## Install
 
@@ -146,13 +226,10 @@ foreach ($l in Get-Content "$d\SHA256SUMS") {
 "bad=$bad"
 ```
 
-**Drive is an on-demand copy, never automated.** No timer, unit or script copies
-bundles to the owner's personal Google Drive. The 2026-10-28 rule forbids
-automation on personal credentials, and the two dtm-* copies already give
-redundancy. When the owner asks for a Drive copy, an agent runs one
-`rclone copy` (never `sync`) of the named bundle to
-`gdrive-personal:VIGIL_DATA/agent-hub/history/<name>`, checks it with
-`rclone check --one-way`, and records the copy on the bus.
+**Legacy Drive rule superseded.** The old on-demand-only personal-Drive rule was
+replaced by the operator's explicit backup-migration instruction. The private,
+encrypted and readback-verified current workflow is documented above; older SFTP
+copies are not deleted by that change.
 
 **Restore**: copy a bundle back, run `sha256sum -c SHA256SUMS` in it, then read
 the gzip NDJSON parts. MANIFEST.json's `body_encoding` field explains the Redis
