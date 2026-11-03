@@ -10013,13 +10013,13 @@
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_truncated_pg_rows_fail_even_with_a_valid_health_window",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 152,
@@ -10039,19 +10039,28 @@
       "rationale": "Protects: the captured PG snapshot, beyond an internally hashed bundle.\nDetects: five exported rows being labelled as a100-row snapshot even when\nhealth counts admit100. Needs: synthetic rows only. Breadcrumb:\nvalidate_drive_bundle snapshot/count binding and check_window.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_truncated_presence_rows_fail_snapshot_binding",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 166,
@@ -10071,19 +10080,28 @@
       "rationale": "Protects: complete presence history, absent from decoded export--all.\nDetects: one presence row accepted against a seven-row recorded snapshot.\nNeeds: synthetic PG/presence rows. Breadcrumb: validate_drive_bundle.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_snapshot_tsv_counts_cannot_disagree_with_manifest",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 178,
@@ -10103,19 +10121,28 @@
       "rationale": "Protects: snapshot.tsv as the same source binding as MANIFEST/counts.\nDetects: all five parsed PG rows passing while snapshot.tsv records four.\nNeeds: synthetic rows; no live stores. Breadcrumb: validate_drive_bundle.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_snapshot_time_and_complete_fields_are_required",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 189,
@@ -10135,19 +10162,28 @@
       "rationale": "Protects: a unique complete snapshot identity for restore qualification.\nDetects: wrong snapshot time or a missing presence count being accepted.\nNeeds: synthetic bundle clones only. Breadcrumb: validate_drive_bundle.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_bundle_validation_rejects_extra_and_traversal_files",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 207,
@@ -10167,19 +10203,28 @@
       "rationale": "Protects: exact, safely restorable backup census. Detects: an unlisted\nfile or a checksum path escaping the backup being accepted. Needs: only\nsynthetic files. Breadcrumb: validate_drive_bundle and README Drive restore.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_private_proof_refuses_shared_or_wrong_owner",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 223,
@@ -10199,19 +10244,28 @@
       "rationale": "Protects: owner-only cloud backup. Detects: a shared object or a different\naccount passing the provider proof. Needs: synthetic API objects only.\nBreadcrumb: DriveStore.check_private.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_environment_cannot_override_dedicated_remote",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 245,
@@ -10231,19 +10285,28 @@
       "rationale": "Protects: fixed qualified Drive configuration. Detects: inherited rclone\nenvironment redirecting the destination or auth. Needs: patched process env,\nno credentials. Breadcrumb: drive_environment.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_cloud_failure_keeps_sealed_cipher_for_exact_retry",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 257,
@@ -10263,19 +10326,28 @@
       "rationale": "Protects: durable failed backups and retry without live re-export.\nDetects: failed readback discarding a closed cipher or a retry re-encrypting.\nNeeds: synthetic bundle, mocked age and cloud. Breadcrumb: close_drive_job,\npublish_drive_job; no real backends, credentials or package code.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_tampered_cipher_is_held_before_any_cloud_call",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 320,
@@ -10295,19 +10367,28 @@
       "rationale": "Protects: exact closed-cipher retry. Detects: modified local ciphertext\nbeing uploaded under a prior proof. Needs: synthetic closed job only.\nBreadcrumb: close_drive_job binding checks before publish_drive_job.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_success_requires_both_cipher_and_receipt_readback",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 334,
@@ -10327,19 +10408,28 @@
       "rationale": "Protects: a remotely recoverable exact bundle and durable receipt.\nDetects: completion after cipher upload alone, plaintext deletion, or unsafe\ntar members. Needs: synthetic job and provider proofs; no network/key.\nBreadcrumb: publish_drive_job, close_drive_job, README Drive restore.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_receipt_failure_is_not_reported_as_complete",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 370,
@@ -10359,19 +10449,28 @@
       "rationale": "Protects: completion-receipt durability. Detects: a failed second upload\nbeing mistaken for success. Needs: synthetic job and failed fake receipt.\nBreadcrumb: publish_drive_job writes verified.json only after both proofs.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_receipt_retry_reuses_identical_closed_receipt_bytes",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 386,
@@ -10391,19 +10490,28 @@
       "rationale": "Protects: immutable receipt retry after an interrupted second upload.\nDetects: new receipt bytes/name or re-encryption on retry. Needs: synthetic\njob/provider, no live config. Breadcrumb: publish_drive_job receipt reuse.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_capacity_hold_keeps_plaintext_before_creating_cipher",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 408,
@@ -10423,19 +10531,28 @@
       "rationale": "Protects: the source100GiB reserve during other ongoing migrations.\nDetects: encryption or archive allocation when capacity is unavailable.\nNeeds: synthetic bundle and disk-usage fixture. Breadcrumb: close_drive_job.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_conflicting_remote_is_preserved_without_overwrite",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 430,
@@ -10455,19 +10572,28 @@
       "rationale": "Protects: immutable cloud history. Detects: a same-name wrong object\nbeing overwritten or accepted. Needs: fake API metadata only.\nBreadcrumb: DriveStore.put provider binding before readback.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_duplicate_remote_name_and_wrong_parent_are_rejected",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 455,
@@ -10487,19 +10613,28 @@
       "rationale": "Protects: unambiguous private object identity. Detects: duplicate names\nor an object outside the qualified folder passing. Needs: fake API only.\nBreadcrumb: DriveStore.put find and parent proof.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_existing_partial_is_retained_without_encrypting",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 469,
@@ -10519,19 +10654,28 @@
       "rationale": "Protects: interrupted backup evidence. Detects: an unknown partial\nbeing replaced, removed or silently retried. Needs: synthetic bundle.\nBreadcrumb: close_drive_job unbound_partial_preserved gate.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_auth_failure_preserves_job_and_retries_without_export",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 486,
@@ -10551,19 +10695,28 @@
       "rationale": "Protects: failure receipts and retry independent of live databases.\nDetects: auth failure deleting a backup or retry querying production stores.\nNeeds: synthetic closed job and fake DriveStore; no live configuration.\nBreadcrumb: drive_backup chooses existing unverified job before capture.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_notices_satisfy_finding_and_status_schema_fields",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 514,
@@ -10583,19 +10736,28 @@
       "rationale": "Protects: failed scheduled backups being visible on the coordination bus.\nDetects: a finding rejected for missing FINDING/SEVERITY, or a success\nmissing STATUS. Needs: synthetic closed job/provider and mocked bus only.\nBreadcrumb: drive_backup notices, bus schema selection and README alerts.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::DriveTests::test_drive_full_readback_rejects_corrupted_and_truncated_stream",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 542,
@@ -10615,19 +10777,28 @@
       "rationale": "Protects: actual full readback bytes, not a provider listing. Detects:\nequal-length corruption and truncation. Needs: owned Python stdout child,\nno network/credentials. Breadcrumb: DriveStore.readback stream digest/size.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     },
     {
       "selector": "scripts/ci/test_history_export.py::UnitFileTests::test_service_uses_drive_without_a_gen9_or_gen7_transport",
-      "reviewer": null,
-      "reviewer_type": "pending_independent_agent",
-      "reviewer_authored_test_or_fix": null,
+      "reviewer": "codex-p1gen9-integration-review",
+      "reviewer_type": "independent_agent",
+      "reviewer_authored_test_or_fix": false,
       "date": "2026-11-03",
-      "commit_reviewed": null,
-      "scope": "Closed synthetic history Drive transport controls; no live stores, cloud or credentials",
-      "disposition": "unreviewed",
+      "commit_reviewed": "0160c3c89f3516b87e905114b20b1a962b069480",
+      "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+      "disposition": "keep",
       "selector_source": {
         "path": "scripts/ci/test_history_export.py",
         "first_line": 818,
@@ -10647,7 +10818,16 @@
       "rationale": "Protects: daily backup independence from retiring Windows drops.\nDetects: required or optional old-host transport surviving in ExecStart.\nNeeds: source unit text only. Breadcrumb: README private Drive runbook.",
       "relevance": "Existing scheduled backup must remain recoverable without Gen9 or the failed required Gen7 drop.",
       "coverage": {
-        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux."
+        "author_control": "Initial four selectors failed on absent Drive implementation; synthetic provider/hash/tamper/retry controls then pass. POSIX pipe control requires Linux.",
+        "independent_review": {
+          "selected": 23,
+          "passed": 23,
+          "skipped": 0,
+          "scope": "Changed history Drive behavior plus exact snapshot-count rejection; synthetic isolated Linux controls. No runtime cloud/database/key/decrypt pilot.",
+          "external_receipt": "C:/Users/david/.codex/evidence/fleet-integration/resume-lan/history-review/review.json",
+          "receipt_sha256": "89497b64815788d58256696fa92cd3de1b54b715ac44f7411f59fc4cd1c40fab",
+          "selector_dispositions_sha256": "741ae1c5475a8b68880bdefdcc532f3557421f566c27149153980bc230a48eb2"
+        }
       },
       "breaking_behavior": "Existing daily service selects encrypted private Drive instead of SFTP; legacy explicit --dest remains available."
     }
