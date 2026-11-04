@@ -453,7 +453,7 @@ class RuntimeClosureTests(unittest.TestCase):
 
 def snapshot():
     return {
-        "version": "0.18.0",
+        "version": "0.19.0",
         "stats": {
             "requests_executed": 0,
             "cache_hits": {"counts": {}},

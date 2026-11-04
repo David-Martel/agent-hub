@@ -93,14 +93,14 @@ $assignment = $ast.Find({ param($node)
     $node.Left.Extent.Text -ceq '$cacheRoot'
 }, $false)
 if (-not $assignment) { throw 'Production cache-root assignment missing' }
-$cacheParent = Join-Path ([IO.Path]::GetTempPath()) 'synthetic-windows-gnu0.18'
+$cacheParent = Join-Path ([IO.Path]::GetTempPath()) 'synthetic-windows-gnu0.19'
 $imageId = $image
 . ([scriptblock]::Create($assignment.Extent.Text)); $first = $cacheRoot
 $imageId = 'sha256:' + ('e' * 64)
 . ([scriptblock]::Create($assignment.Extent.Text)); $second = $cacheRoot
 Assert-SetupFixture ($first -cne $second -and (Split-Path $first -Leaf) -ceq ('b' * 64) -and
     (Split-Path $second -Leaf) -ceq ('e' * 64)) 'immutable images preserve distinct cache children'
-$owner = [pscustomobject]@{ schema_version = 1; owner = 'agent-hub-windows-gnu-cache-v1'; uid = '1000'; version = '0.18.0'; image = $image; revision = $revision; dockerfile = $dockerfile; target = 'x86_64-pc-windows-gnu'; directory = (Join-Path $first 'data'); config = (Join-Path $first 'config'); config_sha256 = ('e' * 64); executable_sha256 = ('f' * 64); idle_timeout = '1800' }
+$owner = [pscustomobject]@{ schema_version = 1; owner = 'agent-hub-windows-gnu-cache-v1'; uid = '1000'; version = '0.19.0'; image = $image; revision = $revision; dockerfile = $dockerfile; target = 'x86_64-pc-windows-gnu'; directory = (Join-Path $first 'data'); config = (Join-Path $first 'config'); config_sha256 = ('e' * 64); executable_sha256 = ('f' * 64); idle_timeout = '1800' }
 Assert-CrossCacheMarker $owner $owner
 Assert-SetupFixture $true 'dedicated owner/config admitted'
 foreach ($field in @('uid', 'directory', 'config', 'executable_sha256', 'version', 'image', 'config_sha256', 'idle_timeout')) {

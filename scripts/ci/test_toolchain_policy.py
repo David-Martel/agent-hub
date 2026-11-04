@@ -43,7 +43,9 @@ class ToolchainPolicyTests(unittest.TestCase):
 
     def test_one_docker_stage_on_old_compiler_fails(self):
         path = self.root / "docker/Dockerfile.linux"
-        path.write_text(path.read_text().replace("rust:1.99.0", "rust:1.98.1", 1))
+        needle = f"rust:{self.policy['rust']}"
+        self.assertIn(needle, path.read_text(), "mutation must change the fixture")
+        path.write_text(path.read_text().replace(needle, "rust:1.98.1", 1))
         self.assertTrue(POLICY_MODULE.verify_sources(self.root, self.policy))
 
     # Protects: CI uses the exact Node version declared by the source policy.
@@ -112,11 +114,11 @@ class ToolchainPolicyTests(unittest.TestCase):
 
         def newer(endpoint):
             if endpoint == POLICY_MODULE.RELEASES["sccache"]:
-                return json.dumps({"tag_name": "v0.19.0"})
+                return json.dumps({"tag_name": "v99.0.0"})
             return self.release_fixture(endpoint)
 
         self.assertIn(
-            "sccache: pinned 0.18.0, official latest 0.19.0",
+            f"sccache: pinned {self.policy['sccache']}, official latest 99.0.0",
             POLICY_MODULE.check_latest(self.policy, newer),
         )
         self.assertEqual(self.policy, original)
@@ -128,6 +130,23 @@ class ToolchainPolicyTests(unittest.TestCase):
         issues = POLICY_MODULE.check_latest(self.policy, unavailable)
         self.assertEqual(len(issues), len(POLICY_MODULE.RELEASES))
         self.assertTrue(all("unavailable" in issue for issue in issues))
+
+    def test_node_latest_skips_unstable_builds_listed_first(self):
+        index = json.dumps(
+            [
+                {"version": "v99.0.0-alpha.0.0.0"},
+                {"version": "v98.1.0-rc.1"},
+                {"version": "v97.2.3", "lts": "Fixture"},
+                {"version": "v97.2.2", "lts": False},
+            ]
+        )
+        self.assertEqual(POLICY_MODULE.release_version("node", index), "97.2.3")
+
+    def test_node_metadata_without_a_stable_release_is_refused(self):
+        with self.assertRaises(ValueError):
+            POLICY_MODULE.release_version(
+                "node", json.dumps([{"version": "v99.0.0-alpha.0.0.0"}])
+            )
 
     def test_unstable_release_is_refused(self):
         with self.assertRaises(ValueError):
@@ -297,19 +316,16 @@ class ToolchainPolicyTests(unittest.TestCase):
         )
         self.assertEqual(issues, ["holds: unknown tool rustc"])
 
-    # Protects: the seeded hold is the one PR #184 recorded, and stays short.
-    # Detects: a hold for a release no reviewer decided (actions runner 2.338.2 was
-    #   published 2026-10-26, after #184 merged), or one without its citation.
+    # Protects: any hold in the tracked policy is one the rules accept, and defers a
+    #   real gap. Rust 1.99.1 is now pinned, so #184's hold is gone and none is seeded.
+    # Detects: a tracked hold for the pinned version, or one hold_problem refuses.
     # Needs: the tracked toolchain-policy.json; no network, services or hardware.
-    # Breadcrumb: scripts/ci/toolchain-policy.json holds; PR #184 image admission.
-    def test_seeded_holds_are_the_reviewed_image_admission_deferrals(self):
+    # Breadcrumb: scripts/ci/toolchain-policy.json holds.
+    def test_tracked_holds_are_valid_when_recorded(self):
         holds = self.policy.get("holds", {})
-        self.assertEqual(set(holds), {"rust"})
+        self.assertIsInstance(holds, dict)
         for tool, hold in holds.items():
             with self.subTest(tool=tool):
-                self.assertIn("immutable cross image", hold["reason"])
-                self.assertIn("#184", hold["reference"])
-                self.assertIn("review of PR #184", hold["reviewer"])
                 self.assertNotEqual(hold["version"], self.policy[tool])
                 self.assertIsNone(
                     POLICY_MODULE.hold_problem(

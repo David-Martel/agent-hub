@@ -16,10 +16,10 @@ foreach ($compilerOverride in @('RUSTC', 'RUSTC_WORKSPACE_WRAPPER')) {
     }
 }
 
-$version = '0.18.0'
+$version = '0.19.0'
 $archiveName = "sccache-v$version-x86_64-pc-windows-msvc"
 $archiveUrl = "https://github.com/mozilla/sccache/releases/download/v$version/$archiveName.zip"
-$archiveSha256 = '8965c74d5e8a225244f741e18ad2f3f504f48228dc1bac948fc22761a348363d'
+$archiveSha256 = '28be8c61f6b2c89b9eb2869f6af7f78e6f992e78a8abae0ce855fcc129cbeac1'
 $policy = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'windows-cache-policy.json') -Raw | ConvertFrom-Json
 if ($policy.version -cne $version) { throw 'Pinned hosted sccache release differs from Windows cache policy' }
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)

@@ -249,20 +249,20 @@ if (Test-Path -LiteralPath $jobRoot) { throw 'Refuse pre-existing cross setup di
 New-Item -ItemType Directory -Path $jobRoot | Out-Null
 [IO.File]::SetUnixFileMode($jobRoot, [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute)
 $archive = Join-Path $jobRoot 'sccache.tar.gz'
-$archiveHash = '45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89'
+$archiveHash = 'aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd'
 $curl = (Get-Command curl -CommandType Application -TotalCount 1 -ErrorAction Stop).Source
 $null = Invoke-CrossSetupTool $curl @('--fail', '--location', '--proto', '=https', '--tlsv1.2',
     '--connect-timeout', '10', '--max-time', '60', '--output', $archive,
-    'https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz') 65
+    'https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-unknown-linux-musl.tar.gz') 65
 if ((Get-FileHash -LiteralPath $archive).Hash.ToLowerInvariant() -cne $archiveHash) { throw 'Pinned sccache archive digest differs' }
 $tar = (Get-Command tar -CommandType Application -TotalCount 1 -ErrorAction Stop).Source
-$null = Invoke-CrossSetupTool $tar @('-xzf', $archive, '-C', $jobRoot, '--', 'sccache-v0.18.0-x86_64-unknown-linux-musl/sccache')
-$sccache = Join-Path $jobRoot 'sccache-v0.18.0-x86_64-unknown-linux-musl/sccache'
+$null = Invoke-CrossSetupTool $tar @('-xzf', $archive, '-C', $jobRoot, '--', 'sccache-v0.19.0-x86_64-unknown-linux-musl/sccache')
+$sccache = Join-Path $jobRoot 'sccache-v0.19.0-x86_64-unknown-linux-musl/sccache'
 if ((Invoke-CrossSetupTool $sccache @('--version')) -cne "sccache $($policy.version)") { throw 'Cross cache version differs from policy' }
 
 # Stable across jobs/recreated containers of the same immutable image. Retain
 # older image namespaces; never adopt, stop, reset or replace their cache.
-$cacheParent = Join-Path $HOME '.cache/agent-hub/windows-gnu0.18'
+$cacheParent = Join-Path $HOME '.cache/agent-hub/windows-gnu0.19'
 Assert-CrossPlainPath $cacheParent
 if (-not (Test-Path -LiteralPath $cacheParent)) {
     [IO.Directory]::CreateDirectory($cacheParent, [IO.UnixFileMode]::UserRead -bor
@@ -275,7 +275,7 @@ $cacheData = Join-Path $cacheRoot 'data'
 $cacheConfig = Join-Path $cacheRoot 'sccache-config.toml'
 $cacheMarker = Join-Path $cacheRoot 'owner.json'
 $owner = [ordered]@{
-    schema_version = 1; owner = 'agent-hub-windows-gnu-cache-v1'; version = '0.18.0'
+    schema_version = 1; owner = 'agent-hub-windows-gnu-cache-v1'; version = '0.19.0'
     uid = [regex]::Match([IO.File]::ReadAllText('/proc/self/status'), '(?m)^Uid:\s+(\d+)').Groups[1].Value
     image = $imageId; revision = $imageRevision; dockerfile = $dockerfileHash; target = $target
     directory = $cacheData; config = $cacheConfig

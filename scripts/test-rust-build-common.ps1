@@ -342,7 +342,7 @@ $global:LASTEXITCODE = 0
 switch ($args[0]) {
     "--version" {
         if ($mode -eq "version-failure") { $global:LASTEXITCODE = 2; "version unavailable" }
-        else { "sccache 0.18.0" }
+        else { "sccache 0.19.0" }
     }
     "--show-stats" {
         if ($mode -eq "transport-failure") { throw "Failed to read response header (os error10060)" }
@@ -352,7 +352,7 @@ switch ($args[0]) {
         $executed = if ($mode -eq "synthetic") { 0 } else { $count }
         $hits = if ($mode -eq "no-hit") { 0 } else { [Math]::Max(0, $count - 1) }
         $counts = if ($hits) { @{ Rust = $hits } } else { @{} }
-        @{version = $(if ($mode -eq "mismatched") { "0.16.0" } else { "0.18.0" }); stats = @{
+        @{version = $(if ($mode -eq "mismatched") { "0.16.0" } else { "0.19.0" }); stats = @{
             requests_executed = $executed; cache_hits = @{counts = $counts};
             requests_not_cacheable = $(if ($mode -eq "non-cacheable") { $count } else { 0 });
             requests_unsupported_compiler = 0; cache_timeouts = 0; compile_fails = 0;

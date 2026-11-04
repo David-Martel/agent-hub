@@ -7,21 +7,21 @@ ENV PATH="/home/runner/.cargo/bin:${PATH}"
 USER root
 RUN curl --fail --location --proto '=https' --tlsv1.2 \
       --connect-timeout 10 --max-time 120 \
-      https://github.com/PowerShell/PowerShell/releases/download/v7.6.7/powershell-7.6.7-linux-x64.tar.gz \
+      https://github.com/PowerShell/PowerShell/releases/download/v7.6.9/powershell-7.6.9-linux-x64.tar.gz \
       --output /tmp/agent-hub-pwsh.tar.gz && \
-    echo '6896f9e3a6b0a354bf470835a96da76d2f801cd50dcf047ad7c4563bf93bf431  /tmp/agent-hub-pwsh.tar.gz' | sha256sum -c - && \
+    echo '1da6d6d6035d651f20e70ddee7c4c15ac6ab8b9fb40ee92240d91263f28a884b  /tmp/agent-hub-pwsh.tar.gz' | sha256sum -c - && \
     tar -xzf /tmp/agent-hub-pwsh.tar.gz -C /opt/microsoft/powershell/7 && \
     chmod +x /opt/microsoft/powershell/7/pwsh && \
     rm /tmp/agent-hub-pwsh.tar.gz
 
 RUN curl --fail --location --proto '=https' --tlsv1.2 \
       --connect-timeout 10 --max-time 120 \
-      https://nodejs.org/dist/v26.12.1/node-v26.12.1-linux-x64.tar.xz \
+      https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.xz \
       --output /tmp/agent-hub-node.tar.xz && \
-    echo '6170b2d474e1c626f43cff3adc118df9fe3b573258a4fc3d850c8dbc6b079bbd  /tmp/agent-hub-node.tar.xz' | sha256sum -c - && \
+    echo 'd28a96af6c38596f6d9d97c0ee531c13d238d757742387d1928de822d959e997  /tmp/agent-hub-node.tar.xz' | sha256sum -c - && \
     tar --no-same-owner -xJf /tmp/agent-hub-node.tar.xz --strip-components=1 -C /usr/local && \
     rm /tmp/agent-hub-node.tar.xz && \
-    test "$(node --version)" = v26.12.1 && \
+    test "$(node --version)" = v26.13.0 && \
     test "$(npm --version)" = 11.20.0
 
 # npm's stable release is newer than the bundled copy. Integrity binds its
@@ -43,15 +43,15 @@ RUN curl --fail --location --proto '=https' --tlsv1.2 \
     chmod +x /tmp/rustup-init && \
     /tmp/rustup-init -y --no-modify-path --default-toolchain none && \
     rm /tmp/rustup-init && \
-    rustup toolchain install 1.99.0 --profile minimal --component rustfmt --component clippy \
+    rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy \
       --target x86_64-pc-windows-gnu --no-self-update && \
-    rustup default 1.99.0
+    rustup default 1.99.1
 
 RUN curl --fail --location --proto '=https' --tlsv1.2 \
       --connect-timeout 10 --max-time 120 \
-      https://github.com/mozilla/sccache/releases/download/v0.18.0/sccache-v0.18.0-x86_64-unknown-linux-musl.tar.gz \
+      https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-unknown-linux-musl.tar.gz \
       --output /tmp/agent-hub-sccache.tar.gz && \
-    echo '45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89  /tmp/agent-hub-sccache.tar.gz' | sha256sum -c - && \
+    echo 'aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd  /tmp/agent-hub-sccache.tar.gz' | sha256sum -c - && \
     mkdir -p /tmp/agent-hub-sccache && \
     tar -xzf /tmp/agent-hub-sccache.tar.gz --strip-components=1 -C /tmp/agent-hub-sccache && \
     install -m 0755 /tmp/agent-hub-sccache/sccache /home/runner/.cargo/bin/sccache && \
@@ -60,15 +60,15 @@ RUN curl --fail --location --proto '=https' --tlsv1.2 \
 WORKDIR /home/runner/actions-runner
 RUN curl --fail --location --proto '=https' --tlsv1.2 \
       --connect-timeout 10 --max-time 120 \
-      https://github.com/actions/runner/releases/download/v2.338.0/actions-runner-linux-x64-2.338.0.tar.gz \
+      https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz \
       --output /tmp/agent-hub-runner.tar.gz && \
-    echo 'af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32  /tmp/agent-hub-runner.tar.gz' | sha256sum -c - && \
+    echo 'baebf204307bac6193480852732f0aba2ae97b6c5597c244f4d5558390147c40  /tmp/agent-hub-runner.tar.gz' | sha256sum -c - && \
     tar -xzf /tmp/agent-hub-runner.tar.gz -C /home/runner/actions-runner && \
     rm /tmp/agent-hub-runner.tar.gz && \
-    test "$(rustc --version | cut -d ' ' -f 2)" = 1.99.0 && \
-    test "$(sccache --version)" = 'sccache 0.18.0' && \
-    test "$(pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()')" = 7.6.7 && \
-    test "$(./bin/Runner.Listener --version)" = 2.338.0
+    test "$(rustc --version | cut -d ' ' -f 2)" = 1.99.1 && \
+    test "$(sccache --version)" = 'sccache 0.19.0' && \
+    test "$(pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()')" = 7.6.9 && \
+    test "$(./bin/Runner.Listener --version)" = 2.338.2
 
 # Provenance labels come after the tool layers so a new source label alone does
 # not download/reinstall the same checksum-bound tools. The base entrypoint

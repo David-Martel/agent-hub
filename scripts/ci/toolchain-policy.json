@@ -1,28 +1,19 @@
 {
   "schema_version": 1,
-  "verified_utc": "2026-10-22T15:51:52Z",
-  "rust": "1.99.0",
+  "verified_utc": "2026-11-02T06:00:00Z",
+  "rust": "1.99.1",
   "rustup": "1.29.2",
-  "sccache": "0.18.0",
-  "node": "26.12.1",
+  "sccache": "0.19.0",
+  "node": "26.13.0",
   "npm": "12.2.1",
   "npm_integrity": "sha512-bKCmFRVT/BB+YPEYbZwQ1XUI3N5t4xKSpU1MxOjo7z3iWzKBJ0ZXRC1xFdEN+TC7N5TdywaBzf2dMXGJq/e2PQ==",
   "buildx": "0.38.1",
   "buildkit": "0.34.1",
-  "powershell": "7.6.7",
-  "actions_runner": "2.338.0",
+  "powershell": "7.6.9",
+  "actions_runner": "2.338.2",
   "docker": "29.9.2",
   "lefthook": "2.2.2",
   "lefthook_linux_x64_sha256": "2b8d7fd52771f26d7a50260ef10cd6fe704d66f60102e566362b84da09884ab7",
-  "runner_image_admission": "PENDING: rebuild and qualify immutable cross image for refreshed Node/npm/rustup; Rust 1.99.0 and runner 2.338.0 retained; newer compiler/runner candidates require separate review; no deployed-image equivalence claimed",
-  "holds": {
-    "rust": {
-      "version": "1.99.1",
-      "reason": "PR #184 (merged 2026-10-22) kept Rust 1.99.0 although 1.99.1 was published 2026-10-16: rebuild and qualify immutable cross image before a newer compiler is admitted (runner_image_admission PENDING)",
-      "reference": "David-Martel/agent-hub PR #184, merge c603a889e69367787835edeb82ae3713587e74c5",
-      "reviewer": "codex source/integration review of PR #184 at 6bd597a6, 2026-10-22T16:59:01Z: 'Rust1.99.0 and Actions runner2.338.0 remain unchanged, image admission stays PENDING rebuild'",
-      "recorded_utc": "2026-11-01T21:50:00Z",
-      "expires_utc": "2026-11-15T00:00:00Z"
-    }
-  }
+  "runner_image_admission": "PENDING: rebuild and qualify the immutable cross image for the refreshed Node, npm, PowerShell, Rust 1.99.1, sccache 0.19.0 and runner 2.338.2 pins; the previous Rust 1.99.0 and runner 2.338.0 retention is replaced by this reviewed bump of the source pins; no deployed-image equivalence claimed",
+  "holds": {}
 }

@@ -8,8 +8,8 @@ export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${RUNNER_TEMP:-$PWD/.tmp}/agent-hub-target}"
 export CARGO_INCREMENTAL=0
 # New version has a separate daemon endpoint and cache; leave old serving daemons alone.
-export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache/agent-hub/native-0.18}"
-export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4230}"
+export SCCACHE_DIR="${SCCACHE_DIR:-$HOME/.cache/sccache/agent-hub/native-0.19}"
+export SCCACHE_SERVER_PORT="${SCCACHE_SERVER_PORT:-4231}"
 export SCCACHE_REDIS_KEY_PREFIX="${SCCACHE_REDIS_KEY_PREFIX:-agent-hub:${RUNNER_ARCH:-unknown}:v2:}"
 export SCCACHE_REDIS_EXPIRATION="${SCCACHE_REDIS_EXPIRATION:-1209600}"
 
@@ -52,17 +52,17 @@ fi
 
 mkdir -p "$CARGO_TARGET_DIR" "$SCCACHE_DIR"
 
-expected_sccache_version="0.18.0"
+expected_sccache_version="0.19.0"
 install_sccache() {
   local target_triple archive_name release_url temp_dir expected actual result
   case "${RUNNER_ARCH:-}" in
     X64)
       target_triple="x86_64-unknown-linux-musl"
-      expected="45f1447fbe231e3037bde351ef70677dd212216c8d62ae7ca409fecc4d6acc89"
+      expected="aa73c7270c997894038c0d8f0d297865f57569e1687883322bc431713d4bb9dd"
       ;;
     ARM64)
       target_triple="aarch64-unknown-linux-musl"
-      expected="2b3284d5da3b46a47dc4229e75bb7b88ac4aa99c8d754fb7d2f84997e5a4354a"
+      expected="3e47fc4a71b1ddd1b4294a0de9d34498922fdf41e3cd0bda5df3954e3d6deb9d"
       ;;
     *)
       echo "warning: no pinned sccache artifact for RUNNER_ARCH=${RUNNER_ARCH:-unset}" >&2
