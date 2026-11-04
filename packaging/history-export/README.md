@@ -87,7 +87,7 @@ identity `dtm-work`) when started with `--config`. Without `--config` it is the
 unchanged asuspro13 deployment, and the asuspro13 unit is byte-identical. A config
 file is all-or-nothing: it names every endpoint, tool path and spool root (no
 asuspro13 path is inherited), and it must also name the hub identity, the cutover
-watermark, the PostgreSQL system identifier and the Redis replication id, or it is
+watermark and the PostgreSQL system identifier, or it is
 refused before anything runs. The destination folder, owner hash and public
 recipient hash stay the operator-qualified constants; a config may repeat them but
 cannot change them.
@@ -104,7 +104,7 @@ cannot change them.
     "postgres": {"psql": "/home/<user>/.local/bin/psql", "host": "127.0.0.1", "port": 5432,
                  "user": "postgres", "database": "redis_backend",
                  "system_identifier": "<pg_control_system().system_identifier>"},
-    "redis": {"host": "127.0.0.1", "port": 6380, "db": 0, "replid": "<INFO replication master_replid>"}
+    "redis": {"host": "127.0.0.1", "port": 6380, "db": 0}
   },
   "drive": {
     "rclone": "/home/<user>/.local/bin/rclone",
@@ -129,8 +129,12 @@ after, and a wrong hub is refused before any spool entry exists). Freshness:
 `redis_before_cutover` (newest stream id), so a stale asuspro13 copy cannot pass.
 Generation: `pg_generation_mismatch` (`pg_control_system()` read inside the same
 `REPEATABLE READ` snapshot), `redis_generation_mismatch`,
-`redis_restarted_during_export`, `redis_stream_window_mismatch` (the stream must be
-the length the hub itself reports). The snapshot count window, the strict
+`redis_restarted_during_export` (the Redis run id must not change during the read),
+`redis_stream_window_mismatch` (the stream must be the length the hub itself
+reports) and `stores_share_no_messages`. Redis has no stable dataset id:
+`master_replid` is recorded in the manifest but changed on dtm-work with the same
+run id and no restart (so it is not pinned there); an optional `redis.replid` pin
+enforces it (`redis_generation_mismatch`) where an operator knows it is stable. The snapshot count window, the strict
 PG/presence counts that bind `snapshot.tsv` to the manifest, and the Redis
 side-channel export are unchanged; a failed window is now a recorded hold, not an
 exit with nothing written.

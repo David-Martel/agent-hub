@@ -1562,18 +1562,17 @@ class WorkConfigTests(SettingsCase):
         self.assertEqual(hx.SOURCE_HUB, "dtm-work")
         self.assertEqual(hx.DRIVE_FOLDER, "1mmL8o1upp4ty5zuaghn0YOfv40vsHzyt")
 
-    def test_config_must_bind_hub_cutover_and_both_generations(self):
+    def test_config_must_bind_hub_cutover_and_pg_generation(self):
         """Protects: a Work export that cannot be told from stale ASUS data.
         Detects: a config accepted without the hub identity, the cutover watermark,
-        the PostgreSQL system identifier or the Redis replication id; and a refused
-        config leaving any setting half applied. Needs: tmp files.
+        or the PostgreSQL system identifier; and a refused config leaving any
+        setting half applied. Needs: tmp files.
         Breadcrumb: configure required keys.
         """
         for path, key in (
             ((), "hub_identity"),
             ((), "cutover_utc"),
             (("postgres",), "system_identifier"),
-            (("redis",), "replid"),
         ):
             with self.subTest(missing=key):
                 config = work_config(self.tmp)
@@ -1743,6 +1742,24 @@ class SourceBindingTests(SettingsCase):
         with self.assertRaisesRegex(hx.DriveHold, "redis_restarted_during_export"):
             self.check(recon=restarted)
 
+    def test_redis_replication_id_is_recorded_and_enforced_only_when_pinned(self):
+        """Protects: not holding every backup on an unstable identifier. Detects: the
+        replication id (observed to change on dtm-work with the same run id and no
+        restart) being enforced without a pin, or ignored with one. Needs:
+        synthetic metadata. Breadcrumb: check_source.
+        """
+        moved = source_recon()
+        moved["redis_generation"] = {
+            **moved["redis_generation"],
+            "replid": "x" * 40,
+            "replid_after": "x" * 40,
+        }
+        with mock.patch.object(hx, "SOURCE_REDIS_REPLID", None):
+            binding = self.check(recon=moved)
+        self.assertEqual(binding["redis"]["replid"], "x" * 40)
+        with self.assertRaisesRegex(hx.DriveHold, "redis_generation_mismatch"):
+            self.check(recon=moved)
+
     def test_redis_that_is_not_the_hubs_stream_is_held(self):
         """Protects: Redis being the hub's own store, not a stale copy.
         Detects: a Redis stream whose length disagrees with the hub's reported
@@ -1803,6 +1820,17 @@ class StoreDifferenceTests(SettingsCase):
             hx.store_difference(source_recon(redis_entries_without_id=1))
         with self.assertRaisesRegex(hx.DriveHold, "store_difference_unaccounted"):
             hx.store_difference(source_recon(only_in_pg=2))
+        with self.assertRaisesRegex(hx.DriveHold, "stores_share_no_messages"):
+            hx.store_difference(
+                source_recon(
+                    pg_rows=5,
+                    pg_lines=5,
+                    redis_stream_entries=3,
+                    redis_unique_ids=3,
+                    only_in_pg=5,
+                    only_in_redis=3,
+                )
+            )
 
     def test_redis_messages_missing_from_postgres_are_capped(self):
         """Protects: PostgreSQL staying the durable record. Detects: Redis holding

@@ -14,7 +14,7 @@ Run the reviewed helper through the existing flock with:
 Without --config the built-in values are the original asuspro13 deployment. A
 config file (README.md, "Work-authoritative profile") rebinds every endpoint,
 tool path and spool root. It must then also name the promoted hub identity, the
-cutover watermark and the PostgreSQL and Redis generation: a config that omits
+cutover watermark and the PostgreSQL system identifier: a config that omits
 any of them is refused, and a source that does not match them is held.
 
 What it exports, from one PostgreSQL REPEATABLE READ snapshot plus a Redis dump:
@@ -590,6 +590,8 @@ def store_difference(recon: dict) -> dict:
     pg, stream = recon["pg_rows"], recon["redis_stream_entries"]
     if pg - recon["only_in_pg"] + recon["only_in_redis"] != stream:
         raise DriveHold("store_difference_unaccounted")
+    if pg - recon["only_in_pg"] <= 0:
+        raise DriveHold("stores_share_no_messages")
     if MAX_ONLY_IN_REDIS is not None and recon["only_in_redis"] > MAX_ONLY_IN_REDIS:
         raise DriveHold("redis_ahead_of_pg")
     return {
@@ -648,12 +650,14 @@ def check_source(before: dict, after: dict, meta: dict, recon: dict) -> dict:
             raise DriveHold("redis_before_cutover")
         if meta["pg_system_identifier"] != SOURCE_PG_SYSTEM:
             raise DriveHold("pg_generation_mismatch")
-        if (
-            generation["run_id"] != generation["run_id_after"]
-            or generation["replid"] != generation["replid_after"]
-        ):
+        # master_replid is recorded but is not a stable identity: on dtm-work it
+        # changed with the same run_id and no restart, so only an explicit pin
+        # enforces it and the run id guards the read itself.
+        if generation["run_id"] != generation["run_id_after"]:
             raise DriveHold("redis_restarted_during_export")
-        if generation["replid"] != SOURCE_REDIS_REPLID:
+        if SOURCE_REDIS_REPLID is not None and (
+            generation["replid"] != SOURCE_REDIS_REPLID
+        ):
             raise DriveHold("redis_generation_mismatch")
         lengths = [
             before.get("stream_length"),
@@ -796,7 +800,7 @@ def configure(path: Path) -> None:
             pg,
             ("psql", "host", "port", "user", "database", "system_identifier"),
         ),
-        ("source.redis.", redis_cfg, ("host", "port", "db", "replid")),
+        ("source.redis.", redis_cfg, ("host", "port", "db")),
         (
             "drive.",
             drive,
@@ -853,7 +857,7 @@ def configure(path: Path) -> None:
     SOURCE_HUB = source["hub_identity"]
     SOURCE_CUTOVER = source["cutover_utc"]
     SOURCE_PG_SYSTEM = pg["system_identifier"]
-    SOURCE_REDIS_REPLID = redis_cfg["replid"]
+    SOURCE_REDIS_REPLID = redis_cfg.get("replid")
     MAX_ONLY_IN_REDIS = source.get("max_only_in_redis")
     MAX_SNAPSHOT_AGE = freshness.get("max_snapshot_age_seconds")
     UNCACHED = {"mode": mode, "command": command}
