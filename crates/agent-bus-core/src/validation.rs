@@ -114,9 +114,18 @@ pub fn non_empty<'a>(val: &'a str, name: &str) -> Result<&'a str> {
 pub fn parse_metadata_arg(metadata: Option<&str>) -> Result<serde_json::Value> {
     match metadata {
         None => Ok(serde_json::Value::Object(serde_json::Map::new())),
-        Some(s) => serde_json::from_str(s).map_err(|e| {
-            AgentBusError::InvalidParams(format!("--metadata must be valid JSON object: {e}"))
-        }),
+        Some(s) => {
+            let value: serde_json::Value = serde_json::from_str(s).map_err(|e| {
+                AgentBusError::InvalidParams(format!("--metadata must be valid JSON object: {e}"))
+            })?;
+            if value.is_object() {
+                Ok(value)
+            } else {
+                Err(AgentBusError::InvalidParams(
+                    "--metadata must be valid JSON object, not another JSON type".to_owned(),
+                ))
+            }
+        }
     }
 }
 
@@ -428,6 +437,19 @@ mod tests {
     fn parse_metadata_arg_valid_json() {
         let val = parse_metadata_arg(Some(r#"{"key":"value"}"#)).unwrap();
         assert_eq!(val["key"], "value");
+    }
+
+    #[test]
+    fn parse_metadata_arg_rejects_json_that_is_not_an_object() {
+        // The error says "must be valid JSON object"; the metadata merge that
+        // adds schema and compression markers silently drops anything else.
+        for text in ["[1,2]", "\"text\"", "42", "true", "null"] {
+            assert!(
+                parse_metadata_arg(Some(text)).is_err(),
+                "{text} accepted as metadata"
+            );
+        }
+        assert!(parse_metadata_arg(Some("{}")).is_ok());
     }
 
     #[test]
