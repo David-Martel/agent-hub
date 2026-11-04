@@ -68,6 +68,8 @@ namespace HubBackup {
                         if (read == 0) break;
                         Marshal.Copy(native, managed, 0, read);
                         sha.TransformBlock(managed, 0, read, null, 0);
+                        // A short read left the file pointer unaligned, so never read again from there.
+                        if (read < Block) break;
                     }
                     sha.TransformFinalBlock(new byte[0], 0, 0);
                     return BitConverter.ToString(sha.Hash).Replace("-", "");
