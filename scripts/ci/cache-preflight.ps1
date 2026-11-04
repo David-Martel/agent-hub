@@ -104,7 +104,7 @@ function Invoke-AgentBusCachePreflight {
         [ValidateSet('x86_64-pc-windows-gnu')][string]$TargetTriple
     )
 
-    if ($Policy.schema_version -ne 1 -or $Policy.version -cne '0.18.0' -or
+    if ($Policy.schema_version -ne 1 -or $Policy.version -cne '0.19.0' -or
         $Policy.server_port -ne 4228 -or $Policy.command_timeout_seconds -lt 1 -or
         $Policy.command_timeout_seconds -gt 60 -or $Policy.preflight_directory -cne 'cache-preflight') {
         throw 'Invalid dedicated Windows cache policy'
