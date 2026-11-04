@@ -49,12 +49,7 @@ fn check_specs(specs: &[CandidateSpec]) {
         assert!(spec.hub.as_deref().is_none_or(valid_site_name));
     }
     // No two accepted entries may name the same endpoint.
-    for (i, a) in specs.iter().enumerate() {
-        for b in &specs[i + 1..] {
-            let norm = |s: &str| s.to_ascii_lowercase().trim_end_matches('/').to_string();
-            assert_ne!(norm(&a.url), norm(&b.url), "duplicate url accepted");
-        }
-    }
+    agent_bus_fuzz::assert_distinct_endpoints(specs);
 }
 
 fuzz_target!(|input: Input| {
