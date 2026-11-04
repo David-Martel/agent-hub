@@ -751,10 +751,11 @@ class DriveTests(TempDirCase):
             hx.close_drive_job(job, binding["name"])
         self.assertEqual(calls, [binding["cipher_file"]])
 
-    def test_drive_uncached_command_gets_windows_paths_from_wslpath(self):
+    def test_drive_uncached_command_gets_a_windows_path_from_wslpath(self):
         """Protects: the Windows-side reader being given a path it can open.
-        Detects: {win_path} or {helper_dir_win} reaching the command unexpanded.
-        Needs: a stand-in drive_run. Breadcrumb: uncached_digest.
+        Detects: {win_path} reaching the command unexpanded, or the reader's
+        answer not being lower-cased and parsed. Needs: a stand-in drive_run.
+        Breadcrumb: uncached_digest.
         """
         target = self.tmp / "file.bin"
         target.write_bytes(b"abc")
@@ -766,16 +767,15 @@ class DriveTests(TempDirCase):
                 return ("W:" + args[-1]).encode()
             return b'{"sha256": "' + b"A" * 64 + b'", "bytes": 3}'
 
-        command = ["reader", "-File", "{helper_dir_win}/x.ps1", "-Path", "{win_path}"]
+        command = ["reader", "-Path", "{win_path}"]
         with (
             mock.patch.object(hx, "UNCACHED", {"mode": "command", "command": command}),
             mock.patch.object(hx, "drive_run", side_effect=run),
         ):
             got = hx.uncached_digest(target)
         self.assertEqual(got, {"sha256": "a" * 64, "bytes": 3})
-        final = seen[-1]
-        self.assertEqual(final[-1], "W:" + str(target))
-        self.assertTrue(final[2].startswith("W:") and final[2].endswith("/x.ps1"))
+        self.assertEqual(seen[0][:2], ["wslpath", "-w"])
+        self.assertEqual(seen[-1], ["reader", "-Path", "W:" + str(target)])
 
 
 class DecTests(unittest.TestCase):
@@ -1250,6 +1250,15 @@ class InstallTests(TempDirCase):
             )
         self.assertEqual(self.calls(), ["--user daemon-reload"])
         self.assertIn("NOT enabled", res.stdout)
+        windows = self.tmp / "windows-dir"
+        again = self.run_install(
+            "--profile", "work", "--rev", "abc123", "--windows-dir", str(windows)
+        )
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(
+            (windows / "Get-UncachedHash.ps1").read_bytes(),
+            (PKG / "windows/Get-UncachedHash.ps1").read_bytes(),
+        )
 
     def test_work_profile_enables_only_when_asked_and_dry_run_writes_nothing(self):
         """Protects: explicit activation and a safe preview. Detects: --enable not

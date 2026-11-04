@@ -116,7 +116,7 @@ cannot change them.
   },
   "uncached": {"mode": "command", "command": ["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
       "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-      "-File", "{helper_dir_win}/windows/Get-UncachedHash.ps1", "-Path", "{win_path}"]},
+      "-File", "R:/AgentHub-offsite/bin/Get-UncachedHash.ps1", "-Path", "{win_path}"]},
   "freshness": {"max_snapshot_age_seconds": 172800}
 }
 ```
@@ -178,8 +178,10 @@ the plaintext tar and the ciphertext are re-hashed by
 [`windows/Get-UncachedHash.ps1`](windows/Get-UncachedHash.ps1), which reads with
 `FILE_FLAG_NO_BUFFERING` like `AgentHub-daily-backup`'s `Get-DiskHash`, and the
 result must equal the cached hash and length (`uncached_hash_mismatch`; the
-ciphertext is re-read on every retry). `fadvise` and `none` modes exist for Linux
-disks and for the asuspro13 deployment.
+ciphertext is re-read on every retry). The script must be on a Windows-local path:
+PowerShell's `RemoteSigned` policy refuses one on the WSL network share, so
+`install.sh --windows-dir` copies it (`/mnt/r/AgentHub-offsite/bin`). `fadvise`
+and `none` modes exist for Linux disks and for the asuspro13 deployment.
 
 **Platform choice.** On dtm-work the helper runs in WSL (Ubuntu-22.04, mirrored
 networking). It is a POSIX program (flock, pipe selectors, mode bits) that CI
@@ -192,7 +194,7 @@ above supplies the uncached read that Linux cannot do across 9p.
 **Stage (never enables).**
 
 ```sh
-packaging/history-export/install.sh --profile work [--rev <commit>] [--dry-run]
+packaging/history-export/install.sh --profile work [--rev <commit>]     [--windows-dir /mnt/r/AgentHub-offsite/bin] [--dry-run]
 ```
 
 stages the reviewed files under `~/.local/share/agent-hub-history-export/<rev>/`,

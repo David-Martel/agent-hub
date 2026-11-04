@@ -1316,8 +1316,8 @@ def uncached_digest(path: Path):
     disk copy is wrong, so it proves nothing about the stored bytes. The mode is
     configured per host: "none" (the asuspro13 behaviour), "fadvise" (drop this
     kernel's cache, then read) or "command" (an external reader whose stdout is
-    one JSON object {"sha256", "bytes"}; {path}, {win_path} and {helper_dir_win}
-    are substituted, the last two by `wslpath -w`).
+    one JSON object {"sha256", "bytes"}; {path} and {win_path} are
+    substituted, the latter by `wslpath -w`).
     """
     mode = UNCACHED["mode"]
     if mode == "none":
@@ -1330,11 +1330,9 @@ def uncached_digest(path: Path):
             os.close(fd)
         return drive_hash(path)
     args = [part.replace("{path}", str(path)) for part in UNCACHED["command"]]
-    here = str(Path(__file__).resolve().parent)
-    for token, target in (("{win_path}", str(path)), ("{helper_dir_win}", here)):
-        if any(token in part for part in args):
-            win = drive_run(["wslpath", "-w", target], timeout=30).decode().strip()
-            args = [part.replace(token, win) for part in args]
+    if any("{win_path}" in part for part in args):
+        win = drive_run(["wslpath", "-w", str(path)], timeout=30).decode().strip()
+        args = [part.replace("{win_path}", win) for part in args]
     try:
         value = json.loads(drive_run(args, timeout=3600).decode("utf-8-sig"))
         return {"sha256": value["sha256"].lower(), "bytes": value["bytes"]}

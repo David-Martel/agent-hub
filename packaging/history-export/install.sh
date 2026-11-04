@@ -2,7 +2,7 @@
 # Install the agent-hub history export job for the current user on the hub host.
 #
 #   packaging/history-export/install.sh [--dry-run] [--no-enable]
-#   packaging/history-export/install.sh --profile work [--rev ID] [--enable] [--dry-run]
+#   packaging/history-export/install.sh --profile work [--rev ID] [--windows-dir DIR] [--enable] [--dry-run]
 #
 # Default profile: copies agent-hub-history-export.py and agent-hub-history-export-notify.sh to
 # ~/.local/share/agent-hub-history-export/ and the three user units to ~/.config/systemd/user/, reloads the user manager
@@ -13,7 +13,10 @@
 # ~/.local/share/agent-hub-history-export/<rev>/ (rev defaults to this checkout's
 # git commit), points the `current` symlink there, installs the work service, timer
 # and notify units, reloads the user manager and does NOT enable or start anything
-# unless --enable is given. It never creates the config file or any credential.
+# unless --enable is given. --windows-dir also copies the uncached reader to a
+# Windows-local directory (for example /mnt/r/AgentHub-offsite/bin): PowerShell
+# refuses a script on a WSL network share under RemoteSigned. It never creates
+# the config file or any credential.
 # SYSTEMCTL overrides the systemctl binary (the packaging test uses a recorder).
 set -euo pipefail
 
@@ -22,6 +25,7 @@ dry=0
 enable=1
 profile=asuspro13
 rev=""
+windir=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --dry-run) dry=1 ;;
@@ -33,7 +37,10 @@ while [ "$#" -gt 0 ]; do
         --rev)
             [ "$#" -ge 2 ] || { echo "install.sh: --rev needs a value" >&2; exit 2; }
             rev="$2"; shift ;;
-        -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+        --windows-dir)
+            [ "$#" -ge 2 ] || { echo "install.sh: --windows-dir needs a value" >&2; exit 2; }
+            windir="$2"; shift ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "install.sh: unknown argument: $1" >&2; exit 2 ;;
     esac
     shift
@@ -94,6 +101,9 @@ place() {  # place <source> <dest-dir> <mode>
 if [ "$profile" = work ]; then
     place "$here/agent-hub-history-export.py" "$share/$rev" 0644
     place "$here/windows/Get-UncachedHash.ps1" "$share/$rev/windows" 0644
+    if [ -n "$windir" ]; then
+        place "$here/windows/Get-UncachedHash.ps1" "$windir" 0644
+    fi
     place "$here/agent-hub-history-export-notify.sh" "$share" 0644
     for unit in agent-hub-history-export-work.service agent-hub-history-export-work.timer                 agent-hub-history-export-notify@.service; do
         place "$here/systemd/$unit" "$units" 0644
