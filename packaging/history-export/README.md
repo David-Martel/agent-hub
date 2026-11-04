@@ -116,7 +116,7 @@ cannot change them.
   },
   "uncached": {"mode": "command", "command": ["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
       "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-      "-File", "{helper_dir_win}\\windows\\Get-UncachedHash.ps1", "-Path", "{win_path}"]},
+      "-File", "{helper_dir_win}/windows/Get-UncachedHash.ps1", "-Path", "{win_path}"]},
   "freshness": {"max_snapshot_age_seconds": 172800}
 }
 ```
