@@ -643,7 +643,7 @@ pub fn row_to_message(row: &postgres::Row) -> Message {
         sensitivity: row
             .get::<_, Option<String>>("sensitivity")
             .as_deref()
-            .and_then(Sensitivity::parse),
+            .and_then(Sensitivity::from_stored),
     }
 }
 

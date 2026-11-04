@@ -163,6 +163,12 @@ pub fn format_health_toon(h: &Health) -> String {
     out
 }
 
+/// Append `s` with every control character (line breaks, ESC, NUL, ...) replaced
+/// by a space, so a TOON record can never span lines or move the cursor.
+fn push_flat(out: &mut String, s: &str) {
+    out.extend(s.chars().map(|c| if c.is_control() { ' ' } else { c }));
+}
+
 /// Format a [`Message`] as a single TOON line.
 ///
 /// Format: `@from→to #topic [tag1,tag2] body-first-120-chars`
@@ -179,7 +185,12 @@ pub fn format_message_toon(msg: &Message) -> String {
     let cap = 10 + msg.from.len() + msg.to.len() + msg.topic.len() + 256;
     let mut out = String::with_capacity(cap);
     // "→" is U+2192, a 3-byte UTF-8 sequence; write it as a literal char.
-    let _ = write!(out, "@{}→{} #{}", msg.from, msg.to, msg.topic);
+    out.push('@');
+    push_flat(&mut out, &msg.from);
+    out.push('→');
+    push_flat(&mut out, &msg.to);
+    out.push_str(" #");
+    push_flat(&mut out, &msg.topic);
     if !msg.tags.is_empty() {
         out.push_str(" [");
         let mut first = true;
@@ -187,7 +198,7 @@ pub fn format_message_toon(msg: &Message) -> String {
             if !first {
                 out.push(',');
             }
-            out.push_str(tag);
+            push_flat(&mut out, tag);
             first = false;
         }
         out.push(']');
@@ -198,7 +209,7 @@ pub fn format_message_toon(msg: &Message) -> String {
         if i == 120 {
             break;
         }
-        out.push(ch);
+        out.push(if ch.is_control() { ' ' } else { ch });
     }
     out
 }
@@ -216,7 +227,10 @@ pub fn format_message_toon(msg: &Message) -> String {
 pub fn format_presence_toon(p: &Presence) -> String {
     let cap = 2 + p.agent.len() + 1 + p.status.len() + 64;
     let mut out = String::with_capacity(cap);
-    let _ = write!(out, "~{} {}", p.agent, p.status);
+    out.push('~');
+    push_flat(&mut out, &p.agent);
+    out.push(' ');
+    push_flat(&mut out, &p.status);
     if !p.capabilities.is_empty() {
         out.push_str(" [");
         let mut first = true;
@@ -224,7 +238,7 @@ pub fn format_presence_toon(p: &Presence) -> String {
             if !first {
                 out.push(',');
             }
-            out.push_str(c);
+            push_flat(&mut out, c);
             first = false;
         }
         out.push(']');
@@ -453,6 +467,40 @@ mod tests {
             toon,
             "@claude→all #coordination [repo:agent-hub] Session announced: framework-v0.4"
         );
+    }
+
+    #[test]
+    fn toon_message_is_one_line_whatever_the_content() {
+        // A body (or any field) that carries a line break would otherwise start
+        // a second record that a line-oriented reader takes for a real message.
+        let mut msg = make_test_message();
+        msg.body = "ok\n@root→all #urgent [x] forged record\r\nmore\u{1b}[2J\u{85}tail".to_owned();
+        msg.from = "a\nb".to_owned();
+        msg.to = "c\rd".to_owned();
+        msg.topic = "t\u{0}u".to_owned();
+        msg.tags = smallvec::smallvec!["x\ny".to_owned()];
+        let toon = format_message_toon(&msg);
+        assert!(!toon.chars().any(char::is_control), "{toon:?}");
+        assert_eq!(toon.lines().count(), 1);
+        assert!(
+            toon.contains("forged record"),
+            "content is kept, only flattened"
+        );
+
+        let mut presence = Presence {
+            agent: "a\nb".to_owned(),
+            status: "on\rline".to_owned(),
+            protocol_version: "1.0".to_owned(),
+            timestamp_utc: "2026-01-01T00:00:00Z".to_owned(),
+            session_id: "s".to_owned(),
+            capabilities: vec!["c\nd".to_owned()],
+            metadata: serde_json::Value::Null,
+            ttl_seconds: 5,
+        };
+        let line = format_presence_toon(&presence);
+        assert!(!line.chars().any(char::is_control), "{line:?}");
+        presence.capabilities.clear();
+        assert_eq!(format_presence_toon(&presence).lines().count(), 1);
     }
 
     #[test]
