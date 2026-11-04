@@ -1,0 +1,21 @@
+[Unit]
+Description=Export Work-authoritative agent-bus history to encrypted private Google Drive custody
+Documentation=https://github.com/David-Martel/agent-hub/blob/main/packaging/history-export/README.md
+After=network-online.target
+OnFailure=agent-hub-history-export-notify@%n.service
+
+[Service]
+Type=oneshot
+# Same helper and gates as agent-hub-history-export.service; the one difference is
+# --config, which rebinds every endpoint and path and requires the promoted hub
+# identity, cutover watermark and PostgreSQL/Redis generation. `current` is the
+# symlink install.sh --profile work points at the reviewed revision directory.
+ExecStart=/bin/bash -c 'source "$HOME/.config/bash/env.bash" && mkdir -p "$HOME/.cache" && exec flock -n "$HOME/.cache/agent-hub-history-export.lock" uv run --offline --no-project --with redis python -B "$HOME/.local/share/agent-hub-history-export/current/agent-hub-history-export.py" --drive --config "$HOME/.config/agent-hub-history-export/config.json"'
+TimeoutStartSec=2h
+UMask=0077
+Nice=19
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUQuota=100%
+MemoryMax=4G
+NoNewPrivileges=true

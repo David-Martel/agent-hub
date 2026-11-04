@@ -94,6 +94,21 @@ impl Sensitivity {
             _ => None,
         }
     }
+
+    /// Read a stored `sensitivity` column or stream field, failing closed.
+    ///
+    /// An empty value is "not set" (`None`, every entry written before cloud
+    /// sync looks like this). Any other text that is not exactly `internal`
+    /// becomes [`Sensitivity::NoOffsite`], so a corrupt or foreign value can
+    /// keep a message on-site but can never make it replicable.
+    #[must_use]
+    pub fn from_stored(raw: &str) -> Option<Self> {
+        if raw.is_empty() {
+            None
+        } else {
+            Some(Self::parse(raw).unwrap_or(Self::NoOffsite))
+        }
+    }
 }
 
 /// Tag that opts a message out of cloud replication, for senders that cannot

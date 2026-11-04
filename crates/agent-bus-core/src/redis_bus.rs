@@ -824,7 +824,7 @@ pub fn decode_stream_entry<S: std::hash::BuildHasher>(
         origin_hub: non_empty(get("origin_hub")),
         origin_seq: get("origin_seq").parse::<u64>().ok(),
         hlc: non_empty(get("hlc")),
-        sensitivity: Sensitivity::parse(&get("sensitivity")),
+        sensitivity: Sensitivity::from_stored(&get("sensitivity")),
     }
 }
 
@@ -917,6 +917,11 @@ fn lz4_compress_body(body: &str) -> Result<(String, usize)> {
     Ok((encoded, body.len()))
 }
 
+/// Largest body [`lz4_decompress_body`] will inflate. Posting already caps a body
+/// at [`crate::validation::MAX_BODY_LEN`]; the extra factor leaves room for
+/// entries written under an older, looser limit.
+const MAX_DECOMPRESSED_BODY_LEN: usize = crate::validation::MAX_BODY_LEN * 16;
+
 /// Decompress a Base64+LZ4 body stored by [`lz4_compress_body`].
 ///
 /// # Errors
@@ -930,6 +935,18 @@ fn lz4_decompress_body(encoded: &str) -> Result<String> {
                 "base64 decode of compressed body failed: {e}"
             ))
         })?;
+    // The first four bytes are the claimed output size, and lz4_flex allocates
+    // that many zeroed bytes before it reads any data. Those bytes come from the
+    // store, so bound them: a corrupt entry must not be able to ask for 4 GiB.
+    let claimed = compressed
+        .first_chunk::<4>()
+        .map(|prefix| u32::from_le_bytes(*prefix) as usize);
+    if claimed.is_some_and(|size| size > MAX_DECOMPRESSED_BODY_LEN) {
+        return Err(crate::error::AgentBusError::Internal(format!(
+            "lz4 body claims {} bytes, over the {MAX_DECOMPRESSED_BODY_LEN} byte limit",
+            claimed.unwrap_or_default()
+        )));
+    }
     let raw = lz4_flex::decompress_size_prepended(&compressed).map_err(|e| {
         crate::error::AgentBusError::Internal(format!("lz4 decompress failed: {e}"))
     })?;
@@ -3484,6 +3501,69 @@ mod tests {
             hlc: None,
             sensitivity: None,
         }
+    }
+
+    fn bulk_fields(pairs: &[(&str, &str)]) -> HashMap<String, redis::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| {
+                (
+                    (*k).to_owned(),
+                    redis::Value::BulkString(v.as_bytes().to_vec()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn decode_stream_entry_sensitivity_field_fails_closed() {
+        // An unrecognised stored value must not read as "absent", which means
+        // replicable: the cloud-sync gate treats absent as `internal`.
+        for raw in [
+            "No-Offsite",
+            "no_offsite",
+            " no-offsite",
+            "secret",
+            "INTERNAL",
+            "0",
+        ] {
+            let msg = decode_stream_entry(&bulk_fields(&[("sensitivity", raw)]));
+            assert_eq!(msg.sensitivity, Some(Sensitivity::NoOffsite), "{raw:?}");
+            assert_eq!(
+                msg.effective_sensitivity(),
+                Sensitivity::NoOffsite,
+                "{raw:?}"
+            );
+        }
+        let msg = decode_stream_entry(&bulk_fields(&[("sensitivity", "internal")]));
+        assert_eq!(msg.sensitivity, Some(Sensitivity::Internal));
+        let msg = decode_stream_entry(&bulk_fields(&[("sensitivity", "no-offsite")]));
+        assert_eq!(msg.sensitivity, Some(Sensitivity::NoOffsite));
+        // Absent and empty fields stay absent (every pre-sync entry looks like this).
+        assert_eq!(decode_stream_entry(&bulk_fields(&[])).sensitivity, None);
+        assert_eq!(
+            decode_stream_entry(&bulk_fields(&[("sensitivity", "")])).sensitivity,
+            None
+        );
+    }
+
+    #[test]
+    fn decode_stream_entry_refuses_lz4_body_claiming_a_huge_size() {
+        // Four size bytes decide how much memory lz4_flex allocates up front.
+        // A corrupt entry must fall back to the raw body, not reserve 4 GiB.
+        let hostile = u32::try_from(crate::validation::MAX_BODY_LEN * 64).unwrap();
+        let mut block = lz4_flex::compress_prepend_size(b"hello");
+        block[..4].copy_from_slice(&hostile.to_le_bytes());
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&block);
+        assert!(lz4_decompress_body(&encoded).is_err());
+
+        let msg = decode_stream_entry(&bulk_fields(&[("body", &encoded), ("_compressed", "lz4")]));
+        assert_eq!(msg.body, encoded, "falls back to the stored text");
+
+        // A legitimate body at the validation ceiling still round-trips.
+        let plain = "x".repeat(crate::validation::MAX_BODY_LEN);
+        let (stored, _) = lz4_compress_body(&plain).unwrap();
+        assert_eq!(lz4_decompress_body(&stored).unwrap(), plain);
     }
 
     #[test]
