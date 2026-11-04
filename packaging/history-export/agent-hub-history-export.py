@@ -9,7 +9,13 @@ fixed destination, isolated tests and the reviewed activation gate.
 
 Run the reviewed helper through the existing flock with:
   uv run --offline --no-project --with redis python -B \
-      agent-hub-history-export.py --drive
+      agent-hub-history-export.py --drive [--config CONFIG.json]
+
+Without --config the built-in values are the original asuspro13 deployment. A
+config file (README.md, "Work-authoritative profile") rebinds every endpoint,
+tool path and spool root. It must then also name the promoted hub identity, the
+cutover watermark and the PostgreSQL and Redis generation: a config that omits
+any of them is refused, and a source that does not match them is held.
 
 What it exports, from one PostgreSQL REPEATABLE READ snapshot plus a Redis dump:
   messages-pg/            agent_bus.messages (row_to_json, ordered by timestamp, id)
@@ -69,6 +75,47 @@ DRIVE_RECIPIENT_SHA = "b7965828eac40a779a8732d11705dc8c17e88bca15eb0282f7bc4f9cb
 DRIVE_RESERVE = 100 * 1024**3
 # Tests point this at a fake sftp; production uses the OpenSSH client on PATH.
 SFTP = os.environ.get("AGENT_HUB_HISTORY_EXPORT_SFTP", "sftp")
+
+# Everything below is the original asuspro13 deployment. configure() replaces it
+# from a config file (README.md, "Work-authoritative profile"); with no file the
+# helper behaves exactly as before. SETTING_NAMES lists every global configure()
+# may replace, so a caller or test can save and restore them.
+RCLONE = "/usr/bin/rclone"
+AGE = "/usr/bin/age"
+DRIVE_QUALIFICATION = DRIVE_ROOT / "transport-qualification.json"
+DRIVE_OWNER = None  # account name; None reads it from DRIVE_QUALIFICATION
+AGENT_BUS = "agent-bus"
+REDIS_ADDRESS = ("127.0.0.1", 6380, 0)
+# Source binding. All None means unbound (the asuspro13 behaviour): the observed
+# identity is only recorded. A config file must fill in every field.
+SOURCE_HUB = None
+SOURCE_CUTOVER = None
+SOURCE_PG_SYSTEM = None
+SOURCE_REDIS_REPLID = None
+MAX_ONLY_IN_REDIS = None
+MAX_SNAPSHOT_AGE = None
+UNCACHED = {"mode": "none"}
+SETTING_NAMES = (
+    "STATE",
+    "DRIVE_ROOT",
+    "DRIVE_CONFIG",
+    "DRIVE_RECIPIENT",
+    "DRIVE_RESERVE",
+    "RCLONE",
+    "AGE",
+    "DRIVE_QUALIFICATION",
+    "DRIVE_OWNER",
+    "AGENT_BUS",
+    "REDIS_ADDRESS",
+    "SOURCE_HUB",
+    "SOURCE_CUTOVER",
+    "SOURCE_PG_SYSTEM",
+    "SOURCE_REDIS_REPLID",
+    "MAX_ONLY_IN_REDIS",
+    "MAX_SNAPSHOT_AGE",
+    "UNCACHED",
+    "PSQL",
+)
 PSQL = [
     "psql",
     "-X",
@@ -112,6 +159,12 @@ SELECT 'snapshot_utc',
        to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"');
 SELECT 'messages', count(*) FROM agent_bus.messages;
 SELECT 'presence_events', count(*) FROM agent_bus.presence_events;
+SELECT 'max_message_utc',
+       to_char(max(timestamp_utc) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+FROM agent_bus.messages;
+SELECT 'pg_system_identifier', system_identifier FROM pg_control_system();
+SELECT 'pg_database_oid', oid FROM pg_database WHERE datname = current_database();
+SELECT 'pg_server_version', current_setting('server_version');
 \o messages.ndjson
 SELECT row_to_json(m)::text FROM agent_bus.messages m ORDER BY m.timestamp_utc, m.id;
 \o presence-events.ndjson
@@ -150,11 +203,28 @@ def export_pg(raw: Path) -> dict:
         "pg_snapshot_utc": snap["snapshot_utc"],
         "pg_messages": int(snap["messages"]),
         "pg_presence_events": int(snap["presence_events"]),
+        "pg_max_message_utc": snap["max_message_utc"],
+        "pg_system_identifier": snap["pg_system_identifier"],
+        "pg_database_oid": snap["pg_database_oid"],
+        "pg_server_version": snap["pg_server_version"],
+    }
+
+
+def redis_generation(r) -> dict:
+    """Identify the Redis instance and dataset being read; no keys or values."""
+    server, repl = r.info("server"), r.info("replication")
+    return {
+        "run_id": server["run_id"],
+        "replid": repl["master_replid"],
+        "version": server["redis_version"],
+        "tcp_port": server["tcp_port"],
     }
 
 
 def export_redis(raw: Path, r) -> dict:
     exported, skipped = Counter(), Counter()
+    generation = redis_generation(r)
+    xlen_before = r.xlen("agent_bus:messages")
     with open(raw / "redis-side-channels.ndjson", "w") as f:
         for k in sorted(r.scan_iter(count=2000)):
             key = k.decode()
@@ -185,7 +255,7 @@ def export_redis(raw: Path, r) -> dict:
                 + "\n"
             )
             exported[fam] += 1
-    redis_uuids, n, last = set(), 0, "-"
+    redis_uuids, n, last, no_id = set(), 0, "-", 0
     with open(raw / "redis-stream-messages.ndjson", "w") as f:
         while True:
             batch = r.xrange("agent_bus:messages", min=last, max="+", count=5000)
@@ -199,13 +269,31 @@ def export_redis(raw: Path, r) -> dict:
                     "fields": {k.decode(): dec(v) for k, v in fields.items()},
                 }
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-                redis_uuids.add(rec["fields"].get("id"))
+                if rec["fields"].get("id") is None:
+                    no_id += 1
+                else:
+                    redis_uuids.add(rec["fields"]["id"])
                 n += 1
             last = batch[-1][0].decode()
+    xlen_after = r.xlen("agent_bus:messages")
+    after = redis_generation(r)
+    pg_uuids, pg_lines = set(), 0
     with open(raw / "messages.ndjson") as f:
-        pg_uuids = {json.loads(line)["id"] for line in f}
+        for line in f:
+            pg_uuids.add(json.loads(line)["id"])
+            pg_lines += 1
     recon = {
         "redis_stream_entries": n,
+        "redis_entries_without_id": no_id,
+        "redis_unique_ids": len(redis_uuids),
+        "redis_stream_xlen_before_after": [xlen_before, xlen_after],
+        "redis_last_stream_id": last if last != "-" else None,
+        "redis_generation": {
+            **generation,
+            "run_id_after": after["run_id"],
+            "replid_after": after["replid"],
+        },
+        "pg_lines": pg_lines,
         "pg_rows": len(pg_uuids),
         "uuid_union": len(pg_uuids | redis_uuids),
         "only_in_redis": len(redis_uuids - pg_uuids),
@@ -405,7 +493,7 @@ def bus(body: str, ok: bool) -> None:
     topic, schema = ("status", "status") if ok else ("agent-hub-findings", "finding")
     subprocess.run(
         [
-            "agent-bus",
+            AGENT_BUS,
             "send",
             "--from-agent",
             "agent-hub-history-export",
@@ -435,7 +523,7 @@ def bus(body: str, ok: bool) -> None:
 def health() -> dict:
     return json.loads(
         subprocess.run(
-            ["agent-bus", "health", "--encoding", "compact"],
+            [AGENT_BUS, "health", "--encoding", "compact"],
             capture_output=True,
             text=True,
             check=True,
@@ -466,6 +554,325 @@ def upload_receipts(
 
 class DriveHold(Exception):
     """A fixed, payload-free reason to retain the owned backup for retry."""
+
+
+def parse_utc(value, what: str) -> datetime:
+    """Parse an ISO-8601 instant with an offset (Python 3.10 cannot read a bare Z)."""
+    if not isinstance(value, str) or not value:
+        raise DriveHold("invalid_" + what)
+    try:
+        moment = datetime.fromisoformat(
+            value[:-1] + "+00:00" if value.endswith("Z") else value
+        )
+    except ValueError:
+        raise DriveHold("invalid_" + what) from None
+    if moment.tzinfo is None:
+        raise DriveHold("invalid_" + what)
+    return moment.astimezone(timezone.utc)
+
+
+def store_difference(recon: dict) -> dict:
+    """Report the PostgreSQL/Redis message difference and refuse an unexplained one.
+
+    The two stores legitimately differ: Redis keeps a trimmed stream, so older rows
+    exist only in PostgreSQL, and write-behind lag can leave a few newest messages
+    only in Redis. That is reported by id set, never absorbed. What cannot be
+    explained is held: duplicate or missing ids, whose counts would then not add up.
+    """
+    if recon["pg_lines"] != recon["pg_rows"]:
+        raise DriveHold("pg_message_ids_not_unique")
+    if (
+        recon["redis_entries_without_id"]
+        or recon["redis_unique_ids"] != recon["redis_stream_entries"]
+    ):
+        raise DriveHold("redis_stream_ids_not_unique")
+    pg, stream = recon["pg_rows"], recon["redis_stream_entries"]
+    if pg - recon["only_in_pg"] + recon["only_in_redis"] != stream:
+        raise DriveHold("store_difference_unaccounted")
+    if MAX_ONLY_IN_REDIS is not None and recon["only_in_redis"] > MAX_ONLY_IN_REDIS:
+        raise DriveHold("redis_ahead_of_pg")
+    return {
+        "pg_messages": pg,
+        "redis_stream_entries": stream,
+        "pg_minus_stream": pg - stream,
+        "only_in_pg": recon["only_in_pg"],
+        "only_in_redis": recon["only_in_redis"],
+        "in_both": pg - recon["only_in_pg"],
+        "accounted": True,
+    }
+
+
+def check_hub(reading: dict) -> None:
+    """One health reading must come from the configured, authoritative, running hub."""
+    if SOURCE_HUB is None:
+        return
+    if reading.get("hub_identity") != SOURCE_HUB:
+        raise DriveHold("hub_identity_mismatch")
+    if (reading.get("backend") or {}).get("authoritative") is not True:
+        raise DriveHold("hub_not_authoritative")
+    state = reading.get("maintenance") or {}
+    if state.get("mode") != "running" or state.get("write_blocked"):
+        raise DriveHold("hub_not_running")
+
+
+def check_source(before: dict, after: dict, meta: dict, recon: dict) -> dict:
+    """Bind one export to the promoted hub and the PG and Redis it actually read.
+
+    Returns the source binding recorded in MANIFEST.json. With no configured
+    identity (the asuspro13 deployment) nothing is enforced and the observed values
+    are only recorded. With one, every rule fails closed with a fixed reason.
+    """
+    bound = SOURCE_HUB is not None
+    backend = after.get("backend") or {}
+    maintenance = after.get("maintenance") or {}
+    generation = recon["redis_generation"]
+    stream_id = recon["redis_last_stream_id"]
+    if bound:
+        check_hub(before)
+        check_hub(after)
+        if (before.get("maintenance") or {}).get("changed_at_utc") != maintenance.get(
+            "changed_at_utc"
+        ):
+            raise DriveHold("hub_state_changed_during_export")
+        cutover = parse_utc(SOURCE_CUTOVER, "cutover")
+        if parse_utc(meta["pg_snapshot_utc"], "snapshot_utc") < cutover:
+            raise DriveHold("snapshot_before_cutover")
+        if parse_utc(meta["pg_max_message_utc"], "max_message_utc") < cutover:
+            raise DriveHold("source_before_cutover")
+        try:
+            stream_ms = int(str(stream_id).split("-", 1)[0])
+        except ValueError:
+            raise DriveHold("redis_stream_id_invalid") from None
+        if stream_ms < cutover.timestamp() * 1000:
+            raise DriveHold("redis_before_cutover")
+        if meta["pg_system_identifier"] != SOURCE_PG_SYSTEM:
+            raise DriveHold("pg_generation_mismatch")
+        if (
+            generation["run_id"] != generation["run_id_after"]
+            or generation["replid"] != generation["replid_after"]
+        ):
+            raise DriveHold("redis_restarted_during_export")
+        if generation["replid"] != SOURCE_REDIS_REPLID:
+            raise DriveHold("redis_generation_mismatch")
+        lengths = [
+            before.get("stream_length"),
+            after.get("stream_length"),
+            *recon["redis_stream_xlen_before_after"],
+        ]
+        if not all(type(n) is int for n in lengths) or not (
+            min(lengths) <= recon["redis_stream_entries"] <= max(lengths)
+        ):
+            raise DriveHold("redis_stream_window_mismatch")
+    return {
+        "schema": "agent-hub.history-source-binding/v1",
+        "hub_identity": after.get("hub_identity"),
+        "hub_identity_required": SOURCE_HUB,
+        "hub_authoritative": backend.get("authoritative"),
+        "hub_build_version": after.get("build_version"),
+        "cutover_utc": SOURCE_CUTOVER,
+        "pg": {
+            "system_identifier": meta["pg_system_identifier"],
+            "database_oid": meta["pg_database_oid"],
+            "server_version": meta["pg_server_version"],
+            "max_message_utc": meta["pg_max_message_utc"],
+        },
+        "redis": {
+            "run_id": generation["run_id"],
+            "replid": generation["replid"],
+            "version": generation["version"],
+            "tcp_port": generation["tcp_port"],
+            "last_stream_id": stream_id,
+        },
+        "health_before_after": {
+            "pg_message_count": [
+                before.get("pg_message_count"),
+                after.get("pg_message_count"),
+            ],
+            "stream_length": [before.get("stream_length"), after.get("stream_length")],
+            "maintenance_changed_at_utc": maintenance.get("changed_at_utc"),
+        },
+        "store_difference": store_difference(recon),
+    }
+
+
+class ConfigError(Exception):
+    """The config file is unusable; nothing has been read or written yet."""
+
+
+CONFIG_SCHEMA = "agent-hub.history-export-config/v1"
+# Section -> {key: allowed types}; any other key is refused, so a typo cannot
+# silently leave a binding at its default.
+CONFIG_KEYS = {
+    "": {
+        "schema": str,
+        "state_root": str,
+        "source": dict,
+        "drive": dict,
+        "uncached": dict,
+        "freshness": dict,
+    },
+    "source": {
+        "hub_identity": str,
+        "cutover_utc": str,
+        "agent_bus": str,
+        "max_only_in_redis": int,
+        "postgres": dict,
+        "redis": dict,
+    },
+    "postgres": {
+        "psql": str,
+        "host": str,
+        "port": int,
+        "user": str,
+        "database": str,
+        "system_identifier": str,
+    },
+    "redis": {"host": str, "port": int, "db": int, "replid": str},
+    "drive": {
+        "folder_id": str,
+        "owner_account": str,
+        "owner_sha256": str,
+        "rclone": str,
+        "rclone_config": str,
+        "qualification": str,
+        "age": str,
+        "recipient_file": str,
+        "recipient_sha256": str,
+        "reserve_bytes": int,
+    },
+    "uncached": {"mode": str, "command": list},
+    "freshness": {"max_snapshot_age_seconds": int},
+}
+
+
+def config_section(value: dict, name: str, path: str) -> dict:
+    allowed = CONFIG_KEYS[name]
+    for key, item in value.items():
+        if key not in allowed:
+            raise ConfigError(f"unknown config key {path}{key}")
+        # bool is an int subclass; a port or size must be a real number.
+        if not isinstance(item, allowed[key]) or (
+            allowed[key] is int and isinstance(item, bool)
+        ):
+            raise ConfigError(f"config key {path}{key} has the wrong type")
+    return value
+
+
+def configure(path: Path) -> None:
+    """Replace the built-in asuspro13 settings from a config file, all or nothing.
+
+    The destination folder, its owner hash and the public recipient hash stay the
+    operator-qualified constants: a config may repeat them but never change them.
+    """
+    global STATE, DRIVE_ROOT, DRIVE_CONFIG, DRIVE_RECIPIENT, DRIVE_RESERVE
+    global RCLONE, AGE, DRIVE_QUALIFICATION, DRIVE_OWNER, AGENT_BUS
+    global REDIS_ADDRESS, SOURCE_HUB, SOURCE_CUTOVER, SOURCE_PG_SYSTEM
+    global SOURCE_REDIS_REPLID, MAX_ONLY_IN_REDIS, MAX_SNAPSHOT_AGE, UNCACHED, PSQL
+    try:
+        if path.is_symlink() or not path.is_file():
+            raise ConfigError("config file missing or not a regular file")
+        text = path.read_text(encoding="utf-8")
+        doc = json.loads(text)
+    except (OSError, ValueError) as error:
+        raise ConfigError("config unreadable: " + type(error).__name__) from None
+    if not isinstance(doc, dict):
+        raise ConfigError("config must be a JSON object")
+    config_section(doc, "", "")
+    if doc.get("schema") != CONFIG_SCHEMA:
+        raise ConfigError("config schema must be " + CONFIG_SCHEMA)
+    source = config_section(doc.get("source", {}), "source", "source.")
+    pg = config_section(source.get("postgres", {}), "postgres", "source.postgres.")
+    redis_cfg = config_section(source.get("redis", {}), "redis", "source.redis.")
+    drive = config_section(doc.get("drive", {}), "drive", "drive.")
+    uncached = config_section(doc.get("uncached", {}), "uncached", "uncached.")
+    freshness = config_section(doc.get("freshness", {}), "freshness", "freshness.")
+    # A config file never inherits an asuspro13 path or endpoint: every one is named.
+    for where, section, keys in (
+        ("", doc, ("state_root", "uncached")),
+        ("source.", source, ("hub_identity", "cutover_utc")),
+        (
+            "source.postgres.",
+            pg,
+            ("psql", "host", "port", "user", "database", "system_identifier"),
+        ),
+        ("source.redis.", redis_cfg, ("host", "port", "db", "replid")),
+        (
+            "drive.",
+            drive,
+            ("rclone", "rclone_config", "age", "recipient_file", "reserve_bytes"),
+        ),
+    ):
+        for key in keys:
+            if key not in section or section[key] in ("", None):
+                raise ConfigError(f"config key {where}{key} is required")
+    if "owner_account" not in drive and "qualification" not in drive:
+        raise ConfigError("config needs drive.owner_account or drive.qualification")
+    try:
+        parse_utc(source["cutover_utc"], "cutover")
+    except DriveHold:
+        raise ConfigError("source.cutover_utc is not an ISO-8601 UTC time") from None
+    for key, fixed in (
+        ("folder_id", DRIVE_FOLDER),
+        ("owner_sha256", DRIVE_OWNER_SHA),
+        ("recipient_sha256", DRIVE_RECIPIENT_SHA),
+    ):
+        if drive.get(key, fixed) != fixed:
+            raise ConfigError(f"drive.{key} is a fixed qualified value")
+    owner = drive.get("owner_account")
+    if (
+        owner is not None
+        and hashlib.sha256(owner.encode()).hexdigest() != DRIVE_OWNER_SHA
+    ):
+        raise ConfigError("drive.owner_account is not the qualified owner")
+    mode = uncached.get("mode", "none")
+    command = uncached.get("command")
+    if mode not in ("none", "fadvise", "command") or (mode == "command") != bool(
+        command
+    ):
+        raise ConfigError("uncached.mode and uncached.command disagree")
+    if command is not None and not all(isinstance(part, str) for part in command):
+        raise ConfigError("uncached.command must be a list of strings")
+    reserve = drive["reserve_bytes"]
+    if reserve < 0:
+        raise ConfigError("drive.reserve_bytes must not be negative")
+    # Validated in full above; only now are the settings replaced.
+    STATE = Path(doc["state_root"])
+    DRIVE_CONFIG = Path(drive["rclone_config"])
+    DRIVE_ROOT = DRIVE_CONFIG.parent
+    DRIVE_RECIPIENT = Path(drive["recipient_file"])
+    DRIVE_QUALIFICATION = (
+        Path(drive["qualification"]) if "qualification" in drive else None
+    )
+    DRIVE_OWNER = owner
+    DRIVE_RESERVE = reserve
+    RCLONE = drive["rclone"]
+    AGE = drive["age"]
+    AGENT_BUS = source.get("agent_bus", "agent-bus")
+    REDIS_ADDRESS = (redis_cfg["host"], redis_cfg["port"], redis_cfg["db"])
+    SOURCE_HUB = source["hub_identity"]
+    SOURCE_CUTOVER = source["cutover_utc"]
+    SOURCE_PG_SYSTEM = pg["system_identifier"]
+    SOURCE_REDIS_REPLID = redis_cfg["replid"]
+    MAX_ONLY_IN_REDIS = source.get("max_only_in_redis")
+    MAX_SNAPSHOT_AGE = freshness.get("max_snapshot_age_seconds")
+    UNCACHED = {"mode": mode, "command": command}
+    PSQL = [
+        pg["psql"],
+        "-X",
+        "-w",
+        "-q",
+        "-h",
+        pg["host"],
+        "-p",
+        str(pg["port"]),
+        "-U",
+        pg["user"],
+        "-d",
+        pg["database"],
+        "-At",
+        "-v",
+        "ON_ERROR_STOP=1",
+    ]
 
 
 def drive_environment() -> dict:
@@ -531,6 +938,50 @@ def drive_hash(path: Path) -> dict:
     return {"sha256": sha, "md5": md5, "bytes": size}
 
 
+# snapshot.tsv rows (to MANIFEST top-level key) that a bound bundle adds.
+SNAPSHOT_SOURCE_FIELDS = {
+    "max_message_utc": "pg_max_message_utc",
+    "pg_system_identifier": "pg_system_identifier",
+    "pg_database_oid": "pg_database_oid",
+    "pg_server_version": "pg_server_version",
+}
+
+
+def validate_source_binding(binding, snapshot: dict, manifest: dict) -> None:
+    """Re-check a bundle's source binding, so a restore qualifier re-proves it too."""
+    if not isinstance(binding, dict):
+        raise DriveHold("source_binding_invalid")
+    pg = binding.get("pg")
+    if (
+        binding.get("schema") != "agent-hub.history-source-binding/v1"
+        or not isinstance(pg, dict)
+        or not isinstance(binding.get("store_difference"), dict)
+        or binding["store_difference"].get("accounted") is not True
+    ):
+        raise DriveHold("source_binding_invalid")
+    names = {
+        "max_message_utc": "max_message_utc",
+        "pg_system_identifier": "system_identifier",
+        "pg_database_oid": "database_oid",
+        "pg_server_version": "server_version",
+    }
+    for row, key in names.items():
+        if not snapshot[row] or (
+            snapshot[row] != manifest.get(SNAPSHOT_SOURCE_FIELDS[row])
+            or snapshot[row] != pg.get(key)
+        ):
+            raise DriveHold("source_binding_snapshot_mismatch")
+    required = binding.get("hub_identity_required")
+    if required is not None and binding.get("hub_identity") != required:
+        raise DriveHold("hub_identity_mismatch")
+    if binding.get("cutover_utc") is not None:
+        cutover = parse_utc(binding["cutover_utc"], "cutover")
+        if parse_utc(snapshot["snapshot_utc"], "snapshot_utc") < cutover or (
+            parse_utc(snapshot["max_message_utc"], "max_message_utc") < cutover
+        ):
+            raise DriveHold("source_before_cutover")
+
+
 def validate_drive_bundle(root: Path) -> dict:
     """Verify the exact census and parsed NDJSON; see README Drive restore."""
     if root.is_symlink() or not root.is_dir() or (root / "SHA256SUMS").is_symlink():
@@ -592,11 +1043,14 @@ def validate_drive_bundle(root: Path) -> dict:
     snapshot_rows = [
         line.split("|", 1) for line in (root / "snapshot.tsv").read_text().splitlines()
     ]
+    fields = {"snapshot_utc", "messages", "presence_events"}
+    binding = manifest.get("source_binding")
+    if binding is not None:
+        fields |= set(SNAPSHOT_SOURCE_FIELDS)
     if (
         any(len(row) != 2 for row in snapshot_rows)
-        or len(snapshot_rows) != 3
-        or {row[0] for row in snapshot_rows}
-        != {"snapshot_utc", "messages", "presence_events"}
+        or len(snapshot_rows) != len(fields)
+        or {row[0] for row in snapshot_rows} != fields
     ):
         raise DriveHold("export_snapshot_fields_invalid")
     snapshot = dict(snapshot_rows)
@@ -615,6 +1069,8 @@ def validate_drive_bundle(root: Path) -> dict:
         or snapshot["snapshot_utc"] != manifest.get("pg_snapshot_utc")
     ):
         raise DriveHold("export_snapshot_count_mismatch")
+    if binding is not None:
+        validate_source_binding(binding, snapshot, manifest)
     with (root / "redis-state/redis-side-channels.ndjson").open() as stream:
         for line in stream:
             if not isinstance(json.loads(line), dict):
@@ -626,7 +1082,15 @@ class DriveStore:
     """Owner-only immutable Drive writes and complete readback; no private age key."""
 
     def __init__(self) -> None:
-        qualification = drive_json(DRIVE_ROOT / "transport-qualification.json")
+        self.provisioned()
+        if DRIVE_OWNER is not None:
+            # The account is named by the config; the provider's own owner and
+            # permission proof (account, check_private) is what binds it.
+            self.owner = DRIVE_OWNER
+            if hashlib.sha256(self.owner.encode()).hexdigest() != DRIVE_OWNER_SHA:
+                raise DriveHold("unqualified_private_destination")
+            return
+        qualification = drive_json(DRIVE_QUALIFICATION)
         self.owner = qualification["account"]
         if (
             qualification.get("status") != "PASS"
@@ -636,10 +1100,30 @@ class DriveStore:
         ):
             raise DriveHold("unqualified_private_destination")
 
+    @staticmethod
+    def provisioned() -> None:
+        """Hold with one fixed reason when this host has no Drive access yet.
+
+        Nothing here reads a token value. A missing, empty or section-less rclone
+        config means the owner has not provisioned the remote; that is reported as
+        such and never as a verified upload.
+        """
+        if (
+            DRIVE_CONFIG.is_symlink()
+            or not DRIVE_CONFIG.is_file()
+            or DRIVE_CONFIG.stat().st_size == 0
+        ):
+            raise DriveHold("remote_not_provisioned")
+        config = configparser.ConfigParser(interpolation=None)
+        try:
+            config.read(DRIVE_CONFIG)
+        except configparser.Error:
+            raise DriveHold("remote_not_provisioned") from None
+        if not config.has_option("migration-drive", "token"):
+            raise DriveHold("remote_not_provisioned")
+
     def rc(self, *args: str, timeout: int = 120) -> bytes:
-        return drive_run(
-            ["/usr/bin/rclone", "--config", str(DRIVE_CONFIG), *args], timeout
-        )
+        return drive_run([RCLONE, "--config", str(DRIVE_CONFIG), *args], timeout)
 
     def api(self, path: str) -> dict:
         if DRIVE_CONFIG.is_symlink():
@@ -723,7 +1207,7 @@ class DriveStore:
 
     def readback(self, name: str, expected: dict) -> dict:
         args = [
-            "/usr/bin/rclone",
+            RCLONE,
             "--config",
             str(DRIVE_CONFIG),
             "cat",
@@ -825,6 +1309,74 @@ class DriveStore:
         return {"object": obj, "full_readback": self.readback(name, expected)}
 
 
+def uncached_digest(path: Path):
+    """Hash a file by a read that bypasses the cache of the layer that wrote it.
+
+    A hash taken right after writing can be served from the page cache while the
+    disk copy is wrong, so it proves nothing about the stored bytes. The mode is
+    configured per host: "none" (the asuspro13 behaviour), "fadvise" (drop this
+    kernel's cache, then read) or "command" (an external reader whose stdout is
+    one JSON object {"sha256", "bytes"}; {path}, {win_path} and {helper_dir_win}
+    are substituted, the last two by `wslpath -w`).
+    """
+    mode = UNCACHED["mode"]
+    if mode == "none":
+        return None
+    if mode == "fadvise":
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)
+        finally:
+            os.close(fd)
+        return drive_hash(path)
+    args = [part.replace("{path}", str(path)) for part in UNCACHED["command"]]
+    here = str(Path(__file__).resolve().parent)
+    for token, target in (("{win_path}", str(path)), ("{helper_dir_win}", here)):
+        if any(token in part for part in args):
+            win = drive_run(["wslpath", "-w", target], timeout=30).decode().strip()
+            args = [part.replace(token, win) for part in args]
+    try:
+        value = json.loads(drive_run(args, timeout=3600).decode("utf-8-sig"))
+        return {"sha256": value["sha256"].lower(), "bytes": value["bytes"]}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise DriveHold("uncached_hash_unreadable") from None
+
+
+def check_uncached(path: Path, expected: dict) -> None:
+    """Hold unless an uncached read of path has the expected hash and length."""
+    got = uncached_digest(path)
+    if got is not None and (
+        got["sha256"] != expected["sha256"] or got["bytes"] != expected["bytes"]
+    ):
+        raise DriveHold("uncached_hash_mismatch")
+
+
+def verify_archive(archive: Path, bundle: Path) -> None:
+    """The tar that gets encrypted must be exactly the bundle that was validated."""
+    want = {}
+    for line in (bundle / "SHA256SUMS").read_text().splitlines():
+        sha, rel = line.split("  ", 1)
+        want[rel] = sha
+    want["SHA256SUMS"] = digest(bundle / "SHA256SUMS")[0]
+    seen = {}
+    with tarfile.open(archive, "r") as tar:
+        for member in tar:
+            parts = PurePosixPath(member.name)
+            if (
+                not member.isfile()
+                or member.name in seen
+                or parts.is_absolute()
+                or ".." in parts.parts
+            ):
+                raise DriveHold("archive_member_unsafe")
+            sha, stream = hashlib.sha256(), tar.extractfile(member)
+            while chunk := stream.read(1 << 20):
+                sha.update(chunk)
+            seen[member.name] = sha.hexdigest()
+    if seen != want:
+        raise DriveHold("archive_bundle_mismatch")
+
+
 def close_drive_job(job: Path, name: str) -> dict:
     """Seal one generated bundle, keeping all plaintext until independent restore."""
     if job.is_symlink() or not re.fullmatch(r"history-[0-9a-f]{16}", name):
@@ -842,6 +1394,7 @@ def close_drive_job(job: Path, name: str) -> dict:
             raise DriveHold("closed_binding_changed")
         if drive_hash(job / binding["cipher_file"]) != binding["cipher"]:
             raise DriveHold("closed_cipher_changed")
+        check_uncached(job / binding["cipher_file"], binding["cipher"])
         if drive_hash(job / "archive.tar") != binding["plain"]:
             raise DriveHold("closed_plaintext_changed")
         if (
@@ -873,12 +1426,14 @@ def close_drive_job(job: Path, name: str) -> dict:
     with archive.open("r+b") as stream:
         os.fsync(stream.fileno())
     plain = drive_hash(archive)
+    check_uncached(archive, plain)
+    verify_archive(archive, bundle)
     if digest(DRIVE_RECIPIENT)[0] != DRIVE_RECIPIENT_SHA:
         raise DriveHold("public_recipient_changed")
     pending = job / "ciphertext.pending"
     drive_run(
         [
-            "/usr/bin/age",
+            AGE,
             "--encrypt",
             "--recipients-file",
             str(DRIVE_RECIPIENT),
@@ -893,6 +1448,7 @@ def close_drive_job(job: Path, name: str) -> dict:
     if drive_hash(archive) != plain:
         raise DriveHold("plaintext_changed_during_encryption")
     cipher = drive_hash(pending)
+    check_uncached(pending, cipher)
     cipher_file = cipher["sha256"] + ".age"
     if (job / cipher_file).exists():
         raise DriveHold("closed_cipher_collision")
@@ -908,9 +1464,44 @@ def close_drive_job(job: Path, name: str) -> dict:
         "sha256sums_sha256": digest(bundle / "SHA256SUMS")[0],
         "pg_snapshot_utc": manifest.get("pg_snapshot_utc"),
         "line_counts": manifest["line_counts"],
+        "source_binding": manifest.get("source_binding"),
     }
     drive_atomic(binding_path, binding)
     return binding
+
+
+def verify_proof(proof, expected: dict) -> None:
+    """Hold unless the provider object and the full readback both match the local hash.
+
+    A provider listing, an uploader exit code or a scheduler result is not proof:
+    the object's parent, length and checksum and a streamed readback of every byte
+    must all equal the local file's hash and length.
+    """
+    obj = proof.get("object") if isinstance(proof, dict) else None
+    readback = proof.get("full_readback") if isinstance(proof, dict) else None
+    if (
+        not isinstance(obj, dict)
+        or not isinstance(readback, dict)
+        or obj.get("parents") != [DRIVE_FOLDER]
+        or str(obj.get("size")) != str(expected["bytes"])
+        or obj.get("md5Checksum") != expected["md5"]
+        or readback.get("sha256") != expected["sha256"]
+        or readback.get("bytes") != expected["bytes"]
+    ):
+        raise DriveHold("remote_proof_incomplete")
+
+
+def snapshot_freshness(binding: dict) -> dict:
+    """How old the snapshot was when the upload was verified; stale is reported."""
+    now = datetime.now(timezone.utc)
+    age = (now - parse_utc(binding["pg_snapshot_utc"], "snapshot_utc")).total_seconds()
+    return {
+        "snapshot_utc": binding["pg_snapshot_utc"],
+        "verified_utc": now.isoformat(),
+        "age_seconds": round(age),
+        "max_age_seconds": MAX_SNAPSHOT_AGE,
+        "within_limit": MAX_SNAPSHOT_AGE is None or age <= MAX_SNAPSHOT_AGE,
+    }
 
 
 def publish_drive_job(job: Path, store: DriveStore) -> dict:
@@ -921,6 +1512,7 @@ def publish_drive_job(job: Path, store: DriveStore) -> dict:
     proof = store.put(
         job / binding["cipher_file"], prefix + ".tar.age", binding["cipher"]
     )
+    verify_proof(proof, binding["cipher"])
     receipt_path = job / "cloud-receipt.json"
     if receipt_path.exists():
         receipt = drive_json(receipt_path)
@@ -942,12 +1534,64 @@ def publish_drive_job(job: Path, store: DriveStore) -> dict:
         drive_atomic(receipt_path, receipt)
     receipt_hash = drive_hash(receipt_path)
     receipt_proof = store.put(receipt_path, prefix + ".receipt.json", receipt_hash)
+    verify_proof(receipt_proof, receipt_hash)
     verified = {
         **receipt,
         "completion_receipt": {"hash": receipt_hash, "proof": receipt_proof},
+        "freshness": snapshot_freshness(binding),
+        # The private key is never on this host, so the ciphertext is not decrypted
+        # here: the bundle was validated before encryption (validate_drive_bundle,
+        # verify_archive) and the independent decrypt/restore is a separate step.
+        "restore_qualification": "PENDING_INDEPENDENT_DECRYPT",
     }
     drive_atomic(job / "verified.json", verified)
     return verified
+
+
+def drive_counts(verified: dict) -> str:
+    """Counts and hashes only for the log and bus notice; never a message body."""
+    binding = verified["binding"]
+    source = binding.get("source_binding") or {}
+    diff = source.get("store_difference") or {}
+    fresh = verified["freshness"]
+    return (
+        f"snapshot={fresh['snapshot_utc']} age_s={fresh['age_seconds']}"
+        + ("" if fresh["within_limit"] else " STALE")
+        + f" pg_messages={diff.get('pg_messages')}"
+        + f" redis_stream={diff.get('redis_stream_entries')}"
+        + f" only_in_pg={diff.get('only_in_pg')}"
+        + f" only_in_redis={diff.get('only_in_redis')}"
+        + f" cipher_sha256={binding['cipher']['sha256']}"
+        + f" cipher_bytes={binding['cipher']['bytes']}"
+    )
+
+
+def quarantine(job: Path, spool: Path, error: BaseException) -> Path:
+    """Move a rejected capture aside under a name the next run skips; delete nothing."""
+    if not job.is_dir() or job.name != "pending":
+        return job
+    reason = (
+        str(error)
+        if isinstance(error, DriveHold)
+        else "unexpected_" + type(error).__name__
+    )
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    target = spool / ("rejected-" + stamp)
+    suffix = 0
+    while target.exists():
+        suffix += 1
+        target = spool / f"rejected-{stamp}-{suffix}"
+    job.rename(target)
+    drive_atomic(
+        target / "REJECTED.json",
+        {
+            "schema": "agent-hub.history-drive-rejected/v1",
+            "reason": reason,
+            "observed_utc": datetime.now(timezone.utc).isoformat(),
+            "uploaded": False,
+        },
+    )
+    return target
 
 
 def drive_backup(no_bus: bool = False) -> int:
@@ -962,6 +1606,11 @@ def drive_backup(no_bus: bool = False) -> int:
         for candidate in sorted(spool.iterdir()):
             if candidate.is_symlink() or not candidate.is_dir():
                 raise DriveHold("unknown_spool_entry_preserved")
+            if (
+                candidate.name.startswith("rejected-")
+                and (candidate / "REJECTED.json").is_file()
+            ):
+                continue
             if (candidate / "verified.json").exists():
                 complete = drive_json(candidate / "verified.json")
                 if (
@@ -976,32 +1625,52 @@ def drive_backup(no_bus: bool = False) -> int:
         if job is None:
             import redis
 
+            # A wrong hub is refused before any spool entry exists.
+            before = health()
+            check_hub(before)
             job = spool / "pending"
             job.mkdir(mode=0o700)
             raw, bundle = job / "raw", job / "bundle"
             raw.mkdir()
-            before = health()
-            meta = {
-                "artifact": "agent-hub bus history export",
-                "source_host": socket.gethostname(),
-                "producer": "agent-hub-history-export (packaging/history-export)",
-                "hub_build_version": before.get("build_version"),
-            }
-            meta.update(export_pg(raw))
-            meta["reconciliation"] = export_redis(
-                raw, redis.Redis(host="127.0.0.1", port=6380, db=0)
-            )
-            after = health()
-            check_window(
-                before["pg_message_count"],
-                meta["pg_messages"],
-                after["pg_message_count"],
-            )
-            meta["health_pg_message_count_before_after"] = [
-                before["pg_message_count"],
-                after["pg_message_count"],
-            ]
-            name = build_bundle(raw, bundle, meta)
+            try:
+                meta = {
+                    "artifact": "agent-hub bus history export",
+                    "source_host": socket.gethostname(),
+                    "producer": "agent-hub-history-export (packaging/history-export)",
+                    "hub_build_version": before.get("build_version"),
+                }
+                meta.update(export_pg(raw))
+                reconciliation = export_redis(
+                    raw,
+                    redis.Redis(
+                        host=REDIS_ADDRESS[0],
+                        port=REDIS_ADDRESS[1],
+                        db=REDIS_ADDRESS[2],
+                    ),
+                )
+                meta["reconciliation"] = reconciliation
+                after = health()
+                try:
+                    check_window(
+                        before["pg_message_count"],
+                        meta["pg_messages"],
+                        after["pg_message_count"],
+                    )
+                except SystemExit:
+                    raise DriveHold("snapshot_outside_health_window") from None
+                meta["health_pg_message_count_before_after"] = [
+                    before["pg_message_count"],
+                    after["pg_message_count"],
+                ]
+                meta["source_binding"] = check_source(
+                    before, after, meta, reconciliation
+                )
+                name = build_bundle(raw, bundle, meta)
+            except BaseException as error:
+                # An export that failed its own source checks is evidence, not an
+                # upload candidate: keep it, but never let it block the next run.
+                job = quarantine(job, spool, error)
+                raise
         elif (job / "binding.json").exists():
             name = drive_json(job / "binding.json")["name"]
         elif (job / "bundle/SHA256SUMS").is_file():
@@ -1021,7 +1690,9 @@ def drive_backup(no_bus: bool = False) -> int:
         summary = (
             "STATUS: agent-hub encrypted Drive history "
             + name
-            + ": REMOTE_VERIFIED; plaintext and cipher retained; receipt "
+            + ": REMOTE_VERIFIED; "
+            + drive_counts(verified)
+            + "; plaintext and cipher retained; receipt "
             + str(job / "verified.json")
         )
         drive_atomic(
@@ -1031,6 +1702,8 @@ def drive_backup(no_bus: bool = False) -> int:
                 "name": name,
                 "observed_utc": datetime.now(timezone.utc).isoformat(),
                 "job": str(job),
+                "fresh": verified["freshness"]["within_limit"],
+                "snapshot_utc": verified["freshness"]["snapshot_utc"],
             },
         )
         log(summary)
@@ -1095,10 +1768,26 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--no-bus", action="store_true", help="do not post the result on the bus"
     )
+    ap.add_argument(
+        "--config",
+        type=Path,
+        help="Work-authoritative profile (--drive only); omitted means asuspro13",
+    )
     args = ap.parse_args(argv)
+    if args.config is not None and not args.drive:
+        ap.error("--config applies to --drive only")
     if args.drive:
         if args.mirror:
             ap.error("--drive cannot use SFTP mirrors")
+        if args.config is not None:
+            try:
+                configure(args.config)
+            except ConfigError as error:
+                print(
+                    f"agent-hub-history-export: config refused: {error}",
+                    file=sys.stderr,
+                )
+                return 2
         return drive_backup(args.no_bus)
     import redis  # deferred so the pure helpers import without redis-py (tests, --help)
 

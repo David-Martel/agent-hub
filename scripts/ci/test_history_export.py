@@ -14,6 +14,7 @@ runs `python3 -B -m unittest discover -s scripts/ci -p "test_*.py"`.
 import gzip
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -24,6 +25,7 @@ import tarfile
 import tempfile
 import textwrap
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -83,7 +85,7 @@ FAKE_SFTP = textwrap.dedent("""\
 
 def make_raw(raw: Path, n_messages: int = 5, body: str = "hello") -> None:
     """Write the raw export files build_bundle expects, as the exporters would."""
-    raw.mkdir(parents=True)
+    raw.mkdir(parents=True, exist_ok=True)
     with open(raw / "messages.ndjson", "w") as f:
         f.writelines(
             json.dumps({"id": f"m{i}", "body": f"{body}-{i}"}) + "\n"
@@ -103,6 +105,19 @@ def make_raw(raw: Path, n_messages: int = 5, body: str = "hello") -> None:
     (raw / "snapshot.tsv").write_text(
         f"snapshot_utc|2026-10-29T00:00:00Z\nmessages|{n_messages}\npresence_events|1\n"
     )
+
+
+def fixture_proof(name, expected):
+    """A complete synthetic provider proof: object binding plus full readback."""
+    return {
+        "object": {
+            "id": name,
+            "parents": [hx.DRIVE_FOLDER],
+            "size": str(expected["bytes"]),
+            "md5Checksum": expected["md5"],
+        },
+        "full_readback": {"sha256": expected["sha256"], "bytes": expected["bytes"]},
+    }
 
 
 class TempDirCase(unittest.TestCase):
@@ -339,10 +354,9 @@ class DriveTests(TempDirCase):
         """
         job, binding = self.closed_job()
         store = mock.Mock()
-        store.put.side_effect = lambda path, name, expected: {
-            "object": {"id": name},
-            "full_readback": {"sha256": expected["sha256"], "bytes": expected["bytes"]},
-        }
+        store.put.side_effect = lambda path, name, expected: fixture_proof(
+            name, expected
+        )
         result = hx.publish_drive_job(job, store)
         self.assertEqual(store.put.call_count, 2)
         self.assertEqual(result["status"], "REMOTE_VERIFIED")
@@ -374,10 +388,13 @@ class DriveTests(TempDirCase):
         """
         job, _ = self.closed_job()
         store = mock.Mock()
-        store.put.side_effect = [
-            {"object": {"id": "cipher"}},
-            hx.DriveHold("receipt_readback_failed"),
-        ]
+
+        def put(path, name, expected):
+            if name.endswith(".receipt.json"):
+                raise hx.DriveHold("receipt_readback_failed")
+            return fixture_proof("cipher", expected)
+
+        store.put.side_effect = put
         with self.assertRaisesRegex(hx.DriveHold, "receipt_readback_failed"):
             hx.publish_drive_job(job, store)
         self.assertTrue((job / "cloud-receipt.json").is_file())
@@ -390,16 +407,19 @@ class DriveTests(TempDirCase):
         """
         job, _ = self.closed_job()
         store = mock.Mock()
-        store.put.side_effect = [
-            {"object": {"id": "same-cipher"}},
-            hx.DriveHold("receipt_interrupted"),
-        ]
+
+        def put(path, name, expected):
+            if name.endswith(".receipt.json"):
+                raise hx.DriveHold("receipt_interrupted")
+            return fixture_proof("same-cipher", expected)
+
+        store.put.side_effect = put
         with self.assertRaisesRegex(hx.DriveHold, "receipt_interrupted"):
             hx.publish_drive_job(job, store)
         original = (job / "cloud-receipt.json").read_bytes()
-        store.put.side_effect = lambda path, name, expected: {
-            "object": {"id": "same-cipher" if name.endswith(".age") else "receipt"}
-        }
+        store.put.side_effect = lambda path, name, expected: fixture_proof(
+            "same-cipher" if name.endswith(".age") else "receipt", expected
+        )
         with mock.patch.object(hx, "drive_run") as encrypt:
             hx.publish_drive_job(job, store)
         encrypt.assert_not_called()
@@ -524,7 +544,9 @@ class DriveTests(TempDirCase):
         shutil.move(str(job), spool / binding["name"])
         store = mock.Mock()
         store.account.side_effect = [hx.DriveHold("official_drive_read_failed"), None]
-        store.put.side_effect = lambda path, name, expected: {"object": {"id": name}}
+        store.put.side_effect = lambda path, name, expected: fixture_proof(
+            name, expected
+        )
         with (
             mock.patch.object(hx, "STATE", state),
             mock.patch.object(hx, "DriveStore", return_value=store),
@@ -572,6 +594,188 @@ class DriveTests(TempDirCase):
                             hx.DriveHold, "full_remote_stream_mismatch"
                         ):
                             store.readback("fixture", expected)
+
+    def test_drive_incomplete_provider_proof_is_not_verified(self):
+        """Protects: REMOTE_VERIFIED meaning the destination hash and length were read
+        back, not that an uploader returned. Detects: a proof lacking the full
+        readback, or with another hash, length, parent or checksum, completing the
+        job. Needs: synthetic closed job and provider proofs; no network or key.
+        Breadcrumb: publish_drive_job, verify_proof.
+        """
+        wrong = {
+            "no readback": lambda p: {"object": p["object"]},
+            "other hash": lambda p: {
+                **p,
+                "full_readback": {**p["full_readback"], "sha256": "0" * 64},
+            },
+            "short length": lambda p: {
+                **p,
+                "full_readback": {**p["full_readback"], "bytes": 1},
+            },
+            "wrong parent": lambda p: {
+                **p,
+                "object": {**p["object"], "parents": ["elsewhere"]},
+            },
+            "wrong checksum": lambda p: {
+                **p,
+                "object": {**p["object"], "md5Checksum": "0" * 32},
+            },
+        }
+        for label, damage in wrong.items():
+            with self.subTest(label):
+                job, _ = self.closed_job()
+                store = mock.Mock()
+                store.put.side_effect = lambda path, name, expected, d=damage: d(
+                    fixture_proof(name, expected)
+                )
+                with self.assertRaisesRegex(hx.DriveHold, "remote_proof_incomplete"):
+                    hx.publish_drive_job(job, store)
+                self.assertFalse((job / "verified.json").exists())
+                shutil.rmtree(job)
+
+    def test_drive_archive_must_be_exactly_the_validated_bundle(self):
+        """Protects: the encrypted payload being the bundle that was validated.
+        Detects: a tar with a changed, extra, missing or duplicate member being
+        accepted for encryption. Needs: synthetic bundle only.
+        Breadcrumb: verify_archive, close_drive_job.
+        """
+        bundle, _ = self.bundle()
+        files = sorted(p for p in bundle.rglob("*") if p.is_file())
+
+        def tar_of(path, skip=None, extra=None, tweak=None, twice=None):
+            with tarfile.open(path, "w") as out:
+                for f in files:
+                    rel = f.relative_to(bundle).as_posix()
+                    if rel == skip:
+                        continue
+                    data = f.read_bytes() + (b"x" if rel == tweak else b"")
+                    for _ in range(2 if rel == twice else 1):
+                        info = tarfile.TarInfo(rel)
+                        info.size = len(data)
+                        out.addfile(info, io.BytesIO(data))
+                if extra:
+                    info = tarfile.TarInfo(extra)
+                    info.size = 1
+                    out.addfile(info, io.BytesIO(b"x"))
+
+        good = self.tmp / "good.tar"
+        tar_of(good)
+        hx.verify_archive(good, bundle)
+        for label, kwargs in {
+            "changed": {"tweak": "MANIFEST.json"},
+            "extra": {"extra": "stray.bin"},
+            "missing": {"skip": "snapshot.tsv"},
+            "traversal": {"extra": "../escape"},
+            "duplicate": {"twice": "snapshot.tsv"},
+        }.items():
+            with self.subTest(label):
+                bad = self.tmp / (label + ".tar")
+                tar_of(bad, **kwargs)
+                with self.assertRaises(hx.DriveHold):
+                    hx.verify_archive(bad, bundle)
+
+    def uncached_reader(self, wrong_for=()):
+        """A stand-in for the external uncached reader, plus the age stand-in."""
+        calls = []
+
+        def run(args, timeout=120):
+            if args[0] == "reader":
+                path = Path(args[1])
+                calls.append(path.name)
+                sha, _, size = hx.digest(path)
+                if path.name in wrong_for:
+                    sha = "0" * 64
+                return json.dumps({"sha256": sha, "bytes": size}).encode()
+            Path(args[args.index("--output") + 1]).write_bytes(
+                b"cipher:" + Path(args[-1]).read_bytes()
+            )
+            return b""
+
+        return run, calls
+
+    def test_drive_uncached_hash_must_match_before_the_cipher_is_closed(self):
+        """Protects: the stored plaintext tar and ciphertext, which a hash taken right
+        after writing cannot prove on a disk that returns wrong bytes. Detects: an
+        uncached read that differs from the cached hash being ignored, or never
+        being taken. Needs: synthetic bundle and a stand-in reader.
+        Breadcrumb: uncached_digest, check_uncached, close_drive_job.
+        """
+        bundle, name = self.bundle()
+        job = self.tmp / "job"
+        job.mkdir()
+        shutil.move(str(bundle), job / "bundle")
+        recipient = self.tmp / "recipient"
+        recipient.write_text("fixture-public-recipient")
+        self.patch_recipient(recipient)
+        mode = mock.patch.object(
+            hx, "UNCACHED", {"mode": "command", "command": ["reader", "{path}"]}
+        )
+        mode.start()
+        self.addCleanup(mode.stop)
+        run, calls = self.uncached_reader(wrong_for=("ciphertext.pending",))
+        with (
+            mock.patch.object(hx, "drive_run", side_effect=run),
+            self.assertRaisesRegex(hx.DriveHold, "uncached_hash_mismatch"),
+        ):
+            hx.close_drive_job(job, name)
+        self.assertEqual(calls, ["archive.tar", "ciphertext.pending"])
+        self.assertFalse((job / "binding.json").exists())
+        self.assertTrue((job / "archive.tar").exists())
+        self.assertTrue((job / "ciphertext.pending").exists())
+
+    def test_drive_uncached_hash_is_rechecked_on_retry_and_garbage_is_held(self):
+        """Protects: a ciphertext that rotted in the spool before a delayed upload.
+        Detects: a retry trusting the cached hash alone, and an unreadable reader
+        result being treated as a pass. Needs: synthetic closed job.
+        Breadcrumb: close_drive_job existing-binding branch, uncached_digest.
+        """
+        job, binding = self.closed_job()
+        mode = mock.patch.object(
+            hx, "UNCACHED", {"mode": "command", "command": ["reader", "{path}"]}
+        )
+        mode.start()
+        self.addCleanup(mode.stop)
+        run, _ = self.uncached_reader(wrong_for=(binding["cipher_file"],))
+        with (
+            mock.patch.object(hx, "drive_run", side_effect=run),
+            self.assertRaisesRegex(hx.DriveHold, "uncached_hash_mismatch"),
+        ):
+            hx.publish_drive_job(job, mock.Mock())
+        with (
+            mock.patch.object(hx, "drive_run", return_value=b"not json"),
+            self.assertRaisesRegex(hx.DriveHold, "uncached_hash_unreadable"),
+        ):
+            hx.publish_drive_job(job, mock.Mock())
+        run, calls = self.uncached_reader()
+        with mock.patch.object(hx, "drive_run", side_effect=run):
+            hx.close_drive_job(job, binding["name"])
+        self.assertEqual(calls, [binding["cipher_file"]])
+
+    def test_drive_uncached_command_gets_windows_paths_from_wslpath(self):
+        """Protects: the Windows-side reader being given a path it can open.
+        Detects: {win_path} or {helper_dir_win} reaching the command unexpanded.
+        Needs: a stand-in drive_run. Breadcrumb: uncached_digest.
+        """
+        target = self.tmp / "file.bin"
+        target.write_bytes(b"abc")
+        seen = []
+
+        def run(args, timeout=120):
+            seen.append(args)
+            if args[0] == "wslpath":
+                return ("W:" + args[-1]).encode()
+            return b'{"sha256": "' + b"A" * 64 + b'", "bytes": 3}'
+
+        command = ["reader", "-File", "{helper_dir_win}/x.ps1", "-Path", "{win_path}"]
+        with (
+            mock.patch.object(hx, "UNCACHED", {"mode": "command", "command": command}),
+            mock.patch.object(hx, "drive_run", side_effect=run),
+        ):
+            got = hx.uncached_digest(target)
+        self.assertEqual(got, {"sha256": "a" * 64, "bytes": 3})
+        final = seen[-1]
+        self.assertEqual(final[-1], "W:" + str(target))
+        self.assertTrue(final[2].startswith("W:") and final[2].endswith("/x.ps1"))
 
 
 class DecTests(unittest.TestCase):
@@ -1015,6 +1219,72 @@ class InstallTests(TempDirCase):
         self.assertIn("env.bash is missing", res.stderr)
         self.assertFalse((self.tmp / "home" / ".local").exists())
 
+    def test_work_profile_stages_a_revision_and_enables_nothing(self):
+        """Protects: the reviewed revision being staged under its own directory with
+        a `current` link, and the Work timer staying disabled until the activation
+        gate. Detects: files placed over the asuspro13 layout, a missing link or
+        windows reader, or any enable/start call. Needs: bash.
+        Breadcrumb: install.sh --profile work, README Work profile.
+        """
+        res = self.run_install("--profile", "work", "--rev", "abc123")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        share = self.tmp / "home/.local/share/agent-hub-history-export"
+        self.assertEqual(
+            (share / "abc123/agent-hub-history-export.py").read_bytes(),
+            SCRIPT.read_bytes(),
+        )
+        self.assertEqual(
+            (share / "abc123/windows/Get-UncachedHash.ps1").read_bytes(),
+            (PKG / "windows/Get-UncachedHash.ps1").read_bytes(),
+        )
+        self.assertEqual(os.readlink(share / "current"), "abc123")
+        self.assertFalse((share / "agent-hub-history-export.py").exists())
+        units = self.tmp / "home/.config/systemd/user"
+        for unit in (
+            "agent-hub-history-export-work.service",
+            "agent-hub-history-export-work.timer",
+            "agent-hub-history-export-notify@.service",
+        ):
+            self.assertEqual(
+                (units / unit).read_bytes(), (PKG / "systemd" / unit).read_bytes()
+            )
+        self.assertEqual(self.calls(), ["--user daemon-reload"])
+        self.assertIn("NOT enabled", res.stdout)
+
+    def test_work_profile_enables_only_when_asked_and_dry_run_writes_nothing(self):
+        """Protects: explicit activation and a safe preview. Detects: --enable not
+        reaching the Work timer, or a work dry run writing files or calling
+        systemctl. Needs: bash. Breadcrumb: install.sh --profile work --enable.
+        """
+        dry = self.run_install("--profile", "work", "--rev", "abc123", "--dry-run")
+        self.assertEqual(dry.returncode, 0, dry.stderr)
+        self.assertFalse((self.tmp / "home/.local").exists())
+        self.assertEqual(self.calls(), [])
+        res = self.run_install("--profile", "work", "--rev", "abc123", "--enable")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(
+            self.calls(),
+            [
+                "--user daemon-reload",
+                "--user enable --now agent-hub-history-export-work.timer",
+            ],
+        )
+
+    def test_work_profile_refuses_an_unsafe_revision_or_unknown_profile(self):
+        """Protects: the staging path staying inside the share directory. Detects:
+        a traversal revision or an unknown profile being installed. Needs: bash.
+        Breadcrumb: install.sh argument handling.
+        """
+        for args in (
+            ("--profile", "work", "--rev", "../escape"),
+            ("--profile", "work", "--rev", "a/b"),
+            ("--profile", "bogus"),
+        ):
+            with self.subTest(args=args):
+                res = self.run_install(*args)
+                self.assertEqual(res.returncode, 2, res.stderr)
+        self.assertFalse((self.tmp / "home/.local").exists())
+
 
 class DropInstallerTests(unittest.TestCase):
     def test_sshd_config_is_validated_before_replacing_the_live_one(self):
@@ -1038,6 +1308,919 @@ class DropInstallerTests(unittest.TestCase):
                 text = p.read_text(errors="replace")
                 self.assertNotIn("PRIVATE KEY", text, p)
                 self.assertIsNone(re.search(r"SHA256:[A-Za-z0-9+/]{43}", text), p)
+
+
+# --- Work-authoritative profile -------------------------------------------------
+
+FIXTURE_OWNER = "owner@example.invalid"
+FIXTURE_REPLID = "r" * 40
+FIXTURE_SYSID = "7617335056550016368"
+CUTOVER = "2026-11-04T07:29:00Z"
+
+
+def utc(offset_seconds: float = 0.0) -> str:
+    moment = datetime.now(timezone.utc) + timedelta(seconds=offset_seconds)
+    return moment.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def reading(**override):
+    """One synthetic `agent-bus health` reading from the promoted hub."""
+    base = {
+        "hub_identity": "dtm-work",
+        "backend": {"authoritative": True, "mode": "remote"},
+        "maintenance": {
+            "mode": "running",
+            "write_blocked": False,
+            "changed_at_utc": "2026-11-04T07:29:04.405444Z",
+        },
+        "pg_message_count": 5,
+        "stream_length": 4,
+        "build_version": "fixture",
+    }
+    return {**base, **override}
+
+
+def source_meta(**override):
+    meta = {
+        "pg_snapshot_utc": utc(),
+        "pg_messages": 5,
+        "pg_presence_events": 1,
+        "pg_max_message_utc": utc(-60),
+        "pg_system_identifier": FIXTURE_SYSID,
+        "pg_database_oid": "18653",
+        "pg_server_version": "18.3",
+    }
+    return {**meta, **override}
+
+
+def source_recon(**override):
+    """Reconciliation for 5 PG rows and 4 stream entries: one row only in PG."""
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    recon = {
+        "redis_stream_entries": 4,
+        "redis_entries_without_id": 0,
+        "redis_unique_ids": 4,
+        "redis_stream_xlen_before_after": [4, 4],
+        "redis_last_stream_id": f"{now_ms}-0",
+        "redis_generation": {
+            "run_id": "a" * 40,
+            "run_id_after": "a" * 40,
+            "replid": FIXTURE_REPLID,
+            "replid_after": FIXTURE_REPLID,
+            "version": "8.6.1",
+            "tcp_port": 6380,
+        },
+        "pg_lines": 5,
+        "pg_rows": 5,
+        "uuid_union": 5,
+        "only_in_redis": 0,
+        "only_in_pg": 1,
+    }
+    return {**recon, **override}
+
+
+def work_config(tmp: Path) -> dict:
+    return {
+        "schema": "agent-hub.history-export-config/v1",
+        "state_root": str(tmp / "state"),
+        "source": {
+            "hub_identity": "dtm-work",
+            "cutover_utc": CUTOVER,
+            "agent_bus": "agent-bus-fixture",
+            "max_only_in_redis": 100,
+            "postgres": {
+                "psql": "psql-fixture",
+                "host": "127.0.0.1",
+                "port": 5432,
+                "user": "postgres",
+                "database": "redis_backend",
+                "system_identifier": FIXTURE_SYSID,
+            },
+            "redis": {
+                "host": "127.0.0.1",
+                "port": 6380,
+                "db": 0,
+                "replid": FIXTURE_REPLID,
+            },
+        },
+        "drive": {
+            "rclone": "rclone-fixture",
+            "rclone_config": str(tmp / "rclone.conf"),
+            "age": "age-fixture",
+            "recipient_file": str(tmp / "recipient.txt"),
+            "owner_account": FIXTURE_OWNER,
+            "reserve_bytes": 0,
+        },
+        "uncached": {"mode": "none"},
+        "freshness": {"max_snapshot_age_seconds": 172800},
+    }
+
+
+class SettingsCase(TempDirCase):
+    """Saves the module settings and the fixed owner hash, then restores them."""
+
+    def setUp(self):
+        super().setUp()
+        saved = {name: getattr(hx, name) for name in hx.SETTING_NAMES}
+        self.addCleanup(lambda: [setattr(hx, k, v) for k, v in saved.items()])
+        owner = mock.patch.object(
+            hx, "DRIVE_OWNER_SHA", hashlib.sha256(FIXTURE_OWNER.encode()).hexdigest()
+        )
+        owner.start()
+        self.addCleanup(owner.stop)
+
+    def write_config(self, config: dict) -> Path:
+        path = self.tmp / "config.json"
+        path.write_text(json.dumps(config))
+        return path
+
+    def bind(self, **override):
+        values = {
+            "SOURCE_HUB": "dtm-work",
+            "SOURCE_CUTOVER": CUTOVER,
+            "SOURCE_PG_SYSTEM": FIXTURE_SYSID,
+            "SOURCE_REDIS_REPLID": FIXTURE_REPLID,
+            "MAX_ONLY_IN_REDIS": 100,
+        }
+        patch = mock.patch.multiple(hx, **{**values, **override})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+
+class WorkConfigTests(SettingsCase):
+    def test_no_config_keeps_the_asuspro13_deployment(self):
+        """Protects: the existing ASUS service, which passes no --config.
+        Detects: a default that moved off the asuspro13 stores, tools or root.
+        Needs: nothing. Breadcrumb: module defaults, README Work profile.
+        """
+        self.assertEqual(hx.PSQL[hx.PSQL.index("-p") + 1], "5300")
+        self.assertEqual(
+            hx.DRIVE_CONFIG, Path("/srv/vigil-migration/asuspro13/rclone.conf")
+        )
+        self.assertEqual(hx.RCLONE, "/usr/bin/rclone")
+        self.assertEqual(hx.AGE, "/usr/bin/age")
+        self.assertEqual(hx.UNCACHED, {"mode": "none"})
+        self.assertIsNone(hx.SOURCE_HUB)
+
+    def test_config_rebinds_every_endpoint_tool_and_path(self):
+        """Protects: running the same helper against the Work stores and tools.
+        Detects: any asuspro13 value surviving a complete config. Needs: tmp file.
+        Breadcrumb: configure.
+        """
+        hx.configure(self.write_config(work_config(self.tmp)))
+        self.assertEqual(hx.PSQL[0], "psql-fixture")
+        self.assertEqual(hx.PSQL[hx.PSQL.index("-p") + 1], "5432")
+        self.assertEqual(hx.STATE, self.tmp / "state")
+        self.assertEqual(hx.DRIVE_CONFIG, self.tmp / "rclone.conf")
+        self.assertEqual(hx.DRIVE_RECIPIENT, self.tmp / "recipient.txt")
+        self.assertEqual((hx.RCLONE, hx.AGE), ("rclone-fixture", "age-fixture"))
+        self.assertEqual(hx.AGENT_BUS, "agent-bus-fixture")
+        self.assertEqual(hx.REDIS_ADDRESS, ("127.0.0.1", 6380, 0))
+        self.assertEqual(hx.SOURCE_HUB, "dtm-work")
+        self.assertEqual(hx.DRIVE_FOLDER, "1mmL8o1upp4ty5zuaghn0YOfv40vsHzyt")
+
+    def test_config_must_bind_hub_cutover_and_both_generations(self):
+        """Protects: a Work export that cannot be told from stale ASUS data.
+        Detects: a config accepted without the hub identity, the cutover watermark,
+        the PostgreSQL system identifier or the Redis replication id; and a refused
+        config leaving any setting half applied. Needs: tmp files.
+        Breadcrumb: configure required keys.
+        """
+        for path, key in (
+            ((), "hub_identity"),
+            ((), "cutover_utc"),
+            (("postgres",), "system_identifier"),
+            (("redis",), "replid"),
+        ):
+            with self.subTest(missing=key):
+                config = work_config(self.tmp)
+                parent = config["source"]
+                for step in path:
+                    parent = parent[step]
+                del parent[key]
+                before = {n: getattr(hx, n) for n in hx.SETTING_NAMES}
+                with self.assertRaisesRegex(hx.ConfigError, key):
+                    hx.configure(self.write_config(config))
+                self.assertEqual(before, {n: getattr(hx, n) for n in hx.SETTING_NAMES})
+
+    def test_config_never_inherits_an_asuspro13_path(self):
+        """Protects: the rclone config path being a configuration value.
+        Detects: an omitted path or endpoint silently using the ASUS one.
+        Needs: tmp files. Breadcrumb: configure required keys.
+        """
+        for key in ("rclone_config", "recipient_file", "rclone", "age"):
+            with self.subTest(missing=key):
+                config = work_config(self.tmp)
+                del config["drive"][key]
+                with self.assertRaisesRegex(hx.ConfigError, key):
+                    hx.configure(self.write_config(config))
+        config = work_config(self.tmp)
+        del config["state_root"]
+        with self.assertRaisesRegex(hx.ConfigError, "state_root"):
+            hx.configure(self.write_config(config))
+
+    def test_config_cannot_redirect_the_fixed_destination(self):
+        """Protects: the operator-qualified private folder, owner and recipient.
+        Detects: a config naming another folder, owner account or recipient hash.
+        Needs: tmp files. Breadcrumb: configure fixed values.
+        """
+        for key, value in (
+            ("folder_id", "other-folder"),
+            ("recipient_sha256", "0" * 64),
+            ("owner_sha256", "0" * 64),
+            ("owner_account", "someone-else@example.invalid"),
+        ):
+            with self.subTest(key=key):
+                config = work_config(self.tmp)
+                config["drive"][key] = value
+                with self.assertRaises(hx.ConfigError):
+                    hx.configure(self.write_config(config))
+
+    def test_config_refuses_unknown_keys_and_wrong_types(self):
+        """Protects: a typo not silently leaving a binding unset. Detects: an unknown
+        key, a string port or a boolean number being accepted. Needs: tmp files.
+        Breadcrumb: config_section.
+        """
+        config = work_config(self.tmp)
+        config["source"]["hub_idnetity"] = "x"
+        with self.assertRaisesRegex(hx.ConfigError, "unknown config key"):
+            hx.configure(self.write_config(config))
+        config = work_config(self.tmp)
+        config["source"]["postgres"]["port"] = "5432"
+        with self.assertRaisesRegex(hx.ConfigError, "wrong type"):
+            hx.configure(self.write_config(config))
+        config = work_config(self.tmp)
+        config["source"]["redis"]["port"] = True
+        with self.assertRaisesRegex(hx.ConfigError, "wrong type"):
+            hx.configure(self.write_config(config))
+
+    def test_explicit_missing_config_refuses_without_starting_an_export(self):
+        """Protects: a Work unit never falling back to the asuspro13 defaults.
+        Detects: --config naming an absent file starting an export anyway, and
+        --config being accepted for the legacy --dest mode. Needs: tmp path only.
+        Breadcrumb: main --config.
+        """
+        with mock.patch.object(hx, "drive_backup") as backup:
+            code = hx.main(["--drive", "--config", str(self.tmp / "absent.json")])
+        self.assertEqual(code, 2)
+        backup.assert_not_called()
+        with self.assertRaises(SystemExit):
+            hx.main(["--dest", "host", "--config", str(self.tmp / "absent.json")])
+
+
+class SourceBindingTests(SettingsCase):
+    def setUp(self):
+        super().setUp()
+        self.bind()
+
+    def check(self, before=None, after=None, meta=None, recon=None):
+        return hx.check_source(
+            before or reading(),
+            after or reading(),
+            meta or source_meta(),
+            recon or source_recon(),
+        )
+
+    def test_matching_source_is_bound_and_recorded(self):
+        """Protects: a manifest that names the hub and stores it was read from.
+        Detects: identity, generations or the store difference missing from the
+        recorded binding. Needs: synthetic readings. Breadcrumb: check_source.
+        """
+        binding = self.check()
+        self.assertEqual(binding["hub_identity"], "dtm-work")
+        self.assertEqual(binding["pg"]["system_identifier"], FIXTURE_SYSID)
+        self.assertEqual(binding["redis"]["replid"], FIXTURE_REPLID)
+        self.assertEqual(binding["store_difference"]["only_in_pg"], 1)
+
+    def test_wrong_hub_identity_is_held(self):
+        """Protects: Work history never being exported from another hub.
+        Detects: an asuspro13 hub reading accepted before or after the export.
+        Needs: synthetic readings. Breadcrumb: check_hub.
+        """
+        for field in ("before", "after"):
+            with (
+                self.subTest(reading=field),
+                self.assertRaisesRegex(hx.DriveHold, "hub_identity_mismatch"),
+            ):
+                self.check(**{field: reading(hub_identity="asuspro13")})
+
+    def test_non_authoritative_or_stopped_hub_is_held(self):
+        """Protects: only the promoted authoritative running hub being exported.
+        Detects: a fallback hub, a hub in maintenance or a state change mid-export.
+        Needs: synthetic readings. Breadcrumb: check_hub, check_source.
+        """
+        with self.assertRaisesRegex(hx.DriveHold, "hub_not_authoritative"):
+            self.check(after=reading(backend={"authoritative": False}))
+        with self.assertRaisesRegex(hx.DriveHold, "hub_not_running"):
+            self.check(before=reading(maintenance={"mode": "draining"}))
+        changed = reading()
+        changed["maintenance"] = {**changed["maintenance"], "changed_at_utc": "later"}
+        with self.assertRaisesRegex(hx.DriveHold, "hub_state_changed_during_export"):
+            self.check(after=changed)
+
+    def test_data_older_than_the_cutover_is_held(self):
+        """Protects: stale ASUS history never being reported as Work history.
+        Detects: a snapshot, newest PG message or newest Redis entry that predates
+        the cutover being accepted. Needs: synthetic metadata.
+        Breadcrumb: check_source watermarks.
+        """
+        old = "2026-11-04T07:00:00.000000Z"
+        with self.assertRaisesRegex(hx.DriveHold, "snapshot_before_cutover"):
+            self.check(meta=source_meta(pg_snapshot_utc=old))
+        with self.assertRaisesRegex(hx.DriveHold, "source_before_cutover"):
+            self.check(meta=source_meta(pg_max_message_utc=old))
+        cutover_ms = (
+            datetime(2026, 11, 4, 7, 29, tzinfo=timezone.utc).timestamp() * 1000
+        )
+        stale_id = f"{int(cutover_ms) - 1000}-0"
+        with self.assertRaisesRegex(hx.DriveHold, "redis_before_cutover"):
+            self.check(recon=source_recon(redis_last_stream_id=stale_id))
+
+    def test_other_postgres_or_redis_generation_is_held(self):
+        """Protects: binding to the PG cluster and Redis dataset actually read.
+        Detects: another PG system identifier, a different Redis replication id, or
+        a Redis restart during the read being accepted. Needs: synthetic metadata.
+        Breadcrumb: check_source generation checks.
+        """
+        with self.assertRaisesRegex(hx.DriveHold, "pg_generation_mismatch"):
+            self.check(meta=source_meta(pg_system_identifier="1"))
+        other = source_recon()
+        other["redis_generation"] = {
+            **other["redis_generation"],
+            "replid": "x" * 40,
+            "replid_after": "x" * 40,
+        }
+        with self.assertRaisesRegex(hx.DriveHold, "redis_generation_mismatch"):
+            self.check(recon=other)
+        restarted = source_recon()
+        restarted["redis_generation"] = {
+            **restarted["redis_generation"],
+            "run_id_after": "b" * 40,
+        }
+        with self.assertRaisesRegex(hx.DriveHold, "redis_restarted_during_export"):
+            self.check(recon=restarted)
+
+    def test_redis_that_is_not_the_hubs_stream_is_held(self):
+        """Protects: Redis being the hub's own store, not a stale copy.
+        Detects: a Redis stream whose length disagrees with the hub's reported
+        stream_length. Needs: synthetic readings. Breadcrumb: check_source window.
+        """
+        with self.assertRaisesRegex(hx.DriveHold, "redis_stream_window_mismatch"):
+            self.check(
+                before=reading(stream_length=90000),
+                after=reading(stream_length=90000),
+                recon=source_recon(redis_stream_xlen_before_after=[90000, 90000]),
+            )
+
+    def test_unbound_profile_records_but_does_not_enforce(self):
+        """Protects: the unchanged asuspro13 deployment, which has no configured
+        identity. Detects: the new rules holding an unbound ASUS export, or the
+        observed identity not being recorded. Needs: synthetic readings.
+        Breadcrumb: check_source with SOURCE_HUB unset.
+        """
+        legacy = reading(hub_identity="asuspro13")
+        with mock.patch.multiple(hx, SOURCE_HUB=None, SOURCE_CUTOVER=None):
+            binding = self.check(before=legacy, after=legacy)
+        self.assertEqual(binding["hub_identity"], "asuspro13")
+        self.assertIsNone(binding["hub_identity_required"])
+
+
+class StoreDifferenceTests(SettingsCase):
+    def test_known_postgres_redis_difference_is_reported_not_absorbed(self):
+        """Protects: the 95,949 vs 95,889 PG/stream difference being visible.
+        Detects: the difference or its by-id split being dropped from the report.
+        Needs: synthetic counts. Breadcrumb: store_difference.
+        """
+        report = hx.store_difference(
+            source_recon(
+                pg_lines=95949,
+                pg_rows=95949,
+                redis_stream_entries=95889,
+                redis_unique_ids=95889,
+                only_in_pg=60,
+                only_in_redis=0,
+            )
+        )
+        self.assertEqual(report["pg_minus_stream"], 60)
+        self.assertEqual(report["only_in_pg"], 60)
+        self.assertEqual(report["in_both"], 95889)
+        self.assertTrue(report["accounted"])
+
+    def test_duplicate_or_missing_ids_cannot_explain_a_difference(self):
+        """Protects: counts that add up only because ids repeat or are absent.
+        Detects: duplicate PG ids, duplicate or missing Redis ids and a split that
+        does not sum being accepted. Needs: synthetic counts.
+        Breadcrumb: store_difference.
+        """
+        with self.assertRaisesRegex(hx.DriveHold, "pg_message_ids_not_unique"):
+            hx.store_difference(source_recon(pg_lines=6))
+        with self.assertRaisesRegex(hx.DriveHold, "redis_stream_ids_not_unique"):
+            hx.store_difference(source_recon(redis_unique_ids=3))
+        with self.assertRaisesRegex(hx.DriveHold, "redis_stream_ids_not_unique"):
+            hx.store_difference(source_recon(redis_entries_without_id=1))
+        with self.assertRaisesRegex(hx.DriveHold, "store_difference_unaccounted"):
+            hx.store_difference(source_recon(only_in_pg=2))
+
+    def test_redis_messages_missing_from_postgres_are_capped(self):
+        """Protects: PostgreSQL staying the durable record. Detects: Redis holding
+        far more messages than PG (a broken write-behind) passing as a backup.
+        Needs: synthetic counts. Breadcrumb: store_difference MAX_ONLY_IN_REDIS.
+        """
+        self.bind(MAX_ONLY_IN_REDIS=0)
+        recon = source_recon(
+            redis_stream_entries=6, redis_unique_ids=6, only_in_redis=2, only_in_pg=1
+        )
+        with self.assertRaisesRegex(hx.DriveHold, "redis_ahead_of_pg"):
+            hx.store_difference(recon)
+
+
+def bound_bundle(tmp: Path, drop=(), max_message=None, snapshot=None, binding=None):
+    """A bundle whose snapshot.tsv and MANIFEST carry a source binding."""
+    meta = source_meta()
+    if max_message:
+        meta["pg_max_message_utc"] = max_message
+    rows = {
+        "snapshot_utc": meta["pg_snapshot_utc"],
+        "messages": 5,
+        "presence_events": 1,
+        "max_message_utc": meta["pg_max_message_utc"],
+        "pg_system_identifier": meta["pg_system_identifier"],
+        "pg_database_oid": meta["pg_database_oid"],
+        "pg_server_version": meta["pg_server_version"],
+        **(snapshot or {}),
+    }
+    for name in drop:
+        del rows[name]
+    raw, bundle = tmp / "raw", tmp / "bundle"
+    make_raw(raw)
+    (raw / "snapshot.tsv").write_text("".join(f"{k}|{v}\n" for k, v in rows.items()))
+    meta["source_binding"] = {
+        "schema": "agent-hub.history-source-binding/v1",
+        "hub_identity": "dtm-work",
+        "hub_identity_required": "dtm-work",
+        "cutover_utc": CUTOVER,
+        "pg": {
+            "system_identifier": meta["pg_system_identifier"],
+            "database_oid": meta["pg_database_oid"],
+            "server_version": meta["pg_server_version"],
+            "max_message_utc": meta["pg_max_message_utc"],
+        },
+        "store_difference": {"accounted": True},
+        **(binding or {}),
+    }
+    hx.build_bundle(raw, bundle, meta)
+    return bundle
+
+
+class BoundBundleTests(SettingsCase):
+    def test_bound_bundle_validates(self):
+        """Protects: the bound snapshot/manifest format being restorable.
+        Detects: a complete bound bundle being refused. Needs: synthetic bundle.
+        Breadcrumb: validate_drive_bundle, validate_source_binding.
+        """
+        manifest = hx.validate_drive_bundle(bound_bundle(self.tmp))
+        self.assertEqual(manifest["source_binding"]["hub_identity"], "dtm-work")
+
+    def test_bound_bundle_needs_every_identity_row(self):
+        """Protects: snapshot.tsv carrying the PG generation it was read from.
+        Detects: a bound manifest whose snapshot.tsv lacks an identity row.
+        Needs: synthetic bundle. Breadcrumb: validate_drive_bundle field set.
+        """
+        for name in hx.SNAPSHOT_SOURCE_FIELDS:
+            with self.subTest(drop=name):
+                shutil.rmtree(self.tmp / "raw", ignore_errors=True)
+                shutil.rmtree(self.tmp / "bundle", ignore_errors=True)
+                with self.assertRaisesRegex(
+                    hx.DriveHold, "export_snapshot_fields_invalid"
+                ):
+                    hx.validate_drive_bundle(bound_bundle(self.tmp, drop=(name,)))
+
+    def test_snapshot_rows_cannot_disagree_with_the_manifest_binding(self):
+        """Protects: one PG generation across snapshot.tsv, manifest and binding.
+        Detects: a snapshot row naming another cluster than the manifest. Needs:
+        synthetic bundle. Breadcrumb: validate_source_binding.
+        """
+        bundle = bound_bundle(self.tmp, snapshot={"pg_system_identifier": "9"})
+        with self.assertRaisesRegex(hx.DriveHold, "source_binding_snapshot_mismatch"):
+            hx.validate_drive_bundle(bundle)
+
+    def test_restore_validation_reproves_freshness_and_identity(self):
+        """Protects: the restore qualifier re-checking what the exporter checked.
+        Detects: a bundle whose newest message predates the cutover, one naming
+        another hub, or one with an unaccounted store difference validating.
+        Needs: synthetic bundles. Breadcrumb: validate_source_binding.
+        """
+        cases = {
+            "source_before_cutover": {"max_message": "2026-11-04T07:00:00.000000Z"},
+            "hub_identity_mismatch": {"binding": {"hub_identity": "asuspro13"}},
+            "source_binding_invalid": {"binding": {"store_difference": {}}},
+        }
+        for reason, kwargs in cases.items():
+            with self.subTest(reason):
+                shutil.rmtree(self.tmp / "raw", ignore_errors=True)
+                shutil.rmtree(self.tmp / "bundle", ignore_errors=True)
+                with self.assertRaisesRegex(hx.DriveHold, reason):
+                    hx.validate_drive_bundle(bound_bundle(self.tmp, **kwargs))
+
+    def test_legacy_bundle_without_a_binding_still_validates(self):
+        """Protects: bundles written before the binding (the asuspro13 history).
+        Detects: the three-row snapshot being refused when no binding is recorded.
+        Needs: synthetic bundle. Breadcrumb: validate_drive_bundle.
+        """
+        raw, bundle = self.tmp / "raw", self.tmp / "bundle"
+        make_raw(raw)
+        hx.build_bundle(
+            raw,
+            bundle,
+            {
+                "pg_messages": 5,
+                "pg_presence_events": 1,
+                "pg_snapshot_utc": "2026-10-29T00:00:00Z",
+            },
+        )
+        self.assertNotIn("source_binding", hx.validate_drive_bundle(bundle))
+
+
+class FakeRedis:
+    """Just enough redis-py for export_redis: no side channels, one stream."""
+
+    def __init__(self, entries, generation=None):
+        self.entries = entries
+        self.generation = generation or {"run_id": "a" * 40, "master_replid": "r" * 40}
+
+    def scan_iter(self, count=0):
+        return iter(())
+
+    def info(self, section):
+        if section == "server":
+            return {
+                "run_id": self.generation["run_id"],
+                "redis_version": "8.6.1",
+                "tcp_port": 6380,
+            }
+        return {"master_replid": self.generation["master_replid"]}
+
+    def xlen(self, name):
+        return len(self.entries)
+
+    def xrange(self, name, min="-", max="+", count=None):
+        start = 0 if min == "-" else [i for i, _ in self.entries].index(min.encode())
+        return self.entries[start : start + (count or len(self.entries))]
+
+
+class ExportEvidenceTests(SettingsCase):
+    def test_pg_snapshot_reads_identity_inside_the_one_transaction(self):
+        """Protects: the PG generation and watermark coming from the same
+        REPEATABLE READ snapshot as the rows. Detects: identity or the newest
+        message read outside the READ ONLY transaction, or not read at all.
+        Needs: a stand-in psql. Breadcrumb: PG_SQL, export_pg.
+        """
+        sql = hx.PG_SQL
+        begin = sql.index("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        end = sql.index("COMMIT")
+        for needle in ("pg_control_system()", "max(timestamp_utc)", "pg_database"):
+            self.assertTrue(begin < sql.index(needle) < end, needle)
+        raw = self.tmp / "raw"
+        raw.mkdir()
+
+        def psql(args, cwd, check):
+            (Path(cwd) / "snapshot.tsv").write_text(
+                "snapshot_utc|2026-11-04T15:00:00.000000Z\nmessages|5\n"
+                "presence_events|1\nmax_message_utc|2026-11-04T14:59:00.000000Z\n"
+                "pg_system_identifier|7617335056550016368\npg_database_oid|18653\n"
+                "pg_server_version|18.3\n"
+            )
+
+        with mock.patch.object(hx.subprocess, "run", side_effect=psql):
+            got = hx.export_pg(raw)
+        self.assertEqual(got["pg_system_identifier"], "7617335056550016368")
+        self.assertEqual(got["pg_max_message_utc"], "2026-11-04T14:59:00.000000Z")
+        self.assertEqual(got["pg_messages"], 5)
+
+    def test_redis_export_records_generation_and_id_accounting(self):
+        """Protects: the Redis instance and the id accounting behind the store
+        difference. Detects: a missing run id or replication id, an entry count that
+        hides a duplicated id, or a stream tail that is not recorded.
+        Needs: a fake redis client and synthetic NDJSON. Breadcrumb: export_redis.
+        """
+        raw = self.tmp / "raw"
+        raw.mkdir()
+        (raw / "messages.ndjson").write_text(
+            "".join(json.dumps({"id": f"u{i}"}) + "\n" for i in range(5))
+        )
+        stream = [
+            (b"1-0", {b"id": b"u0"}),
+            (b"2-0", {b"id": b"u1"}),
+            (b"3-0", {b"id": b"u1"}),
+            (b"4-0", {b"id": b"u9"}),
+        ]
+        recon = hx.export_redis(raw, FakeRedis(stream))
+        self.assertEqual(recon["redis_stream_entries"], 4)
+        self.assertEqual(recon["redis_unique_ids"], 3)
+        self.assertEqual(recon["redis_last_stream_id"], "4-0")
+        self.assertEqual(recon["redis_stream_xlen_before_after"], [4, 4])
+        self.assertEqual(recon["redis_generation"]["replid"], "r" * 40)
+        self.assertEqual(recon["redis_generation"]["run_id_after"], "a" * 40)
+        self.assertEqual((recon["only_in_redis"], recon["only_in_pg"]), (1, 3))
+        with self.assertRaisesRegex(hx.DriveHold, "redis_stream_ids_not_unique"):
+            hx.store_difference(recon)
+
+
+class WorkCaptureTests(SettingsCase):
+    """drive_backup end to end against synthetic stores, bus and provider."""
+
+    def setUp(self):
+        super().setUp()
+        self.bind()
+        self.state = self.tmp / "state"
+        recipient = self.tmp / "recipient.txt"
+        recipient.write_text("fixture-public-recipient\n")
+        patches = [
+            mock.patch.object(hx, "STATE", self.state),
+            mock.patch.object(hx, "DRIVE_RESERVE", 0),
+            mock.patch.object(hx, "DRIVE_CONFIG", self.tmp / "rclone.conf"),
+            mock.patch.object(hx, "DRIVE_OWNER", FIXTURE_OWNER),
+            mock.patch.object(hx, "DRIVE_RECIPIENT", recipient),
+            mock.patch.object(hx, "DRIVE_RECIPIENT_SHA", hx.digest(recipient)[0]),
+            mock.patch.object(hx, "export_pg", side_effect=self.export_pg),
+            mock.patch.object(hx, "export_redis", side_effect=self.export_redis),
+            mock.patch.dict(sys.modules, {"redis": mock.MagicMock()}),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.meta = source_meta()
+        self.health = mock.patch.object(hx, "health", side_effect=lambda: reading())
+        self.health.start()
+        self.addCleanup(self.health.stop)
+        self.bus = mock.patch.object(hx, "bus")
+        self.notice = self.bus.start()
+        self.addCleanup(self.bus.stop)
+        self.age_calls = []
+
+    def export_pg(self, raw):
+        make_raw(raw)
+        rows = {
+            "snapshot_utc": self.meta["pg_snapshot_utc"],
+            "messages": 5,
+            "presence_events": 1,
+            "max_message_utc": self.meta["pg_max_message_utc"],
+            "pg_system_identifier": self.meta["pg_system_identifier"],
+            "pg_database_oid": self.meta["pg_database_oid"],
+            "pg_server_version": self.meta["pg_server_version"],
+        }
+        (raw / "snapshot.tsv").write_text(
+            "".join(f"{k}|{v}\n" for k, v in rows.items())
+        )
+        return dict(self.meta)
+
+    def export_redis(self, raw, client):
+        return source_recon()
+
+    def encrypt(self, args, timeout=120):
+        self.age_calls.append(args[0])
+        Path(args[args.index("--output") + 1]).write_bytes(
+            b"cipher:" + Path(args[-1]).read_bytes()
+        )
+        return b""
+
+    def last(self):
+        return json.loads((self.state / "last-drive-result.json").read_text())
+
+    def spool(self):
+        return sorted(p.name for p in (self.state / "drive-spool").iterdir())
+
+    def provider(self):
+        store = mock.Mock()
+        store.put.side_effect = lambda path, name, expected: fixture_proof(
+            name, expected
+        )
+        return store
+
+    def test_wrong_hub_is_refused_before_any_spool_entry_exists(self):
+        """Protects: Work history never being captured from another hub, and an
+        unattended retry not being blocked by it. Detects: an asuspro13 reading
+        starting an export or leaving a pending spool entry. Needs: synthetic
+        health only. Breadcrumb: drive_backup, check_hub.
+        """
+        self.health.stop()
+        with mock.patch.object(
+            hx, "health", return_value=reading(hub_identity="asuspro13")
+        ):
+            self.assertEqual(hx.drive_backup(no_bus=True), 1)
+        self.assertEqual(self.last()["reason"], "hub_identity_mismatch")
+        self.assertEqual(self.spool(), [])
+        hx.export_pg.assert_not_called()
+
+    def test_health_window_failure_is_a_recorded_hold_not_a_crash(self):
+        """Protects: a failed snapshot control leaving a durable HELD result and a
+        bus finding. Detects: check_window's SystemExit escaping the Drive path
+        with nothing recorded. Needs: synthetic stores. Breadcrumb: drive_backup.
+        """
+        self.health.stop()
+        with mock.patch.object(
+            hx, "health", return_value=reading(pg_message_count=100)
+        ):
+            self.assertEqual(hx.drive_backup(), 1)
+        self.assertEqual(self.last()["reason"], "snapshot_outside_health_window")
+        self.assertTrue(self.notice.call_args.args[0].startswith("FINDING:"))
+
+    def test_stale_capture_is_quarantined_and_the_next_run_proceeds(self):
+        """Protects: stale ASUS data never becoming an upload candidate, and one
+        rejected capture not blocking every later run. Detects: a newest message
+        before the cutover being closed, or its spool entry blocking the retry.
+        Needs: synthetic stores and provider. Breadcrumb: quarantine, drive_backup.
+        """
+        self.meta = source_meta(pg_max_message_utc="2026-11-04T07:00:00.000000Z")
+        self.assertEqual(hx.drive_backup(no_bus=True), 1)
+        self.assertEqual(self.last()["reason"], "source_before_cutover")
+        (rejected,) = self.spool()
+        self.assertTrue(rejected.startswith("rejected-"))
+        marker = json.loads(
+            (self.state / "drive-spool" / rejected / "REJECTED.json").read_text()
+        )
+        self.assertFalse(marker["uploaded"])
+        self.assertEqual(self.age_calls, [])
+        self.meta = source_meta()
+        with (
+            mock.patch.object(hx, "drive_run", side_effect=self.encrypt),
+            mock.patch.object(hx, "DriveStore", return_value=self.provider()),
+        ):
+            self.assertEqual(hx.drive_backup(no_bus=True), 0)
+        self.assertEqual(self.last()["status"], "REMOTE_VERIFIED")
+        self.assertEqual(len(self.spool()), 2)
+
+    def test_unprovisioned_remote_holds_after_closing_and_never_verifies(self):
+        """Protects: the owner-pending Drive access outcome. Detects: an absent
+        rclone config being reported as success, or as a generic metadata error,
+        or any rclone call being made, or the closed cipher not being kept.
+        Needs: synthetic stores, no rclone config. Breadcrumb: DriveStore.provisioned,
+        drive_backup.
+        """
+        with mock.patch.object(hx, "drive_run", side_effect=self.encrypt):
+            self.assertEqual(hx.drive_backup(), 1)
+        result = self.last()
+        self.assertEqual(result, {**result, "status": "HELD"})
+        self.assertEqual(result["reason"], "remote_not_provisioned")
+        self.assertEqual(set(self.age_calls), {hx.AGE})
+        (job,) = self.spool()
+        files = {p.name for p in (self.state / "drive-spool" / job).iterdir()}
+        self.assertIn("binding.json", files)
+        self.assertIn("archive.tar", files)
+        self.assertTrue(any(f.endswith(".age") for f in files))
+        self.assertNotIn("verified.json", files)
+        self.assertNotIn("cloud-receipt.json", files)
+        self.assertFalse((self.state / "receipts").exists())
+        self.assertTrue(self.notice.call_args.args[0].startswith("FINDING:"))
+        self.assertIn("remote_not_provisioned", self.notice.call_args.args[0])
+
+    def test_provisioned_check_needs_a_real_config_with_a_token(self):
+        """Protects: remote_not_provisioned meaning exactly "no usable remote".
+        Detects: a missing, empty, symlinked, section-less or token-less rclone
+        config passing as provisioned, or a complete one being refused. Needs:
+        tmp files; no token value is read. Breadcrumb: DriveStore.provisioned.
+        """
+        config = self.tmp / "rclone.conf"
+        with self.assertRaisesRegex(hx.DriveHold, "remote_not_provisioned"):
+            hx.DriveStore.provisioned()
+        config.write_text("")
+        with self.assertRaisesRegex(hx.DriveHold, "remote_not_provisioned"):
+            hx.DriveStore.provisioned()
+        config.write_text("[other]\ntoken = x\n")
+        with self.assertRaisesRegex(hx.DriveHold, "remote_not_provisioned"):
+            hx.DriveStore.provisioned()
+        config.write_text("[migration-drive]\ntype = drive\n")
+        with self.assertRaisesRegex(hx.DriveHold, "remote_not_provisioned"):
+            hx.DriveStore.provisioned()
+        config.write_text("[migration-drive]\ntype = drive\ntoken = {}\n")
+        hx.DriveStore.provisioned()
+        link = self.tmp / "link.conf"
+        try:
+            link.symlink_to(config)
+        except OSError:
+            return
+        with (
+            mock.patch.object(hx, "DRIVE_CONFIG", link),
+            self.assertRaisesRegex(hx.DriveHold, "remote_not_provisioned"),
+        ):
+            hx.DriveStore.provisioned()
+
+    def test_work_profile_never_reads_the_asuspro13_qualification_file(self):
+        """Protects: the Work host not depending on any ASUS file. Detects: the
+        owner being read from /srv/vigil-migration instead of the config.
+        Needs: tmp config. Breadcrumb: DriveStore.__init__.
+        """
+        (self.tmp / "rclone.conf").write_text("[migration-drive]\ntoken = {}\n")
+        with mock.patch.object(hx, "DRIVE_QUALIFICATION", None):
+            store = hx.DriveStore()
+        self.assertEqual(store.owner, FIXTURE_OWNER)
+
+    def test_verified_receipt_records_counts_freshness_and_pending_restore(self):
+        """Protects: an honest off-site result. Detects: REMOTE_VERIFIED without the
+        snapshot age, the store difference and cipher hash in the notice, a stale
+        snapshot being called fresh, or a plaintext restore being claimed.
+        Needs: synthetic stores and provider. Breadcrumb: publish_drive_job,
+        snapshot_freshness, drive_counts.
+        """
+        with (
+            mock.patch.object(hx, "drive_run", side_effect=self.encrypt),
+            mock.patch.object(hx, "DriveStore", return_value=self.provider()),
+        ):
+            self.assertEqual(hx.drive_backup(), 0)
+        (job,) = self.spool()
+        verified = json.loads(
+            (self.state / "drive-spool" / job / "verified.json").read_text()
+        )
+        self.assertEqual(
+            verified["restore_qualification"], "PENDING_INDEPENDENT_DECRYPT"
+        )
+        self.assertTrue(verified["freshness"]["within_limit"])
+        self.assertEqual(
+            verified["binding"]["source_binding"]["store_difference"]["only_in_pg"], 1
+        )
+        notice = self.notice.call_args.args[0]
+        for part in (
+            "only_in_pg=1",
+            "only_in_redis=0",
+            "cipher_sha256=",
+            "pg_messages=5",
+        ):
+            self.assertIn(part, notice)
+        self.assertTrue(self.last()["fresh"])
+        self.assertFalse(verified["source_private_age_key"])
+
+    def test_stale_snapshot_at_upload_is_reported_not_called_fresh(self):
+        """Protects: a delayed upload not being mistaken for a current backup, and
+        not blocking the next capture either. Detects: a snapshot older than the
+        limit being marked fresh or held forever. Needs: synthetic stores.
+        Breadcrumb: snapshot_freshness, drive_counts.
+        """
+        with (
+            mock.patch.object(hx, "MAX_SNAPSHOT_AGE", -1),
+            mock.patch.object(hx, "drive_run", side_effect=self.encrypt),
+            mock.patch.object(hx, "DriveStore", return_value=self.provider()),
+        ):
+            self.assertEqual(hx.drive_backup(), 0)
+        self.assertFalse(self.last()["fresh"])
+        self.assertIn(" STALE", self.notice.call_args.args[0])
+
+
+class WorkPackagingTests(unittest.TestCase):
+    def read(self, name: str) -> str:
+        return (PKG / "systemd" / name).read_text()
+
+    def test_work_service_passes_an_explicit_config_and_names_no_asus_path(self):
+        """Protects: the Work unit never running on the asuspro13 defaults, and the
+        asuspro13 unit staying byte-for-byte on them. Detects: --config missing from
+        the Work ExecStart, an ASUS path in it, or --config added to the old unit.
+        Needs: unit text only. Breadcrumb: README Work profile.
+        """
+        work = self.read("agent-hub-history-export-work.service")
+        self.assertIn(
+            '--drive --config "$HOME/.config/agent-hub-history-export/config.json"',
+            work,
+        )
+        self.assertIn("OnFailure=agent-hub-history-export-notify@%n.service", work)
+        self.assertIn('source "$HOME/.config/bash/env.bash" &&', work)
+        self.assertIn("exec flock -n", work)
+        self.assertIn(
+            "agent-hub-history-export/current/agent-hub-history-export.py", work
+        )
+        for text in (work, self.read("agent-hub-history-export-work.timer")):
+            self.assertNotIn("/srv/vigil-migration", text)
+            self.assertNotIn("asuspro13", text)
+        self.assertNotIn("--config", self.read("agent-hub-history-export.service"))
+
+    def test_work_timer_targets_the_work_service_and_is_daily(self):
+        """Protects: the staged timer starting the right service. Detects: a timer
+        pointing at the asuspro13 service, or losing Persistent/daily.
+        Needs: unit text only. Breadcrumb: systemd/agent-hub-history-export-work.timer.
+        """
+        timer = self.read("agent-hub-history-export-work.timer")
+        self.assertIn("Unit=agent-hub-history-export-work.service", timer)
+        self.assertIn("OnCalendar=daily", timer)
+        self.assertIn("Persistent=true", timer)
+
+    def test_uncached_reader_is_unbuffered_and_read_only(self):
+        """Protects: the Windows-side uncached read. Detects: the reader dropping
+        FILE_FLAG_NO_BUFFERING (a cached read proves nothing about stored bytes) or
+        gaining any write, delete or network call. Needs: script text only.
+        Breadcrumb: windows/Get-UncachedHash.ps1.
+        """
+        ps1 = (PKG / "windows" / "Get-UncachedHash.ps1").read_text()
+        self.assertIn("0x20000000", ps1)
+        self.assertIn("SHA256", ps1)
+        self.assertIn("[IO.FileAccess]::Read", ps1)
+        for forbidden in (
+            "Set-Content",
+            "Out-File",
+            "Add-Content",
+            "Remove-Item",
+            "Invoke-WebRequest",
+            "Invoke-RestMethod",
+            "[IO.FileAccess]::Write",
+        ):
+            self.assertNotIn(forbidden, ps1)
 
 
 if __name__ == "__main__":

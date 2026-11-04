@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Work-authoritative agent-bus history export to private Drive custody
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30min
+Persistent=true
+Unit=agent-hub-history-export-work.service
+
+[Install]
+WantedBy=timers.target

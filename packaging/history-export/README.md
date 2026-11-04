@@ -7,6 +7,7 @@ packaging/history-export/install.sh --dry-run
 python3 -B -c 'from pathlib import Path; p=Path("packaging/history-export/agent-hub-history-export.py"); compile(p.read_bytes(), str(p), "exec")'
 # test: CI Unit Tests selectors, no live stores
 python3 -B -m unittest scripts/ci/test_history_export.py scripts/ci/test_history_prune.py -v
+# Work-authoritative host: install.sh --profile work stages without enabling (see below)
 # run: only after reviewed deployment and independent restore qualification
 systemctl --user start agent-hub-history-export.service
 ```
@@ -78,6 +79,160 @@ ciphertext, corrupt/truncated readback and missing receipt proof; they verify
 failed-spool retention and exact retry without live export. The POSIX stream control
 runs in Linux CI; unsupported platforms report a skip. Selector review bindings live
 in the [existing review register](../../docs/test-review-register.json).
+
+## Work-authoritative profile
+
+The same helper exports the hub that was promoted on 2026-11-04 (host `dtm-work`,
+identity `dtm-work`) when started with `--config`. Without `--config` it is the
+unchanged asuspro13 deployment, and the asuspro13 unit is byte-identical. A config
+file is all-or-nothing: it names every endpoint, tool path and spool root (no
+asuspro13 path is inherited), and it must also name the hub identity, the cutover
+watermark, the PostgreSQL system identifier and the Redis replication id, or it is
+refused before anything runs. The destination folder, owner hash and public
+recipient hash stay the operator-qualified constants; a config may repeat them but
+cannot change them.
+
+```json
+{
+  "schema": "agent-hub.history-export-config/v1",
+  "state_root": "/mnt/r/AgentHub-offsite/state",
+  "source": {
+    "hub_identity": "dtm-work",
+    "cutover_utc": "2026-11-04T07:29:00Z",
+    "agent_bus": "/home/<user>/.local/bin/agent-bus",
+    "max_only_in_redis": 100,
+    "postgres": {"psql": "/home/<user>/.local/bin/psql", "host": "127.0.0.1", "port": 5432,
+                 "user": "postgres", "database": "redis_backend",
+                 "system_identifier": "<pg_control_system().system_identifier>"},
+    "redis": {"host": "127.0.0.1", "port": 6380, "db": 0, "replid": "<INFO replication master_replid>"}
+  },
+  "drive": {
+    "rclone": "/home/<user>/.local/bin/rclone",
+    "rclone_config": "/home/<user>/.config/agent-hub-history-export/rclone.conf",
+    "age": "/home/<user>/.local/bin/age",
+    "recipient_file": "/home/<user>/.config/agent-hub-history-export/age-recipient.txt",
+    "owner_account": "<the qualified owner account>",
+    "reserve_bytes": 21474836480
+  },
+  "uncached": {"mode": "command", "command": ["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-File", "{helper_dir_win}\\windows\\Get-UncachedHash.ps1", "-Path", "{win_path}"]},
+  "freshness": {"max_snapshot_age_seconds": 172800}
+}
+```
+
+**What a run refuses.** Each is a `HELD` result with a fixed reason, never a
+`REMOTE_VERIFIED`. Hub: `hub_identity_mismatch`, `hub_not_authoritative`,
+`hub_not_running`, `hub_state_changed_during_export` (health is read before and
+after, and a wrong hub is refused before any spool entry exists). Freshness:
+`snapshot_before_cutover`, `source_before_cutover` (newest PostgreSQL message),
+`redis_before_cutover` (newest stream id), so a stale asuspro13 copy cannot pass.
+Generation: `pg_generation_mismatch` (`pg_control_system()` read inside the same
+`REPEATABLE READ` snapshot), `redis_generation_mismatch`,
+`redis_restarted_during_export`, `redis_stream_window_mismatch` (the stream must be
+the length the hub itself reports). The snapshot count window, the strict
+PG/presence counts that bind `snapshot.tsv` to the manifest, and the Redis
+side-channel export are unchanged; a failed window is now a recorded hold, not an
+exit with nothing written.
+
+**PostgreSQL versus Redis.** The stores are expected to differ: Redis keeps a
+trimmed stream, so older rows exist only in PostgreSQL. The manifest, the receipt
+and the bus notice report `pg_messages`, `redis_stream_entries`, `pg_minus_stream`,
+`only_in_pg`, `only_in_redis` and `in_both`. Duplicate or missing ids, a split
+that does not add up, or `only_in_redis` above `max_only_in_redis` (write-behind
+lag) are held (`pg_message_ids_not_unique`, `redis_stream_ids_not_unique`,
+`store_difference_unaccounted`, `redis_ahead_of_pg`).
+
+**A rejected capture does not block the next run.** A capture that fails these
+checks is moved to `drive-spool/rejected-<utc>/` with a `REJECTED.json` marker,
+keeps every raw file, is never uploaded, and is skipped by later runs, which take a
+fresh snapshot. Closed jobs (a `binding.json`) still block a new snapshot until they
+are uploaded or reviewed, as before.
+
+**Remote not provisioned.** If the configured rclone config is missing, empty, a
+symlink or has no `[migration-drive]` token, the job is closed (snapshot, parts,
+manifest, tar, ciphertext, binding) and then held with the reason
+`remote_not_provisioned`. No rclone call is made, no receipt is written, and the
+status is never `REMOTE_VERIFIED`. Once the owner provisions the config, the next
+run uploads that retained, already-closed job first.
+
+**Off-site proof.** `REMOTE_VERIFIED` and `verified.json` appear only after, for
+both the ciphertext and the completion receipt: the provider object's parent, size
+and checksum match, a streamed readback of every byte matches the local SHA-256 and
+length, and the owner/permission proof passes. `verified.json` also records the
+snapshot age at verification (`freshness`; a snapshot older than
+`max_snapshot_age_seconds` is reported `STALE`, not held, so one late upload cannot
+block later captures) and `restore_qualification: PENDING_INDEPENDENT_DECRYPT`,
+because the private age key is never on the hub and this host cannot decrypt.
+Before encryption the plaintext bundle is validated (`validate_drive_bundle`,
+which for a bound bundle also re-proves identity, freshness and the store
+difference) and the tar is checked member by member against `SHA256SUMS`
+(`verify_archive`). The independent decrypt, extraction and `validate_drive_bundle`
+run on the key-custody machine remains the restore qualification, as above. A
+bound bundle needs this helper revision to validate; bundles written by the
+original helper validate unchanged.
+
+**Uncached verification.** On a disk that can return wrong bytes, a hash taken
+right after writing can be answered from cache. With `uncached.mode = "command"`
+the plaintext tar and the ciphertext are re-hashed by
+[`windows/Get-UncachedHash.ps1`](windows/Get-UncachedHash.ps1), which reads with
+`FILE_FLAG_NO_BUFFERING` like `AgentHub-daily-backup`'s `Get-DiskHash`, and the
+result must equal the cached hash and length (`uncached_hash_mismatch`; the
+ciphertext is re-read on every retry). `fadvise` and `none` modes exist for Linux
+disks and for the asuspro13 deployment.
+
+**Platform choice.** On dtm-work the helper runs in WSL (Ubuntu-22.04, mirrored
+networking). It is a POSIX program (flock, pipe selectors, mode bits) that CI
+already tests on Linux, and a native Windows port would fork that code. WSL
+reaches PostgreSQL 5432, Redis 6380 and the hub on loopback, PostgreSQL `trust` on
+loopback gives `psql -w`, and `psql`, `age` and `rclone` install in user space
+with no sudo. The spool is on `R:` (ReFS) through `/mnt/r`, and the Windows reader
+above supplies the uncached read that Linux cannot do across 9p.
+
+**Stage (never enables).**
+
+```sh
+packaging/history-export/install.sh --profile work [--rev <commit>] [--dry-run]
+```
+
+stages the reviewed files under `~/.local/share/agent-hub-history-export/<rev>/`,
+points `current` there, installs the work service, timer and notify units, and runs
+only `daemon-reload`. The timer stays disabled until the activation gate: provision
+Drive access (below), run the service once, qualify the restore on the key-custody
+machine, then `systemctl --user enable --now agent-hub-history-export-work.timer`.
+
+**Provision Drive access (owner action; the helper never creates or copies it).**
+Either way the result is an rclone config at the configured `rclone_config`, mode
+`0600`, with remote `migration-drive` and `root_folder_id` equal to the fixed
+folder. The helper then proves the account and the owner-only folder through the
+Drive API before any write.
+
+- Fresh login on dtm-work, signed in as the folder owner (OAuth cannot be scoped
+  to one folder; the folder binding is `root_folder_id` plus the helper's checks):
+
+  ```sh
+  umask 077
+  rclone config create migration-drive drive scope drive \
+      root_folder_id 1mmL8o1upp4ty5zuaghn0YOfv40vsHzyt \
+      --config "$HOME/.config/agent-hub-history-export/rclone.conf"
+  chmod 600 "$HOME/.config/agent-hub-history-export/rclone.conf"
+  rclone about migration-drive: --config "$HOME/.config/agent-hub-history-export/rclone.conf"
+  ```
+
+  rclone prints a local `127.0.0.1:53682` link; with mirrored networking the
+  Windows browser reaches it. Sign in with the owner account only.
+
+- An approved copy from asuspro13 (a second host then holds the same refresh
+  token, and revoking it revokes both). Stream it; never put it in a file in a
+  shared location, the bus or Git:
+
+  ```sh
+  umask 077
+  ssh asuspro13-vigil 'sudo -n cat /srv/vigil-migration/asuspro13/rclone.conf' \
+      > "$HOME/.config/agent-hub-history-export/rclone.conf"
+  chmod 600 "$HOME/.config/agent-hub-history-export/rclone.conf"
+  grep -c '^root_folder_id = 1mmL8o1upp4ty5zuaghn0YOfv40vsHzyt$' "$HOME/.config/agent-hub-history-export/rclone.conf"   # prints 1
+  ```
 
 ## Legacy SFTP drop workflow
 
