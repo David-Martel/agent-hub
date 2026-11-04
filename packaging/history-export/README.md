@@ -180,8 +180,12 @@ the plaintext tar and the ciphertext are re-hashed by
 result must equal the cached hash and length (`uncached_hash_mismatch`; the
 ciphertext is re-read on every retry). The script must be on a Windows-local path:
 PowerShell's `RemoteSigned` policy refuses one on the WSL network share, so
-`install.sh --windows-dir` copies it (`/mnt/r/AgentHub-offsite/bin`). `fadvise`
-and `none` modes exist for Linux disks and for the asuspro13 deployment.
+`install.sh --windows-dir` copies it (`/mnt/r/AgentHub-offsite/bin`). Run it from
+the systemd user unit or a live WSL session: a process started with `nohup` from a
+session that has since ended inherits a dead `WSL_INTEROP` socket and cannot start
+the reader, and the run then holds with `uncached_reader_failed_*` (observed on
+dtm-work). `fadvise` and `none` modes exist for Linux disks and for the
+asuspro13 deployment.
 
 **Platform choice.** On dtm-work the helper runs in WSL (Ubuntu-22.04, mirrored
 networking). It is a POSIX program (flock, pipe selectors, mode bits) that CI

@@ -1345,9 +1345,9 @@ def uncached_digest(path: Path):
         try:
             output = drive_run(args, timeout=3600)
             break
-        except DriveHold:
+        except DriveHold as hold:
             if attempt == UNCACHED_ATTEMPTS - 1:
-                raise DriveHold("uncached_reader_failed") from None
+                raise DriveHold(f"uncached_reader_failed_{hold}") from None
             time.sleep(2 * (attempt + 1))
     try:
         value = json.loads(output.decode("utf-8-sig"))
