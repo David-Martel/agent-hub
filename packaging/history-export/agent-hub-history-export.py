@@ -1190,16 +1190,48 @@ class DriveStore:
         self.check_private(obj, permissions, self.owner)
         return obj
 
+    def auth_check(self) -> None:
+        """Refresh the grant through rclone; a dead grant is its own failed outcome.
+
+        A revoked, expired or consent-screen-limited (Testing mode, about 7 days)
+        refresh token must stop the run with a reason an operator can act on
+        (re-consent), never look like a generic transport error or a skipped run.
+        rclone's stderr is only matched, never logged.
+        """
+        try:
+            result = subprocess.run(
+                [
+                    RCLONE,
+                    "--config",
+                    str(DRIVE_CONFIG),
+                    "about",
+                    "migration-drive:",
+                    "--json",
+                    "--retries",
+                    "2",
+                    "--low-level-retries",
+                    "5",
+                ],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=120,
+                env=drive_environment(),
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            raise DriveHold("remote_unreachable_timeout") from None
+        except OSError:
+            raise DriveHold("command_unavailable_rclone") from None
+        if result.returncode:
+            text = result.stderr.decode(errors="replace").lower()
+            if re.search(
+                r"invalid_grant|token (has been )?(expired|revoked)|oauth2", text
+            ):
+                raise DriveHold("remote_auth_failed")
+            raise DriveHold(f"remote_unreachable_exit_{result.returncode}")
+
     def account(self) -> None:
-        self.rc(
-            "about",
-            "migration-drive:",
-            "--json",
-            "--retries",
-            "2",
-            "--low-level-retries",
-            "5",
-        )
+        self.auth_check()
         if (
             self.api("about?fields=user(emailAddress)")["user"]["emailAddress"]
             != self.owner

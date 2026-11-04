@@ -751,6 +751,33 @@ class DriveTests(TempDirCase):
             hx.close_drive_job(job, binding["name"])
         self.assertEqual(calls, [binding["cipher_file"]])
 
+    def test_drive_refresh_failure_is_a_distinct_failed_outcome(self):
+        """Protects: a dead OAuth grant (revoked, or expired under a Testing-mode
+        consent screen) being reported as an actionable failure. Detects: it
+        surfacing as a generic exit code, passing, or leaking rclone's output.
+        Needs: a stand-in rclone through subprocess.run. Breadcrumb:
+        DriveStore.auth_check.
+        """
+        store = object.__new__(hx.DriveStore)
+        for stderr, reason in (
+            (
+                b'Failed to refresh: oauth2: "invalid_grant" SECRET',
+                "remote_auth_failed",
+            ),
+            (b"Token has been expired or revoked.", "remote_auth_failed"),
+            (b"dial tcp: no route", "remote_unreachable_exit_1"),
+        ):
+            done = subprocess.CompletedProcess([], 1, b"", stderr)
+            with (
+                mock.patch.object(hx.subprocess, "run", return_value=done),
+                self.assertRaises(hx.DriveHold) as failed,
+            ):
+                store.account()
+            self.assertEqual(str(failed.exception), reason)
+        ok = subprocess.CompletedProcess([], 0, b"{}", b"")
+        with mock.patch.object(hx.subprocess, "run", return_value=ok):
+            store.auth_check()
+
     def test_drive_command_failure_names_the_tool_but_not_its_arguments(self):
         """Protects: diagnosable holds without payload in logs. Detects: a generic
         exit code that cannot say which command failed, a missing tool escaping as

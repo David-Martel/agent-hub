@@ -198,7 +198,8 @@ above supplies the uncached read that Linux cannot do across 9p.
 **Stage (never enables).**
 
 ```sh
-packaging/history-export/install.sh --profile work [--rev <commit>]     [--windows-dir /mnt/r/AgentHub-offsite/bin] [--dry-run]
+packaging/history-export/install.sh --profile work [--rev <commit>] \
+    [--windows-dir /mnt/r/AgentHub-offsite/bin] [--dry-run]
 ```
 
 stages the reviewed files under `~/.local/share/agent-hub-history-export/<rev>/`,
@@ -209,16 +210,18 @@ machine, then `systemctl --user enable --now agent-hub-history-export-work.timer
 
 **Provision Drive access (owner action; the helper never creates or copies it).**
 Either way the result is an rclone config at the configured `rclone_config`, mode
-`0600`, with remote `migration-drive` and `root_folder_id` equal to the fixed
+`0600`, with remote `migration-drive` whose `root_folder_id` equals the fixed
 folder. The helper then proves the account and the owner-only folder through the
-Drive API before any write.
+Drive API before any write. The `drive.file` scope is enough: it sees what the
+OAuth client created, which includes the fixed folder. OAuth cannot be limited to
+one folder, so the binding is `root_folder_id` plus the helper's checks.
 
-- Fresh login on dtm-work, signed in as the folder owner (OAuth cannot be scoped
-  to one folder; the folder binding is `root_folder_id` plus the helper's checks):
+- Fresh login on dtm-work, signed in as the folder owner, with the OAuth client
+  the owner approves (`client_id` and `client_secret` are added by the owner):
 
   ```sh
   umask 077
-  rclone config create migration-drive drive scope drive \
+  rclone config create migration-drive drive scope drive.file \
       root_folder_id 1mmL8o1upp4ty5zuaghn0YOfv40vsHzyt \
       --config "$HOME/.config/agent-hub-history-export/rclone.conf"
   chmod 600 "$HOME/.config/agent-hub-history-export/rclone.conf"
@@ -228,17 +231,27 @@ Drive API before any write.
   rclone prints a local `127.0.0.1:53682` link; with mirrored networking the
   Windows browser reaches it. Sign in with the owner account only.
 
-- An approved copy from asuspro13 (a second host then holds the same refresh
-  token, and revoking it revokes both). Stream it; never put it in a file in a
-  shared location, the bus or Git:
+- An approved copy of a grant made elsewhere (for example the owner's staged
+  `drive.file` grant on Carbon, or asuspro13's config). Stream it; never put it in
+  a file in a shared location, the bus or Git. A second host then holds the same
+  refresh token, and revoking it revokes both:
 
   ```sh
   umask 077
-  ssh asuspro13-vigil 'sudo -n cat /srv/vigil-migration/asuspro13/rclone.conf' \
+  ssh <source-host> 'cat <path-to-rclone.conf>' \
       > "$HOME/.config/agent-hub-history-export/rclone.conf"
   chmod 600 "$HOME/.config/agent-hub-history-export/rclone.conf"
   grep -c '^root_folder_id = 1mmL8o1upp4ty5zuaghn0YOfv40vsHzyt$' "$HOME/.config/agent-hub-history-export/rclone.conf"   # prints 1
   ```
+
+**Re-consent.** If the consent screen is in Testing mode, a grant dies after about
+seven days; a revoked grant fails the same way. The run then stops with
+`remote_auth_failed`, the closed job is kept, and the failure alerts through the
+unit's `OnFailure` notice and the bus finding. It is never skipped quietly, and no
+keepalive is added. To recover: delete the stale `[migration-drive]` section (or
+the file), redo one of the steps above signed in as the owner, then start the
+service once; it uploads the retained job first. Moving the consent screen to
+Production avoids the seven-day expiry, and that is the owner's decision.
 
 ## Legacy SFTP drop workflow
 
