@@ -2,9 +2,15 @@
 
 This command reads state only. Release drift never upgrades a shared runner,
 rewrites a lockfile, restarts a daemon or silently selects a floating compiler.
+
+A pin whose upgrade waits on a separate review (for example an immutable image
+rebuild) may carry a recorded hold in toolchain-policy.json "holds". A hold
+excuses one exact upstream version until its expiry, at most HOLD_MAX_DAYS after
+it was recorded; afterwards, or for any newer release, the drift fails again.
 """
 
 import argparse
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -111,20 +117,103 @@ def release_version(tool, body):
     return version
 
 
-def check_latest(policy, fetch):
-    """Return all drift/access errors; never report a failed lookup as current."""
-    issues = []
+HOLD_FIELDS = (
+    "version",
+    "reason",
+    "reference",
+    "reviewer",
+    "recorded_utc",
+    "expires_utc",
+)
+HOLD_MAX_DAYS = 31
+
+
+def parse_utc(value):
+    stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if stamp.tzinfo is None:
+        raise ValueError("hold timestamp has no timezone")
+    return stamp
+
+
+def hold_record_problem(tool, hold, now):
+    """Return why a recorded hold is invalid on its own terms, or None.
+
+    A hold names the exact upstream version it defers, a reason, the decision it
+    cites, a reviewer, and an expiry at most HOLD_MAX_DAYS after it was recorded.
+    Its recorded time may not lie after the check, and it must not have expired.
+    These rules apply whether or not the tool currently shows drift.
+    """
+    if not isinstance(hold, dict) or any(
+        not isinstance(hold.get(field), str) or not hold[field].strip()
+        for field in HOLD_FIELDS
+    ):
+        return f"{tool}: hold is malformed (needs {', '.join(HOLD_FIELDS)})"
+    try:
+        recorded = parse_utc(hold["recorded_utc"])
+        expires = parse_utc(hold["expires_utc"])
+    except ValueError:
+        return f"{tool}: hold timestamps are not ISO-8601 UTC"
+    if recorded > now:
+        return f"{tool}: hold is recorded in the future ({hold['recorded_utc']})"
+    if not recorded < expires <= recorded + timedelta(days=HOLD_MAX_DAYS):
+        return f"{tool}: hold must expire within {HOLD_MAX_DAYS} days of being recorded"
+    if now >= expires:
+        return f"{tool}: hold for {hold['version']} expired {hold['expires_utc']}"
+    return None
+
+
+def hold_problem(tool, hold, current, now):
+    """Return why a recorded hold cannot excuse drift to ``current``, or None.
+
+    A valid hold excuses only the exact upstream version it names.
+    """
+    problem = hold_record_problem(tool, hold, now)
+    if problem:
+        return problem
+    if hold["version"] != current:
+        return f"{tool}: hold covers {hold['version']}, official latest is {current}"
+    return None
+
+
+def check_latest(policy, fetch, now=None, held=None):
+    """Return all drift/access errors; never report a failed lookup as current.
+
+    Drift covered by a valid recorded hold is appended to ``held`` instead. Every
+    other hold for a known tool is still validated, so it fails closed.
+    """
+    now = now or datetime.now(timezone.utc)
+    held = [] if held is None else held
+    holds = policy.get("holds", {})
+    if not isinstance(holds, dict):
+        return ["holds: must be an object keyed by tool"]
+    issues = [f"holds: unknown tool {tool}" for tool in holds if tool not in RELEASES]
+    judged = set()
     for tool, endpoint in RELEASES.items():
         try:
             current = release_version(tool, fetch(endpoint))
             if current != policy[tool]:
-                issues.append(
-                    f"{tool}: pinned {policy[tool]}, official latest {current}"
-                )
+                drift = f"{tool}: pinned {policy[tool]}, official latest {current}"
+                if tool not in holds:
+                    issues.append(drift)
+                    continue
+                judged.add(tool)
+                problem = hold_problem(tool, holds[tool], current, now)
+                if problem:
+                    issues.append(f"{drift}; {problem}")
+                else:
+                    until, ref = holds[tool]["expires_utc"], holds[tool]["reference"]
+                    held.append(f"{drift}, held until {until} ({ref})")
         except (OSError, ValueError, KeyError, IndexError, TypeError) as error:
             issues.append(
                 f"{tool}: latest-release evidence unavailable ({type(error).__name__})"
             )
+    # Holds not judged against drift (no drift, or no release evidence) must still
+    # be valid, so a stale or malformed hold cannot outlive its catch-up silently.
+    for tool, hold in holds.items():
+        if tool in RELEASES and tool not in judged:
+            problem = hold_record_problem(tool, hold, now)
+            if problem:
+                issues.append(problem)
     return issues
 
 
@@ -199,13 +288,15 @@ def main():
         parser.error("select --verify-sources, --latest or --installed")
     policy = json.loads(POLICY.read_text())
     issues = []
+    held = []
     if args.verify_sources:
         issues.extend(verify_sources(ROOT, policy))
     if args.latest:
-        issues.extend(check_latest(policy, fetch_release))
+        issues.extend(check_latest(policy, fetch_release, held=held))
     if args.installed:
         issues.extend(check_installed(policy, args.installed))
-    print(json.dumps({"ok": not issues, "issues": issues, "policy": policy}, indent=2))
+    report = {"ok": not issues, "issues": issues, "held": held, "policy": policy}
+    print(json.dumps(report, indent=2))
     return int(bool(issues))
 
 

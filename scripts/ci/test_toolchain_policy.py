@@ -1,6 +1,7 @@
 """Detect stale pins, source/image drift and unavailable latest-release evidence."""
 
 import copy
+from datetime import datetime, timezone
 import importlib.util
 import json
 import os
@@ -152,6 +153,188 @@ class ToolchainPolicyTests(unittest.TestCase):
             POLICY_MODULE.release_version(
                 "sccache", '{"tag_name":"v0.19.0","prerelease":true}'
             )
+
+    def held_policy(self, **hold):
+        policy = copy.deepcopy(self.policy)
+        record = {
+            "version": "1.99.1",
+            "reason": "rebuild and qualify immutable cross image (fixture)",
+            "reference": "PR #184",
+            "reviewer": "fixture reviewer",
+            "recorded_utc": "2026-11-01T00:00:00Z",
+            "expires_utc": "2026-11-15T00:00:00Z",
+        }
+        record.update(hold)
+        policy["rust"] = "1.99.0"
+        policy["holds"] = {"rust": record}
+        return policy
+
+    def rust_release(self, version):
+        def fetch(endpoint):
+            if endpoint == POLICY_MODULE.RELEASES["rust"]:
+                return json.dumps(
+                    {"tag_name": version, "draft": False, "prerelease": False}
+                )
+            return self.release_fixture(endpoint)
+
+        return fetch
+
+    def rust_issues(self, policy, version, now):
+        issues = POLICY_MODULE.check_latest(policy, self.rust_release(version), now=now)
+        return [issue for issue in issues if issue.startswith("rust:")]
+
+    # Protects: a deliberate, reviewed deferral keeps the scheduled drift job useful.
+    # Detects: a recorded hold that fails to excuse its exact version before expiry,
+    #   or that keeps excusing it at or after expiry.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py hold_problem and check_latest.
+    def test_held_drift_passes_before_expiry_and_fails_after(self):
+        policy = self.held_policy()
+        held = []
+        before = datetime(2026, 11, 14, 23, 59, tzinfo=timezone.utc)
+        self.assertEqual(
+            POLICY_MODULE.check_latest(
+                policy, self.rust_release("1.99.1"), now=before, held=held
+            ),
+            [],
+        )
+        self.assertEqual(len(held), 1)
+        self.assertIn("held until 2026-11-15T00:00:00Z", held[0])
+        at_expiry = datetime(2026, 11, 15, tzinfo=timezone.utc)
+        issues = self.rust_issues(policy, "1.99.1", at_expiry)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("expired", issues[0])
+
+    # Protects: drift without a recorded hold stays a failure.
+    # Detects: a hold on one tool excusing drift in another.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py check_latest.
+    def test_unheld_drift_still_fails_beside_a_hold(self):
+        policy = self.held_policy()
+
+        def fetch(endpoint):
+            if endpoint == POLICY_MODULE.RELEASES["sccache"]:
+                return json.dumps({"tag_name": "v9.9.9"})
+            return self.rust_release("1.99.1")(endpoint)
+
+        now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        issues = POLICY_MODULE.check_latest(policy, fetch, now=now)
+        self.assertEqual(
+            issues, [f"sccache: pinned {policy['sccache']}, official latest 9.9.9"]
+        )
+
+    # Protects: a hold excuses only the exact upstream version that was reviewed.
+    # Detects: a newer upstream release hiding behind an older hold.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py hold_problem version check.
+    def test_hold_does_not_cover_a_newer_release(self):
+        now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        issues = self.rust_issues(self.held_policy(), "1.100.0", now)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("hold covers 1.99.1, official latest is 1.100.0", issues[0])
+
+    # Protects: every hold carries its reason, decision, reviewer and expiry, and
+    #   cannot outlive HOLD_MAX_DAYS.
+    # Detects: an unreviewed, unexplained or effectively permanent hold.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py hold_record_problem field, span checks.
+    def test_malformed_or_long_holds_fail(self):
+        now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        for field, value, expected in (
+            ("reviewer", "", "malformed"),
+            ("reason", "  ", "malformed"),
+            ("expires_utc", "2026-12-15T00:00:00Z", "within 31 days"),
+            ("expires_utc", "2026-10-31T00:00:00Z", "within 31 days"),
+            ("recorded_utc", "not-a-date", "ISO-8601"),
+        ):
+            with self.subTest(field=field, value=value):
+                issues = self.rust_issues(
+                    self.held_policy(**{field: value}), "1.99.1", now
+                )
+                self.assertEqual(len(issues), 1)
+                self.assertIn(expected, issues[0])
+
+    # Protects: a hold's 31-day window starts no later than the check that reads it.
+    # Detects: a recorded_utc set in the future to stretch a hold past HOLD_MAX_DAYS.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py hold_record_problem recorded_utc check.
+    def test_hold_recorded_in_the_future_fails(self):
+        now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        policy = self.held_policy(
+            recorded_utc="2026-11-20T00:00:00Z", expires_utc="2026-12-20T00:00:00Z"
+        )
+        issues = self.rust_issues(policy, "1.99.1", now)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("recorded in the future", issues[0])
+
+    # Protects: the fail-closed hold contract holds once a pin has caught up.
+    # Detects: a malformed, expired, future-recorded or over-long hold that passes
+    #   silently because the tool currently shows no drift.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py check_latest hold validation.
+    def test_invalid_hold_fails_without_drift(self):
+        now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        for overrides, expected in (
+            ({"reviewer": ""}, "malformed"),
+            ({"expires_utc": "2026-11-01T12:00:00Z"}, "expired"),
+            (
+                {
+                    "recorded_utc": "2026-11-20T00:00:00Z",
+                    "expires_utc": "2026-12-01T00:00:00Z",
+                },
+                "recorded in the future",
+            ),
+            ({"expires_utc": "2026-12-15T00:00:00Z"}, "within 31 days"),
+        ):
+            with self.subTest(expected=expected):
+                policy = self.held_policy(**overrides)
+                policy["rust"] = "1.99.1"
+                issues = self.rust_issues(policy, "1.99.1", now)
+                self.assertEqual(len(issues), 1)
+                self.assertIn(expected, issues[0])
+
+    # Protects: a valid hold whose pin has caught up is not itself a failure.
+    # Detects: the no-drift validation rejecting a well-formed, unexpired hold.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py check_latest hold validation.
+    def test_valid_hold_without_drift_passes(self):
+        now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        policy = self.held_policy()
+        policy["rust"] = "1.99.1"
+        self.assertEqual(self.rust_issues(policy, "1.99.1", now), [])
+
+    # Protects: holds name only tools the drift check knows.
+    # Detects: a misspelled hold that silently excuses nothing and rots.
+    # Needs: in-memory release fixtures; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain_policy.py check_latest hold-key check.
+    def test_hold_for_unknown_tool_fails(self):
+        policy = self.held_policy()
+        policy["holds"]["rustc"] = policy["holds"].pop("rust")
+        now = datetime(2026, 11, 2, tzinfo=timezone.utc)
+        issues = POLICY_MODULE.check_latest(
+            policy, self.rust_release("1.99.0"), now=now
+        )
+        self.assertEqual(issues, ["holds: unknown tool rustc"])
+
+    # Protects: any hold in the tracked policy is one the rules accept, and defers a
+    #   real gap. Rust 1.99.1 is now pinned, so #184's hold is gone and none is seeded.
+    # Detects: a tracked hold for the pinned version, or one hold_problem refuses.
+    # Needs: the tracked toolchain-policy.json; no network, services or hardware.
+    # Breadcrumb: scripts/ci/toolchain-policy.json holds.
+    def test_tracked_holds_are_valid_when_recorded(self):
+        holds = self.policy.get("holds", {})
+        self.assertIsInstance(holds, dict)
+        for tool, hold in holds.items():
+            with self.subTest(tool=tool):
+                self.assertNotEqual(hold["version"], self.policy[tool])
+                self.assertIsNone(
+                    POLICY_MODULE.hold_problem(
+                        tool,
+                        hold,
+                        hold["version"],
+                        POLICY_MODULE.parse_utc(hold["recorded_utc"]),
+                    )
+                )
 
     def test_node_prerelease_at_head_reports_newest_stable(self):
         """Protects the Node drift report from upstream prerelease ordering.
