@@ -74,10 +74,10 @@ fuzz_target!(|input: Input| {
 
     // Structured: a list of objects built from a pool of pieces.
     let mut u = Unstructured::new(&input.shape);
-    if let Ok(value) = agent_bus_fuzz::gen_json(&mut u, 3) {
-        if let Ok(specs) = agent_bus_core::hub_candidates::parse_candidate_entries(&value) {
-            check_specs(&specs);
-        }
+    if let Ok(value) = agent_bus_fuzz::gen_json(&mut u, 3)
+        && let Ok(specs) = agent_bus_core::hub_candidates::parse_candidate_entries(&value)
+    {
+        check_specs(&specs);
     }
 
     // Public-target classification: total on any string, and never "public"

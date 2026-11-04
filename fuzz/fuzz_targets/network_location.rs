@@ -95,11 +95,11 @@ fuzz_target!(|input: Input| {
 
     // Rules JSON built from arbitrary structure.
     let mut u = Unstructured::new(&input.shape);
-    if let Ok(value) = agent_bus_fuzz::gen_json(&mut u, 3) {
-        if let Ok(rules) = parse_location_rules(&value) {
-            for rule in rules {
-                assert!(valid_site_name(&rule.name), "rule name {:?}", rule.name);
-            }
+    if let Ok(value) = agent_bus_fuzz::gen_json(&mut u, 3)
+        && let Ok(rules) = parse_location_rules(&value)
+    {
+        for rule in rules {
+            assert!(valid_site_name(&rule.name), "rule name {:?}", rule.name);
         }
     }
 });

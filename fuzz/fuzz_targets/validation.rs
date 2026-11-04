@@ -59,14 +59,14 @@ fuzz_target!(|input: Input| {
 
     // Metadata argument: the error text says "JSON object", so only an object
     // may be accepted, and it must equal what serde_json parses.
-    if let Some(text) = &input.metadata {
-        if let Ok(value) = parse_metadata_arg(Some(text)) {
-            assert!(value.is_object(), "non-object metadata accepted: {text:?}");
-            assert_eq!(
-                value,
-                serde_json::from_str::<serde_json::Value>(text).unwrap()
-            );
-        }
+    if let Some(text) = &input.metadata
+        && let Ok(value) = parse_metadata_arg(Some(text))
+    {
+        assert!(value.is_object(), "non-object metadata accepted: {text:?}");
+        assert_eq!(
+            value,
+            serde_json::from_str::<serde_json::Value>(text).unwrap()
+        );
     }
     assert!(
         parse_metadata_arg(None)
@@ -78,9 +78,8 @@ fuzz_target!(|input: Input| {
     let named = input.schema.as_deref();
     if let Some(name) = named {
         assert_eq!(MessageSchema::parse(name).is_ok(), SCHEMAS.contains(&name));
-        assert_eq!(
-            validate_message_schema(&input.body, Some(name)).is_ok() && !SCHEMAS.contains(&name),
-            false,
+        assert!(
+            !(validate_message_schema(&input.body, Some(name)).is_ok() && !SCHEMAS.contains(&name)),
             "unknown schema {name:?} accepted"
         );
     }
