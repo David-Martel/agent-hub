@@ -24,8 +24,10 @@ keeping stderr visible.
 - [`packaging/hub-backup/hub-backup.ps1`](../packaging/hub-backup/hub-backup.ps1) runs daily as task
   `AgentHub-daily-backup` (SYSTEM) and writes to `R:\AgentHub-backups`. The deployed copy is
   `C:\ProgramData\AgentHub\hub-backup.ps1`.
-- **Don't store anything on dtm-work's F: drive.** On 2026-11-04 it returned different bytes from those written, while a
-  hash taken at write time passed. Both failed runs from that day are kept there as evidence.
+- **Don't store anything on dtm-work's F: drive.** On 2026-11-04 it stored different bytes from those written: 2 of 2
+  random 296 MB files read back wrong through an aligned uncached reader, while C: and R: matched hashes computed during
+  the write. A 98 MB snapshot did survive there, so it doesn't corrupt every write. Both failed runs from that day are
+  kept there as evidence.
 - Restore test, last run 2026-11-04 on run `20261104-091609`: restore the dump into a throwaway database and load the
   snapshot into a temporary Redis on another port, then compare counts and a content digest with live.
 - Off-site copies come from [`packaging/history-export`](../packaging/history-export/README.md). See its README for its

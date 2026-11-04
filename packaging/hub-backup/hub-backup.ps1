@@ -15,7 +15,9 @@ param(
     [int]$PgPort = 5432,
     [int]$RedisPort = 6380,
     [int]$RetentionDays = 14,
-    [int]$KeepNewest = 3
+    [int]$KeepNewest = 3,
+    # Test seam: lets a test simulate a disk that returns different bytes.
+    [scriptblock]$DiskHashCommand = { param($p) [HubBackup.DiskHash]::Compute($p) }
 )
 $ProgressPreference = 'SilentlyContinue'
 $ErrorActionPreference = 'Stop'
@@ -25,18 +27,67 @@ function Write-BackupLog([string]$Text) {
     [IO.File]::AppendAllText($log, ('{0} {1}{2}' -f (Get-Date).ToUniversalTime().ToString('s'), $Text, "`r`n"))
 }
 
-function Get-DiskHash([string]$Path) {
-    $sha = [Security.Cryptography.SHA256]::Create()
-    $block = 1MB
-    $buffer = New-Object byte[] $block
-    # 0x20000000 is FILE_FLAG_NO_BUFFERING. It reads the disk, not the page cache.
-    $options = [IO.FileOptions]([int][IO.FileOptions]::SequentialScan -bor 0x20000000)
-    $stream = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read, 1, $options)
-    try {
-        while (($count = $stream.Read($buffer, 0, $block)) -gt 0) { [void]$sha.TransformBlock($buffer, 0, $count, $null, 0) }
-        [void]$sha.TransformFinalBlock(@(), 0, 0)
-    } finally { $stream.Dispose() }
-    [BitConverter]::ToString($sha.Hash) -replace '-', ''
+# FILE_FLAG_NO_BUFFERING needs a sector-aligned buffer, which a managed array doesn't guarantee. VirtualAlloc returns
+# page-aligned memory, and every read is a whole multiple of the block size.
+if (-not ('HubBackup.DiskHash' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using Microsoft.Win32.SafeHandles;
+
+namespace HubBackup {
+    public static class DiskHash {
+        const uint GenericRead = 0x80000000, ShareRead = 1, OpenExisting = 3;
+        const uint NoBuffering = 0x20000000, SequentialScan = 0x08000000;
+        const uint MemCommit = 0x1000, MemReserve = 0x2000, MemRelease = 0x8000, PageReadWrite = 4;
+        const int Block = 1024 * 1024;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool ReadFile(SafeFileHandle file, IntPtr buffer, int count, out int read, IntPtr overlapped);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern IntPtr VirtualAlloc(IntPtr address, UIntPtr size, uint type, uint protect);
+        [DllImport("kernel32.dll", SetLastError = true)]
+        static extern bool VirtualFree(IntPtr address, UIntPtr size, uint type);
+
+        public static string Compute(string path) {
+            IntPtr native = VirtualAlloc(IntPtr.Zero, (UIntPtr)Block, MemCommit | MemReserve, PageReadWrite);
+            if (native == IntPtr.Zero) throw new Win32Exception();
+            try {
+                using (SafeFileHandle file = CreateFileW(path, GenericRead, ShareRead, IntPtr.Zero, OpenExisting, NoBuffering | SequentialScan, IntPtr.Zero))
+                using (SHA256 sha = SHA256.Create()) {
+                    if (file.IsInvalid) throw new Win32Exception();
+                    byte[] managed = new byte[Block];
+                    int read;
+                    while (true) {
+                        if (!ReadFile(file, native, Block, out read, IntPtr.Zero)) throw new Win32Exception();
+                        if (read == 0) break;
+                        Marshal.Copy(native, managed, 0, read);
+                        sha.TransformBlock(managed, 0, read, null, 0);
+                    }
+                    sha.TransformFinalBlock(new byte[0], 0, 0);
+                    return BitConverter.ToString(sha.Hash).Replace("-", "");
+                }
+            } finally { VirtualFree(native, UIntPtr.Zero, MemRelease); }
+        }
+    }
+}
+'@
+}
+
+# Flush the file, then compare what the producer wrote (still in the page cache) with what reached the disk. A mismatch
+# is the failure this script exists to catch, so it stops the run before anything is published or pruned.
+function Assert-OnDisk([string]$Path) {
+    $handle = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+    try { $handle.Flush($true) } finally { $handle.Dispose() }
+    $written = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    $onDisk = & $DiskHashCommand $Path
+    if ($written -ne $onDisk) { throw "disk copy differs from what was written: $(Split-Path $Path -Leaf)" }
+    $onDisk
 }
 
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -63,7 +114,7 @@ try {
     }
     # The manifest names closed producer files only, so it can never hash itself.
     $lines = foreach ($path in @($dump, $rdb)) {
-        '{0} {1} {2}' -f (Split-Path $path -Leaf), (Get-Item $path).Length, (Get-DiskHash $path)
+        '{0} {1} {2}' -f (Split-Path $path -Leaf), (Get-Item $path).Length, (Assert-OnDisk $path)
     }
     [IO.File]::WriteAllLines((Join-Path $partial 'SHA256SUMS.txt'), [string[]]$lines, (New-Object Text.UTF8Encoding($false)))
     Rename-Item $partial $final

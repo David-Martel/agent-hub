@@ -58,6 +58,25 @@ Describe 'hub-backup' {
         (Get-Content (Join-Path $script:Dest 'backup.log') -Raw) | Should -Match 'FAILED'
     }
 
+    It 'refuses to publish when the bytes on disk differ from what was written' {
+        $bin = New-FakeTools $script:Root
+        { & $script:Script -Dest $script:Dest -PgBin $bin -RedisBin $bin -DiskHashCommand { param($p) 'DEADBEEF' } } | Should -Throw '*disk copy differs*'
+        @(Get-ChildItem $script:Dest -Directory | Where-Object Name -NotMatch '^\.partial').Count | Should -Be 0
+        (Get-Content (Join-Path $script:Dest 'backup.log') -Raw) | Should -Match 'FAILED'
+    }
+
+    It 'reads real files through the aligned reader, including sizes that are not a sector multiple' {
+        $bin = New-FakeTools $script:Root
+        & $script:Script -Dest $script:Dest -PgBin $bin -RedisBin $bin
+        foreach ($size in 1, 511, 4097, 1048576, 3145729) {
+            $file = Join-Path $script:Root "size-$size.bin"
+            $bytes = New-Object byte[] $size
+            (New-Object Random($size)).NextBytes($bytes)
+            [IO.File]::WriteAllBytes($file, $bytes)
+            [HubBackup.DiskHash]::Compute($file) | Should -Be (Get-FileHash $file -Algorithm SHA256).Hash
+        }
+    }
+
     It 'keeps old runs when a backup fails, and keeps the newest few when one succeeds' {
         foreach ($name in '20200101-000000', '20200102-000000', '20200103-000000', '20200104-000000') {
             $old = New-Item -ItemType Directory (Join-Path $script:Dest $name)
@@ -66,6 +85,8 @@ Describe 'hub-backup' {
         $bad = New-FakeTools (Join-Path $script:Root 'bad') -CheckExit 1
         { & $script:Script -Dest $script:Dest -PgBin $bad -RedisBin $bad } | Should -Throw
         @(Get-ChildItem $script:Dest -Directory | Where-Object Name -Match '^2020').Count | Should -Be 4
+        # Folder names have one-second resolution, and the script refuses to reuse one.
+        Start-Sleep -Milliseconds 1100
         $good = New-FakeTools (Join-Path $script:Root 'good')
         & $script:Script -Dest $script:Dest -PgBin $good -RedisBin $good
         @(Get-ChildItem $script:Dest -Directory | Where-Object Name -Match '^2020' | Sort-Object Name -Descending | ForEach-Object Name) | Should -Be @('20200104-000000', '20200103-000000')
