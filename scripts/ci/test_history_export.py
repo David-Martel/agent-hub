@@ -83,7 +83,9 @@ FAKE_SFTP = textwrap.dedent("""\
 """)
 
 
-def make_raw(raw: Path, n_messages: int = 5, body: str = "hello") -> None:
+def make_raw(
+    raw: Path, n_messages: int = 5, body: str = "hello", redis_ids=("m0",)
+) -> None:
     """Write the raw export files build_bundle expects, as the exporters would."""
     raw.mkdir(parents=True, exist_ok=True)
     with open(raw / "messages.ndjson", "w") as f:
@@ -92,7 +94,10 @@ def make_raw(raw: Path, n_messages: int = 5, body: str = "hello") -> None:
             for i in range(n_messages)
         )
     (raw / "redis-stream-messages.ndjson").write_text(
-        json.dumps({"stream_id": "1-0", "fields": {"id": "m0"}}) + "\n"
+        "".join(
+            json.dumps({"stream_id": f"{n + 1}-0", "fields": {"id": ident}}) + "\n"
+            for n, ident in enumerate(redis_ids)
+        )
     )
     (raw / "presence-events.ndjson").write_text(
         json.dumps({"id": 1, "agent": "a"}) + "\n"
@@ -1742,6 +1747,21 @@ class SourceBindingTests(SettingsCase):
         with self.assertRaisesRegex(hx.DriveHold, "redis_restarted_during_export"):
             self.check(recon=restarted)
 
+    def test_local_stream_length_is_compared_only_with_the_hub_stream_length(self):
+        """Protects: Redis being the hub's own stream. Detects: a local stream of 4
+        entries accepted because the hub reports 90000 (the two kinds of count were
+        mixed into one window). Needs: synthetic readings.
+        Breadcrumb: check_stream_window.
+        """
+        hub = reading(stream_length=90000)
+        with self.assertRaisesRegex(hx.DriveHold, "redis_stream_window_mismatch"):
+            self.check(before=hub, after=hub)
+        near = reading(stream_length=4 + hx.STREAM_WINDOW_TOLERANCE)
+        self.check(before=near, after=near)
+        far = reading(stream_length=5 + hx.STREAM_WINDOW_TOLERANCE)
+        with self.assertRaisesRegex(hx.DriveHold, "redis_stream_window_mismatch"):
+            self.check(before=far, after=far)
+
     def test_redis_replication_id_is_recorded_and_enforced_only_when_pinned(self):
         """Protects: not holding every backup on an unstable identifier. Detects: the
         replication id (observed to change on dtm-work with the same run id and no
@@ -1845,7 +1865,39 @@ class StoreDifferenceTests(SettingsCase):
             hx.store_difference(recon)
 
 
-def bound_bundle(tmp: Path, drop=(), max_message=None, snapshot=None, binding=None):
+def claims_for(n_messages: int, redis_ids):
+    """The reconciliation and store difference the rows themselves support."""
+    pg = {f"m{i}" for i in range(n_messages)}
+    redis = set(redis_ids)
+    recon = {
+        "redis_stream_entries": len(redis_ids),
+        "pg_rows": n_messages,
+        "only_in_pg": len(pg - redis),
+        "only_in_redis": len(redis - pg),
+        "uuid_union": len(pg | redis),
+    }
+    diff = {
+        "pg_messages": n_messages,
+        "redis_stream_entries": len(redis_ids),
+        "pg_minus_stream": n_messages - len(redis_ids),
+        "only_in_pg": len(pg - redis),
+        "only_in_redis": len(redis - pg),
+        "in_both": n_messages - len(pg - redis),
+        "accounted": True,
+    }
+    return recon, diff
+
+
+def bound_bundle(
+    tmp: Path,
+    drop=(),
+    max_message=None,
+    snapshot=None,
+    binding=None,
+    redis_ids=("m0",),
+    recon=None,
+    diff=None,
+):
     """A bundle whose snapshot.tsv and MANIFEST carry a source binding."""
     meta = source_meta()
     if max_message:
@@ -1863,8 +1915,12 @@ def bound_bundle(tmp: Path, drop=(), max_message=None, snapshot=None, binding=No
     for name in drop:
         del rows[name]
     raw, bundle = tmp / "raw", tmp / "bundle"
-    make_raw(raw)
+    make_raw(raw, redis_ids=redis_ids)
     (raw / "snapshot.tsv").write_text("".join(f"{k}|{v}\n" for k, v in rows.items()))
+    honest_recon, honest_diff = claims_for(5, redis_ids)
+    recon = {**honest_recon, **(recon or {})}
+    (raw / "reconciliation.json").write_text(json.dumps(recon) + "\n")
+    meta["reconciliation"] = recon
     meta["source_binding"] = {
         "schema": "agent-hub.history-source-binding/v1",
         "hub_identity": "dtm-work",
@@ -1876,7 +1932,7 @@ def bound_bundle(tmp: Path, drop=(), max_message=None, snapshot=None, binding=No
             "server_version": meta["pg_server_version"],
             "max_message_utc": meta["pg_max_message_utc"],
         },
-        "store_difference": {"accounted": True},
+        "store_difference": {**honest_diff, **(diff or {})},
         **(binding or {}),
     }
     hx.build_bundle(raw, bundle, meta)
@@ -1924,7 +1980,7 @@ class BoundBundleTests(SettingsCase):
         cases = {
             "source_before_cutover": {"max_message": "2026-11-04T07:00:00.000000Z"},
             "hub_identity_mismatch": {"binding": {"hub_identity": "asuspro13"}},
-            "source_binding_invalid": {"binding": {"store_difference": {}}},
+            "source_binding_invalid": {"diff": {"accounted": False}},
         }
         for reason, kwargs in cases.items():
             with self.subTest(reason):
@@ -1932,6 +1988,51 @@ class BoundBundleTests(SettingsCase):
                 shutil.rmtree(self.tmp / "bundle", ignore_errors=True)
                 with self.assertRaisesRegex(hx.DriveHold, reason):
                     hx.validate_drive_bundle(bound_bundle(self.tmp, **kwargs))
+
+    def test_package_must_hold_every_row_and_redis_only_id_it_claims(self):
+        """Protects: the only copy of a message not being lost. Detects: a package
+        claiming rows or Redis-only ids its parts do not contain (a claimed
+        Redis-only id absent from the Redis part, more PG rows than present, an
+        unbalanced reconciliation). Needs: synthetic bundles.
+        Breadcrumb: validate_package_difference, package_reconciliation.
+        """
+        honest = bound_bundle(self.tmp, redis_ids=("m0", "x1"))
+        manifest = hx.validate_drive_bundle(honest)
+        self.assertEqual(
+            manifest["source_binding"]["store_difference"]["only_in_redis"], 1
+        )
+        cases = {
+            "redis-only id claimed but not in the Redis part": (
+                {"redis_ids": ("m0",), "diff": {"only_in_redis": 1}},
+                "store_difference_mismatch",
+            ),
+            "package holds 5 rows but claims 6": (
+                {"diff": {"pg_messages": 6, "pg_minus_stream": 5, "in_both": 1}},
+                "store_difference_mismatch",
+            ),
+            "reconciliation claims a Redis-only id that is absent": (
+                {"recon": {"only_in_redis": 1, "uuid_union": 6}},
+                "reconciliation_mismatch",
+            ),
+            "reconciliation claims fewer PG-only ids than the rows hold": (
+                {"recon": {"only_in_pg": 3}},
+                "reconciliation_mismatch",
+            ),
+        }
+        for label, (kwargs, reason) in cases.items():
+            with self.subTest(label):
+                shutil.rmtree(self.tmp / "raw", ignore_errors=True)
+                shutil.rmtree(self.tmp / "bundle", ignore_errors=True)
+                with self.assertRaisesRegex(hx.DriveHold, reason):
+                    hx.validate_drive_bundle(bound_bundle(self.tmp, **kwargs))
+
+    def test_package_with_repeated_redis_ids_is_refused(self):
+        """Protects: counts that equal claims only because ids repeat. Detects:
+        duplicate Redis ids passing validation. Needs: a synthetic bundle.
+        Breadcrumb: validate_package_difference.
+        """
+        with self.assertRaisesRegex(hx.DriveHold, "redis_stream_ids_not_unique"):
+            hx.validate_drive_bundle(bound_bundle(self.tmp, redis_ids=("m0", "m0")))
 
     def test_legacy_bundle_without_a_binding_still_validates(self):
         """Protects: bundles written before the binding (the asuspro13 history).
@@ -2070,7 +2171,11 @@ class WorkCaptureTests(SettingsCase):
         self.age_calls = []
 
     def export_pg(self, raw):
-        make_raw(raw)
+        ids = ["m0", "m1", "m2", "m3"]
+        make_raw(raw, redis_ids=ids)
+        (raw / "reconciliation.json").write_text(
+            json.dumps(claims_for(5, ids)[0]) + "\n"
+        )
         rows = {
             "snapshot_utc": self.meta["pg_snapshot_utc"],
             "messages": 5,
@@ -2184,6 +2289,110 @@ class WorkCaptureTests(SettingsCase):
         self.assertFalse((self.state / "receipts").exists())
         self.assertTrue(self.notice.call_args.args[0].startswith("FINDING:"))
         self.assertIn("remote_not_provisioned", self.notice.call_args.args[0])
+
+    def closed_job_in_spool(self, bundle_kwargs=None, skip_validator=False):
+        """Close a bundle (as an older revision would) and park it in the spool."""
+        bundle = bound_bundle(self.tmp / "b", **(bundle_kwargs or {}))
+        name = "history-" + hx.digest(bundle / "SHA256SUMS")[0][:16]
+        job = self.state / "drive-spool" / name
+        job.mkdir(parents=True)
+        shutil.move(str(bundle), job / "bundle")
+        with (
+            mock.patch.object(hx, "check_job_source"),
+            mock.patch.object(hx, "drive_run", side_effect=self.encrypt),
+        ):
+            if skip_validator:
+                with mock.patch.object(hx, "validate_package_difference"):
+                    hx.close_drive_job(job, name)
+            else:
+                hx.close_drive_job(job, name)
+        return job, name
+
+    def test_resume_revalidates_a_job_closed_by_an_older_revision(self):
+        """Protects: a retained closed job never uploading on hashes alone. Detects:
+        a job closed before the package checks existed, whose claims its rows do
+        not support, being uploaded once a config and remote appear.
+        Needs: synthetic job and provider. Breadcrumb: close_drive_job resume branch.
+        """
+        job, _ = self.closed_job_in_spool(
+            {"redis_ids": ("m0",), "diff": {"only_in_redis": 1}}, skip_validator=True
+        )
+        store = self.provider()
+        with mock.patch.object(hx, "DriveStore", return_value=store):
+            self.assertEqual(hx.drive_backup(no_bus=True), 1)
+        self.assertEqual(self.last()["reason"], "store_difference_mismatch")
+        store.put.assert_not_called()
+        self.assertFalse((job / "verified.json").exists())
+
+    def test_resume_refuses_a_job_not_bound_to_the_configured_source(self):
+        """Protects: a job closed for another source not uploading just because a
+        Work config appeared. Detects: an other-hub, other-cutover or other-cluster
+        job being published. Needs: synthetic jobs and provider.
+        Breadcrumb: check_job_source.
+        """
+        for label, binding in (
+            (
+                "other hub",
+                {"hub_identity": "asuspro13", "hub_identity_required": "asuspro13"},
+            ),
+            ("other cutover", {"cutover_utc": "2026-01-01T00:00:00Z"}),
+        ):
+            with self.subTest(label):
+                shutil.rmtree(self.tmp / "b", ignore_errors=True)
+                shutil.rmtree(self.state, ignore_errors=True)
+                self.closed_job_in_spool({"binding": binding})
+                store = self.provider()
+                with mock.patch.object(hx, "DriveStore", return_value=store):
+                    self.assertEqual(hx.drive_backup(no_bus=True), 1)
+                self.assertEqual(
+                    self.last()["reason"], "job_not_bound_to_configured_source"
+                )
+                store.put.assert_not_called()
+        with self.subTest("other cluster"):
+            shutil.rmtree(self.tmp / "b", ignore_errors=True)
+            shutil.rmtree(self.state, ignore_errors=True)
+            self.closed_job_in_spool()
+            store = self.provider()
+            with (
+                mock.patch.object(hx, "SOURCE_PG_SYSTEM", "1"),
+                mock.patch.object(hx, "DriveStore", return_value=store),
+            ):
+                self.assertEqual(hx.drive_backup(no_bus=True), 1)
+            self.assertEqual(
+                self.last()["reason"], "job_not_bound_to_configured_source"
+            )
+            store.put.assert_not_called()
+
+    def test_resume_refuses_a_legacy_unbound_job_under_a_work_config(self):
+        """Protects: an asuspro13-era closed job not uploading under the Work
+        config. Detects: a job without a source binding being published.
+        Needs: a synthetic legacy job. Breadcrumb: check_job_source.
+        """
+        bundle, name = DriveTests.bundle(self)
+        job = self.state / "drive-spool" / name
+        job.mkdir(parents=True)
+        shutil.move(str(bundle), job / "bundle")
+        with (
+            mock.patch.object(hx, "SOURCE_HUB", None),
+            mock.patch.object(hx, "drive_run", side_effect=self.encrypt),
+        ):
+            hx.close_drive_job(job, name)
+        store = self.provider()
+        with mock.patch.object(hx, "DriveStore", return_value=store):
+            self.assertEqual(hx.drive_backup(no_bus=True), 1)
+        self.assertEqual(self.last()["reason"], "job_not_bound_to_configured_source")
+        store.put.assert_not_called()
+
+    def test_valid_closed_bound_job_still_resumes(self):
+        """Protects: the retry path for a good job. Detects: the new revalidation
+        refusing an honest, correctly bound closed job. Needs: synthetic job and
+        provider. Breadcrumb: close_drive_job resume branch.
+        """
+        job, _ = self.closed_job_in_spool({"redis_ids": ("m0", "x1")})
+        store = self.provider()
+        with mock.patch.object(hx, "DriveStore", return_value=store):
+            self.assertEqual(hx.drive_backup(no_bus=True), 0)
+        self.assertTrue((job / "verified.json").exists())
 
     def test_provisioned_check_needs_a_real_config_with_a_token(self):
         """Protects: remote_not_provisioned meaning exactly "no usable remote".

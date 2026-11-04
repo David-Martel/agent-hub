@@ -147,6 +147,23 @@ that does not add up, or `only_in_redis` above `max_only_in_redis` (write-behind
 lag) are held (`pg_message_ids_not_unique`, `redis_stream_ids_not_unique`,
 `store_difference_unaccounted`, `redis_ahead_of_pg`).
 
+**The package must hold what it claims.** `validate_drive_bundle` recomputes the
+id accounting from the parts themselves: every PG row and Redis entry claimed by
+the snapshot, the manifest, the binding and `reconciliation.json` must be present,
+ids must be unique, and every Redis-only id must be in the Redis part
+(`store_difference_mismatch`, `reconciliation_mismatch`,
+`pg_message_ids_not_unique`, `redis_stream_ids_not_unique`), so the only copy of a
+message cannot be left out. The local stream length is compared only with the hub's
+reported stream length (within `STREAM_WINDOW_TOLERANCE` entries), never with a mix
+of the two.
+
+**A retained closed job is revalidated on every resume.** Hashes alone are not
+enough: the current validator re-checks the bundle, the binding must equal the
+manifest's, the tar must equal the bundle, and the job must have been bound to the
+configured hub, cutover and PostgreSQL system id (`job_not_bound_to_configured_source`).
+A job closed by an older revision, or by the asuspro13 profile, stays held; it is
+never uploaded just because a config or an rclone remote appeared.
+
 **A rejected capture does not block the next run.** A capture that fails these
 checks is moved to `drive-spool/rejected-<utc>/` with a `REJECTED.json` marker,
 keeps every raw file, is never uploaded, and is skipped by later runs, which take a
@@ -212,7 +229,14 @@ only `daemon-reload`. The timer stays disabled until the activation gate: provis
 Drive access (below), run the service once, qualify the restore on the key-custody
 machine, then `systemctl --user enable --now agent-hub-history-export-work.timer`.
 
+**Old asuspro13 timer.** It is already disabled, with its state kept at
+`~/dev/evidence/history-export-timer-disable-20261104` on asuspro13, so no decision
+is pending there.
+
 **Provision Drive access (owner action; the helper never creates or copies it).**
+How the rclone config reaches dtm-work is the owner's choice and is not assumed:
+until a usable config exists at `rclone_config` every run stops at
+`remote_not_provisioned`.
 Either way the result is an rclone config at the configured `rclone_config`, mode
 `0600`, with remote `migration-drive` whose `root_folder_id` equals the fixed
 folder. The helper then proves the account and the owner-only folder through the

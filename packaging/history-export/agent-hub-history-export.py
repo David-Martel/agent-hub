@@ -605,6 +605,24 @@ def store_difference(recon: dict) -> dict:
     }
 
 
+# Entries Redis may add or trim between two readings of the same stream. The hub
+# reports its length before and after the export, and the local XLEN readings fall
+# between them, so each count is compared only with counts of its own kind.
+STREAM_WINDOW_TOLERANCE = 200
+
+
+def check_stream_window(before: dict, after: dict, recon: dict) -> None:
+    """The local Redis stream must be the length the hub itself reports."""
+    hub = [before.get("stream_length"), after.get("stream_length")]
+    local = [*recon["redis_stream_xlen_before_after"], recon["redis_stream_entries"]]
+    if not all(type(n) is int for n in (*hub, *local)):
+        raise DriveHold("redis_stream_window_mismatch")
+    low = min(hub) - STREAM_WINDOW_TOLERANCE
+    high = max(hub) + STREAM_WINDOW_TOLERANCE
+    if not all(low <= n <= high for n in local):
+        raise DriveHold("redis_stream_window_mismatch")
+
+
 def check_hub(reading: dict) -> None:
     """One health reading must come from the configured, authoritative, running hub."""
     if SOURCE_HUB is None:
@@ -659,15 +677,7 @@ def check_source(before: dict, after: dict, meta: dict, recon: dict) -> dict:
             generation["replid"] != SOURCE_REDIS_REPLID
         ):
             raise DriveHold("redis_generation_mismatch")
-        lengths = [
-            before.get("stream_length"),
-            after.get("stream_length"),
-            *recon["redis_stream_xlen_before_after"],
-        ]
-        if not all(type(n) is int for n in lengths) or not (
-            min(lengths) <= recon["redis_stream_entries"] <= max(lengths)
-        ):
-            raise DriveHold("redis_stream_window_mismatch")
+        check_stream_window(before, after, recon)
     return {
         "schema": "agent-hub.history-source-binding/v1",
         "hub_identity": after.get("hub_identity"),
@@ -992,6 +1002,100 @@ def validate_source_binding(binding, snapshot: dict, manifest: dict) -> None:
             raise DriveHold("source_before_cutover")
 
 
+def package_reconciliation(root: Path) -> dict:
+    """Recompute the PG/Redis id accounting from the rows the package really holds."""
+    pg_ids, pg_lines = set(), 0
+    redis_ids, redis_lines, no_id = set(), 0, 0
+    try:
+        for path in sorted((root / "messages-pg").glob("*.ndjson.gz")):
+            with gzip.open(path, "rt", encoding="utf-8") as stream:
+                for line in stream:
+                    pg_ids.add(json.loads(line)["id"])
+                    pg_lines += 1
+        for path in sorted((root / "messages-redis-stream").glob("*.ndjson.gz")):
+            with gzip.open(path, "rt", encoding="utf-8") as stream:
+                for line in stream:
+                    ident = json.loads(line)["fields"].get("id")
+                    redis_lines += 1
+                    if ident is None:
+                        no_id += 1
+                    else:
+                        redis_ids.add(ident)
+    except (KeyError, TypeError, AttributeError):
+        raise DriveHold("package_row_unreadable") from None
+    return {
+        "pg_lines": pg_lines,
+        "pg_rows": len(pg_ids),
+        "redis_stream_entries": redis_lines,
+        "redis_unique_ids": len(redis_ids),
+        "redis_entries_without_id": no_id,
+        "only_in_pg": len(pg_ids - redis_ids),
+        "only_in_redis": len(redis_ids - pg_ids),
+        "uuid_union": len(pg_ids | redis_ids),
+    }
+
+
+def validate_package_difference(root: Path, binding: dict, manifest: dict) -> None:
+    """Every row and id the manifest, binding and reconciliation claim must be present.
+
+    The claims are compared with counts recomputed from the parts themselves, so a
+    package that holds fewer rows than it says, or that names a Redis-only message
+    its Redis part does not contain, is refused: that message could exist nowhere
+    else.
+    """
+    found = package_reconciliation(root)
+    if found["pg_lines"] != found["pg_rows"]:
+        raise DriveHold("pg_message_ids_not_unique")
+    if (
+        found["redis_entries_without_id"]
+        or found["redis_unique_ids"] != found["redis_stream_entries"]
+    ):
+        raise DriveHold("redis_stream_ids_not_unique")
+    claim = binding["store_difference"]
+    pg, stream = found["pg_rows"], found["redis_stream_entries"]
+    expected_claim = {
+        "pg_messages": pg,
+        "redis_stream_entries": stream,
+        "pg_minus_stream": pg - stream,
+        "only_in_pg": found["only_in_pg"],
+        "only_in_redis": found["only_in_redis"],
+        "in_both": pg - found["only_in_pg"],
+    }
+    if any(claim.get(k) != v for k, v in expected_claim.items()):
+        raise DriveHold("store_difference_mismatch")
+    for source in (
+        manifest.get("reconciliation"),
+        json.loads((root / "reconciliation.json").read_text()),
+    ):
+        if not isinstance(source, dict) or any(
+            source.get(k) != found[k]
+            for k in (
+                "redis_stream_entries",
+                "pg_rows",
+                "only_in_pg",
+                "only_in_redis",
+                "uuid_union",
+            )
+        ):
+            raise DriveHold("reconciliation_mismatch")
+
+
+def check_job_source(manifest: dict) -> None:
+    """A closed job may be uploaded only if it was bound to the configured source."""
+    if SOURCE_HUB is None:
+        return
+    binding = manifest.get("source_binding")
+    pg = binding.get("pg") if isinstance(binding, dict) else None
+    if (
+        not isinstance(pg, dict)
+        or binding.get("hub_identity_required") != SOURCE_HUB
+        or binding.get("hub_identity") != SOURCE_HUB
+        or binding.get("cutover_utc") != SOURCE_CUTOVER
+        or pg.get("system_identifier") != SOURCE_PG_SYSTEM
+    ):
+        raise DriveHold("job_not_bound_to_configured_source")
+
+
 def validate_drive_bundle(root: Path) -> dict:
     """Verify the exact census and parsed NDJSON; see README Drive restore."""
     if root.is_symlink() or not root.is_dir() or (root / "SHA256SUMS").is_symlink():
@@ -1081,6 +1185,7 @@ def validate_drive_bundle(root: Path) -> dict:
         raise DriveHold("export_snapshot_count_mismatch")
     if binding is not None:
         validate_source_binding(binding, snapshot, manifest)
+        validate_package_difference(root, binding, manifest)
     with (root / "redis-state/redis-side-channels.ndjson").open() as stream:
         for line in stream:
             if not isinstance(json.loads(line), dict):
@@ -1452,9 +1557,18 @@ def close_drive_job(job: Path, name: str) -> dict:
             or digest(job / "bundle/SHA256SUMS")[0] != binding["sha256sums_sha256"]
         ):
             raise DriveHold("closed_manifest_changed")
+        # A retained job is revalidated by the current validator every time, so a
+        # job closed by an older revision (or without a binding to the configured
+        # source) stays held; it is never uploaded just because a config appeared.
+        manifest = validate_drive_bundle(job / "bundle")
+        if manifest.get("source_binding") != binding.get("source_binding"):
+            raise DriveHold("closed_binding_changed")
+        check_job_source(manifest)
+        verify_archive(job / "archive.tar", job / "bundle")
         return binding
     bundle = job / "bundle"
     manifest = validate_drive_bundle(bundle)
+    check_job_source(manifest)
     if "history-" + digest(bundle / "SHA256SUMS")[0][:16] != name:
         raise DriveHold("history_name_mismatch")
     archive = job / "archive.tar"
