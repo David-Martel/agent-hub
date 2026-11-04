@@ -95,6 +95,7 @@ SOURCE_REDIS_REPLID = None
 MAX_ONLY_IN_REDIS = None
 MAX_SNAPSHOT_AGE = None
 UNCACHED = {"mode": "none"}
+UNCACHED_ATTEMPTS = 3
 SETTING_NAMES = (
     "STATE",
     "DRIVE_ROOT",
@@ -881,6 +882,9 @@ def drive_environment() -> dict:
 
 
 def drive_run(args: list[str], timeout: int = 120) -> bytes:
+    # The reason names the tool (never its arguments), so a hold says which command
+    # failed without logging paths, remotes or other payload.
+    tool = re.sub(r"[^A-Za-z0-9_.-]", "_", Path(args[0]).name)[:40]
     try:
         result = subprocess.run(
             args,
@@ -891,9 +895,11 @@ def drive_run(args: list[str], timeout: int = 120) -> bytes:
             check=False,
         )
     except subprocess.TimeoutExpired:
-        raise DriveHold("command_timeout") from None
+        raise DriveHold("command_timeout_" + tool) from None
+    except OSError:
+        raise DriveHold("command_unavailable_" + tool) from None
     if result.returncode:
-        raise DriveHold("command_failed_exit_" + str(result.returncode))
+        raise DriveHold(f"command_failed_{tool}_exit_{result.returncode}")
     return result.stdout
 
 
@@ -1333,8 +1339,18 @@ def uncached_digest(path: Path):
     if any("{win_path}" in part for part in args):
         win = drive_run(["wslpath", "-w", str(path)], timeout=30).decode().strip()
         args = [part.replace("{win_path}", win) for part in args]
+    # A just-written file can still be open on the writing side, which makes the
+    # reader fail once; a bounded retry separates that from a persistent failure.
+    for attempt in range(UNCACHED_ATTEMPTS):
+        try:
+            output = drive_run(args, timeout=3600)
+            break
+        except DriveHold:
+            if attempt == UNCACHED_ATTEMPTS - 1:
+                raise DriveHold("uncached_reader_failed") from None
+            time.sleep(2 * (attempt + 1))
     try:
-        value = json.loads(drive_run(args, timeout=3600).decode("utf-8-sig"))
+        value = json.loads(output.decode("utf-8-sig"))
         return {"sha256": value["sha256"].lower(), "bytes": value["bytes"]}
     except (ValueError, KeyError, TypeError, AttributeError):
         raise DriveHold("uncached_hash_unreadable") from None

@@ -751,6 +751,53 @@ class DriveTests(TempDirCase):
             hx.close_drive_job(job, binding["name"])
         self.assertEqual(calls, [binding["cipher_file"]])
 
+    def test_drive_command_failure_names_the_tool_but_not_its_arguments(self):
+        """Protects: diagnosable holds without payload in logs. Detects: a generic
+        exit code that cannot say which command failed, a missing tool escaping as
+        an unexplained OSError, or an argument leaking into the reason.
+        Needs: the running Python only. Breadcrumb: drive_run.
+        """
+        with self.assertRaises(hx.DriveHold) as failed:
+            hx.drive_run([sys.executable, "-c", "import sys; sys.exit(3)", "SECRET"])
+        reason = str(failed.exception)
+        self.assertRegex(reason, r"^command_failed_.*python.*_exit_3$")
+        self.assertNotIn("SECRET", reason)
+        with self.assertRaisesRegex(hx.DriveHold, "command_unavailable_no-such-tool"):
+            hx.drive_run(["/no/such/dir/no-such-tool"])
+
+    def test_drive_uncached_reader_failure_is_retried_then_held(self):
+        """Protects: a reader that fails once on a just-written file (observed on
+        dtm-work) not discarding a good export, and a dead reader not passing.
+        Detects: no retry, or an unreadable reader being treated as a pass. Needs: a
+        stand-in drive_run and sleep. Breadcrumb: uncached_digest.
+        """
+        target = self.tmp / "file.bin"
+        target.write_bytes(b"abc")
+        answer = b'{"sha256": "' + b"a" * 64 + b'", "bytes": 3}'
+        outcomes = [hx.DriveHold("command_failed_exit_1"), answer]
+
+        def flaky(args, timeout=120):
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return outcome
+
+        with (
+            mock.patch.object(hx, "UNCACHED", {"mode": "command", "command": ["r"]}),
+            mock.patch.object(hx.time, "sleep"),
+            mock.patch.object(hx, "drive_run", side_effect=flaky),
+        ):
+            self.assertEqual(hx.uncached_digest(target)["bytes"], 3)
+        dead = hx.DriveHold("command_failed_exit_1")
+        with (
+            mock.patch.object(hx, "UNCACHED", {"mode": "command", "command": ["r"]}),
+            mock.patch.object(hx.time, "sleep"),
+            mock.patch.object(hx, "drive_run", side_effect=dead) as run,
+            self.assertRaisesRegex(hx.DriveHold, "uncached_reader_failed"),
+        ):
+            hx.uncached_digest(target)
+        self.assertEqual(run.call_count, hx.UNCACHED_ATTEMPTS)
+
     def test_drive_uncached_command_gets_a_windows_path_from_wslpath(self):
         """Protects: the Windows-side reader being given a path it can open.
         Detects: {win_path} reaching the command unexpanded, or the reader's
