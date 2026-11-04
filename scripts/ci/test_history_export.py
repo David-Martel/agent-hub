@@ -783,6 +783,34 @@ class DriveTests(TempDirCase):
         with mock.patch.object(hx.subprocess, "run", return_value=ok):
             store.auth_check()
 
+    def test_drive_tar_read_back_must_equal_the_bytes_that_were_written(self):
+        """Protects: the stored tar being compared with what was produced, not
+        merely recorded. Detects: a read-back that differs from the hash taken while
+        the tar was written being accepted. Needs: synthetic bundle.
+        Breadcrumb: HashingWriter, close_drive_job.
+        """
+        bundle, name = self.bundle()
+        job = self.tmp / "job"
+        job.mkdir()
+        shutil.move(str(bundle), job / "bundle")
+        recipient = self.tmp / "recipient"
+        recipient.write_text("fixture-public-recipient")
+        self.patch_recipient(recipient)
+        real = hx.drive_hash
+
+        def corrupt(path):
+            got = real(path)
+            return {**got, "sha256": "0" * 64} if path.name == "archive.tar" else got
+
+        with (
+            mock.patch.object(hx, "drive_hash", side_effect=corrupt),
+            mock.patch.object(hx, "drive_run") as encrypt,
+            self.assertRaisesRegex(hx.DriveHold, "archive_differs_from_written_bytes"),
+        ):
+            hx.close_drive_job(job, name)
+        encrypt.assert_not_called()
+        self.assertFalse((job / "binding.json").exists())
+
     def test_drive_command_failure_names_the_tool_but_not_its_arguments(self):
         """Protects: diagnosable holds without payload in logs. Detects: a generic
         exit code that cannot say which command failed, a missing tool escaping as
@@ -2485,7 +2513,7 @@ class WorkCaptureTests(SettingsCase):
         self.assertIn(" STALE", self.notice.call_args.args[0])
 
 
-class WorkPackagingTests(unittest.TestCase):
+class WorkPackagingTests(TempDirCase):
     def read(self, name: str) -> str:
         return (PKG / "systemd" / name).read_text()
 
@@ -2521,16 +2549,24 @@ class WorkPackagingTests(unittest.TestCase):
         self.assertIn("OnCalendar=daily", timer)
         self.assertIn("Persistent=true", timer)
 
-    def test_uncached_reader_is_unbuffered_and_read_only(self):
-        """Protects: the Windows-side uncached read. Detects: the reader dropping
-        FILE_FLAG_NO_BUFFERING (a cached read proves nothing about stored bytes) or
-        gaining any write, delete or network call. Needs: script text only.
-        Breadcrumb: windows/Get-UncachedHash.ps1.
+    def test_uncached_reader_uses_aligned_native_memory_and_is_read_only(self):
+        """Protects: the Windows-side uncached read. Detects: the reader reverting to
+        a managed array under FILE_FLAG_NO_BUFFERING (which needs sector-aligned
+        memory), dropping the flag, or gaining any write, delete or network call.
+        Needs: script text only. Breadcrumb: windows/Get-UncachedHash.ps1.
         """
         ps1 = (PKG / "windows" / "Get-UncachedHash.ps1").read_text()
-        self.assertIn("0x20000000", ps1)
-        self.assertIn("SHA256", ps1)
-        self.assertIn("[IO.FileAccess]::Read", ps1)
+        for needed in (
+            "0x20000000",
+            "VirtualAlloc",
+            "CreateFileW",
+            "ReadFile",
+            "SHA256",
+        ):
+            self.assertIn(needed, ps1)
+        self.assertNotIn("FileStream", ps1)
+        self.assertNotIn("FileOptions", ps1)
+        self.assertNotIn("HubBackup", ps1.replace("HubBackup.DiskHash in", ""))
         for forbidden in (
             "Set-Content",
             "Out-File",
@@ -2538,9 +2574,47 @@ class WorkPackagingTests(unittest.TestCase):
             "Remove-Item",
             "Invoke-WebRequest",
             "Invoke-RestMethod",
-            "[IO.FileAccess]::Write",
+            "GenericWrite",
         ):
             self.assertNotIn(forbidden, ps1)
+
+    @unittest.skipUnless(
+        sys.platform == "win32" and shutil.which("powershell"),
+        "the unbuffered reader needs Windows PowerShell",
+    )
+    def test_uncached_reader_matches_get_filehash_at_awkward_sizes(self):
+        """Protects: the reader's hash and length on sizes that straddle the sector
+        and block sizes. Detects: a wrong hash or length for 0, 1, 511, 512, 4097,
+        1 MiB and 3 MiB + 1 bytes. Needs: Windows PowerShell and a temp directory.
+        Breadcrumb: windows/Get-UncachedHash.ps1.
+        """
+        script = PKG / "windows" / "Get-UncachedHash.ps1"
+        for size in (0, 1, 511, 512, 4097, 1024**2, 3 * 1024**2 + 1):
+            with self.subTest(size=size):
+                path = self.tmp / f"f{size}.bin"
+                data = os.urandom(size)
+                path.write_bytes(data)
+                run = subprocess.run(
+                    [
+                        shutil.which("powershell"),
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(script),
+                        "-Path",
+                        str(path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+                self.assertEqual(run.returncode, 0, run.stderr)
+                got = json.loads(run.stdout)
+                self.assertEqual(got["sha256"], hashlib.sha256(data).hexdigest())
+                self.assertEqual(got["bytes"], size)
 
 
 if __name__ == "__main__":

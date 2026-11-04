@@ -1456,6 +1456,24 @@ class DriveStore:
         return {"object": obj, "full_readback": self.readback(name, expected)}
 
 
+class HashingWriter:
+    """Write-through wrapper that hashes every byte as it is written."""
+
+    def __init__(self, stream) -> None:
+        self.stream, self.sha, self.size = stream, hashlib.sha256(), 0
+
+    def write(self, data) -> int:
+        self.sha.update(data)
+        self.size += len(data)
+        return self.stream.write(data)
+
+    def tell(self) -> int:
+        return self.stream.tell()
+
+    def flush(self) -> None:
+        self.stream.flush()
+
+
 def uncached_digest(path: Path):
     """Hash a file by a read that bypasses the cache of the layer that wrote it.
 
@@ -1581,15 +1599,21 @@ def close_drive_job(job: Path, name: str) -> dict:
     needed = sum(p.stat().st_size for p in bundle.rglob("*") if p.is_file())
     if shutil.disk_usage(job).free < DRIVE_RESERVE + needed * 3 + 1024**2:
         raise DriveHold("backup_100GiB_reserve")
-    with tarfile.open(archive, "x") as output:
-        for path in sorted(p for p in bundle.rglob("*") if p.is_file()):
-            header = tarfile.TarInfo(path.relative_to(bundle).as_posix())
-            header.size, header.mode = path.stat().st_size, 0o600
-            with path.open("rb") as stream:
-                output.addfile(header, stream)
-    with archive.open("r+b") as stream:
-        os.fsync(stream.fileno())
+    # The tar is hashed as it is written, before any flush or read-back, so the
+    # later reads are compared with the bytes that were produced, not recorded.
+    with archive.open("xb") as raw_file:
+        writer = HashingWriter(raw_file)
+        with tarfile.open(fileobj=writer, mode="w") as output:
+            for path in sorted(p for p in bundle.rglob("*") if p.is_file()):
+                header = tarfile.TarInfo(path.relative_to(bundle).as_posix())
+                header.size, header.mode = path.stat().st_size, 0o600
+                with path.open("rb") as stream:
+                    output.addfile(header, stream)
+        raw_file.flush()
+        os.fsync(raw_file.fileno())
     plain = drive_hash(archive)
+    if (plain["sha256"], plain["bytes"]) != (writer.sha.hexdigest(), writer.size):
+        raise DriveHold("archive_differs_from_written_bytes")
     check_uncached(archive, plain)
     verify_archive(archive, bundle)
     if digest(DRIVE_RECIPIENT)[0] != DRIVE_RECIPIENT_SHA:
@@ -1607,11 +1631,13 @@ def close_drive_job(job: Path, name: str) -> dict:
         ],
         timeout=3600,
     )
+    # Hash straight after age exits, before the flush; the uncached read of the
+    # stored file must then equal it.
+    cipher = drive_hash(pending)
     with pending.open("r+b") as stream:
         os.fsync(stream.fileno())
     if drive_hash(archive) != plain:
         raise DriveHold("plaintext_changed_during_encryption")
-    cipher = drive_hash(pending)
     check_uncached(pending, cipher)
     cipher_file = cipher["sha256"] + ".age"
     if (job / cipher_file).exists():
