@@ -66,26 +66,29 @@ class ToolchainPolicyTests(unittest.TestCase):
             "Windows, X64, agent-hub-native-smoke]",
             "Linux, X64, docker]",
         ):
-            with self.subTest(labels=labels):
-                self.assertIn(
-                    labels, source, "routing mutation must change the fixture"
-                )
-                path.write_text(source.replace(labels, labels[:-1] + ", vigil1]", 1))
-                self.assertIn(
-                    "vigil1 cannot receive unqualified Docker or Windows jobs",
-                    POLICY_MODULE.verify_sources(self.root, self.policy),
-                )
+            for host_label in ("vigil1", "agent-hub-local"):
+                with self.subTest(labels=labels, host_label=host_label):
+                    self.assertIn(
+                        labels, source, "routing mutation must change the fixture"
+                    )
+                    path.write_text(
+                        source.replace(labels, labels[:-1] + f", {host_label}]", 1)
+                    )
+                    self.assertIn(
+                        "vigil1 cannot receive unqualified Docker or Windows jobs",
+                        POLICY_MODULE.verify_sources(self.root, self.policy),
+                    )
 
     def test_release_build_cannot_drift_back_to_generic_linux(self):
         path = self.root / ".github/workflows/release.yml"
         path.write_text(
             path.read_text().replace(
-                '["self-hosted","Linux","X64","vigil1"]',
+                '["self-hosted","Linux","X64","agent-hub-local"]',
                 '["self-hosted","Linux","X64"]',
             )
         )
         self.assertIn(
-            "Linux x64 release build is not routed to vigil1",
+            "Linux x64 release build is not routed to agent-hub-local",
             POLICY_MODULE.verify_sources(self.root, self.policy),
         )
 
@@ -398,6 +401,7 @@ class ToolchainPolicyTests(unittest.TestCase):
         env = {
             "PATH": "/usr/bin:/bin",
             "HOME": str(home),
+            "CARGO_HOME": str(home / ".cargo"),
             "GITHUB_PATH": str(published),
         }
         subprocess.run(
@@ -433,6 +437,42 @@ class ToolchainPolicyTests(unittest.TestCase):
         )
         self.assertEqual(result.stdout.strip(), "sccache 0.18.0")
         self.assertEqual({client: client.read_bytes() for client in original}, original)
+
+    @unittest.skipUnless(
+        sys.platform == "linux" and shutil.which("bash"),
+        "Linux Bash PATH publication control",
+    )
+    def test_next_step_path_follows_a_preset_cargo_home(self):
+        """
+        Protects: Later steps find cargo on a runner image that moves CARGO_HOME.
+        Detects: setup-rust publishing only $HOME/.cargo/bin (dtm-super-nuc).
+        Needs: Linux Bash; no Rust/cache daemon.
+        Breadcrumb: scripts/ci/setup-rust.sh GITHUB_PATH block.
+        """
+        source = (POLICY_MODULE.ROOT / "scripts/ci/setup-rust.sh").read_text()
+        block = re.search(
+            r'if \[\[ -n "\$\{GITHUB_PATH:-\}" \]\]; then\n.*?\nfi', source, re.S
+        ).group()
+        cargo_home = self.root / "cache" / "cargo"
+        published = self.root / "github-path"
+        subprocess.run(
+            [
+                shutil.which("bash"),
+                "-euc",
+                'sccache_tools="$1"\n' + block,
+                "fixture",
+                str(self.root / "qualified-tools"),
+            ],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(self.root / "home"),
+                "CARGO_HOME": str(cargo_home),
+                "GITHUB_PATH": str(published),
+            },
+            check=True,
+            timeout=5,
+        )
+        self.assertIn(str(cargo_home / "bin"), published.read_text().splitlines())
 
 
 if __name__ == "__main__":
