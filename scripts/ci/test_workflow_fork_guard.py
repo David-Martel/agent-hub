@@ -46,8 +46,8 @@ def _strip_expr(text: str) -> str:
     return text
 
 
-def _conjuncts(expr: str) -> list[str]:
-    """Split on top-level `&&` and drop one layer of enclosing parentheses."""
+def _split_top(expr: str, op: str) -> list[str]:
+    """Split on a top-level operator and drop one layer of enclosing parentheses."""
     parts, depth, start, i = [], 0, 0, 0
     while i < len(expr):
         ch = expr[i]
@@ -55,23 +55,43 @@ def _conjuncts(expr: str) -> list[str]:
             depth += 1
         elif ch == ")":
             depth -= 1
-        elif expr.startswith("&&", i) and depth == 0:
+        elif expr.startswith(op, i) and depth == 0:
             parts.append(expr[start:i])
-            start = i + 2
-            i += 1
+            start = i + len(op)
+            i += len(op) - 1
         i += 1
     parts.append(expr[start:])
-    out = []
-    for part in parts:
-        part = part.strip()
-        if part.startswith("(") and part.endswith(")"):
-            part = part[1:-1].strip()
-        out.append(part)
-    return out
+    return [_unwrap(part) for part in parts]
+
+
+def _unwrap(part: str) -> str:
+    """Drop parentheses only when one pair encloses the whole expression.
+
+    `(a || b) && c()` starts with `(` and ends with `)` but is not enclosed.
+    """
+    part = part.strip()
+    while part.startswith("(") and part.endswith(")"):
+        depth = 0
+        for k, ch in enumerate(part):
+            depth += ch == "("
+            depth -= ch == ")"
+            if depth == 0 and k < len(part) - 1:
+                return part
+        part = part[1:-1].strip()
+    return part
 
 
 def is_guarded(if_expr: str) -> bool:
-    return any(c in SAFE_CONJUNCTS for c in _conjuncts(_strip_expr(if_expr)))
+    """True only when the whole condition is false for every fork pull request.
+
+    `||` binds looser than `&&`, so a top-level disjunction is guarded only when it
+    IS one of the complete guard forms: any other branch could admit a fork on its
+    own (codex review of #237). Otherwise one conjunct must be a guard.
+    """
+    expr = _unwrap(_strip_expr(if_expr))
+    if len(_split_top(expr, "||")) > 1:
+        return expr in SAFE_CONJUNCTS
+    return any(c in SAFE_CONJUNCTS for c in _split_top(expr, "&&"))
 
 
 def _indent(line: str) -> int:
@@ -88,6 +108,17 @@ def _block_value(lines: list[str], i: int, indent: int) -> tuple[str, int]:
         if lines[j].strip() and not lines[j].strip().startswith("#"):
             vals.append(lines[j].strip())
         j += 1
+    # YAML also allows a block sequence at the key's own indent (`runs-on:` then
+    # `- self-hosted` on the same column). Skipping it read runs-on as empty and
+    # passed a self-hosted job (codex review of #237).
+    if not rest:
+        while (
+            j < len(lines)
+            and _indent(lines[j]) == indent
+            and lines[j].lstrip().startswith("- ")
+        ):
+            vals.append(lines[j].strip())
+            j += 1
     return " ".join(vals), j
 
 
@@ -185,6 +216,12 @@ UNSAFE = {
     + "  a:\n    runs-on: ubuntu-latest\n",
     "issue_comment": "on:\n  issue_comment:\njobs:\n"
     + "  a:\n    runs-on: [self-hosted]\n",
+    "or after and": HEAD
+    + "  a:\n    runs-on: [self-hosted]\n"
+    + "    if: github.event_name == 'pull_request' || github.event_name == 'push'"
+    + " && github.event_name != 'pull_request'\n",
+    "sequence at key indent": HEAD
+    + "  a:\n    runs-on:\n    - self-hosted\n    - Linux\n",
     "workflow_run checkout": "on:\n  workflow_run:\njobs:\n"
     + "  a:\n    runs-on: [self-hosted]\n    steps:\n"
     + "      - uses: actions/checkout@v7\n",
@@ -196,6 +233,8 @@ GUARDED = (
     + "  b:\n    runs-on: [self-hosted]\n"
     + "    if: ${{ github.event_name != 'pull_request' && !cancelled() }}\n"
     + "  c:\n    runs-on: ubuntu-latest\n"
+    + "  d:\n    runs-on:\n    - self-hosted\n"
+    + f"    if: (github.event_name != 'pull_request' || {GUARD}) && !cancelled()\n"
 )
 
 
