@@ -100,7 +100,7 @@ pub(crate) enum OutboxCmd {
     /// Recovers from a hub candidate or authority change that left requests
     /// retained in the outbox journal. Unsent requests (replay never attempted)
     /// are re-queued with their original request IDs under the current
-    /// candidates. The old journal is renamed to journal.retired-<origin>.jsonl,
+    /// candidates. The old journal is renamed to journal.migrated-<origin>.jsonl,
     /// never rewritten or deleted. A request whose replay was attempted and never
     /// settled may have been accepted by the previous authority; it refuses the
     /// migration unless --include-attempted archives it (it is listed, never

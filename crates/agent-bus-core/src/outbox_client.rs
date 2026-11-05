@@ -158,6 +158,21 @@ fn journal_present(path: &Path) -> Result<bool> {
     }
 }
 
+/// Open or create the active journal without racing a migration.
+///
+/// The directory lock is held only for this attempt: it finishes an interrupted
+/// migration first, then opens (or creates) the journal, whose own lock then
+/// protects it. A migration holds the same lock across its two renames, so a
+/// writer waits instead of creating a second active journal in between.
+fn open_active(path: &Path, scope: &str) -> std::result::Result<Journal, OutboxError> {
+    let _directory = lock_directory_until(path, Instant::now())?;
+    if let Err(error) = recover_interrupted_migration(path) {
+        tracing::error!(%error, "interrupted outbox migration could not be completed");
+        return Err(OutboxError::Custody);
+    }
+    Journal::open(path, scope)
+}
+
 /// Retry busy journals without scheduling waits beyond the original deadline.
 fn open_journal_until(
     path: &Path,
@@ -179,7 +194,7 @@ fn open_journal_until_with(
     loop {
         // Always acquire after a capped wait, even if the scheduler woke late:
         // the previous writer may have released custody during that wait.
-        match Journal::open(path, scope) {
+        match open_active(path, scope) {
             Err(OutboxError::Busy) => {
                 let remaining = deadline.saturating_duration_since(now());
                 if remaining.is_zero() {
@@ -225,9 +240,8 @@ pub fn submit<T: NativeReplayTransport>(
         })?;
         path
     };
-    // A migration that stopped after archiving the old journal must finish
-    // before a write could create a second active journal beside its staging file.
-    recover_interrupted_migration(&path)?;
+    // `open_journal_until` finishes an interrupted migration under the directory
+    // lock before it opens or creates the active journal.
     let mut journal = match open_journal_until(&path, &scope, route.deadline) {
         // Editing the candidate list rebinds a journal that owes nothing to
         // its previous destination; retained requests still refuse below.
@@ -325,6 +339,21 @@ const STALE_AFTER_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 /// Prefix of a journal written in full beside the active one during a migration.
 const STAGING_PREFIX: &str = "journal.migrating-";
 
+/// Prefix of the old journal once a migration has archived it.
+///
+/// Its existence is the commit point of a migration: a staging journal is
+/// promoted only when the archive for the same origin exists, so a staging file
+/// left by an attempt that never got that far is never mistaken for one that did.
+/// An ordinary retirement uses `journal.retired-` and does not count.
+const MIGRATED_PREFIX: &str = "journal.migrated-";
+
+/// Serializes changes to the journal's directory entry across processes.
+///
+/// Held while a migration moves files and while a writer finishes an interrupted
+/// migration and opens or creates the active journal, so a writer can never
+/// create a fresh active journal in the gap between a migration's two renames.
+const DIRECTORY_LOCK: &str = "journal.lock";
+
 /// Inspect stable pending IDs without submitting a replacement request.
 ///
 /// Read-only apart from the shared journal lock it holds while reading. Each
@@ -332,7 +361,9 @@ const STAGING_PREFIX: &str = "journal.migrating-";
 /// counts the unsent (`never_attempted`), the unsettled attempted
 /// (`attempted_unsettled`) and the stale (`stale`, older than `stale_after_ms`).
 /// When the journal is bound to another candidate list the report says why and
-/// names the supported recovery in `recovery`.
+/// names the supported recovery in `recovery`. After a migration stopped between
+/// its renames the report describes the staged journal, which holds the debt,
+/// and names it in `interrupted_migration`.
 ///
 /// # Errors
 /// Invalid destination or private journal custody, corruption or contention.
@@ -342,16 +373,21 @@ pub fn status(settings: &Settings, path_override: Option<&Path>) -> Result<Value
         Some(path) => path.to_owned(),
         None => journal_path(&scope)?,
     };
-    if !journal_present(&path)? {
-        let mut report = json!({"pending":0,"requests":[]});
-        if let Some(staging) = staging_journals(&path)?.first() {
-            // A migration stopped after retiring the old journal. The next
-            // write, flush or migrate completes it; looking changes nothing.
-            report["interrupted_migration"] = json!(file_name_text(staging));
+    let interrupted = if journal_present(&path)? {
+        None
+    } else {
+        committed_staging(&path)?.into_iter().next()
+    };
+    let (source, interrupted_name) = match &interrupted {
+        Some(staging) => (staging.as_path(), Some(file_name_text(staging))),
+        None if journal_present(&path)? => (path.as_path(), None),
+        None => {
+            let mut report = json!({"pending":0,"requests":[]});
+            add_stale_staging(&mut report, &path)?;
+            return Ok(report);
         }
-        return Ok(report);
-    }
-    let inspection = Journal::inspect(&path).map_err(|_sanitized| {
+    };
+    let inspection = Journal::inspect(source).map_err(|_sanitized| {
         AgentBusError::Internal(
             "private durable outbox status unavailable; preserve journal".to_owned(),
         )
@@ -379,6 +415,9 @@ pub fn status(settings: &Settings, path_override: Option<&Path>) -> Result<Value
             summary["stale"] = json!(request_age_ms(request, now) >= STALE_AFTER_MS);
             summary
         }).collect::<Vec<_>>()});
+    if let Some(name) = interrupted_name {
+        report["interrupted_migration"] = json!(name);
+    }
     if let Some(stored) = inspection
         .destination
         .as_deref()
@@ -408,7 +447,22 @@ pub fn status(settings: &Settings, path_override: Option<&Path>) -> Result<Value
             });
         }
     }
+    add_stale_staging(&mut report, &path)?;
     Ok(report)
+}
+
+/// Name staging journals that no committed migration owns, without touching them.
+fn add_stale_staging(report: &mut Value, path: &Path) -> Result<()> {
+    let committed = committed_staging(path)?;
+    let stale = staging_journals(path)?
+        .into_iter()
+        .filter(|staging| !committed.contains(staging))
+        .map(|staging| file_name_text(&staging))
+        .collect::<Vec<_>>();
+    if !stale.is_empty() {
+        report["stale_staging"] = json!(stale);
+    }
+    Ok(())
 }
 
 fn request_age_ms(request: &ReplayRequest, now: u64) -> u64 {
@@ -421,7 +475,7 @@ fn file_name_text(path: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Staging journals left beside `path` by a migration, in name order.
+/// Staging journals left beside `path` by migrations, committed or not, in name order.
 fn staging_journals(path: &Path) -> Result<Vec<PathBuf>> {
     let Some(directory) = path.parent() else {
         return Ok(Vec::new());
@@ -444,11 +498,67 @@ fn staging_journals(path: &Path) -> Result<Vec<PathBuf>> {
                 && Path::new(&name)
                     .extension()
                     .is_some_and(|extension| extension == "jsonl")
-                && !name.contains(".partial")
+                && !name.contains(".partial.")
         })
         .collect::<Vec<_>>();
     found.sort();
     Ok(found)
+}
+
+/// The origin a staging journal was written for, from its name.
+fn staging_origin(staging: &Path) -> Option<String> {
+    file_name_text(staging)
+        .strip_prefix(STAGING_PREFIX)
+        .and_then(|name| name.strip_suffix(".jsonl"))
+        .map(str::to_owned)
+}
+
+/// Staging journals whose migration reached its commit point (the archive exists).
+fn committed_staging(path: &Path) -> Result<Vec<PathBuf>> {
+    Ok(staging_journals(path)?
+        .into_iter()
+        .filter(|staging| {
+            staging_origin(staging).is_some_and(|origin| {
+                std::fs::symlink_metadata(
+                    path.with_file_name(format!("{MIGRATED_PREFIX}{origin}.jsonl")),
+                )
+                .is_ok()
+            })
+        })
+        .collect())
+}
+
+/// Hold the directory lock, waiting until `deadline` for another holder.
+fn lock_directory_until(
+    path: &Path,
+    deadline: Instant,
+) -> std::result::Result<DirectoryLock, OutboxError> {
+    let lock_path = path.with_file_name(DIRECTORY_LOCK);
+    let mut delay = Duration::from_millis(10);
+    loop {
+        let file =
+            crate::outbox_private::open(&lock_path).map_err(|_sanitized| OutboxError::Custody)?;
+        match file.try_lock() {
+            Ok(()) => return Ok(DirectoryLock(file)),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(OutboxError::Busy);
+                }
+                std::thread::sleep(delay.min(remaining));
+                delay = (delay * 2).min(Duration::from_millis(100));
+            }
+            Err(std::fs::TryLockError::Error(error)) => return Err(OutboxError::Io(error)),
+        }
+    }
+}
+
+/// An exclusive lock on the journal directory's namespace, released on drop.
+struct DirectoryLock(std::fs::File);
+impl Drop for DirectoryLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 fn request_summary(request: &ReplayRequest) -> Value {
@@ -650,12 +760,16 @@ fn report_entry(request: &ReplayRequest, now: u64) -> Value {
 ///    never re-sent;
 /// 2. the carried requests are written in full to a staging journal bound to
 ///    the current candidates;
-/// 3. the old journal is renamed to `journal.retired-<origin>.jsonl`, never
-///    rewritten or deleted;
+/// 3. the old journal is renamed to `journal.migrated-<origin>.jsonl`, never
+///    rewritten or deleted. This is the commit point;
 /// 4. the staging journal is renamed into place.
 ///
-/// A stop between steps 3 and 4 leaves the complete staging journal beside the
-/// archive; the next write, flush, status or migrate finishes the move.
+/// The directory lock (`journal.lock`) is held throughout, and writers take it
+/// to open or create the active journal, so none can create one in the gap
+/// between steps 3 and 4. A stop in that gap leaves the complete, committed
+/// staging journal beside the archive; the next write, flush or migrate
+/// finishes the move, and status describes it meanwhile. A staging journal
+/// without its archive was never committed and is never promoted.
 ///
 /// The report lists what was carried, expired and abandoned by request ID,
 /// operation, topic, thread and age. It never contains a body.
@@ -696,11 +810,33 @@ fn migrate_with_hook(
         Some(path) => path.to_owned(),
         None => journal_path(&scope)?,
     };
-    let finished = recover_interrupted_migration(&path)?;
+    let _directory =
+        lock_directory_until(&path, Instant::now() + Duration::from_secs(5)).map_err(|error| {
+            match error {
+                OutboxError::Busy => AgentBusError::Internal(
+                    "another outbox command is changing the journal; retry".to_owned(),
+                ),
+                _sanitized => {
+                    AgentBusError::Internal("outbox directory lock could not be taken".to_owned())
+                }
+            }
+        })?;
+    if options.dry_run && !journal_present(&path)? {
+        // A plan must not rename anything, so it only reports a pending recovery.
+        if let Some(staging) = committed_staging(&path)?.first() {
+            return Ok(json!({"migrated":false,"dry_run":true,
+                "interrupted_migration":file_name_text(staging),
+                "reason":"an interrupted migration would be completed first"}));
+        }
+    }
+    if !options.dry_run
+        && let Some(staging) = recover_interrupted_migration(&path)?
+    {
+        return Ok(json!({"migrated":false,"completed_interrupted":true,
+            "completed":file_name_text(&staging)}));
+    }
     if !journal_present(&path)? {
-        return Ok(json!({"migrated":false,
-            "reason": if finished.is_some() { "completed an interrupted migration" } else { "no journal" },
-            "completed_interrupted": finished.is_some()}));
+        return Ok(json!({"migrated":false,"reason":"no journal"}));
     }
     let inspection = Journal::inspect(&path).map_err(|_sanitized| {
         AgentBusError::Internal("durable outbox inspection failed; preserve journal".to_owned())
@@ -755,7 +891,7 @@ fn migrate_with_hook(
         "carried":listed(Fate::Carry),"expired":listed(Fate::Expired),
         "archived":listed(Fate::Archive),"abandoned":listed(Fate::Abandon)});
 
-    let archive = path.with_file_name(format!("journal.retired-{origin_id}.jsonl"));
+    let archive = path.with_file_name(format!("{MIGRATED_PREFIX}{origin_id}.jsonl"));
     let staging = path.with_file_name(format!("{STAGING_PREFIX}{origin_id}.jsonl"));
     for target in [&archive, &staging] {
         crate::outbox_private::plain_path(target).map_err(|_sanitized| {
@@ -766,7 +902,7 @@ fn migrate_with_hook(
     }
     if std::fs::symlink_metadata(&archive).is_ok() {
         return Err(AgentBusError::Internal(
-            "retired outbox journal already exists; preserve both journals".to_owned(),
+            "migrated outbox journal already exists; preserve both journals".to_owned(),
         ));
     }
     set_aside_partial_staging(&staging, origin_id)?;
@@ -830,15 +966,16 @@ fn set_aside_partial_staging(staging: &Path, origin_id: uuid::Uuid) -> Result<()
 
 /// Finish a migration that stopped after the old journal was archived.
 ///
-/// Only acts when there is no active journal and exactly one complete staging
-/// journal; returns its name when it moved one into place. With an active
-/// journal present a staging file belongs to an attempt that never reached the
-/// archive step and is left alone.
+/// Only acts when there is no active journal and exactly one committed staging
+/// journal (its `journal.migrated-` archive exists); returns it when it moved
+/// one into place. A staging file without that archive belongs to an attempt
+/// that never reached the commit point, and may belong to a journal that is
+/// still live, so it is left alone. The caller holds the directory lock.
 fn recover_interrupted_migration(path: &Path) -> Result<Option<PathBuf>> {
     if journal_present(path)? {
         return Ok(None);
     }
-    let mut staged = staging_journals(path)?;
+    let mut staged = committed_staging(path)?;
     let Some(staging) = staged.pop() else {
         return Ok(None);
     };
@@ -890,8 +1027,9 @@ fn flush_pending_with_hook<T: NativeReplayTransport>(
         Some(path) => path.to_owned(),
         None => journal_path(&scope)?,
     };
-    recover_interrupted_migration(&path)?;
-    if !journal_present(&path)? {
+    // With the active path vacant, a committed staging journal holds the debt;
+    // opening below finishes the migration that left it.
+    if !journal_present(&path)? && committed_staging(&path)?.is_empty() {
         return Ok(json!({"remaining":0,"applied":0,"requests_submitted":0}));
     }
     let (scope, route) = replay_context(settings, transport)?;
@@ -1093,7 +1231,7 @@ mod tests {
         std::fs::read_dir(path.parent().unwrap())
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .filter(|candidate| candidate != path)
+            .filter(|candidate| candidate != path && file_name_text(candidate) != DIRECTORY_LOCK)
             .collect()
     }
 
@@ -2134,7 +2272,7 @@ mod tests {
         let siblings = retired_siblings(&path);
         assert_eq!(siblings.len(), 1, "{siblings:?}");
         assert_eq!(std::fs::read(&siblings[0]).unwrap(), original);
-        assert!(file_name_text(&siblings[0]).starts_with("journal.retired-"));
+        assert!(file_name_text(&siblings[0]).starts_with(MIGRATED_PREFIX));
 
         // The new journal is bound to the new authority and holds the same IDs.
         let after = status(&new, Some(&path)).unwrap();
@@ -2325,44 +2463,16 @@ mod tests {
     /// Breadcrumb: `migrate_with_hook` and `recover_interrupted_migration`.
     #[test]
     fn interrupted_migration_is_finished_by_the_next_write_before_it_creates_a_journal() {
-        let root = tempfile::tempdir().unwrap();
-        let path = private_journal_path(&root);
-        let (_old, queued, base) = journal_on_old_authority(&path);
-        let new = named_authority_settings("new-hub", "http://localhost:8485");
-        let stopped = migrate_with_hook(
-            &new,
-            Some(&path),
-            MigrateOptions::default(),
-            base + 10_000,
-            || Err(AgentBusError::Internal("simulated stop".to_owned())),
-        );
-        assert!(stopped.is_err());
-        assert!(!path.exists(), "the old journal was archived");
-        let listing = || {
-            let mut names = std::fs::read_dir(path.parent().unwrap())
-                .unwrap()
-                .map(|entry| file_name_text(&entry.unwrap().path()))
-                .collect::<Vec<_>>();
-            names.sort();
-            names
-        };
-        let names = listing();
+        let (_root, path, new, queued) = migration_stopped_between_renames();
+        let names = journal_directory_names(&path);
         assert_eq!(names.len(), 2, "{names:?}");
-        assert!(
-            names
-                .iter()
-                .any(|name| name.starts_with("journal.retired-"))
-        );
-        assert!(
-            names
-                .iter()
-                .any(|name| name.starts_with("journal.migrating-"))
-        );
+        assert!(names.iter().any(|name| name.starts_with(MIGRATED_PREFIX)));
+        assert!(names.iter().any(|name| name.starts_with(STAGING_PREFIX)));
 
         // Looking changes nothing and says what happened.
         let report = status(&new, Some(&path)).unwrap();
         assert!(report["interrupted_migration"].is_string());
-        assert_eq!(listing(), names);
+        assert_eq!(journal_directory_names(&path), names);
 
         // The next write finishes the move first, so the carried requests keep
         // their place ahead of the new one.
@@ -2376,13 +2486,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(response["status"], "queued", "{response}");
-        let names = listing();
+        let names = journal_directory_names(&path);
         assert_eq!(names.len(), 2, "{names:?}");
-        assert!(
-            names
-                .iter()
-                .all(|name| !name.starts_with("journal.migrating-"))
-        );
+        assert!(names.iter().all(|name| !name.starts_with(STAGING_PREFIX)));
         let after = status(&new, Some(&path)).unwrap();
         let ids = after["requests"]
             .as_array()
@@ -2393,6 +2499,191 @@ mod tests {
         assert_eq!(ids.len(), 3);
         assert_eq!(ids[0], queued[0].request_id.to_string());
         assert_eq!(ids[1], queued[1].request_id.to_string());
+    }
+
+    /// A migration stopped between its two renames: the old journal is archived,
+    /// the carried requests are complete in the staging journal, and the active
+    /// path is vacant.
+    fn migration_stopped_between_renames()
+    -> (tempfile::TempDir, PathBuf, Settings, Vec<ReplayRequest>) {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let (_old, queued, base) = journal_on_old_authority(&path);
+        let new = named_authority_settings("new-hub", "http://localhost:8485");
+        let stopped = migrate_with_hook(
+            &new,
+            Some(&path),
+            MigrateOptions::default(),
+            base + 10_000,
+            || Err(AgentBusError::Internal("simulated stop".to_owned())),
+        );
+        assert!(stopped.is_err());
+        assert!(!path.exists(), "the old journal was archived");
+        (root, path, new, queued)
+    }
+
+    fn journal_directory_names(path: &Path) -> Vec<String> {
+        let mut names = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| file_name_text(&entry.unwrap().path()))
+            .filter(|name| name != DIRECTORY_LOCK)
+            .collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+
+    /// Protects: debt held by a migration that stopped between its renames stays visible
+    /// to the guards that refuse a legacy write ahead of retained requests, and a plan
+    /// changes nothing.
+    /// Detects: status reporting `pending: 0` while the staged journal holds the debt
+    /// (the guard then allows a write ahead of it); a dry run that completes the
+    /// recovery by renaming the staging journal.
+    /// Needs: owned private journal; the hook stands in for a stop between the renames.
+    /// Breadcrumb: `status`, `legacy_write_guard`, `migrate_with_hook`.
+    #[test]
+    fn interrupted_migration_debt_is_visible_and_a_dry_run_does_not_finish_it() {
+        let (_root, path, new, queued) = migration_stopped_between_renames();
+        let names = journal_directory_names(&path);
+
+        let report = status(&new, Some(&path)).unwrap();
+        assert_eq!(report["pending"], 2, "{report}");
+        assert!(report["interrupted_migration"].is_string(), "{report}");
+        assert_eq!(
+            report["requests"][0]["request_id"],
+            queued[0].request_id.to_string()
+        );
+        assert!(
+            legacy_write_guard(&new, Some(&path))
+                .unwrap_err()
+                .to_string()
+                .contains("retained durable requests"),
+            "a legacy write must not pass ahead of staged debt"
+        );
+
+        let plan = migrate(
+            &new,
+            Some(&path),
+            MigrateOptions {
+                dry_run: true,
+                ..MigrateOptions::default()
+            },
+            1,
+        )
+        .unwrap();
+        assert!(plan["interrupted_migration"].is_string(), "{plan}");
+        assert_eq!(
+            journal_directory_names(&path),
+            names,
+            "dry run renamed files"
+        );
+        assert!(!path.exists());
+
+        let finished = migrate(&new, Some(&path), MigrateOptions::default(), 1).unwrap();
+        assert_eq!(finished["completed_interrupted"], true, "{finished}");
+        assert!(path.exists());
+        assert_eq!(status(&new, Some(&path)).unwrap()["pending"], 2);
+    }
+
+    /// Protects: a writer cannot create a second active journal while a migration is
+    /// between its renames, so carried work is never hidden behind newer requests.
+    /// Detects: A writer creating a fresh active journal in the gap (the promotion then
+    /// fails and the staged requests are stranded).
+    /// Needs: owned private journal; a writer thread started from the gap.
+    /// Breadcrumb: `open_active`, `lock_directory_until`, `DIRECTORY_LOCK`.
+    #[test]
+    fn writer_waits_for_a_migration_instead_of_creating_a_second_active_journal() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let (_old, queued, base) = journal_on_old_authority(&path);
+        let new = named_authority_settings("new-hub", "http://localhost:8485");
+        let raced = RefCell::new(None);
+        let report = migrate_with_hook(
+            &new,
+            Some(&path),
+            MigrateOptions::default(),
+            base + 10_000,
+            || {
+                let (settings, journal) = (new.clone(), path.clone());
+                let writer = std::thread::spawn(move || {
+                    submit(
+                        &settings,
+                        &Unreachable2,
+                        Operation::Send,
+                        ClientSurface::Cli,
+                        args("written during the migration"),
+                        Some(&journal),
+                    )
+                });
+                std::thread::sleep(Duration::from_millis(400));
+                assert!(!writer.is_finished(), "the writer must wait for the lock");
+                assert!(!path.exists(), "no active journal may exist in the gap");
+                *raced.borrow_mut() = Some(writer);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(report["migrated"], true);
+        let response = raced
+            .into_inner()
+            .unwrap()
+            .join()
+            .unwrap()
+            .expect("the waiting writer succeeds once the migration is done");
+        assert_eq!(response["status"], "queued", "{response}");
+        let ids = status(&new, Some(&path)).unwrap()["requests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["request_id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        assert_eq!(ids[0], queued[0].request_id.to_string());
+        assert_eq!(ids[1], queued[1].request_id.to_string());
+    }
+
+    /// Protects: a staging journal from an attempt that never archived the old journal
+    /// is never promoted, even after that old journal is retired another way.
+    /// Detects: Promoting a stale copy whose requests the original may already have
+    /// delivered (a duplicate delivery to the previous authority's successor).
+    /// Needs: owned private journal.
+    /// Breadcrumb: `committed_staging`, `MIGRATED_PREFIX`.
+    #[test]
+    fn staging_without_its_archive_is_never_promoted() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let old = named_authority_settings("old-hub", "http://localhost:8484");
+        let new = named_authority_settings("new-hub", "http://localhost:8485");
+        // The original journal is settled: an ordinary write retires it.
+        drop(Journal::open(&path, &scope_of(&old)).unwrap());
+        // A copy a stopped migration wrote for it, never committed.
+        let origin = Journal::inspect(&path).unwrap().origin_id.unwrap();
+        let staging = path.with_file_name(format!("{STAGING_PREFIX}{origin}.jsonl"));
+        let mut stale = Journal::open(&staging, &scope_of(&new)).unwrap();
+        stale
+            .enqueue(
+                Operation::Send,
+                ClientSurface::Cli,
+                args("stale copy of a delivered request"),
+                now_ms().unwrap(),
+            )
+            .unwrap();
+        drop(stale);
+
+        let response = submit(
+            &new,
+            &Unreachable2,
+            Operation::Send,
+            ClientSurface::Cli,
+            args("a new request"),
+            Some(&path),
+        )
+        .unwrap();
+        assert_eq!(response["status"], "queued", "{response}");
+        let report = status(&new, Some(&path)).unwrap();
+        assert_eq!(report["pending"], 1, "only the new request: {report}");
+        assert!(report.get("interrupted_migration").is_none(), "{report}");
+        assert_eq!(report["stale_staging"][0], file_name_text(&staging));
+        assert!(staging.exists(), "the stale copy is left in place");
     }
 
     /// Transport that cannot reach the hub, in the native-transport shape.

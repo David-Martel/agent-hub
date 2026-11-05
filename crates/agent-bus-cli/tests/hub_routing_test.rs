@@ -3032,7 +3032,7 @@ fn outbox_migrate_recovers_a_journal_after_the_hub_identity_changed() {
             entry
                 .file_name()
                 .to_string_lossy()
-                .starts_with("journal.retired-")
+                .starts_with("journal.migrated-")
         })
         .count();
     assert_eq!(archives, 1);
