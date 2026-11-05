@@ -3832,11 +3832,74 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
+/// The bearer tokens the HTTP gate accepts.
+///
+/// `previous` is set only while a rotation rolls out: the hub then accepts the
+/// retired token next to the new one so clients can switch one at a time and
+/// the hub never has to flip every client at once. Deliberately not `Debug`, so
+/// a stray `{:?}` cannot print a credential.
+struct BearerTokens {
+    current: String,
+    previous: Option<String>,
+    previous_uses: std::sync::atomic::AtomicU64,
+}
+
+/// Which configured token a request presented.
+#[derive(Debug, PartialEq, Eq)]
+enum TokenMatch {
+    Current,
+    Previous,
+    Rejected,
+}
+
+impl BearerTokens {
+    fn new(current: String, previous: Option<String>) -> Self {
+        Self {
+            current,
+            previous,
+            previous_uses: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Compare `provided` with every configured token. Both comparisons always
+    /// run, so the time taken does not reveal which token (if any) was close.
+    fn check(&self, provided: &str) -> TokenMatch {
+        let current = constant_time_eq(provided.as_bytes(), self.current.as_bytes());
+        let previous = self
+            .previous
+            .as_ref()
+            .is_some_and(|token| constant_time_eq(provided.as_bytes(), token.as_bytes()));
+        if current {
+            TokenMatch::Current
+        } else if previous {
+            TokenMatch::Previous
+        } else {
+            TokenMatch::Rejected
+        }
+    }
+
+    /// Count a request that used the previous token and say so in the log on
+    /// the first use and every thousandth after, so an operator can see that
+    /// clients are still on the old token without a line per request.
+    fn note_previous_use(&self) {
+        let seen = self
+            .previous_uses
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if seen.is_multiple_of(1000) {
+            tracing::warn!(
+                uses = seen + 1,
+                "HTTP server: a client authenticated with the PREVIOUS bearer token; finish the rotation and remove previous_auth_token"
+            );
+        }
+    }
+}
+
 /// Bearer-token gate for the HTTP API. `/health` is exempt so liveness probes
 /// and monitoring can run unauthenticated; every other route requires a
-/// matching `Authorization: Bearer <token>` header or gets `401 Unauthorized`.
+/// matching `Authorization: Bearer <token>` header (the current token, or the
+/// previous one during a rotation overlap) or gets `401 Unauthorized`.
 async fn require_bearer_auth(
-    State(expected): State<Arc<String>>,
+    State(tokens): State<Arc<BearerTokens>>,
     request: Request,
     next: Next,
 ) -> Response {
@@ -3848,11 +3911,13 @@ async fn require_bearer_auth(
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
-    match provided {
-        Some(token) if constant_time_eq(token.as_bytes(), expected.as_bytes()) => {
+    match provided.map_or(TokenMatch::Rejected, |token| tokens.check(token)) {
+        TokenMatch::Current => next.run(request).await,
+        TokenMatch::Previous => {
+            tokens.note_previous_use();
             next.run(request).await
         }
-        _ => (
+        TokenMatch::Rejected => (
             StatusCode::UNAUTHORIZED,
             [(header::WWW_AUTHENTICATE, "Bearer")],
             Json(serde_json::json!({
@@ -3907,6 +3972,7 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
     spawn_pg_backfill_monitor(&state);
     // Capture before `state` is moved into the router.
     let auth_token = state.settings.auth_token.clone();
+    let previous_auth_token = state.settings.previous_auth_token.clone();
     let agent_connections = Arc::clone(&state.agent_connections);
     let app = Router::new()
         .route("/mcp", post(handle_mcp_http).get(handle_mcp_sse))
@@ -4029,9 +4095,15 @@ pub(crate) async fn start_http_server(settings: Settings, port: u16) -> Result<(
     // whole API behind it (except `/health`, kept open for liveness probes).
     // Without a token the server stays open — the historical localhost default.
     let app = if let Some(token) = auth_token {
-        tracing::info!("HTTP server: bearer-token auth ENABLED");
+        if previous_auth_token.is_some() {
+            tracing::warn!(
+                "HTTP server: bearer-token auth ENABLED with a PREVIOUS token accepted (rotation overlap); remove previous_auth_token once clients have switched"
+            );
+        } else {
+            tracing::info!("HTTP server: bearer-token auth ENABLED");
+        }
         app.layer(axum::middleware::from_fn_with_state(
-            Arc::new(token),
+            Arc::new(BearerTokens::new(token, previous_auth_token)),
             require_bearer_auth,
         ))
     } else {
@@ -4440,6 +4512,112 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.0, StatusCode::BAD_REQUEST);
         assert!(!error.1.0.to_string().contains("reflected-synthetic-secret"));
+    }
+
+    #[test]
+    fn bearer_tokens_tell_current_previous_and_unknown_apart() {
+        let tokens = BearerTokens::new(
+            "current-synthetic-token".to_owned(),
+            Some("previous-synthetic-token".to_owned()),
+        );
+        assert_eq!(tokens.check("current-synthetic-token"), TokenMatch::Current);
+        assert_eq!(
+            tokens.check("previous-synthetic-token"),
+            TokenMatch::Previous
+        );
+        assert_eq!(
+            tokens.check("unknown-synthetic-token"),
+            TokenMatch::Rejected
+        );
+        assert_eq!(tokens.check(""), TokenMatch::Rejected);
+        // A prefix of a real token is not the token.
+        assert_eq!(tokens.check("current-synthetic"), TokenMatch::Rejected);
+    }
+
+    #[test]
+    fn bearer_tokens_without_a_previous_token_accept_only_the_current_one() {
+        let tokens = BearerTokens::new("current-synthetic-token".to_owned(), None);
+        assert_eq!(tokens.check("current-synthetic-token"), TokenMatch::Current);
+        assert_eq!(
+            tokens.check("previous-synthetic-token"),
+            TokenMatch::Rejected
+        );
+        assert_eq!(tokens.check(""), TokenMatch::Rejected);
+    }
+
+    /// Serve a one-route app behind the real gate and return the status each
+    /// presented credential gets from an actual HTTP client.
+    async fn gate_statuses(
+        tokens: BearerTokens,
+        presented: &[Option<&str>],
+        path: &str,
+    ) -> Vec<u16> {
+        let app = Router::new()
+            .route("/probe", get(|| async { "ok" }))
+            .route("/health", get(|| async { "up" }))
+            .layer(axum::middleware::from_fn_with_state(
+                Arc::new(tokens),
+                require_bearer_auth,
+            ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let client = reqwest::Client::new();
+        let mut statuses = Vec::new();
+        for credential in presented {
+            let mut request = client.get(format!("http://{addr}{path}"));
+            if let Some(token) = credential {
+                request = request.bearer_auth(token);
+            }
+            statuses.push(request.send().await.unwrap().status().as_u16());
+        }
+        server.abort();
+        statuses
+    }
+
+    #[tokio::test]
+    async fn gate_accepts_current_and_previous_tokens_and_rejects_others_with_401() {
+        let tokens = BearerTokens::new(
+            "current-synthetic-token".to_owned(),
+            Some("previous-synthetic-token".to_owned()),
+        );
+        let statuses = gate_statuses(
+            tokens,
+            &[
+                Some("current-synthetic-token"),
+                Some("previous-synthetic-token"),
+                Some("unknown-synthetic-token"),
+                None,
+            ],
+            "/probe",
+        )
+        .await;
+        assert_eq!(statuses, vec![200, 200, 401, 401]);
+    }
+
+    #[tokio::test]
+    async fn gate_rejects_the_retired_token_once_the_overlap_is_removed() {
+        let tokens = BearerTokens::new("current-synthetic-token".to_owned(), None);
+        let statuses = gate_statuses(
+            tokens,
+            &[
+                Some("current-synthetic-token"),
+                Some("previous-synthetic-token"),
+            ],
+            "/probe",
+        )
+        .await;
+        assert_eq!(statuses, vec![200, 401]);
+    }
+
+    #[tokio::test]
+    async fn gate_keeps_health_open_during_an_overlap() {
+        let tokens = BearerTokens::new(
+            "current-synthetic-token".to_owned(),
+            Some("previous-synthetic-token".to_owned()),
+        );
+        let statuses = gate_statuses(tokens, &[None], "/health").await;
+        assert_eq!(statuses, vec![200]);
     }
 
     fn test_state() -> AppState {
