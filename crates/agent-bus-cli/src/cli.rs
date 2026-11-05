@@ -288,7 +288,10 @@ pub(crate) enum Cmd {
         exclude_broadcast: bool,
         #[arg(
             long,
-            help = "Truncate message bodies to N chars and append a truncation marker"
+            value_name = "N",
+            num_args = 0..=1,
+            default_missing_value = "200",
+            help = "Truncate message bodies to N chars with a truncation marker (200 without N)"
         )]
         excerpt: Option<usize>,
         #[arg(long, default_value = "compact", help = "Output format")]
@@ -1734,6 +1737,40 @@ mod tests {
         } else {
             panic!("expected Cmd::Read");
         }
+    }
+
+    /// Protects: `read --excerpt` works as the docs and callers write it, bare or with N.
+    /// Detects: A value-required flag, which made a bare `--excerpt` a usage error
+    /// (the global guidance names the flag without a value; the plan says 200 chars).
+    #[test]
+    fn parse_read_excerpt_bare_defaults_to_200_and_keeps_other_flags() {
+        for (args, expected) in [
+            (vec!["agent-bus", "read", "--excerpt"], Some(200)),
+            (vec!["agent-bus", "read", "--excerpt", "80"], Some(80)),
+            (vec!["agent-bus", "read", "--excerpt=80"], Some(80)),
+            (vec!["agent-bus", "read"], None),
+        ] {
+            let cli = parse(&args).expect("read must parse");
+            let Cmd::Read { excerpt, .. } = cli.command else {
+                panic!("expected Cmd::Read");
+            };
+            assert_eq!(excerpt, expected, "{args:?}");
+        }
+        // A bare flag must not swallow the next option as its value.
+        let cli = parse(&["agent-bus", "read", "--excerpt", "--limit", "5"])
+            .expect("bare excerpt before another option must parse");
+        let Cmd::Read { excerpt, limit, .. } = cli.command else {
+            panic!("expected Cmd::Read");
+        };
+        assert_eq!((excerpt, limit), (Some(200), 5));
+        // A bare flag last, after other options, as callers write it.
+        let cli = parse(&["agent-bus", "read", "--since-minutes", "60", "--excerpt"])
+            .expect("trailing bare excerpt must parse");
+        let Cmd::Read { excerpt, .. } = cli.command else {
+            panic!("expected Cmd::Read");
+        };
+        assert_eq!(excerpt, Some(200));
+        assert!(parse(&["agent-bus", "read", "--excerpt", "x"]).is_err());
     }
 
     #[test]

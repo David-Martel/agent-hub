@@ -2771,3 +2771,53 @@ fn presence_history_propagates_hub_errors_and_malformed_bodies() {
         );
     }
 }
+
+/// Protects: `read --excerpt` truncates on a client configured for a remote hub.
+/// Detects: A parsed excerpt limit dropped from the hub request, so the command
+/// exited 0 and printed full bodies (every fleet client reads through a hub).
+/// Needs: an owned mock hub; CLI children with Redis/PG pinned to closed ports.
+/// Breadcrumb: crates/agent-bus-cli/src/commands.rs (`read_remote_messages`).
+#[cfg(feature = "server-mode")]
+#[test]
+fn read_excerpt_is_forwarded_to_the_configured_hub() {
+    for (args, expected) in [
+        (vec!["read", "--excerpt"], Some("excerpt=200")),
+        (vec!["read", "--excerpt", "80"], Some("excerpt=80")),
+        (vec!["read"], None),
+    ] {
+        let hub = MockHub::spawn(vec![
+            health_route(),
+            MockRoute {
+                method: "GET",
+                path: "/messages",
+                status: 200,
+                body: "[]".to_owned(),
+            },
+        ]);
+        let output = agent_bus_with_hub_candidates(&[hub.url()], "read-excerpt")
+            .env("AGENT_BUS_AUTH_TOKEN", "disposable-read-token")
+            .args(&args)
+            .output()
+            .expect("run read");
+        assert!(output.status.success(), "{args:?}: {}", stderr_of(&output));
+        let targets: Vec<String> = hub
+            .requests()
+            .iter()
+            .filter_map(|request| request["target"].as_str().map(str::to_owned))
+            .filter(|target| target.starts_with("/messages"))
+            .collect();
+        assert_eq!(targets.len(), 1, "{args:?}: {targets:?}");
+        match expected {
+            Some(pair) => assert!(
+                targets[0].split(['?', '&']).any(|part| part == pair),
+                "{args:?} must send {pair}: {}",
+                targets[0]
+            ),
+            None => assert!(
+                !targets[0].contains("excerpt"),
+                "no excerpt requested: {}",
+                targets[0]
+            ),
+        }
+    }
+}
