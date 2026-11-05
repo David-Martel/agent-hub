@@ -263,6 +263,37 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertNotIn("continue-on-error", block)
                 self.assertRegex(block, r"(?m)^          retention-days: 1$")
 
+    def test_native_smoke_job_never_runs_fork_code_on_the_workstation_runner(
+        self,
+    ) -> None:
+        """Protects: the owner's workstation runner never executes fork pull requests.
+
+        Detects: the fork guard being removed from smoke-functional, the job losing
+        its needs dependency, or the guard being rewritten into a form that no
+        longer compares the head repository with the base repository. Positive
+        control: the same checks reject the job once the guard line is deleted.
+        Needs: the actual ci.yml; no network, services or runner.
+        Breadcrumb: ci.yml smoke-functional; owner decision 2026-11-02.
+        """
+        guard = (
+            "    if: ${{ github.event.pull_request == null || "
+            "github.event.pull_request.head.repo.full_name == github.repository }}\n"
+        )
+
+        def guarded(job: str) -> bool:
+            return (
+                guard in job
+                and "    needs: [windows]\n" in job
+                and "    runs-on: [self-hosted, Windows, X64, agent-hub-native-smoke]\n"
+                in job
+            )
+
+        job = job_block(self.ci, "smoke-functional")
+        self.assertTrue(job, "smoke-functional job must exist")
+        self.assertTrue(guarded(job))
+        self.assertEqual(job.count("\n    if:"), 1)
+        self.assertFalse(guarded(job.replace(guard, "")))
+
     def test_archive_job_verifies_every_release_build_on_dtm_p1gen7(self) -> None:
         """Protects: every Release Build leg is hash-verified into the p1gen7 archive.
 
