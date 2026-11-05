@@ -82,6 +82,7 @@ function Invoke-FixtureCase {
             foreach ($key in @('AGENT_BUS_SERVER_URL', 'AGENT_BUS_SERVER_URLS', 'AGENT_BUS_SERVER_CANDIDATES')) {
                 Assert-Fixture -Condition ($null -eq $snapshot.$key) -Message "$Name retained $key in $($ioRecord.kind)"
             }
+            Assert-Fixture -Condition ($null -eq $snapshot.AGENT_BUS_PREVIOUS_AUTH_TOKEN) -Message "$Name retained the previous bearer token in $($ioRecord.kind)"
             Assert-Fixture -Condition ($snapshot.AGENT_BUS_SERVER_HOST -eq 'localhost') -Message "$Name retained remote listener binding"
             Assert-Fixture -Condition ($snapshot.AGENT_BUS_STARTUP_ENABLED -eq 'false') -Message "$Name enabled startup broadcasts"
             Assert-Fixture -Condition ($snapshot.AGENT_BUS_HUB_CACHE_TTL_SECONDS -eq '0') -Message "$Name retained shared discovery cache"
@@ -163,8 +164,7 @@ function Write-FixtureEvent {
     $keys = @('AGENT_BUS_CONFIG', 'AGENT_BUS_REDIS_URL', 'AGENT_BUS_DATABASE_URL',
         'AGENT_BUS_SERVER_HOST', 'AGENT_BUS_SERVER_URL', 'AGENT_BUS_SERVER_URLS',
         'AGENT_BUS_SERVER_CANDIDATES', 'AGENT_BUS_AUTH_TOKEN', 'AGENT_BUS_PREVIOUS_AUTH_TOKEN',
-    'AGENT_BUS_STARTUP_ENABLED',
-        'AGENT_BUS_HUB_CACHE_TTL_SECONDS')
+        'AGENT_BUS_STARTUP_ENABLED', 'AGENT_BUS_HUB_CACHE_TTL_SECONDS')
     $environment = @{}
     foreach ($key in $keys) { $environment[$key] = [Environment]::GetEnvironmentVariable($key, 'Process') }
     $configExists = Test-Path -LiteralPath $env:AGENT_BUS_CONFIG
