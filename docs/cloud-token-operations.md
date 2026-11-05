@@ -306,13 +306,15 @@ the client's own token file.
        already right;
      - the digest equals neither map: someone else wrote the secret, so stop and
        reconcile by hand;
-     - the digest equals the baseline: the outcome is still unknown. Treat it as
-       a rejection only on settlement evidence from Cloudflare, not from the
-       manifest: after the provider deadline plus a settlement window, the
-       script's `modified_on` and its version and deployment listing show
-       nothing newer than the attempt, or the account audit log shows the
-       request failed. Without that evidence, escalate to the owner and leave
-       both maps in place.
+     - the digest equals the baseline: the outcome is still unknown. Neither
+       the manifest nor unchanged script metadata (`modified_on`, the version
+       and deployment listings) can show that a write has stopped, because a
+       request still executing at Cloudflare changes nothing visible until it
+       lands. Treat it as a rejection only on terminal evidence for this
+       request, such as its own failed entry in the account audit log. Without
+       that, keep both maps and the lease and escalate to the owner. Do not
+       start another rotation meanwhile, since the delayed write could
+       overwrite it.
 8. **Verify, then release the lease.** The manifest digest must equal the new
    note, the entry count must have grown by the number minted, and every old and
    new token must return 200 on `/presence`. Each new token must also pass a
@@ -325,12 +327,18 @@ the client's own token file.
    token through ssh stdin into a script that writes the file, and never pass it
    as an argument.
 
-Rollback needs the same care as the upload. Hold the lease, fetch the manifest
-and confirm it still equals this run's candidate (if not, a later change would
-be lost, so stop), and `PUT` the `previous-map-<stamp>` field. Classify the
-result as in step 7, and make the recovery note equal to the deployed map only
-once the outcome is settled: a rejected rollback leaves the candidate deployed,
-and an unknown one leaves both maps in place.
+Rollback is only for a run that has not reached step 9. Once any client has
+the new token, putting the previous map back removes that credential and the
+client gets 401, so do not restore it; roll forward instead by fixing the
+problem under the candidate map. If a rollback is unavoidable, first put a
+surviving credential back on every migrated client from its backed-up token file
+and authenticate each one against the cloud, and only then remove the new
+entries. A permitted rollback needs the same care as the upload: hold the lease,
+fetch the manifest and confirm it still equals this run's candidate (if not, a
+later change would be lost, so stop), and `PUT` the `previous-map-<stamp>`
+field. Classify the result as in step 7. Make the recovery note equal to the
+deployed map only on a definitive result: a rejected rollback leaves the
+candidate deployed, and an unknown one leaves both maps in place.
 The 2026-11-05 run added two agent entries (`claude` on dtm-p1gen7 and on
 dtm-p1gen9) to the six-entry deployed map and revoked nothing. It was
 run by one operator, the manifest digest matched the recovery note at the start of
