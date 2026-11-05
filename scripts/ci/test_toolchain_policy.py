@@ -401,6 +401,7 @@ class ToolchainPolicyTests(unittest.TestCase):
         env = {
             "PATH": "/usr/bin:/bin",
             "HOME": str(home),
+            "CARGO_HOME": str(home / ".cargo"),
             "GITHUB_PATH": str(published),
         }
         subprocess.run(
@@ -436,6 +437,42 @@ class ToolchainPolicyTests(unittest.TestCase):
         )
         self.assertEqual(result.stdout.strip(), "sccache 0.18.0")
         self.assertEqual({client: client.read_bytes() for client in original}, original)
+
+    @unittest.skipUnless(
+        sys.platform == "linux" and shutil.which("bash"),
+        "Linux Bash PATH publication control",
+    )
+    def test_next_step_path_follows_a_preset_cargo_home(self):
+        """
+        Protects: Later steps find cargo on a runner image that moves CARGO_HOME.
+        Detects: setup-rust publishing only $HOME/.cargo/bin (dtm-super-nuc).
+        Needs: Linux Bash; no Rust/cache daemon.
+        Breadcrumb: scripts/ci/setup-rust.sh GITHUB_PATH block.
+        """
+        source = (POLICY_MODULE.ROOT / "scripts/ci/setup-rust.sh").read_text()
+        block = re.search(
+            r'if \[\[ -n "\$\{GITHUB_PATH:-\}" \]\]; then\n.*?\nfi', source, re.S
+        ).group()
+        cargo_home = self.root / "cache" / "cargo"
+        published = self.root / "github-path"
+        subprocess.run(
+            [
+                shutil.which("bash"),
+                "-euc",
+                'sccache_tools="$1"\n' + block,
+                "fixture",
+                str(self.root / "qualified-tools"),
+            ],
+            env={
+                "PATH": "/usr/bin:/bin",
+                "HOME": str(self.root / "home"),
+                "CARGO_HOME": str(cargo_home),
+                "GITHUB_PATH": str(published),
+            },
+            check=True,
+            timeout=5,
+        )
+        self.assertIn(str(cargo_home / "bin"), published.read_text().splitlines())
 
 
 if __name__ == "__main__":
