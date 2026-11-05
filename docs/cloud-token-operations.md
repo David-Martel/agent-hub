@@ -290,16 +290,29 @@ the client's own token file.
    the secret: stop, and merge their change into the candidate before going on.
    Then `PUT /accounts/<id>/workers/scripts/agentbus-cloud/secrets` with
    `{"name":"AGENT_BUS_TOKENS","text":<map>,"type":"secret_text"}`. The Worker
-   applies the new secret at once.
+   normally applies the new secret within seconds.
 7. **Classify the result before touching the vault.**
-   - A definitive rejection (an HTTP 4xx from Cloudflare with an error body)
-     means the Worker still holds the baseline. Confirm that with the manifest,
-     then restore the previous map in the note.
-   - A timeout, a lost connection or a 5xx is an unknown outcome. Do not retry
-     and do not restore. Keep both maps and read `/admin/tokens/manifest`: if
-     the digest equals the candidate, the upload landed and the note is already
-     right; if it equals the baseline, treat it as a rejection; if it equals
-     neither, someone else wrote the secret, so stop and reconcile by hand.
+   - A definitive rejection is an HTTP 4xx from Cloudflare with an error body.
+     The request was refused, so the Worker still holds the baseline. Confirm
+     that with the manifest, then restore the previous map in the note.
+   - Anything else (a timeout, a lost connection, a 5xx) is an unknown outcome.
+     The request may still be in flight or may complete later, so a manifest
+     that shows the baseline proves nothing: it can be read just before the
+     write lands, and it can lag after one. Do not retry, do not restore, and
+     keep holding the lease. Leave the note on the candidate, which holds every
+     baseline token as well, so no client loses access whichever map is
+     deployed. Keep both maps and read `/admin/tokens/manifest` again:
+     - the digest equals the candidate: the write landed and the note is
+       already right;
+     - the digest equals neither map: someone else wrote the secret, so stop and
+       reconcile by hand;
+     - the digest equals the baseline: the outcome is still unknown. Treat it as
+       a rejection only on settlement evidence from Cloudflare, not from the
+       manifest: after the provider deadline plus a settlement window, the
+       script's `modified_on` and its version and deployment listing show
+       nothing newer than the attempt, or the account audit log shows the
+       request failed. Without that evidence, escalate to the owner and leave
+       both maps in place.
 8. **Verify, then release the lease.** The manifest digest must equal the new
    note, the entry count must have grown by the number minted, and every old and
    new token must return 200 on `/presence`. Each new token must also pass a
@@ -314,8 +327,10 @@ the client's own token file.
 
 Rollback needs the same care as the upload. Hold the lease, fetch the manifest
 and confirm it still equals this run's candidate (if not, a later change would
-be lost, so stop), `PUT` the `previous-map-<stamp>` field, classify the result as
-in step 7, and then make the recovery note equal to what the manifest reports.
+be lost, so stop), and `PUT` the `previous-map-<stamp>` field. Classify the
+result as in step 7, and make the recovery note equal to the deployed map only
+once the outcome is settled: a rejected rollback leaves the candidate deployed,
+and an unknown one leaves both maps in place.
 The 2026-11-05 run added two agent entries (`claude` on dtm-p1gen7 and on
 dtm-p1gen9) to the six-entry deployed map and revoked nothing. It was
 run by one operator, the manifest digest matched the recovery note at the start of
