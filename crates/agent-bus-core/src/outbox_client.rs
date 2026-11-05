@@ -109,6 +109,14 @@ pub fn durable_replay_configured(settings: &Settings) -> bool {
 /// # Errors
 /// Pending debt, inaccessible/corrupt/private state or changed authority.
 pub fn legacy_write_guard(settings: &Settings, path_override: Option<&Path>) -> Result<()> {
+    legacy_write_guard_with(settings, || status(settings, path_override))
+}
+
+/// The guard's decision over a caller-supplied status read (a test seam).
+fn legacy_write_guard_with(
+    settings: &Settings,
+    read_status: impl FnOnce() -> Result<Value>,
+) -> Result<()> {
     let candidates = settings.effective_hub_candidates();
     if candidates
         .iter()
@@ -117,7 +125,7 @@ pub fn legacy_write_guard(settings: &Settings, path_override: Option<&Path>) -> 
     {
         return Ok(());
     }
-    let state = status(settings, path_override)?;
+    let state = read_status()?;
     if state["pending"].as_u64().unwrap_or(1) != 0 {
         return Err(AgentBusError::InvalidParams(
             "retained durable requests require credentials; preserve journal before new submission"
@@ -368,12 +376,24 @@ const DIRECTORY_LOCK: &str = "journal.lock";
 /// # Errors
 /// Invalid destination or private journal custody, corruption or contention.
 pub fn status(settings: &Settings, path_override: Option<&Path>) -> Result<Value> {
-    status_with_hook(settings, path_override, || {})
+    status_with_hooks(settings, path_override, || {}, || {})
 }
 
+#[cfg(test)]
 fn status_with_hook(
     settings: &Settings,
     path_override: Option<&Path>,
+    before_inspect: impl FnMut(),
+) -> Result<Value> {
+    status_with_hooks(settings, path_override, || {}, before_inspect)
+}
+
+/// `status` with two test seams: `after_first_check` runs right after the first
+/// presence check and `before_inspect` right before the journal is read.
+fn status_with_hooks(
+    settings: &Settings,
+    path_override: Option<&Path>,
+    mut after_first_check: impl FnMut(),
     mut before_inspect: impl FnMut(),
 ) -> Result<Value> {
     let scope = candidates_fingerprint(&settings.effective_hub_candidates());
@@ -385,7 +405,9 @@ fn status_with_hook(
     // read. The read never creates the file, so it reports the miss and we look
     // again, now seeing the staged journal the migration left.
     for _ in 0..3 {
-        if let Some(report) = status_once(&scope, &path, &mut before_inspect)? {
+        if let Some(report) =
+            status_once(&scope, &path, &mut after_first_check, &mut before_inspect)?
+        {
             return Ok(report);
         }
     }
@@ -398,9 +420,12 @@ fn status_with_hook(
 fn status_once(
     scope: &str,
     path: &Path,
+    after_first_check: &mut impl FnMut(),
     before_inspect: &mut impl FnMut(),
 ) -> Result<Option<Value>> {
-    let interrupted = if journal_present(path)? {
+    let present_at_first_look = journal_present(path)?;
+    after_first_check();
+    let interrupted = if present_at_first_look {
         None
     } else {
         committed_staging(path)?.into_iter().next()
@@ -408,6 +433,10 @@ fn status_once(
     let (source, interrupted_name) = match &interrupted {
         Some(staging) => (staging.as_path(), Some(file_name_text(staging))),
         None if journal_present(path)? => (path, None),
+        // The journal was there at the first look and gone at the second: a
+        // migration committed in between, and the staged journal that now holds
+        // its debt was never looked for. Look again instead of reporting empty.
+        None if present_at_first_look => return Ok(None),
         None => {
             let mut report = json!({"pending":0,"requests":[]});
             add_stale_staging(&mut report, path)?;
@@ -2744,6 +2773,81 @@ mod tests {
             retire_previous_scope(&path, &scope_of(&new), base, RetirePolicy::SettledOnly).is_err()
         );
         assert!(!path.exists(), "retirement created an active journal");
+    }
+
+    /// Protects: status never reports an empty outbox while a migration that committed
+    /// during the read holds the debt in its staged journal, so the legacy-write guard
+    /// keeps refusing a write ahead of the retained requests.
+    /// Detects: the two presence checks of `status` straddling a migration's commit, the
+    /// first seeing the active journal and the second seeing the vacated path, which
+    /// returned `pending: 0` without looking for committed staging.
+    /// Needs: owned private journal; the hook runs a real migration that stops between
+    /// its two renames, exactly where a concurrent process would leave the directory.
+    /// Breadcrumb: `status_once`, `legacy_write_guard_with`, `migrate_with_hook`.
+    #[test]
+    fn status_between_its_presence_checks_does_not_miss_a_migration_that_commits() {
+        let migrate_and_stop = |new: &Settings, path: &Path, base: u64| {
+            let stopped = migrate_with_hook(
+                new,
+                Some(path),
+                MigrateOptions::default(),
+                base + 10_000,
+                || Err(AgentBusError::Internal("simulated stop".to_owned())),
+            );
+            assert!(stopped.is_err());
+            assert!(!path.exists(), "the migration vacated the active path");
+        };
+
+        // The status read itself.
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let (_old, _queued, base) = journal_on_old_authority(&path);
+        let new = named_authority_settings("new-hub", "http://localhost:8485");
+        let mut commits = 0;
+        let report = status_with_hooks(
+            &new,
+            Some(&path),
+            || {
+                // Only the first look races; the retry sees the settled state.
+                if commits == 0 {
+                    migrate_and_stop(&new, &path, base);
+                }
+                commits += 1;
+            },
+            || {},
+        )
+        .unwrap();
+        assert_eq!(
+            report["pending"], 2,
+            "the debt is staged, not gone: {report}"
+        );
+        assert!(report["interrupted_migration"].is_string(), "{report}");
+        assert_eq!(commits, 2, "the first look raced and the retry settled");
+        assert!(!path.exists(), "status created an active journal: {report}");
+
+        // The guard that decides on it.
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let (_old, _queued, base) = journal_on_old_authority(&path);
+        let new = named_authority_settings("new-hub", "http://localhost:8485");
+        let mut raced = false;
+        let refused = legacy_write_guard_with(&new, || {
+            status_with_hooks(
+                &new,
+                Some(&path),
+                || {
+                    if !raced {
+                        raced = true;
+                        migrate_and_stop(&new, &path, base);
+                    }
+                },
+                || {},
+            )
+        });
+        assert!(
+            refused.is_err(),
+            "a legacy write was allowed ahead of retained requests"
+        );
     }
 
     /// Transport that cannot reach the hub, in the native-transport shape.
