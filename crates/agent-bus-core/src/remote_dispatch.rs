@@ -162,6 +162,9 @@ pub struct RoutingDispatch<'a, T> {
     settings: &'a Settings,
     local: McpToolDispatch<'a>,
     transport: T,
+    /// Journal the durable outbox reads and writes. `None` is the per-user
+    /// default; [`Self::with_outbox_path`] replaces it.
+    outbox_path: Option<std::path::PathBuf>,
 }
 
 impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
@@ -171,7 +174,19 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
             settings,
             local: McpToolDispatch::new(settings),
             transport,
+            outbox_path: None,
         }
+    }
+
+    /// Use `path` as the durable outbox journal instead of the per-user one.
+    ///
+    /// A test that dispatches to a named authority must call this: without it
+    /// the dispatch consults `~/agent-bus-outbox` (or `%LOCALAPPDATA%`), so the
+    /// result depends on whatever the machine's live journal holds.
+    #[must_use]
+    pub fn with_outbox_path(mut self, path: impl Into<std::path::PathBuf>) -> Self {
+        self.outbox_path = Some(path.into());
+        self
     }
 
     /// Resolve which backend this call would use right now.
@@ -272,7 +287,7 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
             Some(crate::outbox_client::flush_pending(
                 self.settings,
                 &DurableTransport(&self.transport),
-                None,
+                self.outbox_path.as_deref(),
             ))
         } else {
             None
@@ -305,7 +320,7 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
                 operation,
                 crate::outbox::ClientSurface::Mcp,
                 args.clone(),
-                None,
+                self.outbox_path.as_deref(),
             );
         }
 
@@ -313,7 +328,7 @@ impl<'a, T: RemoteMcpTransport> RoutingDispatch<'a, T> {
             && crate::outbox::Operation::from_tool(name).is_some()
             && !crate::outbox_client::durable_replay_configured(self.settings)
         {
-            crate::outbox_client::legacy_write_guard(self.settings, None)?;
+            crate::outbox_client::legacy_write_guard(self.settings, self.outbox_path.as_deref())?;
         }
 
         // Claim-authority tools (grant/renew/release/resolve an exclusive
@@ -469,9 +484,15 @@ mod tests {
         settings
     }
 
+    /// Protects: a dispatch test must not depend on the machine's live outbox.
+    /// Detects: `legacy_write_guard` reading `~/agent-bus-outbox`, so the test
+    /// failed on any host whose journal held retained work (it did, on ms01).
+    /// Needs: an empty private directory and nothing from the operator profile.
     #[test]
     fn named_legacy_unauthenticated_authority_dispatches_once_without_outbox() {
         use crate::hub_candidates::{CandidateAuth, HubCandidate, HubRole};
+        let outbox = tempfile::tempdir().expect("private outbox directory");
+        let journal = outbox.path().join("journal.jsonl");
         let url = "http://localhost:8484".to_owned();
         let mut settings = test_settings(std::slice::from_ref(&url));
         settings.auth_token = None;
@@ -488,7 +509,7 @@ mod tests {
             durable: true,
             ..Default::default()
         };
-        let dispatch = RoutingDispatch::new(&settings, transport);
+        let dispatch = RoutingDispatch::new(&settings, transport).with_outbox_path(&journal);
         assert!(!crate::outbox_client::durable_replay_configured(&settings));
         let args = serde_json::json!({"agent":"fixture","resource":"owned-fixture"})
             .as_object()
@@ -520,7 +541,8 @@ mod tests {
                 durable: true,
                 ..Default::default()
             },
-        );
+        )
+        .with_outbox_path(&journal);
         assert!(dispatch.dispatch_tool("claim_resource", &args).is_err());
         assert!(dispatch.transport.called.borrow().is_empty());
         assert!(dispatch.transport.probed.borrow().is_empty());
@@ -532,6 +554,48 @@ mod tests {
         settings.hub_candidates[0].auth =
             CandidateAuth::TokenEnv("OWNED_OUTBOX_MISSING_PROVIDER_FIXTURE".to_owned());
         assert!(crate::outbox_client::durable_replay_configured(&settings));
+    }
+
+    /// Protects: the dispatch consults the journal it was given, not a default.
+    /// Detects: `with_outbox_path` being ignored, which would make the test
+    /// above pass or fail with the host journal instead of its own.
+    /// Needs: a file that is not a journal, in a private directory.
+    #[test]
+    fn legacy_write_guard_reads_the_journal_the_dispatch_was_given() {
+        use crate::hub_candidates::{CandidateAuth, HubCandidate, HubRole};
+        let url = "http://localhost:8484".to_owned();
+        let mut settings = test_settings(std::slice::from_ref(&url));
+        settings.auth_token = None;
+        settings.hub_candidates = vec![HubCandidate {
+            url: url.clone(),
+            role: HubRole::Authoritative,
+            auth: CandidateAuth::Global,
+            hub: Some("fixture-authority".to_owned()),
+            sites: Vec::new(),
+        }];
+        let args = serde_json::json!({"agent":"fixture","resource":"owned-fixture"})
+            .as_object()
+            .unwrap()
+            .clone();
+        let transport = || FakeTransport {
+            healthy_urls: vec![url.clone()],
+            hub_identity: Some("fixture-authority".to_owned()),
+            durable: true,
+            ..Default::default()
+        };
+        let outbox = tempfile::tempdir().expect("private outbox directory");
+        let journal = outbox.path().join("journal.jsonl");
+
+        // Nothing at the path: no retained work, so the legacy write goes through.
+        let clean = RoutingDispatch::new(&settings, transport()).with_outbox_path(&journal);
+        assert!(clean.dispatch_tool("claim_resource", &args).is_ok());
+
+        // Something that is not a journal at the path: the guard refuses to
+        // write ahead of it, and nothing reaches the hub.
+        std::fs::write(&journal, b"not a journal").expect("write fixture file");
+        let guarded = RoutingDispatch::new(&settings, transport()).with_outbox_path(&journal);
+        assert!(guarded.dispatch_tool("claim_resource", &args).is_err());
+        assert!(guarded.transport.called.borrow().is_empty());
     }
 
     #[test]
