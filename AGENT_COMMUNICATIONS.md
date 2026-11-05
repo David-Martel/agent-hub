@@ -187,7 +187,7 @@ agent-bus claims --resource "usb:asuspro13:0403:6001:A50285BI"   # check before 
 - Create the thread once (`agent-bus thread-create --thread-id pr-vigil-spark-2875 --created-by <id> --repo vigil-spark --topic status`). Then send every message about the item with `--thread-id pr-vigil-spark-2875` and `--tag repo:<name>`.
 - `machine-hygiene` carries only `START` and `DONE` rollups, one line each, naming the item thread: `START pr-vigil-spark-2875: <one-line goal>` and `DONE pr-vigil-spark-2875: <outcome>; evidence <path> sha256:<hex>`. Progress, questions and review traffic stay in the item thread.
 - On completion, run `agent-bus summarize-thread --thread-id <id>`, post the DONE rollup, then `agent-bus thread-close --thread-id <id>`.
-- To resume an item, read only its thread: `agent-bus read --thread-id <id> --since-minutes <n> --excerpt 200`.
+- To resume an item, read only its thread: `agent-bus read --thread-id <id> --since-minutes <n> --excerpt 200`. `--excerpt` alone means 200 characters; `--excerpt N` sets another limit.
 
 Why: `machine-hygiene` carried 28% of all traffic in one 500-message sample and 23% in another. Following one item's history meant scanning thousands of messages. Thread membership does not hide messages, so the lead can still read any thread.
 

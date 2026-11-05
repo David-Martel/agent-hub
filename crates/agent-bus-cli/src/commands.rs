@@ -798,6 +798,10 @@ fn read_remote_messages(
         if args.exclude_broadcast {
             query.append_pair("broadcast", "false");
         }
+        // The hub truncates for us (`?excerpt=N`); the local path below does not run.
+        if let Some(excerpt) = args.excerpt {
+            query.append_pair("excerpt", &excerpt.to_string());
+        }
     }
     http_get(url.as_str())
 }
