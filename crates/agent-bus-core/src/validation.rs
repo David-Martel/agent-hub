@@ -296,27 +296,55 @@ pub fn enforce_schema_for_transport(
 /// ```
 #[must_use]
 pub fn auto_fit_schema(body: &str, schema: Option<&str>) -> String {
+    fit_schema(body, schema, true)
+}
+
+/// [`auto_fit_schema`] without the operator warning.
+///
+/// For checks that only need the fitted text to test it, such as re-validating
+/// a retained outbox record each time its journal is opened or inspected. The
+/// warning belongs to the one send that actually fits a body, not to every
+/// later read of the same record.
+///
+/// # Examples
+///
+/// ```
+/// use agent_bus_core::validation::{auto_fit_schema, auto_fit_schema_quiet};
+/// let body = "memory leak in allocator";
+/// assert_eq!(
+///     auto_fit_schema_quiet(body, Some("finding")),
+///     auto_fit_schema(body, Some("finding"))
+/// );
+/// ```
+#[must_use]
+pub fn auto_fit_schema_quiet(body: &str, schema: Option<&str>) -> String {
+    fit_schema(body, schema, false)
+}
+
+fn fit_schema(body: &str, schema: Option<&str>, warn: bool) -> String {
     let Some(schema) = schema else {
         return body.to_owned();
     };
     match schema {
-        SCHEMA_FINDING => auto_fit_finding(body),
-        SCHEMA_BENCHMARK => auto_fit_benchmark(body),
+        SCHEMA_FINDING => auto_fit_finding(body, warn),
+        SCHEMA_BENCHMARK => auto_fit_benchmark(body, warn),
         // status and unknown schemas: pass body through unchanged
         _ => body.to_owned(),
     }
 }
 
-fn auto_fit_finding(body: &str) -> String {
+fn auto_fit_finding(body: &str, warn: bool) -> String {
     // If body already has FINDING: or FIX or COMPLETE, return as-is.
     if body.contains("FINDING:") || body.contains("FIX") || body.contains("COMPLETE") {
         return body.to_owned();
     }
     // F4: Body did not satisfy 'finding' schema constraints — warn so operators notice.
-    tracing::warn!(
-        "auto_fit_schema: body did not satisfy 'finding' schema constraints; \
-         auto-fitted to comply — inspect the original body for correctness"
-    );
+    if warn {
+        tracing::warn!(
+            "auto_fit_schema: body did not satisfy 'finding' schema constraints; \
+             auto-fitted to comply — inspect the original body for correctness"
+        );
+    }
     // Detect severity from content keywords.
     let severity = if body.to_uppercase().contains("CRITICAL") {
         "CRITICAL"
@@ -330,19 +358,24 @@ fn auto_fit_finding(body: &str) -> String {
     } else {
         "LOW"
     };
-    format!("FINDING: {body}\nSEVERITY: {severity}")
+    format!(
+        "FINDING: {body}
+SEVERITY: {severity}"
+    )
 }
 
-fn auto_fit_benchmark(body: &str) -> String {
+fn auto_fit_benchmark(body: &str, warn: bool) -> String {
     // If body already has key=value metrics, return as-is.
     if body.contains('=') {
         return body.to_owned();
     }
     // F4: Body did not satisfy 'benchmark' schema constraints — warn so operators notice.
-    tracing::warn!(
-        "auto_fit_schema: body did not satisfy 'benchmark' schema constraints; \
-         auto-fitted to comply — inspect the original body for correctness"
-    );
+    if warn {
+        tracing::warn!(
+            "auto_fit_schema: body did not satisfy 'benchmark' schema constraints; \
+             auto-fitted to comply — inspect the original body for correctness"
+        );
+    }
     format!("summary={body}")
 }
 
@@ -850,7 +883,7 @@ mod tests {
 
     #[test]
     fn auto_fit_finding_plain_body_produces_valid_finding() {
-        let result = auto_fit_finding("memory leak in allocator");
+        let result = auto_fit_finding("memory leak in allocator", true);
         assert!(result.contains("FINDING:"), "must inject FINDING:");
         assert!(result.contains("SEVERITY:"), "must inject SEVERITY:");
         assert!(validate_message_schema(&result, Some("finding")).is_ok());
@@ -858,7 +891,7 @@ mod tests {
 
     #[test]
     fn auto_fit_benchmark_plain_body_produces_valid_benchmark() {
-        let result = auto_fit_benchmark("test run complete");
+        let result = auto_fit_benchmark("test run complete", true);
         assert!(result.contains('='), "must inject key=value pair");
         assert!(validate_message_schema(&result, Some("benchmark")).is_ok());
     }
@@ -867,7 +900,7 @@ mod tests {
     fn auto_fit_finding_already_valid_no_mutation() {
         let body = "FINDING: test\nSEVERITY: LOW";
         assert_eq!(
-            auto_fit_finding(body),
+            auto_fit_finding(body, true),
             body,
             "already-valid body must not be mutated"
         );
@@ -877,9 +910,51 @@ mod tests {
     fn auto_fit_benchmark_already_valid_no_mutation() {
         let body = "duration=5.2s msgs=100";
         assert_eq!(
-            auto_fit_benchmark(body),
+            auto_fit_benchmark(body, true),
             body,
             "already-valid body must not be mutated"
         );
+    }
+    /// Protects: the send path still tells operators that a body was rewritten.
+    /// Detects: A quiet variant that silenced the warning for real sends too, and
+    /// a capture harness that cannot see warnings (positive control for the next test).
+    #[test]
+    fn auto_fit_schema_warns_when_it_rewrites_a_body() {
+        let log = crate::test_support::logged_during(|| {
+            let _ = auto_fit_schema("plain text", Some("finding"));
+            let _ = auto_fit_schema("plain text", Some("benchmark"));
+        });
+        assert!(
+            log.contains("'finding' schema"),
+            "finding warning missing: {log}"
+        );
+        assert!(
+            log.contains("'benchmark' schema"),
+            "benchmark warning missing: {log}"
+        );
+    }
+
+    /// Protects: re-validating retained records stays silent on a read-only open.
+    /// Detects: The quiet variant logging, or fitting differently from the loud one.
+    #[test]
+    fn auto_fit_schema_quiet_fits_identically_without_logging() {
+        let log = crate::test_support::logged_during(|| {
+            for schema in ["finding", "benchmark", "status"] {
+                assert_eq!(
+                    auto_fit_schema_quiet("plain text", Some(schema)),
+                    auto_fit_schema("plain text", Some(schema)),
+                );
+            }
+        });
+        // The loud calls above log, so count only the quiet ones in isolation.
+        assert!(
+            !log.is_empty(),
+            "control: the loud variant must have logged"
+        );
+        let quiet = crate::test_support::logged_during(|| {
+            let _ = auto_fit_schema_quiet("plain text", Some("finding"));
+            let _ = auto_fit_schema_quiet("plain text", Some("benchmark"));
+        });
+        assert_eq!(quiet, "", "quiet variant must not log");
     }
 }

@@ -93,3 +93,45 @@ fn default_settings_are_refused_by_the_connection_guard() {
         "connect() with a live port must panic in unit tests"
     );
 }
+
+/// Shared writer so a test can read what a tracing subscriber emitted.
+#[derive(Clone, Default)]
+struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Captured;
+    fn make_writer(&'a self) -> Captured {
+        self.clone()
+    }
+}
+
+/// Run `action` under a WARN-level subscriber on this thread and return what
+/// it logged. Records emitted on other threads are not seen.
+pub(crate) fn logged_during(action: impl FnOnce()) -> String {
+    let captured = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(captured.clone())
+        .with_max_level(tracing::Level::WARN)
+        .with_ansi(false)
+        .finish();
+    tracing::subscriber::with_default(subscriber, action);
+    let bytes = captured
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
