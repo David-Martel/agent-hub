@@ -35,6 +35,7 @@ import {
 } from "./auth";
 import { DEFAULT_RATE_LIMIT_PER_MINUTE, type BusLog, type InsertMessageInput } from "./do-buslog";
 import type { ClaimDO } from "./do-claim";
+import { excerptBody } from "./excerpt";
 import { formatTimestampUtc, uuidv7 } from "./ids";
 import {
   autoFitSchema,
@@ -347,7 +348,7 @@ app.get("/messages", async (c) => {
       session: q.session,
     });
     if (excerpt !== undefined) {
-      msgs = msgs.map((m) => ({ ...m, body: m.body.length > excerpt ? `${m.body.slice(0, excerpt)}…` : m.body }));
+      msgs = msgs.map((m) => ({ ...m, body: excerptBody(m.body, excerpt) }));
     }
     return msgs;
   });
