@@ -368,30 +368,62 @@ const DIRECTORY_LOCK: &str = "journal.lock";
 /// # Errors
 /// Invalid destination or private journal custody, corruption or contention.
 pub fn status(settings: &Settings, path_override: Option<&Path>) -> Result<Value> {
+    status_with_hook(settings, path_override, || {})
+}
+
+fn status_with_hook(
+    settings: &Settings,
+    path_override: Option<&Path>,
+    mut before_inspect: impl FnMut(),
+) -> Result<Value> {
     let scope = candidates_fingerprint(&settings.effective_hub_candidates());
     let path = match path_override {
         Some(path) => path.to_owned(),
         None => journal_path(&scope)?,
     };
-    let interrupted = if journal_present(&path)? {
+    // A migration can vacate the active path between the presence check and the
+    // read. The read never creates the file, so it reports the miss and we look
+    // again, now seeing the staged journal the migration left.
+    for _ in 0..3 {
+        if let Some(report) = status_once(&scope, &path, &mut before_inspect)? {
+            return Ok(report);
+        }
+    }
+    Err(AgentBusError::Internal(
+        "durable outbox changed repeatedly while reading status; retry".to_owned(),
+    ))
+}
+
+/// One look at the journal; `None` when it vanished between check and read.
+fn status_once(
+    scope: &str,
+    path: &Path,
+    before_inspect: &mut impl FnMut(),
+) -> Result<Option<Value>> {
+    let interrupted = if journal_present(path)? {
         None
     } else {
-        committed_staging(&path)?.into_iter().next()
+        committed_staging(path)?.into_iter().next()
     };
     let (source, interrupted_name) = match &interrupted {
         Some(staging) => (staging.as_path(), Some(file_name_text(staging))),
-        None if journal_present(&path)? => (path.as_path(), None),
+        None if journal_present(path)? => (path, None),
         None => {
             let mut report = json!({"pending":0,"requests":[]});
-            add_stale_staging(&mut report, &path)?;
-            return Ok(report);
+            add_stale_staging(&mut report, path)?;
+            return Ok(Some(report));
         }
     };
-    let inspection = Journal::inspect(source).map_err(|_sanitized| {
-        AgentBusError::Internal(
-            "private durable outbox status unavailable; preserve journal".to_owned(),
-        )
-    })?;
+    before_inspect();
+    let inspection = match Journal::inspect(source) {
+        Ok(inspection) => inspection,
+        Err(OutboxError::Missing) => return Ok(None),
+        Err(_sanitized) => {
+            return Err(AgentBusError::Internal(
+                "private durable outbox status unavailable; preserve journal".to_owned(),
+            ));
+        }
+    };
     let now = now_ms()?;
     let attempted = inspection
         .pending
@@ -437,7 +469,7 @@ pub fn status(settings: &Settings, path_override: Option<&Path>) -> Result<Value
         };
         report["scope_mismatch"] = json!(true);
         report["bound_scope_prefix"] = json!(scope_prefix(stored));
-        report["current_scope_prefix"] = json!(scope_prefix(&scope));
+        report["current_scope_prefix"] = json!(scope_prefix(scope));
         report["rotation"] = json!(rotation);
         if !inspection.pending.is_empty() {
             report["recovery"] = json!(if attempted == 0 {
@@ -447,8 +479,8 @@ pub fn status(settings: &Settings, path_override: Option<&Path>) -> Result<Value
             });
         }
     }
-    add_stale_staging(&mut report, &path)?;
-    Ok(report)
+    add_stale_staging(&mut report, path)?;
+    Ok(Some(report))
 }
 
 /// Name staging journals that no committed migration owns, without touching them.
@@ -2684,6 +2716,34 @@ mod tests {
         assert!(report.get("interrupted_migration").is_none(), "{report}");
         assert_eq!(report["stale_staging"][0], file_name_text(&staging));
         assert!(staging.exists(), "the stale copy is left in place");
+    }
+
+    /// Protects: reading the journal never creates it. A migration vacates the active
+    /// path between its two renames, and a reader that created an empty file there
+    /// would make the later promotion fail and hide the staged requests.
+    /// Detects: `status` or the retirement inspection creating an empty active journal
+    /// when the path vanishes between the presence check and the read.
+    /// Needs: owned private journal; the hook vacates the path as a migration does.
+    /// Breadcrumb: `Journal::inspect`, `outbox_private::open_existing_only`, `status_once`.
+    #[test]
+    fn reading_the_journal_never_creates_it_when_a_migration_vacates_the_path() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let (_old, _queued, base) = journal_on_old_authority(&path);
+        let new = named_authority_settings("new-hub", "http://localhost:8485");
+        let archive = path.with_file_name(format!("{MIGRATED_PREFIX}vacated.jsonl"));
+        let report = status_with_hook(&new, Some(&path), || {
+            std::fs::rename(&path, &archive).unwrap();
+        })
+        .unwrap();
+        assert!(!path.exists(), "status created an active journal: {report}");
+        assert_eq!(report["pending"], 0, "{report}");
+        assert!(archive.exists());
+        // The ordinary retirement inspection has the same obligation.
+        assert!(
+            retire_previous_scope(&path, &scope_of(&new), base, RetirePolicy::SettledOnly).is_err()
+        );
+        assert!(!path.exists(), "retirement created an active journal");
     }
 
     /// Transport that cannot reach the hub, in the native-transport shape.

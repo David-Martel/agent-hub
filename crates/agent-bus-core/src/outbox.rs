@@ -280,6 +280,8 @@ pub enum OutboxError {
     Custody,
     #[error("another writer holds the outbox journal")]
     Busy,
+    #[error("outbox journal not found")]
+    Missing,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -462,7 +464,19 @@ impl Journal {
     /// # Errors
     /// Custody failure, corrupt journal, lock contention or I/O.
     pub fn inspect(path: &Path) -> Result<JournalInspection, OutboxError> {
-        let file = crate::outbox_private::open(path).map_err(|_sanitized| OutboxError::Custody)?;
+        // Never create: a path that is vacant for an instant (a migration between
+        // its two renames) must not become an empty active journal because
+        // someone looked at it. A missing file is `OutboxError::Missing`.
+        let file = crate::outbox_private::open_existing_only(path).map_err(|error| {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                OutboxError::Missing
+            } else {
+                OutboxError::Custody
+            }
+        })?;
         let (journal, destination) = Self::load(file, None, Some(path))?;
         Ok(Self::inspection(journal, destination))
     }
@@ -1173,6 +1187,24 @@ mod tests {
             assert_eq!(inspection.pending[0].request_id, retained.request_id);
         });
         assert_eq!(logged, "", "inspection must not log");
+    }
+
+    /// Protects: inspecting a journal that is not there leaves it not there.
+    /// Detects: `inspect` opening with create semantics, which turned a path a
+    /// migration had just vacated into an empty active journal.
+    /// Needs: an owned private directory; no services.
+    /// Breadcrumb: `Journal::inspect` and `outbox_private::open_existing_only`.
+    #[test]
+    fn inspecting_a_missing_journal_reports_missing_and_creates_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("private");
+        crate::outbox_private::create_directory(&directory).unwrap();
+        let path = directory.join("journal.jsonl");
+        assert!(matches!(Journal::inspect(&path), Err(OutboxError::Missing)));
+        assert!(!path.exists());
+        // Control: opening for write still creates and binds it.
+        drop(Journal::open(&path, "scope").unwrap());
+        assert!(Journal::inspect(&path).is_ok());
     }
 
     #[test]
