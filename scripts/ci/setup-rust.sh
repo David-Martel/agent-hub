@@ -3,8 +3,10 @@ set -euo pipefail
 
 # Keep Cargo outputs private to a runner. A shared CARGO_TARGET_DIR is not safe:
 # concurrent rustc processes and target-specific artifacts can corrupt each other.
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 export CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
+# A runner image can set CARGO_HOME away from $HOME/.cargo (dtm-super-nuc uses ~/.cache/cargo), and
+# the bin directory must follow it here and in GITHUB_PATH or later steps cannot find cargo.
+export PATH="$HOME/.local/bin:$CARGO_HOME/bin:$HOME/.cargo/bin:$PATH"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-${RUNNER_TEMP:-$PWD/.tmp}/agent-hub-target}"
 export CARGO_INCREMENTAL=0
 # New version has a separate daemon endpoint and cache; leave old serving daemons alone.
@@ -131,7 +133,7 @@ fi
 if [[ -n "${GITHUB_PATH:-}" ]]; then
   # Actions prepends collected entries in reverse order on the next step.
   # Publish the private qualified client last so inherited clients cannot win.
-  printf '%s\n' "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+  printf '%s\n' "$HOME/.cargo/bin" "$CARGO_HOME/bin" >> "$GITHUB_PATH"
   printf '%s\n' "$HOME/.local/bin" "$sccache_tools" >> "$GITHUB_PATH"
 fi
 if [[ -n "${GITHUB_ENV:-}" ]]; then
