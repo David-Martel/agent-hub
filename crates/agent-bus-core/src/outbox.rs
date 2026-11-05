@@ -173,7 +173,11 @@ impl ReplayRequest {
             let resolved =
                 crate::validation::resolve_message_schema(self.surface.as_str(), schema, topic)
                     .map_err(|_sanitized| OutboxError::InvalidRequest)?;
-            let fitted = crate::validation::auto_fit_schema(
+            // Fit only to test the result. This runs again for every retained
+            // record whenever a journal is opened or inspected, so it must not
+            // log a "rewritten body" warning each time (status printed one per
+            // queued record).
+            let fitted = crate::validation::auto_fit_schema_quiet(
                 body,
                 resolved.map(crate::validation::MessageSchema::as_str),
             );
@@ -1132,6 +1136,43 @@ mod tests {
         assert_eq!(inspection.pending, [] as [ReplayRequest; 0]);
         drop(inspection);
         assert_eq!(std::fs::read(empty.path()).unwrap(), b"");
+    }
+
+    /// Protects: `outbox status` prints only its report, with no warning per record.
+    /// Detects: Re-validating a retained `finding` body through the warning fitter,
+    /// which logged one WARN per queued record on every open or inspection.
+    /// Needs: An owned temporary file; no services.
+    /// Breadcrumb: `ReplayRequest::validate` and `validation::auto_fit_schema_quiet`.
+    #[test]
+    fn opening_and_inspecting_retained_findings_logs_nothing() {
+        let temp = NamedTempFile::new().unwrap();
+        let mut journal = open(&temp);
+        let mut args = send("plain text with no finding fields");
+        args.insert("schema".to_owned(), Value::from("finding"));
+        let retained = journal
+            .enqueue(Operation::Send, ClientSurface::Cli, args, 100)
+            .unwrap();
+        drop(journal);
+        // Control: the loud fitter would have warned for this very body.
+        assert!(
+            crate::test_support::logged_during(|| {
+                let _ = crate::validation::auto_fit_schema(
+                    "plain text with no finding fields",
+                    Some("finding"),
+                );
+            })
+            .contains("auto_fit_schema")
+        );
+        let logged = crate::test_support::logged_during(|| {
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(temp.path())
+                .unwrap();
+            let inspection = Journal::inspect_private_file(file).unwrap();
+            assert_eq!(inspection.pending[0].request_id, retained.request_id);
+        });
+        assert_eq!(logged, "", "inspection must not log");
     }
 
     #[test]
