@@ -70,7 +70,7 @@ retaining nosuid, nodev and mode 0700. Docker's implicit noexec default otherwis
 makes rustdoc return failure after printing successful standalone test results.
 Source remains read-only, and compilation caches never gain network access.
 
-## Provisioning on Linux (asuspro13, verified 2026-10-19)
+## Provisioning on Linux (asuspro13 verified 2026-10-19, minisforum-ms01 verified 2026-11-05)
 
 All paths below live under `~/.local/state/agent-bus-hook-qa` (`$Q`), four distinct
 directories (`cargo_home`, `target`, `tools`, `evidence`) plus `config.json`. The Docker
@@ -92,7 +92,7 @@ engine is the rootful local daemon at `unix:///var/run/docker.sock`.
    (relative path to SHA-256 for every file under `tools`), write the JSON and run
    `validate_config()` on it before the first commit.
 5. Environment. Export `AGENT_BUS_HOOK_QA_CONFIG` where every shell, including non-interactive
-   ones, sees it: on asuspro13 that is `~/.config/bash/env.bash`, guarded by a file-exists test.
+   ones, sees it: on both hosts that is `~/.config/bash/env.bash`, guarded by a file-exists test.
 
 After any `rust-toolchain.toml` change, repeat steps 1 to 4 before committing: the
 image is offline and immutable, so the hook refuses a commit whose index pins a
@@ -102,3 +102,18 @@ breaking other branches on the host that still pin the previous compiler.
 
 A passing pre-commit gate takes about one minute and writes `evidence/hook-qa-*/receipt.json`
 with `"state": "PASS"`; the pre-push gate (tests plus audit) adds a similar time.
+
+## Hosts with a provisioned lane
+
+Commit and push agent-hub changes from a Linux host that has a lane. The Windows
+hosts and the laptops have none, and Rust must not be compiled on a laptop.
+
+| Host | Config | Notes |
+| --- | --- | --- |
+| minisforum-ms01 | `~/.local/state/agent-bus-hook-qa-1.99.1/config.json` | Provisioned 2026-11-05 with the steps above. The image was built locally from `FROM rust:1.99.1-bookworm`, so its ID differs from asuspro13's. `tools/` was copied from asuspro13 and its `tool_files_sha256` inventory is identical. |
+| asuspro13 | `~/.local/state/agent-bus-hook-qa-1.99.1/config.json` | The first lane, with the older compiler's lane beside it in `agent-bus-hook-qa/`. The host is scheduled to leave the fleet. |
+
+Keep the lanes in step: when `rust-toolchain.toml` moves, repeat steps 1 to 4 on every
+host that still commits. Compare `tool_files_sha256` between hosts to confirm
+they run the same reviewed tools. A config with `jobs: 4` shares the host with
+other builds, so avoid starting a commit while a release build is running.
