@@ -195,6 +195,7 @@ fn isolated_settings(redis_url: String) -> Settings {
         hub_identity: None,
         machine_safe: false,
         auth_token: Some("synthetic-private-fixture".to_owned()),
+        previous_auth_token: None,
         allow_remote: false,
         cloud_url: None,
         cloud_token_file: None,
