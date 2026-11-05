@@ -1145,6 +1145,56 @@ mod tests {
         assert!(headers.contains("authorization: bearer synthetic-cli-rejected-token\r\n"));
     }
 
+    /// Fetch `body` from a one-shot fixture hub through the real CLI response
+    /// decoder (`send_json`), as a `read --excerpt` against the cloud tier does.
+    fn decode_through_cli(body: &'static str) -> Result<serde_json::Value> {
+        let (url, handle) = capture_mock_body(200, String::new(), body);
+        let mut settings = isolated_settings();
+        settings.server_urls = vec![url.clone()];
+        let client = client_for_settings(&settings)?;
+        let result = run_server_future(send_json(
+            &settings,
+            &client,
+            reqwest::Method::GET,
+            &format!("{url}/messages?excerpt=200"),
+            None,
+            None,
+        ));
+        handle
+            .join()
+            .map_err(|_panic| anyhow::anyhow!("excerpt fixture thread panicked"))?;
+        result
+    }
+
+    /// Why: agent-hub#231 forwards `excerpt` to the cloud tier, which cuts on
+    /// Unicode scalar values. A cut that ends on a non-BMP character arrives as
+    /// an intact surrogate pair and must decode to that character, so one such
+    /// message cannot fail the whole read.
+    #[test]
+    fn an_excerpt_ending_on_a_non_bmp_character_decodes_with_the_pair_intact() {
+        let body: &'static str =
+            Box::leak(format!(r#"[{{"body":"{}😀…"}}]"#, "a".repeat(199)).into_boxed_str());
+        let value = decode_through_cli(body).expect("a well-formed excerpt must decode");
+        let text = value[0]["body"].as_str().expect("excerpt body");
+        assert_eq!(text.chars().count(), 201, "199 ASCII + emoji + ellipsis");
+        assert!(text.contains('\u{1F600}'));
+        assert!(text.ends_with('\u{2026}'));
+    }
+
+    /// Why: this is the failure the Worker's old UTF-16 `slice` produced: a lone
+    /// high surrogate escape. The decoder rejects it, and with it the whole read,
+    /// which is why the Worker must cut on scalar values and never emit one.
+    #[test]
+    fn a_lone_surrogate_excerpt_is_rejected_by_the_response_decoder() {
+        let body: &'static str =
+            Box::leak(format!(r#"[{{"body":"{}\ud83d…"}}]"#, "a".repeat(199)).into_boxed_str());
+        let error = decode_through_cli(body).expect_err("a lone surrogate is not valid JSON text");
+        assert!(
+            error.to_string().contains("was not JSON"),
+            "unexpected error: {error}"
+        );
+    }
+
     #[test]
     fn cli_client_factory_reuses_the_exact_client_for_the_same_timeout() {
         let settings = isolated_settings();
