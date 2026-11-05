@@ -2771,3 +2771,269 @@ fn presence_history_propagates_hub_errors_and_malformed_bodies() {
         );
     }
 }
+
+/// A named on-site authority at `url`, with the shared bearer in the config
+/// file, as `~/.config/agent-bus/config.json` writes it.
+#[cfg(feature = "server-mode")]
+fn write_authority_config(label: &str, hub: &str, url: &str) -> std::path::PathBuf {
+    let path = isolated_config_path(label);
+    std::fs::write(
+        &path,
+        serde_json::json!({
+            "auth_token": "disposable-outbox-token",
+            "server_urls": [{"url": url, "role": "authoritative", "hub": hub}],
+        })
+        .to_string(),
+    )
+    .expect("write authority config");
+    path
+}
+
+/// A CLI child bound to `config`, journaling under `outbox_root`.
+#[cfg(feature = "server-mode")]
+fn outbox_agent_bus(config: &std::path::Path, outbox_root: &std::path::Path) -> Command {
+    let mut cmd = isolated_agent_bus("outbox-e2e");
+    cmd.env("AGENT_BUS_CONFIG", config);
+    // `journal_path` is LOCALAPPDATA on Windows and HOME elsewhere.
+    cmd.env("LOCALAPPDATA", outbox_root);
+    cmd.env("HOME", outbox_root);
+    cmd.env("USERPROFILE", outbox_root);
+    cmd
+}
+
+#[cfg(feature = "server-mode")]
+fn json_of(output: &std::process::Output) -> serde_json::Value {
+    serde_json::from_str(&stdout_of(output))
+        .unwrap_or_else(|error| panic!("stdout is not JSON ({error}): {}", stdout_of(output)))
+}
+
+/// Protects: the real `agent-bus` binary recovers a journal stranded by a hub
+/// identity change, end to end, without replaying anything to the wrong place.
+/// Detects: Writes staying blocked with no supported way out; a migration that
+/// re-sends an attempted request or loses an unsent one; unsent requests
+/// reaching the new hub under new IDs; status that hides what is blocking.
+/// Needs: an owned mock hub, a private temporary outbox root, Redis and
+/// PostgreSQL pinned to a closed port; no live bus.
+/// Breadcrumb: `outbox_client::{status, migrate, flush_pending}`, `Cmd::Outbox`.
+#[cfg(feature = "server-mode")]
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario read top to bottom; splitting it would hide the order that matters"
+)]
+fn outbox_migrate_recovers_a_journal_after_the_hub_identity_changed() {
+    let root = tempfile::tempdir().expect("private outbox root");
+    // Phase A: the old authority is down. A presence is attempted and left
+    // unsettled, and the sends behind it are queued but never attempted.
+    let old = write_authority_config("outbox-old", "old-hub", "http://127.0.0.1:1");
+    let presence = outbox_agent_bus(&old, root.path())
+        .args([
+            "presence",
+            "--agent",
+            "e2e-agent",
+            "--status",
+            "online",
+            "--ttl-seconds",
+            "3600",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("run presence against the dead authority");
+    assert!(presence.status.success(), "{}", stderr_of(&presence));
+    assert_eq!(
+        json_of(&presence)["status"],
+        "queued",
+        "{}",
+        stdout_of(&presence)
+    );
+    let mut sent = Vec::new();
+    for body in ["first unsent finding", "second unsent finding"] {
+        let queued = outbox_agent_bus(&old, root.path())
+            .args([
+                "send",
+                "--from-agent",
+                "e2e-agent",
+                "--to-agent",
+                "all",
+                "--topic",
+                "task-failures",
+                "--thread-id",
+                "e2e-thread",
+                "--body",
+                body,
+                "--encoding",
+                "json",
+            ])
+            .output()
+            .expect("run send against the dead authority");
+        assert!(queued.status.success(), "{}", stderr_of(&queued));
+        let report = json_of(&queued);
+        assert_eq!(report["status"], "queued", "{report}");
+        sent.push(
+            report["request_id"]
+                .as_str()
+                .expect("request id")
+                .to_owned(),
+        );
+    }
+
+    // Phase B: the hub is back under another identity.
+    let hub = MockHub::spawn(vec![
+        health_route(),
+        MockRoute {
+            method: "POST",
+            path: "/replay",
+            status: 200,
+            body: r#"{"status":"applied","result":{"accepted":true}}"#.to_owned(),
+        },
+    ]);
+    let new = write_authority_config("outbox-new", "new-hub", &hub.url());
+
+    let status = outbox_agent_bus(&new, root.path())
+        .args(["outbox", "status", "--encoding", "json"])
+        .output()
+        .expect("outbox status");
+    assert!(status.status.success(), "{}", stderr_of(&status));
+    let report = json_of(&status);
+    assert_eq!(report["scope_mismatch"], true, "{report}");
+    assert_eq!(report["pending"], 3, "{report}");
+    assert_eq!(report["attempted_unsettled"], 1, "{report}");
+    assert_eq!(report["never_attempted"], 2, "{report}");
+    assert_eq!(
+        report["recovery"],
+        "agent-bus outbox migrate --include-attempted"
+    );
+    // A read-only report: it logs nothing and sends nothing.
+    assert_eq!(stderr_of(&status).trim(), "");
+    assert_eq!(hub.hits(), 0, "status must not contact the hub");
+
+    // A new write is refused and the error names the way out.
+    let blocked = outbox_agent_bus(&new, root.path())
+        .args([
+            "send",
+            "--from-agent",
+            "e2e-agent",
+            "--to-agent",
+            "all",
+            "--topic",
+            "task-failures",
+            "--body",
+            "must not be accepted yet",
+        ])
+        .output()
+        .expect("send while blocked");
+    assert!(!blocked.status.success());
+    assert!(
+        stderr_of(&blocked).contains("outbox migrate"),
+        "{}",
+        stderr_of(&blocked)
+    );
+
+    // The attempted presence might have reached the old authority: it blocks.
+    let refused = outbox_agent_bus(&new, root.path())
+        .args(["outbox", "migrate", "--encoding", "json"])
+        .output()
+        .expect("outbox migrate without --include-attempted");
+    assert!(!refused.status.success());
+    assert!(
+        stderr_of(&refused).contains("--include-attempted"),
+        "{}",
+        stderr_of(&refused)
+    );
+    let dry = outbox_agent_bus(&new, root.path())
+        .args(["outbox", "migrate", "--dry-run", "--encoding", "json"])
+        .output()
+        .expect("outbox migrate --dry-run");
+    assert!(dry.status.success(), "{}", stderr_of(&dry));
+    let plan = json_of(&dry);
+    assert_eq!(plan["would_succeed"], false, "{plan}");
+    assert_eq!(plan["carried"].as_array().map(Vec::len), Some(2), "{plan}");
+    assert_eq!(hub.hits(), 0, "migrate must never contact the hub");
+
+    let migrated = outbox_agent_bus(&new, root.path())
+        .args([
+            "outbox",
+            "migrate",
+            "--include-attempted",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("outbox migrate --include-attempted");
+    assert!(migrated.status.success(), "{}", stderr_of(&migrated));
+    let report = json_of(&migrated);
+    assert_eq!(report["migrated"], true, "{report}");
+    assert_eq!(
+        report["abandoned"].as_array().map(Vec::len),
+        Some(1),
+        "{report}"
+    );
+    let carried: Vec<String> = report["carried"]
+        .as_array()
+        .expect("carried list")
+        .iter()
+        .map(|entry| entry["request_id"].as_str().expect("id").to_owned())
+        .collect();
+    assert_eq!(carried, sent, "carried requests keep their IDs and order");
+    assert!(
+        !report.to_string().contains("unsent finding"),
+        "the report must not carry a message body"
+    );
+    assert_eq!(hub.hits(), 0, "migrate must never contact the hub");
+
+    // The journal now belongs to the new authority and drains to it.
+    let flushed = outbox_agent_bus(&new, root.path())
+        .args(["outbox", "flush", "--encoding", "json"])
+        .output()
+        .expect("outbox flush");
+    assert!(flushed.status.success(), "{}", stderr_of(&flushed));
+    let report = json_of(&flushed);
+    assert_eq!(report["applied"], 2, "{report}");
+    assert_eq!(report["remaining"], 0, "{report}");
+    let replays: Vec<serde_json::Value> = hub
+        .requests()
+        .into_iter()
+        .filter(|request| request["target"] == "/replay")
+        .map(|request| {
+            serde_json::from_str(request["body"].as_str().expect("replay body"))
+                .expect("replay envelope")
+        })
+        .collect();
+    assert_eq!(replays.len(), 2, "{replays:?}");
+    for (envelope, expected) in replays.iter().zip(&sent) {
+        assert_eq!(envelope["hub_identity"], "new-hub");
+        assert_eq!(envelope["request"]["request_id"], *expected);
+    }
+
+    // Writes work again, and the old journal is preserved beside the new one.
+    let after = outbox_agent_bus(&new, root.path())
+        .args([
+            "send",
+            "--from-agent",
+            "e2e-agent",
+            "--to-agent",
+            "all",
+            "--topic",
+            "task-failures",
+            "--body",
+            "accepted after migration",
+            "--encoding",
+            "json",
+        ])
+        .output()
+        .expect("send after migration");
+    assert!(after.status.success(), "{}", stderr_of(&after));
+    assert_eq!(json_of(&after)["accepted"], true);
+    let archives = std::fs::read_dir(root.path().join("agent-bus-outbox"))
+        .expect("outbox directory")
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("journal.migrated-")
+        })
+        .count();
+    assert_eq!(archives, 1);
+}

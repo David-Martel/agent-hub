@@ -354,6 +354,13 @@ impl JournalInspection {
             && !self.attempted.contains(&request.request_id)
     }
 
+    /// Whether a replay of `request` was ever attempted and left unsettled.
+    ///
+    /// Such a request may have been accepted by the destination it was sent to.
+    pub(crate) fn was_attempted(&self, request: &ReplayRequest) -> bool {
+        self.attempted.contains(&request.request_id)
+    }
+
     /// Retire the exact locked source without replacing an existing archive.
     pub(crate) fn retire_to(&self, path: &Path, retired: &Path) -> Result<(), OutboxError> {
         crate::outbox_private::retire(&self.guard, path, retired)
@@ -683,6 +690,39 @@ impl Journal {
             surface,
             arguments,
         };
+        self.persist_queued(request)
+    }
+
+    /// Re-queue a request that was never attempted, under this journal's origin.
+    ///
+    /// A migration to a new destination moves unsent work here with its
+    /// original request ID, creation time and expiry; only the origin and
+    /// sequence are this journal's own. The caller must have established that
+    /// no replay of `original` was ever attempted: a request some hub may have
+    /// accepted must not be re-queued, because the new destination cannot
+    /// recognise it.
+    ///
+    /// # Errors
+    /// Invalid request, a request ID already in this journal, capacity or
+    /// storage failure.
+    pub(crate) fn adopt(&mut self, original: &ReplayRequest) -> Result<ReplayRequest, OutboxError> {
+        if self.pending.len() >= REQUEST_LIMIT
+            || self
+                .pending
+                .values()
+                .any(|queued| queued.request_id == original.request_id)
+        {
+            return Err(OutboxError::Capacity);
+        }
+        self.persist_queued(ReplayRequest {
+            origin_id: self.origin_id,
+            sequence: self.next_sequence,
+            ..original.clone()
+        })
+    }
+
+    /// Validate and durably append a queued request before it becomes visible.
+    fn persist_queued(&mut self, request: ReplayRequest) -> Result<ReplayRequest, OutboxError> {
         request.validate()?;
         let next_sequence = self
             .next_sequence
@@ -694,6 +734,20 @@ impl Journal {
         self.next_sequence = next_sequence;
         self.pending.insert(request.sequence, request.clone());
         Ok(request)
+    }
+
+    /// Move this journal's locked file to `to`, which must not exist.
+    ///
+    /// Used to put a fully written staging journal in place after the previous
+    /// active journal was retired; the held handle is what is renamed.
+    ///
+    /// # Errors
+    /// No source path, a changed or replaced source, an existing target or a
+    /// platform without a no-replace rename.
+    pub(crate) fn move_to(&self, to: &Path) -> Result<(), OutboxError> {
+        let from = self.source_path.as_deref().ok_or(OutboxError::Custody)?;
+        crate::outbox_private::retire(&self.file, from, to)
+            .map_err(|_sanitized| OutboxError::Custody)
     }
 
     fn settle(
