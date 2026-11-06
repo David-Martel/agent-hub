@@ -210,3 +210,153 @@ uv run python scripts/manage_agentbus_cloud_tokens.py revoke --manifest /private
 Preview proves local selection only. Actual complete baseline, scoped cutover, exclusive lease and deployed manifest route must be independently established before a real operation. No production authority is inferred from example schema or fake unit controls.
 
 Live revocation requires a build with server-mode; minimal builds reject it before recovery or file changes.
+
+## Credential inventory and rotation record (2026-11-05)
+
+Values are never recorded here. A fingerprint is the first 12 hex digits of the
+SHA-256 of the trimmed token; compare fingerprints, never print a token.
+
+### Where each credential lives
+
+| Credential | Authority and recovery | Consumers |
+|---|---|---|
+| Hub `auth_token` (one shared bearer for the on-site hub) | Bitwarden secure note `agent-bus fleet token`, field `token` | `config.json` `auth_token` or a `token_file` on every client host, `AGENT_BUS_AUTH_TOKEN` in MCP server environments, the hub's own config |
+| Cloud tier map `AGENT_BUS_TOKENS` | Cloudflare Worker secret on `agentbus-cloud`. Bitwarden secure note `agentbus-cloud-root-owned-complete-map-recovery` holds the exact deployed JSON, and its hidden field `previous-map-<stamp>` keeps the map from before the last rotation | the Worker only |
+| Cloud client bearer | `~/.config/agent-bus/cloud-token` on a roaming host, named by `token_file` on the `role: cloud` candidate | the `agent-bus` CLI and MCP server on that host |
+| Cloudflare deploy token | Bitwarden login `agentbus-cloud-github-actions`; GitHub environment `cloudflare-agentbus`, secret `CLOUDFLARE_API_TOKEN` | `deploy-agentbus-cloud.yml`, which keeps the Worker secrets |
+| Cloudflare API token for secret writes | Bitwarden Secrets Manager key `CLOUDFLARE_API_TOKEN`, with `CLOUDFLARE_ACCOUNT_ID` | the operator running a rotation |
+
+No GitHub Actions workflow reads an agent-bus bearer, so no GitHub secret holds
+one. `gh secret list` for the repository showed only `FLEET_ARTIFACT_KEY` on
+2026-11-05, and no workflow references it.
+
+### Why reads returned 401
+
+A client tries its `role: cloud` candidate when the hub probe times out, and
+sends its `cloud-token` there. dtm-p1gen7 held a token from the local map
+`cloud-tokens.json` written on 2026-10-08. The deployed map had been replaced
+since, and none of that map's five tokens was in it, so every cloud call
+returned 401 while `/health` stayed open. The local map is a working copy and
+can be stale. The Bitwarden recovery note is the authority, and this proves it
+before any write: the operator-role `GET /admin/tokens/manifest` returns the
+SHA-256 and entry count of the exact deployed UTF-8 secret, and both must equal
+the values for the Bitwarden note.
+
+### Additive rotation of the cloud tier
+
+This is a manual equivalent of the toolkit's `mint`, `bw-upsert` and
+`wrangler-put` sequence above, run with the Cloudflare API because the toolkit's
+upload step demands a `deployed_map_authority` evidence file that this run
+satisfied by a different, live proof. Treat it as an interim runbook. The
+toolkit gates that matter are still met by hand: the deployed map is proven
+equal to the recovery note, the note is updated and read back before the Worker
+is touched, and an ambiguous upload is never rolled back blindly. The Worker
+secret has no compare-and-swap, so the lease in step 1 is the only protection
+against a concurrent whole-map write, exactly as in the revocation section.
+
+The recovery note is named by the manifest's item name. This section uses the
+existing item `agentbus-cloud-root-owned-complete-map-recovery`; if the manifest
+names `agentbus.dtmventures.com AGENT_BUS_TOKENS`, check which item holds the
+deployed map before relying on either, using the digest in step 2.
+
+Run the steps under a process-scoped Bitwarden session
+(`~/.machine/Invoke-WithBwSession.ps1 <command>`), which unlocks through the
+machine backend and drops the session on exit. Tokens travel only in process
+memory, over stdin, or inside the Bitwarden and Cloudflare request bodies. None
+goes in argv or an environment variable, and the only file that holds one is
+the client's own token file.
+
+1. **Take the lease.** Record an exclusive lease on
+   `cloudflare-worker:agentbus-cloud:AGENT_BUS_TOKENS` (owner, expiry, evidence
+   reference) and keep it until step 8. No other rotation, revocation or deploy
+   that writes the secret may run while it is held. A Worker deploy keeps the
+   secrets, so only an explicit secret write competes.
+2. **Prove the baseline.** Read the recovery note and fetch the manifest with its
+   operator entry. Stop unless the manifest digest and entry count equal the
+   note's.
+3. **Mint** a 64-hex-digit token per new identity. Use `agent: claude` and the
+   host's own name for a laptop. An agent-role token is bound to its `agent` and
+   `host`, and a request body that names another agent is refused with 403.
+4. **Build** the new map as the recovered map plus the new entries. Do not drop,
+   edit or reorder an existing entry, because revocation is a separate
+   operation. Write the previous map to `~/.config/agent-bus/token-backups/`
+   (owner-only).
+5. **Write the vault first.** Put the new map in the Bitwarden recovery note and
+   keep the old one in the hidden `previous-map-<stamp>` field, then read the
+   item back and compare. Edit the item by piping JSON through `bw encode` into
+   `bw edit item <id>`, so the secret never appears in a command line.
+6. **Recheck, then upload.** Fetch the manifest again immediately before the
+   write. If the digest is no longer the baseline from step 2, someone else wrote
+   the secret: stop, and merge their change into the candidate before going on.
+   Then `PUT /accounts/<id>/workers/scripts/agentbus-cloud/secrets` with
+   `{"name":"AGENT_BUS_TOKENS","text":<map>,"type":"secret_text"}`. The Worker
+   normally applies the new secret within seconds.
+7. **Classify the result before touching the vault.**
+   - A definitive rejection is an HTTP 4xx from Cloudflare with an error body.
+     The request was refused, so the Worker still holds the baseline. Confirm
+     that with the manifest, then restore the previous map in the note.
+   - Anything else (a timeout, a lost connection, a 5xx) is an unknown outcome.
+     The request may still be in flight or may complete later, so a manifest
+     that shows the baseline proves nothing: it can be read just before the
+     write lands, and it can lag after one. Do not retry, do not restore, and
+     keep holding the lease. Leave the note on the candidate, which holds every
+     baseline token as well, so no client loses access whichever map is
+     deployed. Keep both maps and read `/admin/tokens/manifest` again:
+     - the digest equals the candidate: the write landed and the note is
+       already right;
+     - the digest equals neither map: someone else wrote the secret, so stop and
+       reconcile by hand;
+     - the digest equals the baseline: the outcome is still unknown. Neither
+       the manifest nor unchanged script metadata (`modified_on`, the version
+       and deployment listings) can show that a write has stopped, because a
+       request still executing at Cloudflare changes nothing visible until it
+       lands. Treat it as a rejection only on terminal evidence for this
+       request, such as its own failed entry in the account audit log. Without
+       that, keep both maps and the lease and escalate to the owner. Do not
+       start another rotation meanwhile, since the delayed write could
+       overwrite it.
+8. **Verify, then release the lease.** The manifest digest must equal the new
+   note, the entry count must have grown by the number minted, and every old and
+   new token must return 200 on `/presence`. Each new token must also pass a
+   send and a read as its own agent. The manifest can lag the first reads by a
+   few seconds, so read it again before treating a mismatch as a failure. This
+   check proves the run's own map only. It cannot show that an unrelated write
+   did not overlap, which is why the lease and the step 6 recheck exist.
+9. **Install each client's token** by writing `~/.config/agent-bus/cloud-token`
+   (one line, with the old file backed up first). For a remote host, pipe the
+   token through ssh stdin into a script that writes the file, and never pass it
+   as an argument.
+
+Rollback is only for a run that has not reached step 9. Once any client has
+the new token, putting the previous map back removes that credential and the
+client gets 401, so do not restore it; roll forward instead by fixing the
+problem under the candidate map. If a rollback is unavoidable, first put a
+surviving credential back on every migrated client from its backed-up token file
+and authenticate each one against the cloud, and only then remove the new
+entries. A permitted rollback needs the same care as the upload: hold the lease,
+fetch the manifest and confirm it still equals this run's candidate (if not, a
+later change would be lost, so stop), and `PUT` the `previous-map-<stamp>`
+field. Classify the result as in step 7. Make the recovery note equal to the
+deployed map only on a definitive result: a rejected rollback leaves the
+candidate deployed, and an unknown one leaves both maps in place.
+The 2026-11-05 run added two agent entries (`claude` on dtm-p1gen7 and on
+dtm-p1gen9) to the six-entry deployed map and revoked nothing. It was
+run by one operator, the manifest digest matched the recovery note at the start of
+the run (it was not rechecked just before the upload), and no lease record was
+written. Steps 1 and 6 close those gaps for the next run.
+
+### The hub `auth_token` cannot overlap yet
+
+`require_bearer_auth` in `crates/agent-bus-http/src/http.rs` compares against a
+single token. A hub rotation is therefore a flag day: every client, every MCP
+environment and the hub config change together, and a client left behind gets
+401 from the hub. Do not rotate it by hand. The safe path is to teach the hub to
+accept a second, previous token for an overlap window (configured beside
+`auth_token` and logged whenever it is used), roll the clients, then drop the
+previous token.
+
+Until then the current hub token is recoverable from the Bitwarden note named
+above. A rotation on 2026-10-09 left a plaintext copy under
+`~/.machine/secrets/agent-bus-rotation/`. Its fingerprint equals the Bitwarden
+copy and the running hub's, so it holds nothing the vault does not, and the
+owner can remove it once the vault copy is confirmed.
