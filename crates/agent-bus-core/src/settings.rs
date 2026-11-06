@@ -83,6 +83,9 @@ pub struct ConfigFile {
     /// Optional bearer token required by the HTTP server. When set, every HTTP
     /// route except `/health` requires `Authorization: Bearer <token>`.
     pub auth_token: Option<String>,
+    /// Retired `auth_token` the HTTP server still accepts during a rotation
+    /// overlap window. Server-side only: clients never send it.
+    pub previous_auth_token: Option<String>,
     /// Opt-in to bind the HTTP server to a non-localhost interface for
     /// cross-machine access. Requires `auth_token` to also be set.
     pub allow_remote: Option<bool>,
@@ -846,6 +849,17 @@ pub struct Settings {
     /// Resolution order: `AGENT_BUS_AUTH_TOKEN` env var → `auth_token` in
     /// config.json → `None` (no auth).
     pub auth_token: Option<String>,
+    /// The previous bearer token, still accepted by the HTTP server next to
+    /// `auth_token` while a rotation rolls out to the clients.
+    ///
+    /// Server-side only: a client always sends `auth_token`. Set it to the
+    /// retired value before switching `auth_token`, restart the hub, update the
+    /// clients, then remove it. `validate()` requires `auth_token` to be set
+    /// and different, so an overlap can never widen access to an open server.
+    ///
+    /// Resolution order: `AGENT_BUS_PREVIOUS_AUTH_TOKEN` env var →
+    /// `previous_auth_token` in config.json → `None`.
+    pub previous_auth_token: Option<String>,
     /// When `true`, the HTTP server may bind to a non-localhost `server_host`
     /// (e.g. `0.0.0.0`) for cross-machine access. Binding off-localhost also
     /// requires `auth_token` to be set; `validate()` rejects an unauthenticated
@@ -906,6 +920,7 @@ impl Settings {
             hub_identity: None,
             machine_safe: false,
             auth_token: None,
+            previous_auth_token: None,
             allow_remote: false,
             cloud_url: None,
             cloud_token_file: None,
@@ -1040,6 +1055,10 @@ impl Settings {
             // Bearer token for the HTTP server: env var overrides config file;
             // empty string treated as absent (no auth required).
             auth_token: resolve_nonempty("AGENT_BUS_AUTH_TOKEN", cfg.auth_token),
+            previous_auth_token: resolve_nonempty(
+                "AGENT_BUS_PREVIOUS_AUTH_TOKEN",
+                cfg.previous_auth_token,
+            ),
             allow_remote: resolve_parse("AGENT_BUS_ALLOW_REMOTE", cfg.allow_remote, false),
             cloud_url: resolve_nonempty("AGENT_BUS_CLOUD_URL", cfg.cloud_url),
             cloud_token_file: resolve_nonempty("AGENT_BUS_CLOUD_TOKEN_FILE", cfg.cloud_token_file),
@@ -1105,6 +1124,23 @@ impl Settings {
                      authentication: set AGENT_BUS_AUTH_TOKEN",
                     self.server_host
                 )));
+            }
+        }
+        if let Some(ref previous) = self.previous_auth_token {
+            match self.auth_token.as_deref() {
+                None => {
+                    return Err(crate::error::AgentBusError::InvalidParams(
+                        "AGENT_BUS_PREVIOUS_AUTH_TOKEN requires AGENT_BUS_AUTH_TOKEN: an overlap window only extends an authenticated server"
+                            .to_owned(),
+                    ));
+                }
+                Some(current) if current == previous => {
+                    return Err(crate::error::AgentBusError::InvalidParams(
+                        "AGENT_BUS_PREVIOUS_AUTH_TOKEN equals AGENT_BUS_AUTH_TOKEN: the rotation did not change the token"
+                            .to_owned(),
+                    ));
+                }
+                Some(_) => {}
             }
         }
         validate_identifier(&self.stream_key, "AGENT_BUS_STREAM_KEY")?;
@@ -2021,6 +2057,51 @@ mod tests {
         s.allow_remote = true;
         s.auth_token = Some("secret-token".to_owned());
         assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_a_previous_token_next_to_a_different_current_one() {
+        let mut s = Settings::for_test();
+        s.auth_token = Some("current-synthetic-token".to_owned());
+        s.previous_auth_token = Some("previous-synthetic-token".to_owned());
+        assert!(s.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_a_previous_token_without_a_current_one() {
+        // An overlap window extends an authenticated server; with no current
+        // token the server is open, and a previous token must not hide that.
+        let mut s = Settings::for_test();
+        s.auth_token = None;
+        s.previous_auth_token = Some("previous-synthetic-token".to_owned());
+        let message = s.validate().unwrap_err().to_string();
+        assert!(
+            message.contains("AGENT_BUS_PREVIOUS_AUTH_TOKEN"),
+            "{message}"
+        );
+        assert!(!message.contains("previous-synthetic-token"), "{message}");
+    }
+
+    #[test]
+    fn validate_rejects_a_previous_token_equal_to_the_current_one() {
+        let mut s = Settings::for_test();
+        s.auth_token = Some("same-synthetic-token".to_owned());
+        s.previous_auth_token = Some("same-synthetic-token".to_owned());
+        let message = s.validate().unwrap_err().to_string();
+        assert!(message.contains("did not change"), "{message}");
+        assert!(!message.contains("same-synthetic-token"), "{message}");
+    }
+
+    #[test]
+    fn config_file_reads_previous_auth_token() {
+        let cfg: ConfigFile = serde_json::from_str(
+            r#"{"auth_token":"current-synthetic","previous_auth_token":"previous-synthetic"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.previous_auth_token.as_deref(),
+            Some("previous-synthetic")
+        );
     }
 
     #[test]

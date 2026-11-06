@@ -38,7 +38,8 @@ if ($HttpPort -lt 1024 -or $HttpPort -gt 65534 -or
 
 $environmentKeys = @('AGENT_BUS_CONFIG', 'AGENT_BUS_REDIS_URL', 'AGENT_BUS_DATABASE_URL',
     'AGENT_BUS_SERVER_HOST', 'AGENT_BUS_SERVER_URL', 'AGENT_BUS_SERVER_URLS',
-    'AGENT_BUS_SERVER_CANDIDATES', 'AGENT_BUS_AUTH_TOKEN', 'AGENT_BUS_STARTUP_ENABLED',
+    'AGENT_BUS_SERVER_CANDIDATES', 'AGENT_BUS_AUTH_TOKEN', 'AGENT_BUS_PREVIOUS_AUTH_TOKEN',
+    'AGENT_BUS_STARTUP_ENABLED',
     'AGENT_BUS_HUB_CACHE_TTL_SECONDS')
 $originalEnvironment = @{}
 foreach ($key in $environmentKeys) {
@@ -53,7 +54,9 @@ try {
     $env:AGENT_BUS_SERVER_HOST = 'localhost'
     $env:AGENT_BUS_STARTUP_ENABLED = 'false'
     $env:AGENT_BUS_HUB_CACHE_TTL_SECONDS = '0'
-    foreach ($key in @('AGENT_BUS_SERVER_URL', 'AGENT_BUS_SERVER_URLS', 'AGENT_BUS_SERVER_CANDIDATES')) {
+    # A live retired bearer must not reach the disposable server, which would accept it.
+    foreach ($key in @('AGENT_BUS_SERVER_URL', 'AGENT_BUS_SERVER_URLS', 'AGENT_BUS_SERVER_CANDIDATES',
+            'AGENT_BUS_PREVIOUS_AUTH_TOKEN')) {
         Remove-Item -LiteralPath ('Env:' + $key) -ErrorAction SilentlyContinue
     }
     if ([string]::IsNullOrWhiteSpace($HttpAuthToken)) { $HttpAuthToken = [guid]::NewGuid().ToString('N') }
