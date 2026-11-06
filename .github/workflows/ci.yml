@@ -37,10 +37,13 @@ env:
   AGENT_BUS_STARTUP_ENABLED: "false"
   AGENT_BUS_HUB_CACHE_TTL_SECONDS: "0"
 
+# Every self-hosted job carries the job-level same-repository guard, so a fork pull request never
+# runs on a persistent runner, even after an approval click (scripts/ci/test_workflow_fork_guard.py).
 jobs:
   format:
     name: Format Check
     runs-on: [self-hosted, Linux, X64, agent-hub-local]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v7
       - run: python3 -B scripts/ci/toolchain_policy.py --verify-sources
@@ -51,6 +54,7 @@ jobs:
   cloud-agentbus:
     name: Cloud Agentbus (TypeScript)
     runs-on: [self-hosted, Linux, X64, agent-hub-local]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # agent-hub#82: cloud/agentbus (the agentbus.dtmventures.com Cloudflare
     # Worker) had ZERO CI coverage before this — verified by grep, the
     # checks on 3aad635 were Rust-only. No `paths:` filter exists anywhere in
@@ -78,6 +82,7 @@ jobs:
   lefthook-gates:
     name: Lefthook Gates Run
     runs-on: [self-hosted, Linux, X64, agent-hub-local]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # Fails if any lefthook command is skipped on a commit/push that changed
     # files it matches -- the "no files for inspection" dead gate that kept
     # fmt/clippy/test/audit from ever running here under `root: "."`.
@@ -105,6 +110,7 @@ jobs:
   clippy:
     name: Clippy Lint
     runs-on: [self-hosted, Linux, X64, agent-hub-local]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
@@ -115,6 +121,7 @@ jobs:
   test-unit:
     name: Unit Tests
     runs-on: [self-hosted, Linux, X64, agent-hub-local]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
@@ -154,6 +161,7 @@ jobs:
   test-integration:
     name: Integration Tests
     runs-on: [self-hosted, Linux, X64, docker]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [test-unit]
     timeout-minutes: 30
     env:
@@ -176,6 +184,7 @@ jobs:
   test-history:
     name: History Catalog Migration
     runs-on: [self-hosted, Linux, X64, docker]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [test-unit]
     timeout-minutes: 30
     steps:
@@ -201,6 +210,7 @@ jobs:
           - name: linux-arm64-2
             runner: '["self-hosted","Linux","ARM64","fleet-build"]'
     runs-on: ${{ fromJSON(matrix.runner) }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [format, clippy, test-unit]
     steps:
       - uses: actions/checkout@v7
@@ -349,6 +359,7 @@ jobs:
   audit:
     name: Security Audit
     runs-on: [self-hosted, Linux, X64, agent-hub-local]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
@@ -500,6 +511,7 @@ jobs:
   bench:
     name: Benchmark Compile
     runs-on: [self-hosted, Linux, X64, agent-hub-local]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [test-unit]
     steps:
       - uses: actions/checkout@v7
@@ -510,6 +522,7 @@ jobs:
   docker-x64:
     name: Docker Build (linux-x64)
     runs-on: [self-hosted, Linux, X64, docker]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v7
       - name: Validate Linux build + tests via Docker
@@ -524,6 +537,7 @@ jobs:
   docker-arm64:
     name: Docker Build (linux-arm64)
     runs-on: [self-hosted, Linux, ARM64, fleet-build]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v7
       - name: Validate Linux build + tests via Docker
