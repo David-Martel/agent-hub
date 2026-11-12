@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import secrets
@@ -30,7 +31,14 @@ from wine_lifecycle import NativeWineProvider, WineGuest, prove_runner_namespace
 
 ROOT = Path(__file__).resolve().parents[2]
 RESERVED_PORTS = {6379, 6380, 5432, 5300, 8400, 8401, 18400}
-DOCKER_PREREQUISITE_TIMEOUT = 15
+# Docker Desktop answers its first `docker info` slowly: 11.8 s measured idle on
+# dtm-p1gen9, and past the old fixed 15 s under load (agent-hub #242 smoke,
+# 2026-11-12). Each prerequisite therefore gets a total budget, retried with
+# backoff while the daemon refuses, and the budget can be raised per runner.
+DOCKER_PREREQUISITE_TIMEOUT_ENV = "ISOLATED_SERVICES_DOCKER_TIMEOUT"
+DOCKER_PREREQUISITE_TIMEOUT = 60.0
+DOCKER_PREREQUISITE_TIMEOUT_MAX = 600.0
+DOCKER_PREREQUISITE_BACKOFF = (1.0, 2.0, 4.0, 8.0)
 
 
 def run(args, *, env=None, capture=False, timeout=180):
@@ -113,29 +121,85 @@ def clean_environment(source):
     return env
 
 
+def docker_prerequisite_budget(environ=None):
+    """Seconds each Docker prerequisite may take in total, from the environment.
+
+    Unset or empty gives DOCKER_PREREQUISITE_TIMEOUT. Anything else must be a
+    finite number of seconds above zero and at most
+    DOCKER_PREREQUISITE_TIMEOUT_MAX; a bad value is an error, never a silent
+    default, because a mistyped override would otherwise reinstate a short limit.
+    """
+    raw = (os.environ if environ is None else environ).get(
+        DOCKER_PREREQUISITE_TIMEOUT_ENV, ""
+    )
+    if not raw.strip():
+        return DOCKER_PREREQUISITE_TIMEOUT
+    try:
+        budget = float(raw)
+    except ValueError:
+        budget = math.nan
+    if not (math.isfinite(budget) and 0 < budget <= DOCKER_PREREQUISITE_TIMEOUT_MAX):
+        raise RuntimeError(
+            f"{DOCKER_PREREQUISITE_TIMEOUT_ENV} must be seconds in "
+            f"(0, {DOCKER_PREREQUISITE_TIMEOUT_MAX:g}], got {raw!r}"
+        )
+    return budget
+
+
 def _docker_prerequisite(operation):
-    """Probe one fixed Docker prerequisite without exposing native command details."""
+    """Probe one fixed Docker prerequisite without exposing native command details.
+
+    Each attempt may wait for whatever remains of the budget, so a slow but
+    healthy daemon is waited for rather than killed and asked again. A refusal
+    (non-zero exit, as while Docker Desktop is still starting) is retried after
+    DOCKER_PREREQUISITE_BACKOFF while budget remains. A timeout has used the
+    whole budget, and a missing or unrunnable tool will not recover, so both
+    fail at once. The failure says how many attempts ran, for how long, and
+    which variable raises the budget.
+    """
     args = {
         "context-inspect": ["docker", "context", "inspect"],
         "linux-container-info": ["docker", "info", "--format", "{{.OSType}}"],
     }[operation]
-    try:
-        return run(args, capture=True, timeout=DOCKER_PREREQUISITE_TIMEOUT)
-    except (
-        subprocess.CalledProcessError,
-        subprocess.TimeoutExpired,
-        OSError,
-        RuntimeError,
-    ) as exc:
-        if isinstance(exc, subprocess.CalledProcessError):
-            detail = f"native exit {exc.returncode}"
-        elif isinstance(exc, subprocess.TimeoutExpired):
-            detail = f"timed out after {DOCKER_PREREQUISITE_TIMEOUT}s"
-        else:
-            detail = type(exc).__name__
-        raise RuntimeError(
-            f"Docker prerequisite {operation} failed ({detail}); no fixtures created"
-        ) from None
+    budget = docker_prerequisite_budget()
+    started = time.monotonic()
+    attempts = 0
+    delays = iter(DOCKER_PREREQUISITE_BACKOFF)
+    while True:
+        attempts += 1
+        remaining = budget - (time.monotonic() - started)
+        try:
+            return run(args, capture=True, timeout=remaining)
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            OSError,
+            RuntimeError,
+        ) as exc:
+            failure = exc
+        if not isinstance(failure, subprocess.CalledProcessError):
+            break
+        delay = next(delays, DOCKER_PREREQUISITE_BACKOFF[-1])
+        if budget - (time.monotonic() - started) <= delay:
+            break
+        time.sleep(delay)
+    if isinstance(failure, subprocess.CalledProcessError):
+        detail = f"native exit {failure.returncode}"
+    elif isinstance(failure, subprocess.TimeoutExpired):
+        detail = f"timed out after {failure.timeout:.1f}s"
+    else:
+        detail = type(failure).__name__
+    elapsed = time.monotonic() - started
+    error = RuntimeError(
+        f"Docker prerequisite {operation} failed ({detail}) after "
+        f"{attempts} attempt{'s' if attempts != 1 else ''} in {elapsed:.1f}s of a "
+        f"{budget:g}s budget (raise it with {DOCKER_PREREQUISITE_TIMEOUT_ENV}); "
+        "no fixtures created"
+    )
+    # Keep the native failure reachable for callers, but never in the printed
+    # traceback: its arguments and output can carry this run's secrets.
+    error.__context__ = failure
+    raise error from None
 
 
 def require_local_docker():
