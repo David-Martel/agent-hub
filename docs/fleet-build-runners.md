@@ -62,6 +62,15 @@ under Wine). Native Windows validation is a manual dispatch.
 | Windows x86-64 build and smoke (cross) | `self-hosted`, `Linux`, `X64`, `docker`, `windows-cross` | qualified ASUSPRO13 runner; vigil1 only after the same qualification | GNU-target compile, strict clippy, unit tests, configured MCP and CLI/HTTP smoke under Wine, release artifacts |
 | Windows x86-64 native (manual) | `self-hosted`, `Windows`, `X64`, `local-build` | dtm-p1gen7 | `workflow_dispatch` only: MSVC-ABI build, Codex config validator and native smoke |
 
+To turn the ARM64 legs back on once a `fleet-build` ARM64 runner is online:
+add `Release Build (linux-arm64-1)`, `Release Build (linux-arm64-2)` and
+`Docker Build (linux-arm64)` back to `REVIEWED_JOB_INVENTORY_JSON` in
+[`dependabot-automerge.yml`](../.github/workflows/dependabot-automerge.yml), then
+set the repository variable `AGENT_HUB_ARM64_CAPACITY=available`. Release
+admission ([`release_windows_artifact.py`](../scripts/ci/release_windows_artifact.py),
+`ARM64_OPT_IN_JOBS`) accepts exactly two reviewed inventories: the 13 base jobs, or
+those plus all three ARM64 jobs; a partial ARM64 set is refused.
+
 Never put a Windows path such as `T:\RustCache` in workflow-level environment
 variables. Windows-only paths belong in a Windows job. Linux jobs use a private
 target directory under `runner.temp`.

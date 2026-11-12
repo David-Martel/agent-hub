@@ -82,8 +82,17 @@ def declaration(source, key):
 # 16 until 2026-11-12. Three ARM64 jobs (Release Build linux-arm64-1/-2 and
 # Docker Build linux-arm64) became opt-in when the Spark `fleet-build` runners
 # left the fleet. They are no longer mandatory admission inputs (ci.yml
-# build-release and docker matrices).
+# build-release and docker matrices). The documented opt-in (set
+# AGENT_HUB_ARM64_CAPACITY=available and add these three names back to the
+# reviewed inventory in dependabot-automerge.yml) yields 16 jobs, so exactly two
+# inventories are reviewed: the 13 base jobs, or the base plus all three ARM64
+# jobs. A partial ARM64 set or any other job count is refused.
 MANDATORY_JOB_COUNT = 13
+ARM64_OPT_IN_JOBS = (
+    "Release Build (linux-arm64-1)",
+    "Release Build (linux-arm64-2)",
+    "Docker Build (linux-arm64)",
+)
 
 
 def policy(repo_root):
@@ -105,7 +114,6 @@ def policy(repo_root):
     jobs = rule["required_jobs"]
     require(
         isinstance(jobs, list)
-        and len(jobs) == MANDATORY_JOB_COUNT
         and all(
             isinstance(name, str)
             and name
@@ -115,8 +123,14 @@ def policy(repo_root):
         ),
         "invalid mandatory job inventory",
     )
+    # Only the full ARM64 opt-in set raises the count; a partial set stays at 13
+    # and so fails the count check below.
+    arm64 = set(ARM64_OPT_IN_JOBS)
+    expected_count = MANDATORY_JOB_COUNT + (len(arm64) if arm64 <= set(jobs) else 0)
+    require(len(jobs) == expected_count, "invalid mandatory job inventory")
     require(
-        len(set(jobs)) == MANDATORY_JOB_COUNT
+        len(set(jobs)) == expected_count
+        and len(set(jobs) - arm64) == MANDATORY_JOB_COUNT
         and WINDOWS in jobs
         and "CLI And HTTP Smoke" in jobs
         and MANUAL not in jobs,
