@@ -79,6 +79,13 @@ def declaration(source, key):
     return decode_json(values[0].replace("''", "'").encode())
 
 
+# 16 until 2026-11-12. Three ARM64 jobs (Release Build linux-arm64-1/-2 and
+# Docker Build linux-arm64) became opt-in when the Spark `fleet-build` runners
+# left the fleet. They are no longer mandatory admission inputs (ci.yml
+# build-release and docker matrices).
+MANDATORY_JOB_COUNT = 13
+
+
 def policy(repo_root):
     raw = (repo_root / CI_PATH).read_bytes()
     inventory = declaration(
@@ -98,7 +105,7 @@ def policy(repo_root):
     jobs = rule["required_jobs"]
     require(
         isinstance(jobs, list)
-        and len(jobs) == 16
+        and len(jobs) == MANDATORY_JOB_COUNT
         and all(
             isinstance(name, str)
             and name
@@ -109,7 +116,7 @@ def policy(repo_root):
         "invalid mandatory job inventory",
     )
     require(
-        len(set(jobs)) == 16
+        len(set(jobs)) == MANDATORY_JOB_COUNT
         and WINDOWS in jobs
         and "CLI And HTTP Smoke" in jobs
         and MANUAL not in jobs,

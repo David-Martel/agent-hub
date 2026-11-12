@@ -121,15 +121,19 @@ jobs:
 
   linux:
     name: Linux release (${{ matrix.name }})
+    # ARM64 IS OPT-IN (2026-11-12). The `fleet-build` ARM64 runners were the DGX Sparks,
+    # which left the fleet on 2026-11-04. A leg whose labels no online runner carries does
+    # not skip; it queues for 24 h, so the `publish` job that needs this one never ran.
+    # The ARM64 leg runs only when the repository variable AGENT_HUB_ARM64_CAPACITY is
+    # `available`; set it only while an ARM64 `fleet-build` runner is online. Until then a
+    # release ships no linux-arm64 archive. Cross-compiling for aarch64 on x86_64 is the
+    # owner's direction for ARM64 artifacts, and is a follow-up.
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: linux-x64
-            runner: '["self-hosted","Linux","X64","agent-hub-local"]'
-          - name: linux-arm64
-            runner: '["self-hosted","Linux","ARM64","fleet-build"]'
-    runs-on: ${{ fromJSON(matrix.runner) }}
+        name: [linux-x64, linux-arm64]
+        exclude: ${{ fromJSON(vars.AGENT_HUB_ARM64_CAPACITY == 'available' && '[]' || '[{"name":"linux-arm64"}]') }}
+    runs-on: ${{ fromJSON(matrix.name == 'linux-arm64' && '["self-hosted","Linux","ARM64","fleet-build"]' || '["self-hosted","Linux","X64","agent-hub-local"]') }}
     steps:
       - uses: actions/checkout@v7
       - run: python3 -B scripts/ci/toolchain_policy.py --verify-sources
@@ -208,5 +212,5 @@ jobs:
           body: |
             Redis + PostgreSQL coordination bus for multi-agent AI systems.
 
-            Artifacts are published for Windows x64, Linux x64, and Linux
-            ARM64. Verify the matching `SHA256SUMS-*` file before installation.
+            Artifacts are published for Windows x64 and Linux x64, plus Linux
+            ARM64 when an ARM64 build runner is available. Verify the matching `SHA256SUMS-*` file before installation.

@@ -37,14 +37,11 @@ JOBS = [
     "Integration Tests",
     "History Catalog Migration",
     "Release Build (linux-x64)",
-    "Release Build (linux-arm64-1)",
-    "Release Build (linux-arm64-2)",
     "CLI And HTTP Smoke",
     "Security Audit",
     "Windows Build And Unit Tests",
     "Benchmark Compile",
     "Docker Build (linux-x64)",
-    "Docker Build (linux-arm64)",
 ]
 
 
@@ -280,7 +277,7 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(HELPER.Refused, "inventory"):
             self.admit()
 
-    def test_reviewed_inventory_matches_independent_sixteen_job_oracle(self):
+    def test_reviewed_inventory_matches_independent_thirteen_job_oracle(self):
         rule, _ = HELPER.policy(self.root)
         self.assertEqual(rule["required_jobs"], JOBS)
 

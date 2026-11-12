@@ -27,7 +27,7 @@ HEAD = "a" * 40
 MERGE = "c" * 40
 PRODUCER = b""
 FUTURE_PRODUCER = b""
-REVIEWED_HASH = "ac19eee5ffeede643232cccde51bda9f067b293a234ccc4780c91d8a6490fbff"
+REVIEWED_HASH = "176c76cbab1058cda2128ec9ed6d02b7a5524ebd60665a0ed82f6c08888290ec"
 JOBS = [
     "Format Check",
     "Cloud Agentbus (TypeScript)",
@@ -37,14 +37,11 @@ JOBS = [
     "Integration Tests",
     "History Catalog Migration",
     "Release Build (linux-x64)",
-    "Release Build (linux-arm64-1)",
-    "Release Build (linux-arm64-2)",
     "CLI And HTTP Smoke",
     "Security Audit",
     "Windows Build And Unit Tests",
     "Benchmark Compile",
     "Docker Build (linux-x64)",
-    "Docker Build (linux-arm64)",
 ]
 
 MANUAL = "Windows Native Validation (manual)"
@@ -54,7 +51,7 @@ SKIPS = {
         {
             "path": ".github/workflows/ci.yml",
             "source_sha256": (
-                "ac19eee5ffeede643232cccde51bda9f067b293a234ccc4780c91d8a6490fbff"
+                "176c76cbab1058cda2128ec9ed6d02b7a5524ebd60665a0ed82f6c08888290ec"
             ),
             "job_name": MANUAL,
             "if_expression": "github.event_name == 'workflow_dispatch'",
@@ -63,7 +60,7 @@ SKIPS = {
         {
             "path": ".github/workflows/ci.yml",
             "source_sha256": (
-                "ac19eee5ffeede643232cccde51bda9f067b293a234ccc4780c91d8a6490fbff"
+                "176c76cbab1058cda2128ec9ed6d02b7a5524ebd60665a0ed82f6c08888290ec"
             ),
             "job_name": ARCHIVE,
             "if_expression": "github.event_name != 'pull_request'",
@@ -196,7 +193,7 @@ def evaluate(code: str, scenario: str) -> tuple[str, list[str]]:
     if scenario == "smoke_missing":
         jobs = [j for j in jobs if j["name"] != "CLI And HTTP Smoke"]
     if scenario == "matrix_missing":
-        jobs = [j for j in jobs if j["name"] != "Release Build (linux-arm64-2)"]
+        jobs = [j for j in jobs if j["name"] != "Release Build (linux-x64)"]
     if scenario == "untrusted_skip":
         jobs.append(
             dict(
@@ -484,7 +481,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(
             declared_json(self.workflow_text, "REVIEWED_SKIP_JOBS_JSON"), SKIPS
         )
-        self.assertEqual(len(JOBS), 16)
+        self.assertEqual(len(JOBS), 13)
         self.assertNotIn(MANUAL, JOBS)
         self.assertEqual(hashlib.sha256(PRODUCER).hexdigest(), REVIEWED_HASH)
         self.assertNotEqual(hashlib.sha256(FUTURE_PRODUCER).hexdigest(), REVIEWED_HASH)

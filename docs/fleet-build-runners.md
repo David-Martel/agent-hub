@@ -58,7 +58,7 @@ under Wine). Native Windows validation is a manual dispatch.
 | --- | --- | --- | --- |
 | Linux x86-64 | `self-hosted`, `Linux`, `X64`, `agent-hub-local` | vigil1 today (role label only, no host label; dtm-super-nuc runners are being added) | format, lint, unit, audit, benchmark compilation, the Linux x64 CI and release builds |
 | Linux x86-64 Docker | `self-hosted`, `Linux`, `X64`, `docker` | ASUSPRO13 and minisforum-ms01 | Linux-container build and the owned-fixture integration and history jobs. ASUS uses its Docker engine. ms01's `minisforum-ms01-agenthub-docker-1` (extra label `minisforum-ms01`) uses the dedicated `ci-agenthub` account's own rootless Podman socket; see [the ms01 carrier](../config/fleet/minisforum-ms01-agenthub/README.md) |
-| Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | Spark fleet | native and Docker builds |
+| Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | none since 2026-11-04 (the Sparks left the fleet); legs opt-in on `AGENT_HUB_ARM64_CAPACITY` | native and Docker builds |
 | Windows x86-64 build and smoke (cross) | `self-hosted`, `Linux`, `X64`, `docker`, `windows-cross` | qualified ASUSPRO13 runner; vigil1 only after the same qualification | GNU-target compile, strict clippy, unit tests, configured MCP and CLI/HTTP smoke under Wine, release artifacts |
 | Windows x86-64 native (manual) | `self-hosted`, `Windows`, `X64`, `local-build` | dtm-p1gen7 | `workflow_dispatch` only: MSVC-ABI build, Codex config validator and native smoke |
 
