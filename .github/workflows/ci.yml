@@ -215,6 +215,14 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [format, clippy, test-unit]
     steps:
+      # An excluded matrix leg produces no job, so say here that the ARM64 legs did not run.
+      - name: Report excluded ARM64 legs
+        if: matrix.name == 'linux-x64' && vars.AGENT_HUB_ARM64_CAPACITY != 'available'
+        shell: bash
+        run: |
+          reason="ARM64 runner unavailable (set vars.AGENT_HUB_ARM64_CAPACITY=available once a fleet-build ARM64 runner is online)"
+          echo "::warning title=ARM64 legs skipped::skipped: $reason. Not run: Release Build (linux-arm64-1), Release Build (linux-arm64-2), Docker Build (linux-arm64)."
+          printf '### ARM64 legs skipped\n\nskipped: %s.\nNot run: Release Build (linux-arm64-1), Release Build (linux-arm64-2), Docker Build (linux-arm64).\n' "$reason" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
       - name: Record runner and cache provenance

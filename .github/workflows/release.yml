@@ -135,6 +135,14 @@ jobs:
         exclude: ${{ fromJSON(vars.AGENT_HUB_ARM64_CAPACITY == 'available' && '[]' || '[{"name":"linux-arm64"}]') }}
     runs-on: ${{ fromJSON(matrix.name == 'linux-arm64' && '["self-hosted","Linux","ARM64","fleet-build"]' || '["self-hosted","Linux","X64","agent-hub-local"]') }}
     steps:
+      # An excluded matrix leg produces no job, so say here that the ARM64 leg did not run.
+      - name: Report excluded ARM64 leg
+        if: matrix.name == 'linux-x64' && vars.AGENT_HUB_ARM64_CAPACITY != 'available'
+        shell: bash
+        run: |
+          reason="ARM64 runner unavailable (set vars.AGENT_HUB_ARM64_CAPACITY=available once a fleet-build ARM64 runner is online)"
+          echo "::warning title=ARM64 release leg skipped::skipped: $reason. This release ships no linux-arm64 archive."
+          printf '### ARM64 release leg skipped\n\nskipped: %s.\nThis release ships no linux-arm64 archive.\n' "$reason" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v7
       - run: python3 -B scripts/ci/toolchain_policy.py --verify-sources
       - run: bash scripts/ci/setup-rust.sh
