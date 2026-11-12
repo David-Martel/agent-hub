@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import math
 import subprocess
 import sys
 import tempfile
@@ -417,6 +418,165 @@ class IsolationTests(unittest.TestCase):
                     owned.close()
 
 
+class FakeClock:
+    """A monotonic clock that only moves when a faked child or sleep spends time."""
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = []
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        self.now += seconds
+
+
+class DockerPrerequisiteBudgetTests(unittest.TestCase):
+    """The Docker prerequisite waits for a slow daemon within a bounded budget.
+
+    agent-hub #242's smoke failed twice on dtm-p1gen9 because `docker info`
+    took longer than the fixed 15 s limit; Docker Desktop measured 11.8 s cold
+    while idle. These tests fake the child process and the clock, so they spend
+    no real time and need no Docker.
+    """
+
+    def _probe(self, behaviour, environ=None):
+        clock = FakeClock()
+        calls = []
+
+        def fake_run(args, *, capture, timeout):
+            calls.append(timeout)
+            return behaviour(args, timeout, clock, len(calls))
+
+        with (
+            patch.dict(services.os.environ, environ or {}, clear=True),
+            patch.object(services, "run", side_effect=fake_run),
+            patch.object(services.time, "monotonic", side_effect=clock.monotonic),
+            patch.object(services.time, "sleep", side_effect=clock.sleep),
+        ):
+            try:
+                result = services._docker_prerequisite("linux-container-info")
+            except RuntimeError as caught:
+                return clock, calls, caught
+        return clock, calls, result
+
+    @staticmethod
+    def _answers_after(seconds):
+        def behaviour(args, timeout, clock, _attempt):
+            if timeout < seconds:
+                clock.now += timeout
+                raise subprocess.TimeoutExpired(args, timeout)
+            clock.now += seconds
+            return subprocess.CompletedProcess(args, 0, "linux\n", "")
+
+        return behaviour
+
+    def test_a_docker_answering_after_20s_is_waited_for(self):
+        """Protects: a slow but healthy Docker passes the prerequisite.
+
+        Detects: a per-call limit below the daemon's answer time, which kills
+        the probe before it answers (the old fixed 15 s failed this case).
+        Needs: faked run() and clock only.
+        Breadcrumb: scripts/ci/isolated-services.py _docker_prerequisite.
+        """
+        clock, calls, result = self._probe(self._answers_after(20))
+        self.assertIsInstance(result, subprocess.CompletedProcess, result)
+        self.assertEqual(result.stdout.strip(), "linux")
+        self.assertEqual(len(calls), 1)
+        self.assertGreaterEqual(calls[0], 20)
+        self.assertEqual(clock.now, 20)
+
+    def test_a_docker_that_never_answers_fails_within_the_budget(self):
+        """Protects: a hung Docker still fails, and says so plainly, in bounded time.
+
+        Detects: retrying after a timeout (which would overrun the budget) or
+        an unbounded wait. Needs: faked run() and clock only.
+        Breadcrumb: scripts/ci/isolated-services.py _docker_prerequisite.
+        """
+        clock, calls, caught = self._probe(self._answers_after(math.inf))
+        self.assertIsInstance(caught, RuntimeError)
+        self.assertLessEqual(clock.now, services.DOCKER_PREREQUISITE_TIMEOUT)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            str(caught),
+            "Docker prerequisite linux-container-info failed (timed out after "
+            "60.0s) after 1 attempt in 60.0s of a 60s budget (raise it with "
+            "ISOLATED_SERVICES_DOCKER_TIMEOUT); no fixtures created",
+        )
+
+    def test_a_refusing_daemon_is_retried_with_backoff_until_it_answers(self):
+        """Protects: Docker Desktop still starting (a quick refusal) is retried.
+
+        Detects: failing on the first non-zero exit, or retrying without
+        backing off. Needs: faked run() and clock only.
+        """
+
+        def behaviour(args, timeout, clock, attempt):
+            clock.now += 0.5
+            if attempt < 3:
+                raise subprocess.CalledProcessError(1, args)
+            return subprocess.CompletedProcess(args, 0, "linux\n", "")
+
+        clock, calls, result = self._probe(behaviour)
+        self.assertIsInstance(result, subprocess.CompletedProcess, result)
+        self.assertEqual(clock.sleeps, [1.0, 2.0])
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[1], 60 - 0.5 - 1.0)
+
+    def test_a_daemon_that_keeps_refusing_stops_inside_the_budget(self):
+        """Protects: retries end, with the attempt count, before the budget runs out.
+
+        Detects: an unbounded retry loop or a sleep that overruns the budget.
+        Needs: faked run() and clock only.
+        """
+
+        def behaviour(args, timeout, clock, _attempt):
+            clock.now += 0.5
+            raise subprocess.CalledProcessError(1, args)
+
+        clock, calls, caught = self._probe(behaviour)
+        self.assertIsInstance(caught, RuntimeError)
+        self.assertLessEqual(clock.now, services.DOCKER_PREREQUISITE_TIMEOUT)
+        self.assertEqual(clock.sleeps[:4], [1.0, 2.0, 4.0, 8.0])
+        self.assertTrue(all(delay == 8.0 for delay in clock.sleeps[4:]))
+        self.assertIn(f"(native exit 1) after {len(calls)} attempts", str(caught))
+
+    def test_the_budget_is_overridable_and_a_bad_override_is_an_error(self):
+        """Protects: a runner can raise or lower the budget, and a typo is refused.
+
+        Detects: an override that is ignored (here a 5 s budget must fail a
+        Docker that answers after 20 s), or a bad value silently replaced by a
+        default. Needs: faked run() and clock only.
+        """
+        clock, calls, caught = self._probe(
+            self._answers_after(20), {"ISOLATED_SERVICES_DOCKER_TIMEOUT": "5"}
+        )
+        self.assertIsInstance(caught, RuntimeError)
+        self.assertEqual(calls, [5.0])
+        self.assertIn("of a 5s budget", str(caught))
+        clock, calls, result = self._probe(
+            self._answers_after(90), {"ISOLATED_SERVICES_DOCKER_TIMEOUT": "120"}
+        )
+        self.assertIsInstance(result, subprocess.CompletedProcess, result)
+        for value in ("", "  "):
+            self.assertEqual(
+                services.docker_prerequisite_budget(
+                    {"ISOLATED_SERVICES_DOCKER_TIMEOUT": value}
+                ),
+                60.0,
+            )
+        for value in ("abc", "0", "-1", "nan", "inf", "601"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    RuntimeError, "ISOLATED_SERVICES_DOCKER_TIMEOUT must be seconds"
+                ):
+                    services.docker_prerequisite_budget(
+                        {"ISOLATED_SERVICES_DOCKER_TIMEOUT": value}
+                    )
+
+
 class DockerPrerequisiteTests(unittest.TestCase):
     def test_prerequisite_success_uses_exact_fixed_commands_and_finite_timeout(self):
         for operation, args in (
@@ -426,6 +586,8 @@ class DockerPrerequisiteTests(unittest.TestCase):
             with self.subTest(operation=operation):
                 completed = subprocess.CompletedProcess(args, 0, "inert", "")
                 with (
+                    patch.dict(services.os.environ, {}, clear=True),
+                    patch.object(services.time, "monotonic", return_value=0.0),
                     patch.object(services.shutil, "which", return_value="owned-docker"),
                     patch.object(
                         services.subprocess, "run", return_value=completed
@@ -440,7 +602,7 @@ class DockerPrerequisiteTests(unittest.TestCase):
                     text=True,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=15,
+                    timeout=60.0,
                     creationflags=(
                         subprocess.CREATE_NO_WINDOW if services.os.name == "nt" else 0
                     ),
@@ -536,25 +698,36 @@ class DockerPrerequisiteTests(unittest.TestCase):
                 ),
                 (
                     subprocess.TimeoutExpired(
-                        [marker], 15, output=marker, stderr=marker
+                        [marker], 60.0, output=marker, stderr=marker
                     ),
-                    "timed out after 15s",
+                    "timed out after 60.0s",
                 ),
                 (OSError(marker), "OSError"),
                 (RuntimeError(marker), "RuntimeError"),
             ):
+                clock = FakeClock()
                 with (
                     self.subTest(operation=operation, detail=detail),
+                    patch.dict(services.os.environ, {}, clear=True),
+                    patch.object(
+                        services.time, "monotonic", side_effect=clock.monotonic
+                    ),
+                    patch.object(services.time, "sleep", side_effect=clock.sleep),
                     patch.object(services.shutil, "which", return_value="owned-docker"),
                     patch.object(services.subprocess, "run", side_effect=failure),
                 ):
                     try:
                         services._docker_prerequisite(operation)
                     except RuntimeError as caught:
+                        # A refusal is retried until the next backoff no longer
+                        # fits; the fake clock moves only by those sleeps.
+                        attempts = len(clock.sleeps) + 1
                         self.assertEqual(
                             str(caught),
-                            f"Docker prerequisite {operation} failed ({detail}); "
-                            "no fixtures created",
+                            f"Docker prerequisite {operation} failed ({detail}) "
+                            f"after {attempts} attempt{'s' if attempts != 1 else ''} "
+                            f"in {clock.now:.1f}s of a 60s budget (raise it with "
+                            "ISOLATED_SERVICES_DOCKER_TIMEOUT); no fixtures created",
                         )
                         self.assertIs(caught.__context__, failure)
                         self.assertTrue(caught.__suppress_context__)
@@ -584,6 +757,7 @@ class DockerPrerequisiteTests(unittest.TestCase):
                         },
                         clear=True,
                     ),
+                    patch.object(services.time, "monotonic", return_value=0.0),
                     patch.object(services.shutil, "which", return_value="owned-docker"),
                     patch.object(
                         services.subprocess,
@@ -603,7 +777,8 @@ class DockerPrerequisiteTests(unittest.TestCase):
                     ],
                 )
                 self.assertEqual(
-                    [call.kwargs["timeout"] for call in native.call_args_list], [15, 15]
+                    [call.kwargs["timeout"] for call in native.call_args_list],
+                    [60.0, 60.0],
                 )
 
     def test_explicit_local_host_skips_context_and_requires_linux(self):
@@ -665,17 +840,22 @@ class DockerPrerequisiteTests(unittest.TestCase):
                         if timeout
                         else subprocess.CalledProcessError(7, ["inert-marker"])
                     )
-                    replies = (
-                        [failure]
-                        if operation == "context-inspect"
-                        else [
-                            subprocess.CompletedProcess(
-                                [], 0, json_context("unix:///inert.sock"), ""
-                            ),
-                            failure,
-                        ]
+                    context = subprocess.CompletedProcess(
+                        [], 0, json_context("unix:///inert.sock"), ""
                     )
+                    first = [] if operation == "context-inspect" else [context]
+
+                    def replies(*_args, _first=first, _failure=failure, **_kwargs):
+                        if _first:
+                            return _first.pop()
+                        raise _failure
+
+                    clock = FakeClock()
                     with (
+                        patch.object(
+                            services.time, "monotonic", side_effect=clock.monotonic
+                        ),
+                        patch.object(services.time, "sleep", side_effect=clock.sleep),
                         patch.dict(services.os.environ, {}, clear=True),
                         patch.object(sys, "argv", ["isolated-services.py", "history"]),
                         patch.object(
