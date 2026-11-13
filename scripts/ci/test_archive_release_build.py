@@ -323,12 +323,23 @@ class WorkflowContractTests(unittest.TestCase):
             )
         self.assertIn("python -I -B scripts/ci/archive_release_build.py", job)
         self.assertIn(r"C:\codedev\agent-hub-artifacts\ci", job)
-        legs = re.findall(
-            r"(?m)^          - name: (\S+)$", job_block(self.ci, "build-release")
+        matrix = re.search(
+            r"(?m)^        name: \[([^\]]+)\]$", job_block(self.ci, "build-release")
         )
+        self.assertIsNotNone(matrix)
+        legs = [leg.strip() for leg in matrix[1].split(",")]
         self.assertEqual(legs, ["linux-x64", "linux-arm64-1", "linux-arm64-2"])
         required = re.findall(r"'--require', '(agent-bus-linux-[a-z0-9-]+)'", job)
         self.assertEqual(required, [f"agent-bus-{leg}" for leg in legs])
+        # The ARM64 legs are opt-in (2026-11-12): excluded unless
+        # AGENT_HUB_ARM64_CAPACITY is `available`, and the archive requires them
+        # only under the same condition.
+        self.assertIn(
+            "vars.AGENT_HUB_ARM64_CAPACITY == 'available'",
+            job_block(self.ci, "build-release"),
+        )
+        self.assertIn("if ($env:ARM64_CAPACITY -ceq 'available') {", job)
+        self.assertIn("ARM64_CAPACITY: ${{ vars.AGENT_HUB_ARM64_CAPACITY }}", job)
 
     def test_archive_job_and_its_upload_skip_pull_request_runs_together(self) -> None:
         """Protects: the archive job never waits on an artifact that PR runs do not

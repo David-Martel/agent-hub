@@ -58,9 +58,18 @@ under Wine). Native Windows validation is a manual dispatch.
 | --- | --- | --- | --- |
 | Linux x86-64 | `self-hosted`, `Linux`, `X64`, `agent-hub-local` | vigil1 today (role label only, no host label; dtm-super-nuc runners are being added) | format, lint, unit, audit, benchmark compilation, the Linux x64 CI and release builds |
 | Linux x86-64 Docker | `self-hosted`, `Linux`, `X64`, `docker` | ASUSPRO13 and minisforum-ms01 | Linux-container build and the owned-fixture integration and history jobs. ASUS uses its Docker engine. ms01's `minisforum-ms01-agenthub-docker-1` (extra label `minisforum-ms01`) uses the dedicated `ci-agenthub` account's own rootless Podman socket; see [the ms01 carrier](../config/fleet/minisforum-ms01-agenthub/README.md) |
-| Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | Spark fleet | native and Docker builds |
+| Linux ARM64 | `self-hosted`, `Linux`, `ARM64`, `fleet-build` | none since 2026-11-04 (the Sparks left the fleet); legs opt-in on `AGENT_HUB_ARM64_CAPACITY` | native and Docker builds |
 | Windows x86-64 build and smoke (cross) | `self-hosted`, `Linux`, `X64`, `docker`, `windows-cross` | qualified ASUSPRO13 runner; vigil1 only after the same qualification | GNU-target compile, strict clippy, unit tests, configured MCP and CLI/HTTP smoke under Wine, release artifacts |
 | Windows x86-64 native (manual) | `self-hosted`, `Windows`, `X64`, `local-build` | dtm-p1gen7 | `workflow_dispatch` only: MSVC-ABI build, Codex config validator and native smoke |
+
+To turn the ARM64 legs back on once a `fleet-build` ARM64 runner is online:
+add `Release Build (linux-arm64-1)`, `Release Build (linux-arm64-2)` and
+`Docker Build (linux-arm64)` back to `REVIEWED_JOB_INVENTORY_JSON` in
+[`dependabot-automerge.yml`](../.github/workflows/dependabot-automerge.yml), then
+set the repository variable `AGENT_HUB_ARM64_CAPACITY=available`. Release
+admission ([`release_windows_artifact.py`](../scripts/ci/release_windows_artifact.py),
+`ARM64_OPT_IN_JOBS`) accepts exactly two reviewed inventories: the 13 base jobs, or
+those plus all three ARM64 jobs; a partial ARM64 set is refused.
 
 Never put a Windows path such as `T:\RustCache` in workflow-level environment
 variables. Windows-only paths belong in a Windows job. Linux jobs use a private

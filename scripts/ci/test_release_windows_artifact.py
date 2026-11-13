@@ -37,14 +37,11 @@ JOBS = [
     "Integration Tests",
     "History Catalog Migration",
     "Release Build (linux-x64)",
-    "Release Build (linux-arm64-1)",
-    "Release Build (linux-arm64-2)",
     "CLI And HTTP Smoke",
     "Security Audit",
     "Windows Build And Unit Tests",
     "Benchmark Compile",
     "Docker Build (linux-x64)",
-    "Docker Build (linux-arm64)",
 ]
 
 
@@ -280,9 +277,58 @@ class AdmissionTests(unittest.TestCase):
         with self.assertRaisesRegex(HELPER.Refused, "inventory"):
             self.admit()
 
-    def test_reviewed_inventory_matches_independent_sixteen_job_oracle(self):
+    def test_reviewed_inventory_matches_independent_thirteen_job_oracle(self):
         rule, _ = HELPER.policy(self.root)
         self.assertEqual(rule["required_jobs"], JOBS)
+
+    def with_inventory(self, extra):
+        """Add `extra` to the reviewed inventory and give the CI run those jobs."""
+        path = self.root / HELPER.POLICY_PATH
+        source = path.read_text()
+        match = re.search(r"REVIEWED_JOB_INVENTORY_JSON: '(.*)'\n", source)
+        self.assertIsNotNone(match)
+        inventory = json.loads(match[1].replace("''", "'"))
+        inventory["CI"]["required_jobs"] += extra
+        encoded = json.dumps(inventory, separators=(",", ":")).replace("'", "''")
+        path.write_text(source[: match.start(1)] + encoded + source[match.end(1) :])
+        for index, name in enumerate(extra):
+            self.api.jobs.append({**self.api.jobs[0], "id": 300 + index, "name": name})
+
+    def test_arm64_opt_in_inventory_of_sixteen_jobs_is_admitted(self):
+        """Protects: the documented ARM64 opt-in keeps Windows release admission.
+
+        Detects: admission refusing the 13 base jobs plus exactly the three ARM64
+        jobs that ci.yml runs once AGENT_HUB_ARM64_CAPACITY is `available` (the
+        opt-in adds them back to the reviewed inventory). Positive control: the
+        base 13-job inventory is admitted by test_exact_success.
+        Needs: the closed API fixtures only; no network or credentials.
+        Breadcrumb: release_windows_artifact.policy, ARM64_OPT_IN_JOBS.
+        """
+        self.with_inventory(list(HELPER.ARM64_OPT_IN_JOBS))
+        rule, _ = HELPER.policy(self.root)
+        self.assertEqual(rule["required_jobs"], [*JOBS, *HELPER.ARM64_OPT_IN_JOBS])
+        _, receipt = self.admit()
+        self.assertEqual(
+            set(receipt["jobs"]), {*JOBS, *HELPER.ARM64_OPT_IN_JOBS, HELPER.MANUAL}
+        )
+
+    def test_partial_or_foreign_inventory_beyond_the_base_is_refused(self):
+        """Protects: only the two reviewed inventories (13, or 13 plus the three
+        ARM64 jobs) are accepted.
+
+        Detects: a partial ARM64 set (14 or 15 jobs) or an unrelated 16th job
+        being admitted. Positive control: the full ARM64 set is admitted by the
+        sibling test.
+        Needs: the closed API fixtures only; no network or credentials.
+        Breadcrumb: release_windows_artifact.policy.
+        """
+        arm = list(HELPER.ARM64_OPT_IN_JOBS)
+        for extra in (arm[:1], arm[:2], [*arm[:2], "Unreviewed Build (linux-arm64)"]):
+            with self.subTest(extra=extra):
+                self.setUp()
+                self.with_inventory(extra)
+                with self.assertRaisesRegex(HELPER.Refused, "inventory"):
+                    HELPER.policy(self.root)
 
     def test_changed_raw_producer_is_refused(self):
         self.api.source += b"\n# unreviewed source drift\n"
