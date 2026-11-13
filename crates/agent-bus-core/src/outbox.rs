@@ -280,6 +280,8 @@ pub enum OutboxError {
     Custody,
     #[error("another writer holds the outbox journal")]
     Busy,
+    #[error("outbox journal not found")]
+    Missing,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -352,6 +354,13 @@ impl JournalInspection {
         request.expires_ms != 0
             && now >= request.expires_ms
             && !self.attempted.contains(&request.request_id)
+    }
+
+    /// Whether a replay of `request` was ever attempted and left unsettled.
+    ///
+    /// Such a request may have been accepted by the destination it was sent to.
+    pub(crate) fn was_attempted(&self, request: &ReplayRequest) -> bool {
+        self.attempted.contains(&request.request_id)
     }
 
     /// Retire the exact locked source without replacing an existing archive.
@@ -455,7 +464,19 @@ impl Journal {
     /// # Errors
     /// Custody failure, corrupt journal, lock contention or I/O.
     pub fn inspect(path: &Path) -> Result<JournalInspection, OutboxError> {
-        let file = crate::outbox_private::open(path).map_err(|_sanitized| OutboxError::Custody)?;
+        // Never create: a path that is vacant for an instant (a migration between
+        // its two renames) must not become an empty active journal because
+        // someone looked at it. A missing file is `OutboxError::Missing`.
+        let file = crate::outbox_private::open_existing_only(path).map_err(|error| {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                OutboxError::Missing
+            } else {
+                OutboxError::Custody
+            }
+        })?;
         let (journal, destination) = Self::load(file, None, Some(path))?;
         Ok(Self::inspection(journal, destination))
     }
@@ -683,6 +704,39 @@ impl Journal {
             surface,
             arguments,
         };
+        self.persist_queued(request)
+    }
+
+    /// Re-queue a request that was never attempted, under this journal's origin.
+    ///
+    /// A migration to a new destination moves unsent work here with its
+    /// original request ID, creation time and expiry; only the origin and
+    /// sequence are this journal's own. The caller must have established that
+    /// no replay of `original` was ever attempted: a request some hub may have
+    /// accepted must not be re-queued, because the new destination cannot
+    /// recognise it.
+    ///
+    /// # Errors
+    /// Invalid request, a request ID already in this journal, capacity or
+    /// storage failure.
+    pub(crate) fn adopt(&mut self, original: &ReplayRequest) -> Result<ReplayRequest, OutboxError> {
+        if self.pending.len() >= REQUEST_LIMIT
+            || self
+                .pending
+                .values()
+                .any(|queued| queued.request_id == original.request_id)
+        {
+            return Err(OutboxError::Capacity);
+        }
+        self.persist_queued(ReplayRequest {
+            origin_id: self.origin_id,
+            sequence: self.next_sequence,
+            ..original.clone()
+        })
+    }
+
+    /// Validate and durably append a queued request before it becomes visible.
+    fn persist_queued(&mut self, request: ReplayRequest) -> Result<ReplayRequest, OutboxError> {
         request.validate()?;
         let next_sequence = self
             .next_sequence
@@ -694,6 +748,20 @@ impl Journal {
         self.next_sequence = next_sequence;
         self.pending.insert(request.sequence, request.clone());
         Ok(request)
+    }
+
+    /// Move this journal's locked file to `to`, which must not exist.
+    ///
+    /// Used to put a fully written staging journal in place after the previous
+    /// active journal was retired; the held handle is what is renamed.
+    ///
+    /// # Errors
+    /// No source path, a changed or replaced source, an existing target or a
+    /// platform without a no-replace rename.
+    pub(crate) fn move_to(&self, to: &Path) -> Result<(), OutboxError> {
+        let from = self.source_path.as_deref().ok_or(OutboxError::Custody)?;
+        crate::outbox_private::retire(&self.file, from, to)
+            .map_err(|_sanitized| OutboxError::Custody)
     }
 
     fn settle(
@@ -1119,6 +1187,24 @@ mod tests {
             assert_eq!(inspection.pending[0].request_id, retained.request_id);
         });
         assert_eq!(logged, "", "inspection must not log");
+    }
+
+    /// Protects: inspecting a journal that is not there leaves it not there.
+    /// Detects: `inspect` opening with create semantics, which turned a path a
+    /// migration had just vacated into an empty active journal.
+    /// Needs: an owned private directory; no services.
+    /// Breadcrumb: `Journal::inspect` and `outbox_private::open_existing_only`.
+    #[test]
+    fn inspecting_a_missing_journal_reports_missing_and_creates_nothing() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("private");
+        crate::outbox_private::create_directory(&directory).unwrap();
+        let path = directory.join("journal.jsonl");
+        assert!(matches!(Journal::inspect(&path), Err(OutboxError::Missing)));
+        assert!(!path.exists());
+        // Control: opening for write still creates and binds it.
+        drop(Journal::open(&path, "scope").unwrap());
+        assert!(Journal::inspect(&path).is_ok());
     }
 
     #[test]
