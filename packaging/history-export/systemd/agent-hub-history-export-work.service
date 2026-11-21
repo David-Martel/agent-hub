@@ -10,6 +10,10 @@ Type=oneshot
 # --config, which rebinds every endpoint and path and requires the promoted hub
 # identity, cutover watermark and PostgreSQL/Redis generation. `current` is the
 # symlink install.sh --profile work points at the reviewed revision directory.
+# Warm the uv cache online first. The main run stays --offline (no package fetch during the export), but a cache
+# prune evicts the redis wheel and the offline resolve then fails (2026-11-21 00:16 and 03:46). A warm-up failure
+# (no network) is ignored: the offline run still works whenever the cache is warm.
+ExecStartPre=-/bin/bash -c 'source "$HOME/.config/bash/env.bash" && uv run --no-project --with redis python -c "import redis"'
 ExecStart=/bin/bash -c 'source "$HOME/.config/bash/env.bash" && mkdir -p "$HOME/.cache" && exec flock -n "$HOME/.cache/agent-hub-history-export.lock" uv run --offline --no-project --with redis python -B "$HOME/.local/share/agent-hub-history-export/current/agent-hub-history-export.py" --drive --config "$HOME/.config/agent-hub-history-export/config.json"'
 TimeoutStartSec=2h
 UMask=0077
