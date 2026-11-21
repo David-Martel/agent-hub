@@ -199,4 +199,16 @@ try {
 } finally {
     if (Test-Path $flagDir) { Remove-Item -LiteralPath $flagDir -Recurse -Force }
 }
+# Why: vigil1 and asuspro13 left the fleet on 2026-11-04 and the U-M lab network is no
+# longer used, so the watchdog must reach the hub only through its configured candidates.
+# Detects: the removed U-M branch, which ssh-jumped through vigil1's campus address to
+# 10.60.4.1:8400, or any other tunnel fallback, coming back. Needs: only the parsed script
+# text; nothing is executed. Breadcrumb: agent-bus-watchdog.ps1 main block.
+Invoke-Case 'route_no_umich_lab_or_tunnel_fallback' {
+    $text = $ast.Extent.Text
+    foreach ($forbidden in @('141.212.', '10.60.', '192.168.50.', 'agent-bus-tunnel', '-Jump')) {
+        Assert-Equal $text.Contains($forbidden) $false "Watchdog must not reference '$forbidden'"
+    }
+}
+
 Write-Output "RESULT passed=$script:passed failed=0 skipped=0 runtime=$($PSVersionTable.PSVersion)"

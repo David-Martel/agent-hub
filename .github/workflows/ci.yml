@@ -532,7 +532,11 @@ jobs:
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
       - name: Compile benchmark targets
-        run: cargo bench --workspace --no-run
+        # This job proves the benches compile; it never runs them. The default bench profile
+        # inherits release (lto = "thin", codegen-units = 1), which took 5-15 min here on
+        # 2026-11-21. fast-release (no LTO, 16 units) type-checks and links the same targets.
+        # Real benchmark numbers still come from `cargo bench` with the release settings.
+        run: cargo bench --workspace --no-run --locked --profile fast-release
 
   docker:
     name: Docker Build (${{ matrix.name }})

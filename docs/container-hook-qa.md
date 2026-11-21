@@ -111,7 +111,8 @@ hosts and the laptops have none, and Rust must not be compiled on a laptop.
 | Host | Config | Notes |
 | --- | --- | --- |
 | minisforum-ms01 | `~/.local/state/agent-bus-hook-qa-1.99.1/config.json` | Provisioned 2026-11-05 with the steps above. The image was built locally from `FROM rust:1.99.1-bookworm`, so its ID differs from asuspro13's. `tools/` was copied from asuspro13 and its `tool_files_sha256` inventory is identical. |
-| asuspro13 | `~/.local/state/agent-bus-hook-qa-1.99.1/config.json` | The first lane, with the older compiler's lane beside it in `agent-bus-hook-qa/`. The host is scheduled to leave the fleet. |
+| dtm-super-nuc (WSL `ci-linux`) | `/home/hookqa/.local/state/agent-bus-hook-qa-1.99.1/config.json` | Provisioned 2026-11-12 with the steps above, as the non-root user `hookqa` in the `docker` group, because the gate refuses a root actor and the distro's default user is root. The image was built locally from `FROM rust:1.99.1-bookworm`. `tools/` was copied from minisforum-ms01 and its `tool_files_sha256` inventory is identical. Pushes go over the Windows host's Git `ssh.exe` through WSL interop (`core.sshCommand`), so the GitHub key stays on Windows. |
+| asuspro13 | (none) | The first lane. The host left the fleet on 2026-11-04, so the lane is gone. |
 
 Keep the lanes in step: when `rust-toolchain.toml` moves, repeat steps 1 to 4 on every
 host that still commits. Compare `tool_files_sha256` between hosts to confirm
