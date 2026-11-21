@@ -1738,6 +1738,15 @@ def publish_drive_job(job: Path, store: DriveStore) -> dict:
     return verified
 
 
+def drive_exit_code(verified: dict) -> int:
+    """0 when the verified snapshot is within the age limit, 4 when it is STALE.
+
+    The status line already says STALE; the exit code must agree, otherwise the unit
+    finishes green and neither the timer nor OnFailure= shows a nine-day-old
+    snapshot."""
+    return 0 if verified["freshness"]["within_limit"] else 4
+
+
 def drive_counts(verified: dict) -> str:
     """Counts and hashes only for the log and bus notice; never a message body."""
     binding = verified["binding"]
@@ -1902,7 +1911,7 @@ def drive_backup(no_bus: bool = False) -> int:
                 bus(summary, True)
             except (subprocess.SubprocessError, OSError):
                 log("Drive backup verified; optional bus notice failed")
-        return 0
+        return drive_exit_code(verified)
     except (
         DriveHold,
         OSError,
