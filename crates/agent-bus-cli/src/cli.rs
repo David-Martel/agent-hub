@@ -95,6 +95,33 @@ pub(crate) enum OutboxCmd {
         #[arg(long, default_value = "compact", value_enum)]
         encoding: Encoding,
     },
+    /// Move a journal bound to another hub candidate list onto the current one.
+    ///
+    /// Recovers from a hub candidate or authority change that left requests
+    /// retained in the outbox journal. Unsent requests (replay never attempted)
+    /// are re-queued with their original request IDs under the current
+    /// candidates. The old journal is renamed to journal.migrated-<origin>.jsonl,
+    /// never rewritten or deleted. A request whose replay was attempted and never
+    /// settled may have been accepted by the previous authority; it refuses the
+    /// migration unless --include-attempted archives it (it is listed, never
+    /// re-sent). The report names every request by ID, operation, topic and
+    /// thread, never its body.
+    Migrate {
+        #[arg(long, help = "Show what each request would become and change nothing")]
+        dry_run: bool,
+        #[arg(
+            long,
+            help = "Also archive requests whose replay was attempted and never settled"
+        )]
+        include_attempted: bool,
+        #[arg(
+            long,
+            help = "Archive unsent requests too instead of carrying them to the current candidates"
+        )]
+        archive_only: bool,
+        #[arg(long, default_value = "compact", value_enum)]
+        encoding: Encoding,
+    },
 }
 #[derive(Subcommand)]
 pub(crate) enum HistoryCmd {

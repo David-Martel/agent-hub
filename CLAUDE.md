@@ -264,9 +264,13 @@ so there is no candidate set to select over; it does not use this selector.
 See [routing and cache limits](docs/network-location-routing.md) and the
 [resolver](crates/agent-bus-core/src/hub.rs) for the consistency boundary.
 
-A durable offline write outbox (spool-and-replay for `send`/`presence`/
-`claim`/`ack` while offline, with idempotent UUIDv7 client ids) is
-deliberately **not** implemented yet — see #80.
+The durable offline write outbox (#80) is implemented: `send`/`presence`/
+`claim`/`ack` against a named on-site authority are journaled with stable
+request ids and replayed in order. Inspect it with `agent-bus outbox status`,
+drain it with `outbox flush`. When the hub identity or candidate list changes
+while requests are retained, `outbox migrate [--dry-run] [--include-attempted]`
+moves the journal onto the current candidates without replaying anything. See
+[`docs/durable-outbox.md`](docs/durable-outbox.md).
 
 **PR #81 review follow-up (2026-09-27), scope limits:** an `https://`
 candidate (e.g. a Cloudflare-hosted tier per #79) now works — both
@@ -280,7 +284,7 @@ also deduplicates `server_urls` by exact string match (first occurrence
 wins — no trailing-slash/case normalization), and `AGENT_BUS_SERVER_URLS=""`
 (present but empty) is confirmed to fall through to the next tier exactly
 like the var being unset, with no "explicit local-only override" sentinel.
-The #80 outbox above remains the one deliberately deferred gap. Separately,
+Separately,
 `codex/fix-filtered-inbox`'s `8a2064e` (filtered-inbox pagination, part of
 #77) predates and is orthogonal to #78's routing scope — it was carried
 through the rebase described in PR #81 but was not itself re-reviewed as

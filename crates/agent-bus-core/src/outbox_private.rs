@@ -107,6 +107,19 @@ pub(crate) fn create_directory(path: &Path) -> Result<()> {
 
 /// Open an existing private regular file or exclusively create it before bytes.
 pub(crate) fn open(path: &Path) -> Result<File> {
+    open_with(path, true)
+}
+
+/// Open an existing private regular file and never create one.
+///
+/// A read-only look at the journal must not turn a path that is vacant for an
+/// instant (a migration between its renames) into an empty active journal. A
+/// missing file is an `io::ErrorKind::NotFound` error the caller can recognise.
+pub(crate) fn open_existing_only(path: &Path) -> Result<File> {
+    open_with(path, false)
+}
+
+fn open_with(path: &Path, create: bool) -> Result<File> {
     plain_path(path)?;
     let parent = path.parent().context("outbox parent required")?;
     if !parent.is_dir() {
@@ -119,6 +132,9 @@ pub(crate) fn open(path: &Path) -> Result<File> {
                 bail!("regular outbox file required");
             }
             platform::open_existing(path)?
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
+            return Err(error).context("outbox file not found");
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             match platform::create(path) {

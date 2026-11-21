@@ -520,6 +520,22 @@ fn run(args: Vec<OsString>) -> Result<()> {
                 let value = agent_bus_core::outbox_client::rotate_now(&settings)?;
                 crate::output::output(&value, encoding);
             }
+            OutboxCmd::Migrate {
+                dry_run,
+                include_attempted,
+                archive_only,
+                encoding,
+            } => {
+                let value = agent_bus_core::outbox_client::migrate_now(
+                    &settings,
+                    agent_bus_core::outbox_client::MigrateOptions {
+                        dry_run: *dry_run,
+                        include_attempted: *include_attempted,
+                        archive_only: *archive_only,
+                    },
+                )?;
+                crate::output::output(&value, encoding);
+            }
         },
         Cmd::SpoolSend {
             ref from_agent,
