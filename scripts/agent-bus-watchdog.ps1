@@ -146,7 +146,7 @@ try {
     }
     $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
     # Since agent-hub #103 the client routes by network location over an ordered
-    # `server_urls` list (fabric p2p, UMich ssh forward, cloud), so ask the client
+    # `server_urls` list (tailnet hub, then cloud), so ask the client
     # itself which hub it reaches instead of probing one fixed URL.
     $routes = @($cfg.server_urls) + @($cfg.server_url) | Where-Object { $_ }
     if (-not $routes) {
@@ -163,16 +163,10 @@ try {
         return ($raw | Out-String | ConvertFrom-Json)
     }
 
+    # No tunnel fallback: the hub is reached over the tailnet or the cloud tier.
+    # The former U-M branch tunnelled through vigil1's campus address to asuspro13;
+    # both hosts left the fleet on 2026-11-04 and the U-M lab LAN is no longer used.
     $body = Get-BusHealth
-    # On the UMich network / VPN the hub is only reachable through the vigil1
-    # ssh forward; start it (idempotent) once before alerting. Port 18480, not
-    # 18400: the local AgentHub (NSSM) island service owns localhost:18400.
-    if ((-not $body -or $body.backend.mode -ne 'remote') -and $body -and (@($body.network_locations) -contains 'umich')) {
-        try {
-            & pwsh -NoProfile -File 'C:\codedev\agent-bus\scripts\agent-bus-tunnel.ps1' -Jump 'vigil@141.212.75.201' -JumpPort 2222 -Target '10.60.4.1:8400' -LocalPort 18480 -TimeoutSeconds 30 | Out-Null
-        } catch { }
-        $body = Get-BusHealth
-    }
     $assessment = Get-WatchdogAssessment -Health $body -Candidates @($cfg.server_urls) -ExpectedHub $expectedHub -IslandBuild $islandBuildMarker -IslandIdentity $islandIdentityMarker
     if ($assessment.state -ne 'OK') {
         Write-Alert -Message $assessment.message -Detail $assessment.detail -Level $assessment.level

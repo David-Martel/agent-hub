@@ -199,20 +199,30 @@ jobs:
 
   build-release:
     name: Release Build (${{ matrix.name }})
+    # ARM64 IS OPT-IN (2026-11-12). The `fleet-build` ARM64 runners were the DGX Sparks,
+    # which left the fleet on 2026-11-04. A leg whose labels no online runner carries does
+    # not skip; it queues for 24 h, and the whole run stays incomplete (agent-hub #242).
+    # The ARM64 legs run only when the repository variable AGENT_HUB_ARM64_CAPACITY is
+    # `available`. Before setting it, add their job names back to the reviewed inventory
+    # in dependabot-automerge.yml. Cross-compiling for aarch64 on x86_64 is the owner's
+    # direction for ARM64 artifacts, and is a follow-up.
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: linux-x64
-            runner: '["self-hosted","Linux","X64","agent-hub-local"]'
-          - name: linux-arm64-1
-            runner: '["self-hosted","Linux","ARM64","fleet-build"]'
-          - name: linux-arm64-2
-            runner: '["self-hosted","Linux","ARM64","fleet-build"]'
-    runs-on: ${{ fromJSON(matrix.runner) }}
+        name: [linux-x64, linux-arm64-1, linux-arm64-2]
+        exclude: ${{ fromJSON(vars.AGENT_HUB_ARM64_CAPACITY == 'available' && '[]' || '[{"name":"linux-arm64-1"},{"name":"linux-arm64-2"}]') }}
+    runs-on: ${{ fromJSON(startsWith(matrix.name, 'linux-arm64') && '["self-hosted","Linux","ARM64","fleet-build"]' || '["self-hosted","Linux","X64","agent-hub-local"]') }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: [format, clippy, test-unit]
     steps:
+      # An excluded matrix leg produces no job, so say here that the ARM64 legs did not run.
+      - name: Report excluded ARM64 legs
+        if: matrix.name == 'linux-x64' && vars.AGENT_HUB_ARM64_CAPACITY != 'available'
+        shell: bash
+        run: |
+          reason="ARM64 runner unavailable (set vars.AGENT_HUB_ARM64_CAPACITY=available once a fleet-build ARM64 runner is online)"
+          echo "::warning title=ARM64 legs skipped::skipped: $reason. Not run: Release Build (linux-arm64-1), Release Build (linux-arm64-2), Docker Build (linux-arm64)."
+          printf '### ARM64 legs skipped\n\nskipped: %s.\nNot run: Release Build (linux-arm64-1), Release Build (linux-arm64-2), Docker Build (linux-arm64).\n' "$reason" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v7
       - run: bash scripts/ci/setup-rust.sh
       - name: Record runner and cache provenance
@@ -308,10 +318,15 @@ jobs:
         shell: pwsh
         env:
           BUILD_RESULT: ${{ needs.build-release.result }}
+          ARM64_CAPACITY: ${{ vars.AGENT_HUB_ARM64_CAPACITY }}
         run: |
           $require = @()
           if ($env:BUILD_RESULT -ceq 'success') {
-            $require = @('--require', 'agent-bus-linux-x64', '--require', 'agent-bus-linux-arm64-1', '--require', 'agent-bus-linux-arm64-2')
+            $require = @('--require', 'agent-bus-linux-x64')
+            # The ARM64 legs are opt-in (see build-release); require them only when they ran.
+            if ($env:ARM64_CAPACITY -ceq 'available') {
+              $require += @('--require', 'agent-bus-linux-arm64-1', '--require', 'agent-bus-linux-arm64-2')
+            }
           }
           python -I -B scripts/ci/archive_release_build.py `
             --source "$PWD/ci-artifacts/release-build" `
@@ -519,32 +534,32 @@ jobs:
       - name: Compile benchmark targets
         run: cargo bench --workspace --no-run
 
-  docker-x64:
-    name: Docker Build (linux-x64)
-    runs-on: [self-hosted, Linux, X64, docker]
+  docker:
+    name: Docker Build (${{ matrix.name }})
+    # ARM64 IS OPT-IN (2026-11-12). The `fleet-build` ARM64 runners were the DGX Sparks,
+    # which left the fleet on 2026-11-04. A job whose labels no online runner carries does
+    # not skip; it queues for 24 h, and the whole run stays incomplete (agent-hub #242).
+    # The linux-arm64 leg is excluded from the matrix unless the repository variable
+    # AGENT_HUB_ARM64_CAPACITY is `available`. It is excluded rather than skipped by `if:`
+    # because the Dependabot admission gate refuses a skipped job that has no event-based
+    # skip rule. Before setting the variable, add "Docker Build (linux-arm64)" back to the
+    # reviewed inventory in dependabot-automerge.yml.
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [linux-x64, linux-arm64]
+        exclude: ${{ fromJSON(vars.AGENT_HUB_ARM64_CAPACITY == 'available' && '[]' || '[{"name":"linux-arm64"}]') }}
+    runs-on: ${{ fromJSON(matrix.name == 'linux-arm64' && '["self-hosted","Linux","ARM64","fleet-build"]' || '["self-hosted","Linux","X64","docker"]') }}
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v7
       - name: Validate Linux build + tests via Docker
         shell: bash
+        env:
+          LEG: ${{ matrix.name }}
         run: |
           command -v docker >/dev/null
           docker info >/dev/null
           docker build -f docker/Dockerfile.linux -t agent-bus-linux-validate .
-          printf '### Docker Build\n- Native linux-x64 image build and workspace tests passed on %s\n' \
-            "$RUNNER_NAME" >> "$GITHUB_STEP_SUMMARY"
-
-  docker-arm64:
-    name: Docker Build (linux-arm64)
-    runs-on: [self-hosted, Linux, ARM64, fleet-build]
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    steps:
-      - uses: actions/checkout@v7
-      - name: Validate Linux build + tests via Docker
-        shell: bash
-        run: |
-          command -v docker >/dev/null
-          docker info >/dev/null
-          docker build -f docker/Dockerfile.linux -t agent-bus-linux-validate .
-          printf '### Docker Build\n- Native %s image build and workspace tests passed\n' \
-            "linux-arm64" >> "$GITHUB_STEP_SUMMARY"
+          printf '### Docker Build\n- Native %s image build and workspace tests passed on %s\n' \
+            "$LEG" "$RUNNER_NAME" >> "$GITHUB_STEP_SUMMARY"

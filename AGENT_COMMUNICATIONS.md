@@ -899,11 +899,14 @@ validated, remove redundant copies while preserving unique work.
 
 ### Hub and client configuration
 
-- **One authoritative hub, asuspro13.** The fleet clients run in remote mode against it. On
-  2026-10-20, `agent-bus health` on dtm-p1gen7, dtm-p1gen9, dtm-super-nuc and minisforum-ms01
-  reported `backend.mode=remote` and `hub_identity=asuspro13`. No Windows workstation listened
-  on `:8400`. Check yours with `agent-bus health --encoding compact` and read `backend.url` and
-  `hub_identity`. Source: `agents-p1gen7`.
+- **One authoritative hub, DTM-WORK.** The [Work hub runbook](./docs/work-hub-runbook.md)
+  records the November 4 cutover from asuspro13 and the existing Windows service. Work's own
+  client uses `http://localhost:8400`; tailnet clients use the Work endpoint documented in
+  the runbook. If configured, the cloud candidate is non-authoritative. Check
+  `agent-bus health --encoding compact` for `backend.authoritative=true` and
+  `hub_identity=dtm-work`, then run an authenticated read such as `agent-bus presence-list`.
+  Check `agent-bus outbox status` before changing an old candidate list so that retained
+  requests keep their original route and stable IDs.
 - **Where the client finds the hub.** The client selects one complete configuration tier,
   in order: `AGENT_BUS_SERVER_CANDIDATES` (JSON), `AGENT_BUS_SERVER_URLS`,
   `AGENT_BUS_SERVER_URL`, then `server_urls` and `server_url` in `~/.config/agent-bus/config.json`

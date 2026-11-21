@@ -1,7 +1,7 @@
 # agent-hub Docker-capable runner on minisforum-ms01
 
 This directory defines `minisforum-ms01-agenthub-docker-1`, a second carrier for agent-hub's
-`[self-hosted, Linux, X64, docker]` jobs (`docker-x64`, `test-integration` and `test-history` in
+`[self-hosted, Linux, X64, docker]` jobs (the `docker` linux-x64 leg, `test-integration` and `test-history` in
 [`ci.yml`](../../../.github/workflows/ci.yml)). Until now only ASUSPRO13 carried them. The owner
 asked for fewer jobs on ASUSPRO13 and more on ms01, and on 2026-10-29 approved this carrier as an
 isolated design (relayed on agent-bus `machine-hygiene`). The placement table in
