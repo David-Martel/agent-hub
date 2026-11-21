@@ -481,6 +481,34 @@ impl Journal {
         Ok(Self::inspection(journal, destination))
     }
 
+    /// Move a private journal file aside to `retired` without reading its contents.
+    ///
+    /// For derived data a stopped migration may have left half written: a crash or
+    /// a full disk during an append leaves a truncated record, and parsing it
+    /// would refuse the very recovery that needs it out of the way. The file is
+    /// opened without creating it, must be a private regular file, is locked
+    /// exclusively (a live holder yields [`OutboxError::Busy`]) and is renamed
+    /// without replacing `retired`. Not one byte is read, rewritten or deleted.
+    ///
+    /// # Errors
+    /// A missing file, custody failure, lock contention, an existing target or a
+    /// platform without a no-replace rename. The source is left where it was.
+    pub(crate) fn set_aside_unread(path: &Path, retired: &Path) -> Result<(), OutboxError> {
+        let file = crate::outbox_private::open_existing_only(path).map_err(|error| {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+            {
+                OutboxError::Missing
+            } else {
+                OutboxError::Custody
+            }
+        })?;
+        let guard = LockedFile::acquire(file)?;
+        crate::outbox_private::retire(&guard, path, retired)
+            .map_err(|_sanitized| OutboxError::Custody)
+    }
+
     /// [`Self::inspect`] on an already opened private file.
     ///
     /// # Errors

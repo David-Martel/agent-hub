@@ -830,7 +830,10 @@ fn report_entry(request: &ReplayRequest, now: u64) -> Value {
 /// between steps 3 and 4. A stop in that gap leaves the complete, committed
 /// staging journal beside the archive; the next write, flush or migrate
 /// finishes the move, and status describes it meanwhile. A staging journal
-/// without its archive was never committed and is never promoted.
+/// without its archive was never committed and is never promoted. Before step 2
+/// a staging file left by an earlier attempt is moved to a `.partial` name
+/// without being read, so one cut off mid-record cannot block the retry; it is
+/// kept, never deleted.
 ///
 /// The report lists what was carried, expired and abandoned by request ID,
 /// operation, topic, thread and age. It never contains a body.
@@ -966,7 +969,7 @@ fn migrate_with_hook(
             "migrated outbox journal already exists; preserve both journals".to_owned(),
         ));
     }
-    set_aside_partial_staging(&staging, origin_id)?;
+    set_aside_partial_staging(&staging)?;
     // Write the carried requests in full before anything moves, so that no stop
     // can leave them only in a file this command has already renamed.
     let mut next = Journal::open(&staging, &scope).map_err(|_sanitized| {
@@ -1003,26 +1006,57 @@ fn migrate_with_hook(
 
 /// A staging file for this origin means an earlier attempt stopped before the
 /// old journal moved, so it is derived data. Keep it under another name.
-fn set_aside_partial_staging(staging: &Path, origin_id: uuid::Uuid) -> Result<()> {
+///
+/// The file is moved without being read. A crash or a full disk during an append
+/// can leave a truncated record, and requiring the copy to parse would refuse the
+/// recovery on every retry while the original journal, which still holds the
+/// debt, waits behind it. Custody and the exclusive lock still apply, so a
+/// staging file someone holds, or that is not a private regular file, is refused
+/// and left where it is. Nothing is deleted, rewritten or overwritten.
+fn set_aside_partial_staging(staging: &Path) -> Result<()> {
     if std::fs::symlink_metadata(staging).is_err() {
         return Ok(());
     }
-    let partial = staging.with_file_name(format!("{STAGING_PREFIX}{origin_id}.partial.jsonl"));
-    let stale = Journal::inspect(staging).map_err(|_sanitized| {
-        AgentBusError::Internal(
-            "an earlier migration left an unreadable staging journal; preserve it and the journal"
-                .to_owned(),
-        )
-    })?;
-    if std::fs::symlink_metadata(&partial).is_ok() {
-        return Err(AgentBusError::Internal(
-            "earlier migration staging journals already exist; preserve them and the journal"
-                .to_owned(),
-        ));
-    }
-    stale.retire_to(staging, &partial).map_err(|_sanitized| {
-        AgentBusError::Internal("a stale staging journal could not be set aside".to_owned())
+    let partial = partial_staging_name(staging)?;
+    Journal::set_aside_unread(staging, &partial).map_err(|error| {
+        let reason = match error {
+            OutboxError::Busy => {
+                "an earlier migration's staging journal is in use; the old journal is unchanged"
+            }
+            _sanitized => {
+                "an earlier migration's staging journal could not be set aside; preserve it and \
+                 the journal"
+            }
+        };
+        AgentBusError::Internal(reason.to_owned())
     })
+}
+
+/// How many set-aside copies of one origin's staging journal are kept before refusing.
+const PARTIAL_STAGING_LIMIT: u32 = 64;
+
+/// The first unused name for a staging journal being set aside.
+///
+/// `journal.migrating-<origin>.partial.jsonl`, then `.partial.1.jsonl`, `.partial.2.jsonl`
+/// and so on: every interrupted attempt keeps its own copy, and every name contains
+/// `.partial.`, which is how [`staging_journals`] tells them from live staging.
+fn partial_staging_name(staging: &Path) -> Result<PathBuf> {
+    let name = file_name_text(staging);
+    let stem = name.strip_suffix(".jsonl").unwrap_or(&name);
+    for attempt in 0..=PARTIAL_STAGING_LIMIT {
+        let candidate = if attempt == 0 {
+            staging.with_file_name(format!("{stem}.partial.jsonl"))
+        } else {
+            staging.with_file_name(format!("{stem}.partial.{attempt}.jsonl"))
+        };
+        if std::fs::symlink_metadata(&candidate).is_err() {
+            return Ok(candidate);
+        }
+    }
+    Err(AgentBusError::Internal(
+        "earlier migration staging journals already exist; preserve them and the journal"
+            .to_owned(),
+    ))
 }
 
 /// Finish a migration that stopped after the old journal was archived.
@@ -2892,6 +2926,142 @@ mod tests {
                 .get("interrupted_migration")
                 .is_none()
         );
+    }
+
+    /// A staging journal holding one carried request, as a migration writes it before
+    /// it stops: valid when `truncate_by` is zero, otherwise cut inside its last record
+    /// (a crash or a full disk during the append).
+    fn staging_with_one_request(staging: &Path, scope: &str, truncate_by: u64) -> Vec<u8> {
+        let mut journal = Journal::open(staging, scope).unwrap();
+        journal
+            .enqueue(
+                Operation::Send,
+                ClientSurface::Cli,
+                args("derived copy of a retained request"),
+                now_ms().unwrap(),
+            )
+            .unwrap();
+        drop(journal);
+        let length = std::fs::metadata(staging).unwrap().len();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(staging)
+            .unwrap()
+            .set_len(length - truncate_by)
+            .unwrap();
+        std::fs::read(staging).unwrap()
+    }
+
+    /// Protects: a staging journal cut off inside its last record by a crash or a full
+    /// disk does not strand the retained work. The original journal is intact, so the
+    /// next migration sets the damaged copy aside, byte for byte, and completes.
+    /// Detects: Parsing the staging file before preserving it, which fails on the
+    /// truncated record on every retry; deleting or rewriting the damaged bytes; carrying
+    /// a request from the damaged copy instead of from the original journal.
+    /// Needs: owned private journal; a staging file truncated mid-record.
+    /// Breadcrumb: `set_aside_partial_staging`, `Journal::set_aside_unread`.
+    #[test]
+    fn truncated_staging_record_is_set_aside_unread_and_migration_recovers() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let (_old, queued, base) = journal_on_old_authority(&path);
+        let new = named_authority_settings("new-hub", "http://localhost:8485");
+        let original = Journal::inspect(&path).unwrap();
+        let origin = original.origin_id.unwrap();
+        drop(original);
+        let original_bytes = std::fs::read(&path).unwrap();
+        let staging = path.with_file_name(format!("{STAGING_PREFIX}{origin}.jsonl"));
+        let damaged = staging_with_one_request(&staging, &scope_of(&new), 9);
+        assert!(
+            matches!(Journal::inspect(&staging), Err(OutboxError::Corrupt)),
+            "positive control: the fixture must be unparseable"
+        );
+
+        let report = migrate(&new, Some(&path), MigrateOptions::default(), base + 10_000)
+            .expect("a truncated staging copy must not block migration");
+        assert_eq!(report["migrated"], true, "{report}");
+        let partial = path.with_file_name(format!("{STAGING_PREFIX}{origin}.partial.jsonl"));
+        assert_eq!(std::fs::read(&partial).unwrap(), damaged, "bytes preserved");
+        let archive = path.with_file_name(format!("{MIGRATED_PREFIX}{origin}.jsonl"));
+        assert_eq!(std::fs::read(&archive).unwrap(), original_bytes);
+        // Debt comes from the original journal: the live presence and the send are
+        // carried under their own IDs, the expired presence is not, and nothing from
+        // the damaged copy leaks in.
+        let carried = Journal::inspect(&path).unwrap();
+        let ids = carried
+            .pending
+            .iter()
+            .map(|request| request.request_id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec![queued[0].request_id, queued[1].request_id]);
+        drop(carried);
+        let report = status(&new, Some(&path)).unwrap();
+        assert_eq!(report["pending"], 2, "{report}");
+        assert!(report.get("interrupted_migration").is_none(), "{report}");
+        assert!(report.get("stale_staging").is_none(), "{report}");
+    }
+
+    /// Protects: a second interrupted attempt is preserved too. Every set-aside keeps
+    /// its own name, so an earlier preserved copy never blocks recovery.
+    /// Detects: A permanent refusal once one `.partial` file exists, overwriting the
+    /// earlier copy, or dropping either one.
+    /// Needs: owned private journal.
+    /// Breadcrumb: `set_aside_partial_staging`, `partial_staging_name`.
+    #[test]
+    fn repeated_interrupted_attempts_are_each_preserved_under_their_own_name() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let (_old, _queued, base) = journal_on_old_authority(&path);
+        let new = named_authority_settings("new-hub", "http://localhost:8485");
+        let origin = Journal::inspect(&path).unwrap().origin_id.unwrap();
+        let staging = path.with_file_name(format!("{STAGING_PREFIX}{origin}.jsonl"));
+        let first = path.with_file_name(format!("{STAGING_PREFIX}{origin}.partial.jsonl"));
+        // An earlier attempt's copy, already set aside (valid this time).
+        let earlier = staging_with_one_request(&staging, &scope_of(&new), 0);
+        std::fs::rename(&staging, &first).unwrap();
+        // A later attempt that stopped inside a record.
+        let damaged = staging_with_one_request(&staging, &scope_of(&new), 5);
+
+        let report = migrate(&new, Some(&path), MigrateOptions::default(), base + 10_000).unwrap();
+        assert_eq!(report["migrated"], true, "{report}");
+        assert_eq!(
+            std::fs::read(&first).unwrap(),
+            earlier,
+            "earlier copy intact"
+        );
+        let second = path.with_file_name(format!("{STAGING_PREFIX}{origin}.partial.1.jsonl"));
+        assert_eq!(std::fs::read(&second).unwrap(), damaged);
+        assert!(!staging.exists(), "the staging name is free again");
+        assert_eq!(status(&new, Some(&path)).unwrap()["pending"], 2);
+    }
+
+    /// Protects: a staging file another process still holds is not moved from under
+    /// it. The migration refuses with the original journal untouched and nothing
+    /// archived.
+    /// Detects: Setting a staging journal aside without the exclusive lock, or
+    /// archiving the original after a failed set-aside.
+    /// Needs: owned private journal; a live holder of the staging file.
+    /// Breadcrumb: `Journal::set_aside_unread`, `LockedFile::acquire`.
+    #[test]
+    fn staging_held_by_another_process_is_neither_moved_nor_lets_the_original_move() {
+        let root = tempfile::tempdir().unwrap();
+        let path = private_journal_path(&root);
+        let (_old, _queued, base) = journal_on_old_authority(&path);
+        let new = named_authority_settings("new-hub", "http://localhost:8485");
+        let origin = Journal::inspect(&path).unwrap().origin_id.unwrap();
+        let original_bytes = std::fs::read(&path).unwrap();
+        let staging = path.with_file_name(format!("{STAGING_PREFIX}{origin}.jsonl"));
+        let holder = Journal::open(&staging, &scope_of(&new)).unwrap();
+
+        let refused = migrate(&new, Some(&path), MigrateOptions::default(), base + 10_000);
+        assert!(refused.is_err(), "a held staging file is not set aside");
+        assert!(staging.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+        let archive = path.with_file_name(format!("{MIGRATED_PREFIX}{origin}.jsonl"));
+        assert!(!archive.exists(), "the original is not archived");
+        drop(holder);
+        let report = migrate(&new, Some(&path), MigrateOptions::default(), base + 10_000).unwrap();
+        assert_eq!(report["migrated"], true, "{report}");
     }
 
     /// Protects: waiting work stays visible. A send never expires by age, so the only
