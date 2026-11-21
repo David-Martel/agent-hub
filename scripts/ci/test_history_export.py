@@ -351,6 +351,15 @@ class DriveTests(TempDirCase):
         store.account.assert_not_called()
         self.assertEqual(path.read_bytes(), b"tampered")
 
+    def test_drive_exit_code_reports_a_stale_snapshot_as_failure(self):
+        """Protects: the timer shows failure when the uploaded snapshot is stale.
+        Detects: exit 0 while the status line says STALE (2026-11-21: a 9-day-old
+        snapshot was verified and the unit finished green). Needs: no network.
+        Breadcrumb: drive_exit_code, snapshot_freshness.
+        """
+        self.assertEqual(hx.drive_exit_code({"freshness": {"within_limit": True}}), 0)
+        self.assertEqual(hx.drive_exit_code({"freshness": {"within_limit": False}}), 4)
+
     def test_drive_success_requires_both_cipher_and_receipt_readback(self):
         """Protects: a remotely recoverable exact bundle and durable receipt.
         Detects: completion after cipher upload alone, plaintext deletion, or unsafe
@@ -2508,7 +2517,9 @@ class WorkCaptureTests(SettingsCase):
             mock.patch.object(hx, "drive_run", side_effect=self.encrypt),
             mock.patch.object(hx, "DriveStore", return_value=self.provider()),
         ):
-            self.assertEqual(hx.drive_backup(), 0)
+            # STALE is reported and the exit code is 4, so the timer shows failure; the
+            # job is verified, so the next capture is not blocked.
+            self.assertEqual(hx.drive_backup(), 4)
         self.assertFalse(self.last()["fresh"])
         self.assertIn(" STALE", self.notice.call_args.args[0])
 
@@ -2516,6 +2527,24 @@ class WorkCaptureTests(SettingsCase):
 class WorkPackagingTests(TempDirCase):
     def read(self, name: str) -> str:
         return (PKG / "systemd" / name).read_text()
+
+    def test_work_service_warms_the_uv_cache_online_before_the_offline_run(self):
+        """Protects: the nightly run not depending on a cache entry that a prune can
+        evict. Detects: `uv run --offline --with redis` with no online warm-up
+        (2026-11-21 00:16 and 03:46: "redis was not found in the cache").
+        Needs: unit text.
+        Breadcrumb: agent-hub-history-export-work.service ExecStartPre.
+        """
+        unit = self.read("agent-hub-history-export-work.service")
+        pre = [ln for ln in unit.splitlines() if ln.startswith("ExecStartPre=")]
+        self.assertEqual(len(pre), 1)
+        self.assertTrue(
+            pre[0].startswith("ExecStartPre=-"),
+            "warm-up failure must not block the run",
+        )
+        self.assertIn("--with redis", pre[0])
+        self.assertNotIn("--offline", pre[0])
+        self.assertIn("--offline --no-project --with redis", unit)
 
     def test_work_service_passes_an_explicit_config_and_names_no_asus_path(self):
         """Protects: the Work unit never running on the asuspro13 defaults, and the
